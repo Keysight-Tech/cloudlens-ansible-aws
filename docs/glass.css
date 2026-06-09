@@ -7,13 +7,14 @@
 
 :root {
   /* Keysight accent — replaces the reference's blue */
-  --accent-h: 25;            /* red hue */
-  --accent-c: 0.22;           /* high chroma */
-  --accent-l: 50%;            /* mid lightness */
-  --accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
-  --accent-bright: oklch(calc(var(--accent-l) + 12%) calc(var(--accent-c) + 0.02) var(--accent-h));
-  --accent-deep: oklch(calc(var(--accent-l) - 16%) var(--accent-c) var(--accent-h));
-  --accent-glow: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .42);
+  /* True Keysight red — replaced OKLCH (was rendering pink/magenta in gradients) */
+  --accent-h: 25;            /* kept for compat */
+  --accent-c: 0.22;
+  --accent-l: 50%;
+  --accent: #E90029;
+  --accent-bright: #FB3D5E;
+  --accent-deep: #B80020;
+  --accent-glow: rgba(233, 0, 41, .42);
 
   --radius: 22px;
   --depth: 1;
@@ -741,3 +742,48 @@ body { max-width: 100vw; }
   .btn.tier { min-width: 100%; }
   h1 { font-size: clamp(34px, 9vw, 50px) !important; }
 }
+
+/* ============================== */
+/*  STEP CARD OVERLAP FIX          */
+/* ============================== */
+/* When step-num-big is absolute-positioned inside step-card,
+   we need to push the heading + body right so it doesn't sit under the coin */
+.step-card {
+  padding-left: clamp(96px, 12vw, 116px) !important;
+  padding-top: 28px !important;
+  position: relative;
+  min-height: 92px;
+}
+.step-num-big {
+  position: absolute !important;
+  top: 28px !important;
+  left: 28px !important;
+  width: 56px !important;
+  height: 56px !important;
+  display: grid;
+  place-items: center;
+  border-radius: 18px !important;
+  z-index: 3;
+}
+.step-card h3,
+.step-card h2,
+.step-card .step-title,
+.step-card summary {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  display: block;
+}
+.step-card details summary {
+  padding: 0 !important;
+}
+.step-card details {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.step-card details::before { display: none; }
+.step-card details[open] {
+  box-shadow: none !important;
+}
+
