@@ -1243,3 +1243,243 @@ table code { word-break: break-all; }
 /* Hide the OLD in-hero brand card (no longer used) */
 .keysight-brand-card { display: none !important; }
 
+
+/* =====================================================================
+   DARK MODE — COMPREHENSIVE OVERRIDE (works for both manual toggle
+   data-theme="dark" AND system prefers-color-scheme: dark)
+   ===================================================================== */
+
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(circle 800px at 15% 5%, rgba(233, 0, 41, 0.18) 0%, transparent 50%),
+    radial-gradient(circle 700px at 85% 30%, rgba(255, 153, 0, 0.14) 0%, transparent 50%),
+    radial-gradient(circle 600px at 50% 80%, rgba(120, 119, 198, 0.12) 0%, transparent 50%),
+    linear-gradient(180deg, #0B0F14 0%, #14181F 100%) !important;
+  color: #E8EBEF !important;
+}
+
+/* Text: headings */
+html[data-theme="dark"] h1 {
+  background: linear-gradient(135deg, #FFFFFF 0%, #C7D2DE 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  filter: drop-shadow(0 2px 12px rgba(255, 92, 127, 0.25));
+}
+html[data-theme="dark"] h2 {
+  color: #F4F6F8 !important;
+}
+html[data-theme="dark"] h2,
+html[data-theme="dark"] h3,
+html[data-theme="dark"] h4,
+html[data-theme="dark"] h5 {
+  color: #F4F6F8 !important;
+  background: none !important;
+  -webkit-text-fill-color: #F4F6F8 !important;
+}
+html[data-theme="dark"] .section-head h2::before {
+  background: linear-gradient(135deg, #FF3C5E, #FFAA33) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+/* Body copy + paragraphs */
+html[data-theme="dark"] p,
+html[data-theme="dark"] .lede,
+html[data-theme="dark"] li {
+  color: #C2C8D0 !important;
+}
+html[data-theme="dark"] strong { color: #FFFFFF !important; }
+
+/* Hero eyebrow / verified badge */
+html[data-theme="dark"] .eyebrow,
+html[data-theme="dark"] .hero-badge,
+html[data-theme="dark"] .verified-badge {
+  background: rgba(26, 32, 42, 0.7) !important;
+  color: #E8EBEF !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Floating glass header */
+html[data-theme="dark"] .site-header {
+  background: rgba(20, 24, 30, 0.7) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+html[data-theme="dark"] .brand-name {
+  background: linear-gradient(135deg, #FF5C7F 0%, #FF3C5E 100%) !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
+html[data-theme="dark"] .brand-sub {
+  color: #98A0AC !important;
+}
+html[data-theme="dark"] .primary-nav a {
+  color: #D6DBE2 !important;
+}
+html[data-theme="dark"] .primary-nav a:hover {
+  background: rgba(233, 0, 41, 0.18) !important;
+  color: #FFFFFF !important;
+}
+html[data-theme="dark"] .icon-btn,
+html[data-theme="dark"] #theme-toggle {
+  background: rgba(40, 46, 56, 0.7) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #E8EBEF !important;
+}
+html[data-theme="dark"] .icon-btn:hover,
+html[data-theme="dark"] #theme-toggle:hover {
+  background: rgba(60, 66, 78, 0.85) !important;
+}
+
+/* Cards, tiles, FAQ accordions */
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .tile,
+html[data-theme="dark"] .step-card,
+html[data-theme="dark"] .path-card,
+html[data-theme="dark"] .why-card,
+html[data-theme="dark"] .prereq-tile,
+html[data-theme="dark"] .verified-row,
+html[data-theme="dark"] .faq-section details,
+html[data-theme="dark"] .faq details {
+  background: linear-gradient(145deg, rgba(28, 32, 42, 0.78), rgba(22, 26, 34, 0.66)) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow:
+    0 12px 24px -8px rgba(0, 0, 0, 0.55),
+    0 4px 12px -4px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  color: #E8EBEF !important;
+}
+html[data-theme="dark"] .card h3,
+html[data-theme="dark"] .step-card h3,
+html[data-theme="dark"] .path-card h3 {
+  color: #FFFFFF !important;
+}
+html[data-theme="dark"] .card:hover,
+html[data-theme="dark"] .tile:hover,
+html[data-theme="dark"] .step-card:hover,
+html[data-theme="dark"] .path-card:hover,
+html[data-theme="dark"] .prereq-tile:hover {
+  border-color: rgba(255, 92, 127, 0.4) !important;
+  box-shadow:
+    0 24px 48px -12px rgba(0, 0, 0, 0.65),
+    0 0 30px rgba(233, 0, 41, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Inline code + tables */
+html[data-theme="dark"] code:not(pre code) {
+  background: rgba(233, 0, 41, 0.20) !important;
+  color: #FF8FA3 !important;
+  border-color: rgba(233, 0, 41, 0.35) !important;
+}
+html[data-theme="dark"] .step-table {
+  background: rgba(22, 26, 34, 0.6) !important;
+}
+html[data-theme="dark"] .step-table th {
+  color: #F4F6F8 !important;
+  background: linear-gradient(135deg, rgba(233, 0, 41, 0.15), rgba(255, 153, 0, 0.15)) !important;
+}
+html[data-theme="dark"] .step-table td {
+  color: #D6DBE2 !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Form fields */
+html[data-theme="dark"] input[type="text"],
+html[data-theme="dark"] input[type="password"],
+html[data-theme="dark"] input[type="number"],
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea {
+  background: rgba(22, 26, 34, 0.7) !important;
+  color: #FFFFFF !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+html[data-theme="dark"] input:focus,
+html[data-theme="dark"] select:focus,
+html[data-theme="dark"] textarea:focus {
+  background: rgba(30, 34, 44, 0.95) !important;
+  border-color: #FF3C5E !important;
+  box-shadow: 0 0 0 4px rgba(233, 0, 41, 0.22) !important;
+}
+html[data-theme="dark"] label {
+  color: #E0E5EC !important;
+}
+html[data-theme="dark"] .hint {
+  color: #98A0AC !important;
+}
+
+/* Pre/code blocks: keep dark but lift the chrome */
+html[data-theme="dark"] pre {
+  background: linear-gradient(180deg, rgba(8, 12, 18, 0.98) 0%, rgba(4, 6, 10, 0.98) 100%) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Buttons stay punchy red — keep gradient.  Secondary button needs dark glass */
+html[data-theme="dark"] .btn-secondary {
+  background: linear-gradient(145deg, rgba(36, 42, 52, 0.92), rgba(26, 32, 42, 0.82)) !important;
+  color: #F4F6F8 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+html[data-theme="dark"] .btn-secondary:hover {
+  background: rgba(46, 52, 64, 0.95) !important;
+  border-color: rgba(255, 92, 127, 0.4) !important;
+  color: #FF8FA3 !important;
+}
+
+/* Footer */
+html[data-theme="dark"] footer,
+html[data-theme="dark"] .site-footer {
+  background: linear-gradient(180deg, rgba(8, 10, 14, 0.95) 0%, rgba(4, 6, 10, 0.98) 100%) !important;
+  color: #C2C8D0 !important;
+}
+
+/* Eyebrow / hero verified badge "uppercase tracked tag" — pulse dot needs adjustment */
+html[data-theme="dark"] .eyebrow::before,
+html[data-theme="dark"] .hero-badge::before {
+  background: #34D399 !important;
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.7) !important;
+}
+
+/* Hero illustration card */
+html[data-theme="dark"] .hero-illustration,
+html[data-theme="dark"] .hero-figure,
+html[data-theme="dark"] .hero img {
+  background: rgba(20, 24, 30, 0.8) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+/* Callouts retain their accent but on darker base */
+html[data-theme="dark"] .callout-warning {
+  background: linear-gradient(135deg, rgba(255, 153, 0, 0.18), rgba(255, 153, 0, 0.06)) !important;
+  color: #FFD088 !important;
+  border-color: rgba(255, 153, 0, 0.35) !important;
+}
+html[data-theme="dark"] .callout-info {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(59, 130, 246, 0.06)) !important;
+  color: #93C5FD !important;
+  border-color: rgba(59, 130, 246, 0.35) !important;
+}
+
+/* Step number coins keep their red gradient but get a darker outer ring */
+html[data-theme="dark"] .step-num-big {
+  box-shadow:
+    0 14px 30px -6px rgba(233, 0, 41, 0.6),
+    0 6px 14px -2px rgba(0, 0, 0, 0.4),
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Tier badges in hero */
+html[data-theme="dark"] .tier-badges > * {
+  background: rgba(28, 32, 42, 0.7) !important;
+  color: #D6DBE2 !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+}
+
