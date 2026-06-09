@@ -13,7 +13,7 @@
   </script>
   <meta name="color-scheme" content="light dark" />
   <title>CloudLens Ansible for AWS | Keysight Technologies</title>
-  <meta name="description" content="Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes. Linux, Windows, fully automated. CloudFormation template, CloudShell, or Docker." />
+  <meta name="description" content="Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes. Linux, Windows, fully automated. Ansible playbook, CloudShell, or Docker." />
   <meta name="theme-color" content="#0078D4" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0F172A" media="(prefers-color-scheme: dark)" />
 
@@ -92,7 +92,7 @@
               <span class="tier-num">1</span>
               <span class="tier-label">
                 <strong>Deploy via Ansible</strong>
-                <small>CloudFormation template, browser only</small>
+                <small>Ansible playbook, browser only</small>
               </span>
             </a>
             <a class="btn btn-secondary tier" href="https://us-east-1.console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">
@@ -168,7 +168,7 @@ terraform init &amp;&amp; terraform apply</code></pre>
       <div class="container">
         <header class="section-head">
           <h2>AWS Marketplace prerequisites</h2>
-          <p class="lede">CloudLens Ansible deploys three Keysight products from AWS Marketplace. Subscribe to all three <strong>once per AWS account</strong> before running the CloudFormation or Terraform stack &mdash; this is a one-time EULA step that cannot be automated.</p>
+          <p class="lede">CloudLens Ansible deploys three Keysight products from AWS Marketplace. Subscribe to all three <strong>once per AWS account</strong> before running the Ansible or Terraform stack &mdash; this is a one-time EULA step that cannot be automated.</p>
         </header>
 
         <div class="prereq-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
@@ -223,7 +223,7 @@ terraform init &amp;&amp; terraform apply</code></pre>
         </div>
 
         <div class="callout-warning" style="margin-top:32px;">
-          <strong>One-time EULA step:</strong> AWS Marketplace EULAs must be accepted <strong>once per Marketplace product per AWS account</strong> via the AWS Marketplace console. This <em>cannot</em> be automated by CloudFormation or Terraform. Click each <strong>Subscribe</strong> button above, accept the terms, and you're set for all future Ansible deployments in that account.
+          <strong>One-time EULA step:</strong> AWS Marketplace EULAs must be accepted <strong>once per Marketplace product per AWS account</strong> via the AWS Marketplace console. This <em>cannot</em> be automated by Ansible or Terraform. Click each <strong>Subscribe</strong> button above, accept the terms, and you're set for all future Ansible deployments in that account.
         </div>
 
         <details class="card" style="margin-top:24px;">
@@ -323,12 +323,12 @@ done</code></pre>
                 <p>Place your downloaded <code>customer_input.yaml</code> in your working directory, then pick one of the three deploy paths.</p>
                 <div class="step-paths">
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: AWS Console</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: One-command quickstart</h4>
                     <p>One click. No local tools. Best for: trying it for the first time.</p>
                     <a class="btn btn-primary inline-btn" href="https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws" target="_blank" rel="noopener">Deploy from Portal</a>
                   </div>
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: CloudShell</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: AWS CloudShell</h4>
                     <p>Already authenticated. One curl command. Best for: most customers.</p>
 <pre><code># One-click via AWS Console:
 aws cloudformation create-stack \
@@ -338,7 +338,7 @@ aws cloudformation create-stack \
   --region us-east-1</code></pre>
                   </div>
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker container</h4>
                     <p>Reproducible. Pinned versions. Best for: CI or repeat deployments.</p>
 <pre><code>docker run --rm -it -v $(pwd)/customer_input.yaml:/work/customer_input.yaml https://github.com/Keysight-Tech/cloudlens-ansible-aws</code></pre>
                   </div>
@@ -551,7 +551,7 @@ aws cloudformation create-stack \
       <div class="container">
         <header class="section-head">
           <h2>CLMS configuration (one-time)</h2>
-          <p class="lede">Once Terraform or CloudFormation finishes, configure the three Keysight products via their web UIs. One-time setup, about 15 minutes end to end.</p>
+          <p class="lede">Once Terraform or Ansible finishes, configure the three Keysight products via their web UIs. One-time setup, about 15 minutes end to end.</p>
         </header>
 
         <div class="steps">
@@ -774,7 +774,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
           <article class="card">
             <h3>1 &nbsp; IAM ready out of the box</h3>
-            <p>Terraform/CloudFormation already provisions an IAM user with the full <strong>CloudLens v6.13.0 12-statement policy</strong>, scoped with the <code>cloudlens:monitored:vpcid</code> condition tag. Includes EC2, Traffic Mirror, Auto Scaling, and Launch Template permissions.</p>
+            <p>Terraform/Ansible already provisions an IAM user with the full <strong>CloudLens v6.13.0 12-statement policy</strong>, scoped with the <code>cloudlens:monitored:vpcid</code> condition tag. Includes EC2, Traffic Mirror, Auto Scaling, and Launch Template permissions.</p>
           </article>
 
           <article class="card">
@@ -820,7 +820,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
             <p>Terraform path:</p>
             <pre data-lang="bash"><code>cd terraform/environments/demo
 terraform destroy -var-file=demo.tfvars</code></pre>
-            <p>CloudFormation path:</p>
+            <p>Ansible path:</p>
             <pre data-lang="bash"><code>aws cloudformation delete-stack \
   --stack-name cloudlens-demo \
   --region us-east-1
@@ -885,7 +885,7 @@ aws cloudformation wait stack-delete-complete \
 
           <article class="card">
             <h3>📜 SSM Command Documents</h3>
-            <p>Auto-registered by Terraform/CloudFormation:</p>
+            <p>Auto-registered by Terraform/Ansible:</p>
             <table class="step-table">
               <thead><tr><th>Document Name</th><th>Target</th></tr></thead>
               <tbody>
