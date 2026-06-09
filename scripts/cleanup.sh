@@ -22,7 +22,7 @@ echo ""
 echo "This will REMOVE CloudLens sensors from all matching VMs."
 echo ""
 
-ansible-inventory -i inventory/azure_rm.yaml --graph
+ansible-inventory -i inventory/aws_ec2.yaml --graph
 
 echo ""
 read -rp "Continue with cleanup? [y/N] " confirm
@@ -33,7 +33,7 @@ fi
 
 ansible-playbook cleanup.yaml \
   -e "@$INPUT_FILE" \
-  -i inventory/azure_rm.yaml
+  -i inventory/aws_ec2.yaml
 
 echo ""
 echo "Cleanup complete."

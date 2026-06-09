@@ -1,6 +1,6 @@
 # Deployment Guide
 
-🌐 **Interactive walkthrough:** https://keysight-tech.github.io/cloudlens-autopilot-docs/#start-here
+🌐 **Interactive walkthrough:** https://keysight-tech.github.io/cloudlens-ansible-aws/#start-here
 
 The full step-by-step runbook is in [`CloudLens-AutoPilot-Deployment-Runbook.docx`](CloudLens-AutoPilot-Deployment-Runbook.docx) (1,462 lines). This file is the executive summary version for SEs and DevOps reviewers.
 
@@ -18,7 +18,7 @@ The full step-by-step runbook is in [`CloudLens-AutoPilot-Deployment-Runbook.doc
 
 ### Option 1: One-click via AWS Console
 
-[**▶ Deploy from AWS Console**](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-autopilot-docs/main/cloudlens-autopilot.yaml&stackName=cloudlens-autopilot)
+[**▶ Deploy from AWS Console**](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws)
 
 The deeplink pre-loads the CFT from this repo. Fill the parameters (key pair, allowed CIDRs) and click **Create Stack**. ~5 minutes.
 
@@ -26,8 +26,8 @@ The deeplink pre-loads the CFT from this repo. Fill the parameters (key pair, al
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name cloudlens-autopilot \
-  --template-url https://raw.githubusercontent.com/Keysight-Tech/cloudlens-autopilot-docs/main/cloudlens-autopilot.yaml \
+  --stack-name cloudlens-ansible-aws \
+  --template-url https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml \
   --parameters \
     ParameterKey=KeyPairName,ParameterValue=your-key-pair \
     ParameterKey=AllowedSshCidrs,ParameterValue=your.ip/32 \
@@ -35,21 +35,21 @@ aws cloudformation create-stack \
   --capabilities CAPABILITY_NAMED_IAM \
   --region us-east-1
 
-aws cloudformation wait stack-create-complete --stack-name cloudlens-autopilot
+aws cloudformation wait stack-create-complete --stack-name cloudlens-ansible-aws
 
 # Get the URLs
-aws cloudformation describe-stacks --stack-name cloudlens-autopilot \
+aws cloudformation describe-stacks --stack-name cloudlens-ansible-aws \
   --query "Stacks[0].Outputs" --output table
 ```
 
 ## Path B — Terraform (SE / DevOps)
 
 ```bash
-git clone https://github.com/Keysight-Tech/cloudlens-autopilot.git
-cd cloudlens-autopilot/terraform/environments/demo
+git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
+cd cloudlens-ansible-aws/terraform/environments/demo
 
-# Generate terraform.tfvars from the live site wizard:
-# https://keysight-tech.github.io/cloudlens-autopilot-docs/#wizard
+# Generate customer_input.yaml from the live site wizard:
+# https://keysight-tech.github.io/cloudlens-ansible-aws/#wizard
 # Or copy and edit demo.tfvars.example:
 cp demo.tfvars.example demo.tfvars
 vim demo.tfvars   # set aws_region, prefix, key_pair_name, allowed_*_cidrs
@@ -80,7 +80,7 @@ After Phase 1 completes, configure the products via their web UIs:
   --project-key <clms-project-key>
 ```
 
-Sensors are pushed via AWS SSM Run Command — no SSH, no WinRM. Target VMs must have:
+Sensors are pushed via AWS Ansible (SSH/SSM/WinRM) — no SSH, no WinRM. Target VMs must have:
 - IAM role with `AmazonSSMManagedInstanceCore` policy
 - SSM Agent running
 - Tags: `cloudlens=true` + `Platform=linux-docker` (or `linux-podman` or `windows`)
@@ -106,7 +106,7 @@ In KVO UI:
 ./scripts/remove-sensors.sh --region us-east-1 --profile autopilot
 
 # Then destroy infrastructure
-aws cloudformation delete-stack --stack-name cloudlens-autopilot --region us-east-1
+aws cloudformation delete-stack --stack-name cloudlens-ansible-aws --region us-east-1
 # OR
 terraform destroy -var-file=demo.tfvars
 ```

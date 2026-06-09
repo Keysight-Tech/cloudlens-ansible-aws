@@ -28,7 +28,7 @@ echo "  Logs:            $LOG_DIR/"
 echo
 
 # Dump full inventory once
-ansible-inventory -i inventory/azure_rm.yaml --list > /tmp/full_inventory.json
+ansible-inventory -i inventory/aws_ec2.yaml --list > /tmp/full_inventory.json
 
 # Split host list into N shards
 python3 <<EOF

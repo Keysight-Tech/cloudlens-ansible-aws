@@ -1,8 +1,8 @@
 # Scaling
 
-🌐 **Interactive sizing slider:** https://keysight-tech.github.io/cloudlens-autopilot-docs/#scaling
+🌐 **Interactive sizing slider:** https://keysight-tech.github.io/cloudlens-ansible-aws/#scaling
 
-CloudLens AutoPilot scales linearly across thousands of EC2 instances using AWS SSM Run Command's native parallelism. No custom orchestration, no agent push servers — just AWS-native concurrency.
+CloudLens Ansible scales linearly across thousands of EC2 instances using AWS Ansible (SSH/SSM/WinRM)'s native parallelism. No custom orchestration, no agent push servers — just AWS-native concurrency.
 
 ## Sensor deployment time vs fleet size
 
@@ -16,7 +16,7 @@ CloudLens AutoPilot scales linearly across thousands of EC2 instances using AWS 
 | 5,001–10,000 | 1,500 concurrent | Yes | 2–4 hours |
 | 10,000+ | 2,500+ concurrent | Yes | 4+ hours |
 
-SSM Run Command's `--max-concurrency` and `--max-errors` flags let you tune the concurrency profile per customer. The site's interactive slider models the same bands.
+Ansible (SSH/SSM/WinRM)'s `--max-concurrency` and `--max-errors` flags let you tune the concurrency profile per customer. The site's interactive slider models the same bands.
 
 ## KVO infrastructure sizing
 

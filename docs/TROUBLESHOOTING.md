@@ -1,8 +1,8 @@
 # Troubleshooting
 
-Common issues encountered during CloudLens AutoPilot AWS deployments and their fixes. Pulled from real customer engagements (AAA, Nokia, Airtel) and the official deployment runbook section 9.
+Common issues encountered during CloudLens Ansible AWS deployments and their fixes. Pulled from real customer engagements (AAA, Nokia, Airtel) and the official deployment runbook section 9.
 
-🌐 **Live FAQ:** https://keysight-tech.github.io/cloudlens-autopilot-docs/#faq
+🌐 **Live FAQ:** https://keysight-tech.github.io/cloudlens-ansible-aws/#faq
 
 ---
 
@@ -17,7 +17,7 @@ Common issues encountered during CloudLens AutoPilot AWS deployments and their f
 - vPB-KVO **must** use `t3.xlarge` (Marketplace restriction)
 - CLMS is flexible — `t3.xlarge` recommended
 
-Cannot be changed in `terraform.tfvars` or CFT parameters without breaking the Marketplace EULA binding.
+Cannot be changed in `customer_input.yaml` or CFT parameters without breaking the Marketplace EULA binding.
 
 ### `AccessDenied` on stack creation
 
@@ -147,8 +147,8 @@ Wait 60 seconds, then re-run the SSM command.
 ## When nothing else works
 
 1. **Tear down and redeploy** is often faster than debugging. AutoPilot's `terraform destroy` + reapply takes 5 minutes.
-2. **Check the deployment runbook** [section 9 Troubleshooting](https://github.com/Keysight-Tech/cloudlens-autopilot-docs/raw/main/CloudLens-AutoPilot-Deployment-Runbook.docx) for the canonical issue/cause/solution table.
-3. **Open an issue:** https://github.com/Keysight-Tech/cloudlens-autopilot-docs/issues
+2. **Check the deployment runbook** [section 9 Troubleshooting](https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/CloudLens-AutoPilot-Deployment-Runbook.docx) for the canonical issue/cause/solution table.
+3. **Open an issue:** https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues
 
 ---
 

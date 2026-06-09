@@ -1,6 +1,6 @@
-# CloudLens AutoPilot Architecture
+# CloudLens Ansible Architecture
 
-🌐 **Live diagrams:** https://keysight-tech.github.io/cloudlens-autopilot-docs/#architecture
+🌐 **Live diagrams:** https://keysight-tech.github.io/cloudlens-ansible-aws/#architecture
 
 ## The 3-phase approach
 
@@ -10,7 +10,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 |---|---|---|---|
 | **Phase 1** | CloudFormation **or** Terraform | Deploys VPC, KVO, CLMS, vPB, IAM, security groups, SSM Documents (~35 AWS resources) | 5 min |
 | **Phase 2** | Manual (web UI) | Accept EULAs, activate licenses, adopt CLMS into KVO, onboard vPB, create Cloud Config | 15 min |
-| **Phase 3** | AWS SSM Run Command | Push CloudLens sensors to every tagged EC2 instance (Docker, Podman, or Windows) | 5–60 min depending on fleet size |
+| **Phase 3** | AWS Ansible (SSH/SSM/WinRM) | Push CloudLens sensors to every tagged EC2 instance (Docker, Podman, or Windows) | 5–60 min depending on fleet size |
 
 ## Products deployed
 
@@ -20,7 +20,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 | **CLMS** (CloudLens Manager) | Sensor management and registration | `t3.xlarge` | AWS Marketplace `ami-0bebd5e730315337e` |
 | **vPB-KVO** (Virtual Packet Broker) | Traffic filtering, dedup, load balancing | `t3.xlarge` only, SSH on port 9022 | AWS Marketplace `ami-0a561b450552b707d` |
 | **Collector SVM** (Service VM) | AWS VPC Traffic Mirror collector | Auto-deployed by KVO Zone Tapping | `ami-0c22ade3667f8d35a` v6.13.0 |
-| **Auto-Mirror Lambda** | EventBridge-driven instance tagger | python3.12, 128 MB | This repo's `cloudlens-autopilot.yaml` |
+| **Auto-Mirror Lambda** | EventBridge-driven instance tagger | python3.12, 128 MB | This repo's `cloudlens-ansible-aws.yaml` |
 
 ## Network topology
 
@@ -47,7 +47,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-All CIDRs are configurable in `terraform.tfvars` and CFT parameters.
+All CIDRs are configurable in `customer_input.yaml` and CFT parameters.
 
 ## Data flow — east-west AND north-south
 
@@ -106,7 +106,7 @@ Choose based on your team's existing tooling — both produce **identical infras
 
 ## Why Auto-Mirror beats Gigamon ATS
 
-| | Gigamon GigaVUE-FM ATS | CloudLens AutoPilot |
+| | Gigamon GigaVUE-FM ATS | CloudLens Ansible |
 |---|---|---|
 | Mechanism | Poll AWS APIs on interval | EventBridge fires on `RunInstances` |
 | Detection latency | Polling interval (1–5 min) | < 1 second |
@@ -121,11 +121,11 @@ Auto-Mirror auto-tags new EC2 instances with `cloudlens-mirror=true` in watched 
 - 847 VMware VMs migrated to AWS EC2
 - Existing Ansible Tower for orchestration
 - AutoPilot deployed CloudLens stack in 45 minutes end-to-end
-- 100% sensor registration rate via SSM Run Command
+- 100% sensor registration rate via Ansible (SSH/SSM/WinRM)
 - Zero SSH/WinRM access required by SEs
 
 See the [Executive Summary](CloudLens-AutoPilot-Executive-Summary.docx) for the full case study.
 
 ---
 
-*Architecture reference for CloudLens AutoPilot v2.0 (March 2026). For implementation details, see the [Deployment Runbook](CloudLens-AutoPilot-Deployment-Runbook.docx).*
+*Architecture reference for CloudLens Ansible v2.0 (March 2026). For implementation details, see the [Deployment Runbook](CloudLens-AutoPilot-Deployment-Runbook.docx).*

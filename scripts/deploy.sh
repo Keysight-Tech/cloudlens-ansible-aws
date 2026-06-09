@@ -26,9 +26,9 @@ echo "CloudLens Ansible for Azure: Deployment"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
-# Verify Azure CLI
+# Verify AWS CLI
 if ! command -v az >/dev/null 2>&1; then
-  echo "✗ Azure CLI not installed. See: https://learn.microsoft.com/cli/azure/install-azure-cli"
+  echo "✗ AWS CLI not installed. See: https://learn.microsoft.com/cli/azure/install-azure-cli"
   exit 1
 fi
 
@@ -38,8 +38,8 @@ if ! command -v ansible-playbook >/dev/null 2>&1; then
   exit 1
 fi
 
-# Verify Service Principal env vars
-for var in AZURE_SUBSCRIPTION_ID AZURE_TENANT AZURE_CLIENT_ID AZURE_SECRET; do
+# Verify IAM Role env vars
+for var in AZURE_SUBSCRIPTION_ID AZURE_TENANT AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
   if [[ -z "${!var:-}" ]]; then
     echo "✗ Environment variable $var is not set."
     echo "  Run: source scripts/load_sp_creds.sh"
@@ -66,7 +66,7 @@ echo ""
 
 # --- Step 1: Display discovered inventory ---
 echo "─── Step 1: Discovering Azure VMs ───"
-ansible-inventory -i inventory/azure_rm.yaml --graph 2>&1 | tee inventory.txt
+ansible-inventory -i inventory/aws_ec2.yaml --graph 2>&1 | tee inventory.txt
 echo ""
 read -rp "Continue with deployment? [y/N] " confirm
 if [[ "${confirm,,}" != "y" ]]; then
@@ -79,14 +79,14 @@ echo ""
 echo "─── Step 2: Bootstrapping WinRM on Windows VMs ───"
 ansible-playbook playbooks/bootstrap_windows_winrm.yaml \
   -e "@$INPUT_FILE" \
-  -i inventory/azure_rm.yaml || echo "⚠ WinRM bootstrap had errors; check ansible.log"
+  -i inventory/aws_ec2.yaml || echo "⚠ WinRM bootstrap had errors; check ansible.log"
 
 # --- Step 3: Deploy sensors across all OS families ---
 echo ""
 echo "─── Step 3: Deploying CloudLens sensors ───"
 ansible-playbook deploy.yaml \
   -e "@$INPUT_FILE" \
-  -i inventory/azure_rm.yaml
+  -i inventory/aws_ec2.yaml
 
 # --- Final summary ---
 echo ""
