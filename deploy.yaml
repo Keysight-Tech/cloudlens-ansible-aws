@@ -1,0 +1,34 @@
+---
+- name: Verify customer config and prerequisites
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - include_vars:
+        file: customer_input.yaml
+        name: customer
+
+    - name: Check CLMS manager is reachable
+      uri:
+        url: "https://{{ customer.cloudlens.manager_ip_or_fqdn }}/health"
+        validate_certs: false
+        timeout: 10
+        status_code: [200, 401, 403]
+      register: clms_check
+      retries: 3
+      delay: 5
+      ignore_errors: true
+
+    - debug:
+        msg: "CLMS {{ customer.cloudlens.manager_ip_or_fqdn }} — {{ 'reachable' if clms_check is success else 'NOT reachable (check SG + DNS)' }}"
+
+- import_playbook: playbooks/ubuntu.yaml
+  vars:
+    target_group: ubuntu_prod_vms
+
+- import_playbook: playbooks/redhat.yaml
+  vars:
+    target_group: redhat_prod_vms
+
+- import_playbook: playbooks/windows.yaml
+  vars:
+    target_group: windows_prod_vms

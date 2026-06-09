@@ -1,0 +1,6 @@
+---
+# Global vars applied to ALL discovered EC2 instances
+ansible_python_interpreter: /usr/bin/env python3
+
+# Load customer config from the repo root
+customer_input_file: "{{ playbook_dir | dirname }}/customer_input.yaml"

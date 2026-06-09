@@ -1,0 +1,182 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "CloudLens Sensor Deployment Runner",
+    "description": "One-click deploys CloudLens sensors to all tagged VMs in your subscription. Creates an ephemeral Ubuntu runner that executes Ansible, then self-destructs after 1 hour."
+  },
+  "parameters": {
+    "clmsIpOrFqdn": {
+      "type": "string",
+      "metadata": { "description": "CLMS Manager IP address or FQDN (sensors register here)" }
+    },
+    "projectKey": {
+      "type": "securestring",
+      "metadata": { "description": "CloudLens Project Key (from CLMS UI → Projects → API Keys)" }
+    },
+    "customTags": {
+      "type": "string",
+      "defaultValue": "Env=Azure Customer=Customer",
+      "metadata": { "description": "Tags attached to each registered sensor" }
+    },
+    "windowsAdminPassword": {
+      "type": "securestring",
+      "metadata": { "description": "Admin password for Windows target VMs (leave blank if no Windows)" },
+      "defaultValue": "skip-no-windows"
+    },
+    "linuxSshKey": {
+      "type": "string",
+      "metadata": { "description": "SSH public key for connecting to target Linux VMs" }
+    },
+    "subscriptionScope": {
+      "type": "string",
+      "defaultValue": "all",
+      "allowedValues": ["all", "specific-rgs"],
+      "metadata": { "description": "Discover ALL tagged VMs in subscription, OR limit to specific RGs" }
+    },
+    "resourceGroups": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": { "description": "Comma-separated RG list (only if subscriptionScope=specific-rgs)" }
+    },
+    "runnerSize": {
+      "type": "string",
+      "defaultValue": "Standard_D4s_v5",
+      "allowedValues": ["Standard_D2s_v5", "Standard_D4s_v5", "Standard_D8s_v5", "Standard_D16s_v5"],
+      "metadata": { "description": "Runner VM size: bigger means more parallel forks. D8s handles 2000 VMs comfortably." }
+    },
+    "selfDestructMinutes": {
+      "type": "int",
+      "defaultValue": 60,
+      "metadata": { "description": "Auto-delete runner VM after this many minutes (0 = keep)" }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    }
+  },
+  "variables": {
+    "runnerName": "[concat('cl-runner-', uniqueString(resourceGroup().id))]",
+    "vnetName": "[concat(variables('runnerName'), '-vnet')]",
+    "nsgName": "[concat(variables('runnerName'), '-nsg')]",
+    "nicName": "[concat(variables('runnerName'), '-nic')]",
+    "pipName": "[concat(variables('runnerName'), '-pip')]",
+    "cloudInit": "[base64(concat('#cloud-config\n', 'package_update: true\n', 'packages:\n  - git\n  - python3-pip\n  - jq\n', 'runcmd:\n', '  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash\n', '  - git clone https://github.com/Keysight-Tech/cloudlens-ansible-azure.git /opt/cl\n', '  - cd /opt/cl && bash quickstart.sh\n', '  - su azureuser -c \"cd /opt/cl && CLOUDLENS_CLMS=', parameters('clmsIpOrFqdn'), ' CLOUDLENS_KEY=', parameters('projectKey'), ' CLOUDLENS_TAGS=\\\"', parameters('customTags'), '\\\" bash quickstart.sh > /opt/cl/deploy.log 2>&1\"\n', '  - shutdown -h +', string(parameters('selfDestructMinutes')), '\n'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('pipName')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard" },
+      "properties": { "publicIPAllocationMethod": "Static" }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "SSH",
+            "properties": {
+              "priority": 100,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "22"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["10.99.0.0/16"] },
+        "subnets": [
+          { "name": "default", "properties": { "addressPrefix": "10.99.0.0/24" } }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": { "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'default')]" },
+              "publicIPAddress": { "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]" },
+              "privateIPAllocationMethod": "Dynamic"
+            }
+          }
+        ],
+        "networkSecurityGroup": { "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]" }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-11-01",
+      "name": "[variables('runnerName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": ["[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"],
+      "identity": { "type": "SystemAssigned" },
+      "properties": {
+        "hardwareProfile": { "vmSize": "[parameters('runnerSize')]" },
+        "osProfile": {
+          "computerName": "[variables('runnerName')]",
+          "adminUsername": "azureuser",
+          "customData": "[variables('cloudInit')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "ssh": {
+              "publicKeys": [{
+                "path": "/home/azureuser/.ssh/authorized_keys",
+                "keyData": "[parameters('linuxSshKey')]"
+              }]
+            }
+          }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts",
+            "version": "latest"
+          },
+          "osDisk": { "createOption": "FromImage", "diskSizeGB": 64 }
+        },
+        "networkProfile": {
+          "networkInterfaces": [{ "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]" }]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "runnerPublicIp": {
+      "type": "string",
+      "value": "[reference(variables('pipName')).ipAddress]"
+    },
+    "sshCommand": {
+      "type": "string",
+      "value": "[concat('ssh azureuser@', reference(variables('pipName')).ipAddress, ' tail -f /opt/cl/deploy.log')]"
+    }
+  }
+}

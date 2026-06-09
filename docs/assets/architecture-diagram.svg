@@ -1,0 +1,262 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">CloudLens AutoPilot AWS Deployment Architecture</title>
+  <desc id="arch-desc">Diagram showing the flow from a customer machine through AWS IAM Role authentication, dynamic inventory discovery, and per-OS deployment lanes (Ubuntu, RHEL, Windows) converging on the Keysight CloudLens Manager for sensor registration.</desc>
+  <defs>
+    <style>
+      .tier-box { transition: transform 0.25s ease, filter 0.25s ease; transform-box: fill-box; transform-origin: center; cursor: pointer; }
+      .tier-box:hover { transform: scale(1.025); filter: brightness(1.06); }
+      .lane { transition: transform 0.25s ease, filter 0.25s ease; transform-box: fill-box; transform-origin: center; cursor: pointer; }
+      .lane:hover { transform: scale(1.03); filter: brightness(1.08); }
+      .fadein { opacity: 1; animation: fade 0.7s ease both; }
+      .fadein-1 { animation-delay: 0.05s; }
+      .fadein-2 { animation-delay: 0.25s; }
+      .fadein-3 { animation-delay: 0.45s; }
+      .fadein-4 { animation-delay: 0.65s; }
+      .fadein-5 { animation-delay: 0.85s; }
+      .fadein-6 { animation-delay: 1.05s; }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+      .arrow-flow { stroke-dasharray: 4 4; animation: dashflow 1.4s linear infinite; }
+      @keyframes dashflow { to { stroke-dashoffset: -16; } }
+    </style>
+    <filter id="drop-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow stdDeviation="2" dx="0" dy="2" flood-opacity="0.1"/>
+    </filter>
+    <filter id="soft-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow stdDeviation="3" dx="0" dy="3" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0078D4"/>
+    </marker>
+    <marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D4AF37"/>
+    </marker>
+    <marker id="arrow-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1B2A4A"/>
+    </marker>
+    <linearGradient id="aws-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#EFF6FC"/>
+      <stop offset="100%" stop-color="#DCEBF8"/>
+    </linearGradient>
+    <linearGradient id="clms-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF8E1"/>
+      <stop offset="100%" stop-color="#FBEFC5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Canvas -->
+  <rect width="1200" height="600" fill="#FAFAFA"/>
+
+  <!-- Title -->
+  <text x="600" y="38" text-anchor="middle" font-size="20" font-weight="600" fill="#1B2A4A">CloudLens AutoPilot — AWS Deployment Architecture</text>
+  <text x="600" y="60" text-anchor="middle" font-size="13" fill="#5B6478">From customer machine to registered sensors on CLMS</text>
+
+  <!-- ========== LEFT: Customer ========== -->
+  <g class="tier-box fadein fadein-1" filter="url(#soft-shadow)">
+    <title>Customer environment - your laptop, CI runner, or AWS CloudShell</title>
+    <rect x="40" y="170" width="180" height="260" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+    <text x="130" y="195" text-anchor="middle" font-size="13" font-weight="600" fill="#1B2A4A">CUSTOMER</text>
+    <line x1="60" y1="208" x2="200" y2="208" stroke="#E5E7EB"/>
+
+    <!-- Laptop icon -->
+    <g transform="translate(78,230)">
+      <rect x="0" y="0" width="74" height="48" rx="4" fill="#1B2A4A"/>
+      <rect x="5" y="5" width="64" height="38" rx="2" fill="#0078D4"/>
+      <rect x="-8" y="50" width="90" height="6" rx="2" fill="#1B2A4A"/>
+    </g>
+    <text x="130" y="306" text-anchor="middle" font-size="12" font-weight="500" fill="#1B2A4A">Laptop / CI</text>
+
+    <!-- CloudShell icon -->
+    <g transform="translate(85,332)">
+      <path d="M14 14 Q4 14 4 26 Q4 38 14 38 L46 38 Q60 38 60 26 Q60 14 46 14 Q44 4 30 4 Q18 4 14 14 Z" fill="#0078D4" opacity="0.15"/>
+      <path d="M14 14 Q4 14 4 26 Q4 38 14 38 L46 38 Q60 38 60 26 Q60 14 46 14 Q44 4 30 4 Q18 4 14 14 Z" fill="none" stroke="#0078D4" stroke-width="2"/>
+      <text x="32" y="32" text-anchor="middle" font-size="11" font-weight="600" fill="#0078D4" font-family="SF Mono, Menlo, monospace">&gt;_</text>
+    </g>
+    <text x="130" y="402" text-anchor="middle" font-size="12" font-weight="500" fill="#1B2A4A">AWS CloudShell</text>
+  </g>
+
+  <!-- ========== MIDDLE: AWS Account ========== -->
+  <g class="fadein fadein-2" filter="url(#soft-shadow)">
+    <title>AWS account - tenant, subscription, VPC scope</title>
+    <rect x="270" y="100" width="620" height="430" rx="14" fill="url(#aws-grad)" stroke="#0078D4" stroke-width="1.5"/>
+    <text x="295" y="128" font-size="14" font-weight="600" fill="#005A9E">AWS ACCOUNT</text>
+    <text x="295" y="145" font-size="11" fill="#0078D4">tenant • subscription • VPC</text>
+  </g>
+
+  <!-- IAM Role -->
+  <g class="tier-box fadein fadein-3" filter="url(#drop-shadow)">
+    <title>IAM Role authentication via OAuth 2.0</title>
+    <rect x="300" y="165" width="560" height="56" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+    <circle cx="328" cy="193" r="14" fill="#005A9E"/>
+    <text x="328" y="198" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">SP</text>
+    <text x="352" y="187" font-size="13" font-weight="600" fill="#1B2A4A">IAM Role / Access Key</text>
+    <text x="352" y="204" font-size="11" fill="#5B6478">AWS_ACCESS_KEY_ID • AWS_REGION • AWS_SECRET_ACCESS_KEY</text>
+    <text x="836" y="200" text-anchor="end" font-size="11" fill="#0078D4" font-weight="600">OAuth 2.0</text>
+  </g>
+
+  <!-- Dynamic Inventory -->
+  <g class="tier-box fadein fadein-4" filter="url(#drop-shadow)">
+    <title>Dynamic inventory - boto3 / SSM plugin discovers VMs by tag</title>
+    <rect x="300" y="240" width="560" height="60" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+    <g transform="translate(312,254)">
+      <rect width="30" height="30" rx="6" fill="#D4AF37"/>
+      <text x="15" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">i</text>
+    </g>
+    <text x="352" y="265" font-size="13" font-weight="600" fill="#1B2A4A">EC2 Discovery — boto3 / SSM</text>
+    <text x="352" y="282" font-size="11" fill="#5B6478">Discovers VMs by tag • groups by OS family • zero static IPs</text>
+    <text x="352" y="295" font-size="10" font-family="SF Mono, Menlo, monospace" fill="#0078D4">tag:cloudlens=true → ubuntu / rhel / windows lanes</text>
+  </g>
+
+  <!-- 3 OS Lanes -->
+  <g>
+    <!-- Ubuntu lane -->
+    <g class="lane fadein fadein-5" filter="url(#drop-shadow)">
+      <title>Ubuntu deployment lane - SSH to VMs, install Docker container sensor</title>
+      <rect x="300" y="325" width="175" height="180" rx="10" fill="#FFFFFF" stroke="#E5E7EB"/>
+      <rect x="300" y="325" width="175" height="34" rx="10" fill="#E95420"/>
+      <rect x="300" y="349" width="175" height="10" fill="#E95420"/>
+      <circle cx="320" cy="342" r="8" fill="#FFFFFF"/>
+      <text x="336" y="346" font-size="13" font-weight="600" fill="#FFFFFF">Ubuntu</text>
+      <text x="463" y="346" text-anchor="end" font-size="10" fill="#FFFFFF" opacity="0.9">20.04 / 22.04 / 24.04</text>
+
+      <text x="387" y="380" text-anchor="middle" font-size="11" font-weight="600" fill="#1B2A4A">SSH (port 22)</text>
+      <line x1="320" y1="390" x2="455" y2="390" stroke="#E5E7EB"/>
+
+      <!-- Docker container icon -->
+      <g transform="translate(345,405)">
+        <rect x="0" y="20" width="84" height="40" rx="4" fill="#0DB7ED" opacity="0.15"/>
+        <g fill="#0DB7ED">
+          <rect x="6" y="24" width="14" height="10" rx="1"/>
+          <rect x="22" y="24" width="14" height="10" rx="1"/>
+          <rect x="38" y="24" width="14" height="10" rx="1"/>
+          <rect x="22" y="12" width="14" height="10" rx="1"/>
+        </g>
+        <path d="M54 28 Q60 28 64 32 Q68 28 74 32" fill="none" stroke="#0DB7ED" stroke-width="2" stroke-linecap="round"/>
+      </g>
+      <text x="387" y="490" text-anchor="middle" font-size="11" fill="#5B6478">Docker container sensor</text>
+    </g>
+
+    <!-- RHEL lane -->
+    <g class="lane fadein fadein-5" filter="url(#drop-shadow)">
+      <title>RHEL / Rocky deployment lane - SSH to VMs, install Podman or Docker sensor</title>
+      <rect x="492" y="325" width="175" height="180" rx="10" fill="#FFFFFF" stroke="#E5E7EB"/>
+      <rect x="492" y="325" width="175" height="34" rx="10" fill="#EE0000"/>
+      <rect x="492" y="349" width="175" height="10" fill="#EE0000"/>
+      <circle cx="512" cy="342" r="8" fill="#FFFFFF"/>
+      <text x="528" y="346" font-size="13" font-weight="600" fill="#FFFFFF">RHEL / Rocky</text>
+      <text x="655" y="346" text-anchor="end" font-size="10" fill="#FFFFFF" opacity="0.9">7 / 8 / 9</text>
+
+      <text x="579" y="380" text-anchor="middle" font-size="11" font-weight="600" fill="#1B2A4A">SSH (port 22)</text>
+      <line x1="512" y1="390" x2="647" y2="390" stroke="#E5E7EB"/>
+
+      <!-- Podman/Docker icon -->
+      <g transform="translate(521,408)">
+        <circle cx="20" cy="32" r="18" fill="#892CA0" opacity="0.15"/>
+        <text x="20" y="36" text-anchor="middle" font-size="13" font-weight="700" fill="#892CA0">P</text>
+        <text x="50" y="30" font-size="10" fill="#5B6478">Podman</text>
+        <text x="50" y="42" font-size="10" fill="#5B6478">or Docker</text>
+      </g>
+      <text x="579" y="490" text-anchor="middle" font-size="11" fill="#5B6478">Container sensor</text>
+    </g>
+
+    <!-- Windows lane -->
+    <g class="lane fadein fadein-5" filter="url(#drop-shadow)">
+      <title>Windows Server deployment lane - SSM Run Command to VMs, install native MSI sensor service</title>
+      <rect x="684" y="325" width="175" height="180" rx="10" fill="#FFFFFF" stroke="#E5E7EB"/>
+      <rect x="684" y="325" width="175" height="34" rx="10" fill="#0078D4"/>
+      <rect x="684" y="349" width="175" height="10" fill="#0078D4"/>
+      <g transform="translate(700,332)">
+        <rect x="0" y="0" width="8" height="8" fill="#FFFFFF"/>
+        <rect x="10" y="0" width="8" height="8" fill="#FFFFFF"/>
+        <rect x="0" y="10" width="8" height="8" fill="#FFFFFF"/>
+        <rect x="10" y="10" width="8" height="8" fill="#FFFFFF"/>
+      </g>
+      <text x="727" y="346" font-size="13" font-weight="600" fill="#FFFFFF">Windows Server</text>
+      <text x="848" y="346" text-anchor="end" font-size="10" fill="#FFFFFF" opacity="0.9">2019 / 2022</text>
+
+      <text x="771" y="380" text-anchor="middle" font-size="11" font-weight="600" fill="#1B2A4A">SSM Run Command (5985/5986)</text>
+      <line x1="704" y1="390" x2="839" y2="390" stroke="#E5E7EB"/>
+
+      <!-- MSI icon -->
+      <g transform="translate(729,408)">
+        <rect x="0" y="6" width="50" height="38" rx="4" fill="#0078D4" opacity="0.15"/>
+        <text x="25" y="32" text-anchor="middle" font-size="13" font-weight="700" fill="#0078D4">MSI</text>
+      </g>
+      <text x="771" y="490" text-anchor="middle" font-size="11" fill="#5B6478">Native MSI service</text>
+    </g>
+  </g>
+
+  <!-- ========== RIGHT: CLMS ========== -->
+  <g class="tier-box fadein fadein-6" filter="url(#soft-shadow)">
+    <title>Keysight CloudLens Manager - target where sensors register</title>
+    <rect x="940" y="170" width="220" height="260" rx="12" fill="url(#clms-grad)" stroke="#D4AF37" stroke-width="1.5"/>
+    <text x="1050" y="198" text-anchor="middle" font-size="13" font-weight="700" fill="#1B2A4A">KEYSIGHT CLMS</text>
+    <text x="1050" y="215" text-anchor="middle" font-size="11" fill="#8B6F1C">CloudLens Manager</text>
+    <line x1="960" y1="228" x2="1140" y2="228" stroke="#D4AF37" opacity="0.3"/>
+
+    <!-- Server stack -->
+    <g transform="translate(998,250)">
+      <rect x="0" y="0" width="104" height="20" rx="3" fill="#1B2A4A"/>
+      <circle cx="12" cy="10" r="3" fill="#22C55E"/>
+      <rect x="22" y="6" width="70" height="2" fill="#FFFFFF" opacity="0.4"/>
+      <rect x="22" y="11" width="40" height="2" fill="#FFFFFF" opacity="0.3"/>
+
+      <rect x="0" y="24" width="104" height="20" rx="3" fill="#1B2A4A"/>
+      <circle cx="12" cy="34" r="3" fill="#22C55E"/>
+      <rect x="22" y="30" width="70" height="2" fill="#FFFFFF" opacity="0.4"/>
+      <rect x="22" y="35" width="40" height="2" fill="#FFFFFF" opacity="0.3"/>
+
+      <rect x="0" y="48" width="104" height="20" rx="3" fill="#1B2A4A"/>
+      <circle cx="12" cy="58" r="3" fill="#22C55E"/>
+      <rect x="22" y="54" width="70" height="2" fill="#FFFFFF" opacity="0.4"/>
+      <rect x="22" y="59" width="40" height="2" fill="#FFFFFF" opacity="0.3"/>
+    </g>
+
+    <!-- Registration banner -->
+    <g transform="translate(960,340)">
+      <rect width="180" height="64" rx="8" fill="#FFFFFF" stroke="#D4AF37"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="600" fill="#8B6F1C">SENSORS REGISTERED</text>
+      <text x="90" y="48" text-anchor="middle" font-size="22" font-weight="700" fill="#1B2A4A">3 / 3 <tspan fill="#22C55E">✓</tspan></text>
+    </g>
+  </g>
+
+  <!-- ========== ARROWS ========== -->
+  <!-- Customer -> AWS -->
+  <g>
+    <path class="arrow-flow" d="M220 250 Q245 250 270 200" fill="none" stroke="#0078D4" stroke-width="2" marker-end="url(#arrow-blue)"/>
+    <text x="245" y="232" font-size="10" font-weight="600" fill="#0078D4">IAM Role auth</text>
+  </g>
+
+  <!-- SP -> Inventory (inside AWS) -->
+  <path d="M580 221 L580 240" stroke="#5B6478" stroke-width="1.5" marker-end="url(#arrow-navy)" fill="none"/>
+
+  <!-- Inventory -> 3 lanes -->
+  <g stroke="#D4AF37" stroke-width="1.5" fill="none">
+    <path d="M387 300 L387 325" marker-end="url(#arrow-gold)"/>
+    <path d="M579 300 L579 325" marker-end="url(#arrow-gold)"/>
+    <path d="M771 300 L771 325" marker-end="url(#arrow-gold)"/>
+  </g>
+  <text x="580" y="315" text-anchor="middle" font-size="10" font-weight="600" fill="#8B6F1C">Tag-based discovery</text>
+
+  <!-- 3 lanes converge to CLMS -->
+  <g stroke="#22C55E" stroke-width="1.8" fill="none">
+    <path class="arrow-flow" d="M475 415 Q905 415 940 300" marker-end="url(#arrow-blue)" stroke="#0078D4"/>
+    <path class="arrow-flow" d="M667 415 Q830 415 940 320" marker-end="url(#arrow-blue)" stroke="#0078D4"/>
+    <path class="arrow-flow" d="M859 415 Q900 415 940 340" marker-end="url(#arrow-blue)" stroke="#0078D4"/>
+  </g>
+  <text x="900" y="445" text-anchor="middle" font-size="10" font-weight="600" fill="#0078D4">Sensor registration → CLMS</text>
+
+  <!-- Bottom legend -->
+  <g transform="translate(40,540)">
+    <rect width="1120" height="44" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+    <text x="20" y="20" font-size="11" font-weight="600" fill="#1B2A4A">FLOW:</text>
+    <circle cx="78" cy="16" r="5" fill="#0078D4"/>
+    <text x="90" y="20" font-size="11" fill="#1B2A4A">1. Authenticate via IAM Role</text>
+    <circle cx="318" cy="16" r="5" fill="#D4AF37"/>
+    <text x="330" y="20" font-size="11" fill="#1B2A4A">2. Discover VMs by tag (boto3 / SSM)</text>
+    <circle cx="558" cy="16" r="5" fill="#1B2A4A"/>
+    <text x="570" y="20" font-size="11" fill="#1B2A4A">3. Deploy via SSH/SSM Run Command per OS</text>
+    <circle cx="798" cy="16" r="5" fill="#22C55E"/>
+    <text x="810" y="20" font-size="11" fill="#1B2A4A">4. Sensors register to CLMS</text>
+    <text x="20" y="36" font-size="10" fill="#5B6478">All paths use the same CloudFormation + Terraform stack — playbooks select OS lane dynamically.</text>
+  </g>
+</svg>

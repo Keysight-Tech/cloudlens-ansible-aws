@@ -1,0 +1,56 @@
+plugin: amazon.aws.aws_ec2
+
+# Regions to scan — leave empty to scan ALL enabled regions
+# regions:
+#   - us-east-1
+#   - us-west-2
+
+# AWS auth — comes from environment:
+#   AWS_PROFILE       (preferred — for SSO)
+#   AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY  (fallback)
+#   AWS_REGION
+
+# Only include running instances with the cloudlens tag
+filters:
+  instance-state-name: running
+  tag:cloudlens: "yes"
+
+# Hostnames: prefer Name tag, fall back to instance-id
+hostnames:
+  - tag:Name
+  - instance-id
+
+# Group prefixing
+keyed_groups:
+  # Group by Platform tag: linux-docker, linux-podman, windows
+  - prefix: platform
+    key: tags.Platform | default('untagged')
+  # Group by environment tag
+  - prefix: env
+    key: tags.env | default('untagged')
+  # Group by AWS region
+  - prefix: region
+    key: placement.region
+
+# Map customer tags → Ansible groups our playbooks expect
+conditional_groups:
+  ubuntu_prod_vms: "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'prod'"
+  redhat_prod_vms: "tags.os | default('') == 'rhel' and tags.env | default('') == 'prod'"
+  windows_prod_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'prod'"
+  ubuntu_dev_vms:  "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'dev'"
+  redhat_dev_vms:  "tags.os | default('') == 'rhel' and tags.env | default('') == 'dev'"
+  windows_dev_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'dev'"
+
+# Convenience host-level facts (used by playbooks)
+compose:
+  # Windows VMs over WinRM → use public IP (or SSM-tunnelled if private-only)
+  # Linux VMs over SSH    → use private IP if same VPC, else public IP
+  ansible_host: >-
+    (public_ip_address) if (tags.os | default('') == 'windows' and public_ip_address is defined and public_ip_address != '')
+    else (private_ip_address)
+  aws_region: placement.region
+  aws_instance_id: instance_id
+  aws_private_ip: private_ip_address
+  aws_public_ip: public_ip_address | default('', true)
+  aws_vpc_id: vpc_id
+  aws_subnet_id: subnet_id

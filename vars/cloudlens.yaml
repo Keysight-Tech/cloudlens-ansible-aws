@@ -1,0 +1,18 @@
+---
+# =====================================================================
+# Default values, overridden by customer_input.yaml via -e flag
+# Customer-overridable values now live in inventory/group_vars/all.yaml
+# This file only holds STATIC fallbacks for things not in customer_input.yaml
+# =====================================================================
+
+# RHEL container runtime
+podman_command: podman
+redhat_ca_cert_dir: "/etc/pki/ca-trust/source/anchors"
+
+# Windows installer defaults, overridden by customer_input.yaml.windows.installer_path
+# To use a different installer, set in customer_input.yaml:
+#   windows:
+#     installer_path: "files/cloudlens-win-sensor-X.Y.Z.exe"
+#     installer_filename: "cloudlens-win-sensor-X.Y.Z.exe"
+local_installer_path: "{{ windows.installer_path | default(playbook_dir + '/../files/cloudlens-win-sensor-6.13.0.359.exe') }}"
+cloudlens_installer_filename: "{{ windows.installer_filename | default('cloudlens-win-sensor-6.13.0.359.exe') }}"

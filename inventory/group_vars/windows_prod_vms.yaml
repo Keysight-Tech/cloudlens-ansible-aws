@@ -1,0 +1,21 @@
+---
+# Windows prod EC2 instances — two connection modes
+# Selected at run time by customer_input.yaml -> aws.windows_connection
+
+# Mode: ssm (preferred — no inbound ports, IAM-scoped)
+# Requires:  IAM role with AmazonSSMManagedInstanceCore on the instance
+#            SSM Agent running (pre-installed on Windows Server 2016+)
+#            boto3 + community.aws collection
+ansible_connection: "{{ 'community.aws.aws_ssm' if (aws.windows_connection | default('ssm')) == 'ssm' else 'winrm' }}"
+
+# SSM-mode vars
+ansible_aws_ssm_region: "{{ aws.regions[0] | default('us-east-1') }}"
+ansible_aws_ssm_bucket_name: "{{ aws.ssm_bucket_name | default('') }}"   # leave blank to use plaintext mode
+ansible_aws_ssm_plugin: "/usr/local/bin/session-manager-plugin"
+
+# WinRM-mode vars (only used if windows_connection = winrm)
+ansible_winrm_transport: ntlm
+ansible_winrm_server_cert_validation: ignore
+ansible_port: 5986
+ansible_user: Administrator
+# ansible_password: stored in env: ANSIBLE_WINRM_PASSWORD

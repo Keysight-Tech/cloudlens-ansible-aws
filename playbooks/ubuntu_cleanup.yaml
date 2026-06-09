@@ -1,0 +1,63 @@
+---
+- name: Uninstall CloudLens Agent from Ubuntu VMs
+  hosts: "{{ target_group }}"
+  become: yes
+  vars_files:
+    - ../vars/cloudlens.yaml
+
+  tasks:
+    - name: Force stop CloudLens container
+      ansible.builtin.shell: docker stop {{ cloudlens_agent_container_name }} || true
+      changed_when: false
+
+    - name: Force remove CloudLens container
+      ansible.builtin.shell: docker rm -f {{ cloudlens_agent_container_name }} || true
+      changed_when: false
+
+    - name: Force remove CloudLens image
+      ansible.builtin.shell: docker rmi -f {{ cloudlens_manager_ip_or_FQDN }}/sensor || true
+      ignore_errors: yes
+
+    - name: Verify removal
+      ansible.builtin.shell: docker ps -a | grep {{ cloudlens_agent_container_name }}
+      register: check_container
+      failed_when: check_container.rc == 0
+      changed_when: false
+
+    - name: Remove CA certificates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ca_cert_dir }}/cloudlenscerts.crt"
+        - "/etc/docker/certs.d/{{ cloudlens_manager_ip_or_FQDN }}/ca.crt"
+      ignore_errors: yes
+
+    - name: Remove Docker config
+      ansible.builtin.file:
+        path: /etc/docker/daemon.json
+        state: absent
+
+    - name: Remove logs
+      ansible.builtin.file:
+        path: /var/log/cloudlens
+        state: absent
+
+    - name: Remove Docker (OPTIONAL)
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: absent
+      when: remove_docker | default(false) | bool
+
+    - name: Final verification
+      ansible.builtin.shell: docker ps -a
+      register: final
+      changed_when: false
+      failed_when: false
+
+    - name: Show result
+      debug:
+        var: final.stdout_lines

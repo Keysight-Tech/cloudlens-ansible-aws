@@ -1,0 +1,229 @@
+---
+- name: Deploy CloudLens Agent to Ubuntu VMs
+  hosts: "{{ target_group }}"
+  become: yes
+  vars_files:
+    - ../vars/cloudlens.yaml
+
+  tasks:
+    - name: Gather facts about the system
+      ansible.builtin.setup:
+
+    - name: Check if Docker is installed
+      ansible.builtin.command: command -v docker
+      register: docker_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Debug Docker installation status
+      debug:
+        msg: "Docker is {{ 'installed' if docker_installed.rc == 0 else 'not installed' }}."
+
+    - name: Remove any malformed Docker repository files
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/download_docker_com_linux_ubuntu.list
+        state: absent
+
+    - name: Get Ubuntu codename
+      ansible.builtin.command: lsb_release -cs
+      register: ubuntu_codename
+      changed_when: false
+      when: docker_installed.rc != 0
+
+    - name: Install Docker on Ubuntu if not installed
+      block:
+        - name: Update the package index
+          ansible.builtin.apt:
+            update_cache: yes
+
+        - name: Install prerequisites for Docker
+          ansible.builtin.apt:
+            name:
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - software-properties-common
+              - gnupg
+            state: present
+
+        - name: Add Docker's official GPG key
+          ansible.builtin.shell: |
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /usr/share/keyrings/docker-archive-keyring.gpg
+          args:
+            creates: /usr/share/keyrings/docker-archive-keyring.gpg
+
+        - name: Add Docker repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ubuntu_codename.stdout }} stable"
+            state: present
+
+        - name: Install Docker packages
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+            update_cache: yes
+
+        - name: Ensure Docker service is enabled and started
+          ansible.builtin.systemd:
+            name: docker
+            state: started
+            enabled: true
+      when: docker_installed.rc != 0
+
+    - name: Get Docker version
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+
+    - name: Display Docker version
+      debug:
+        msg: "{{ docker_version.stdout }}"
+
+    - name: Ensure Docker service is running
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+      register: docker_status
+
+    - name: Verify Docker daemon is active
+      ansible.builtin.systemd:
+        name: docker
+      register: docker_service_status
+      failed_when: docker_service_status.status.ActiveState != "active"
+
+    - name: Ensure /etc/docker directory exists
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Configure Docker daemon for insecure registry
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "insecure-registries": ["{{ cloudlens_manager_ip_or_FQDN }}"]
+          }
+        mode: '0644'
+      register: docker_config
+      when: registry_type == "insecure"
+
+    - name: Configure Docker daemon for secure registry
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "registry-mirrors": []
+          }
+        mode: '0644'
+      register: docker_config_secure
+      when: registry_type == "secure"
+
+    - name: Transfer CA certificate from local to VM
+      copy:
+        src: "{{ local_ca_path }}"
+        dest: "{{ ca_cert_dir }}/cloudlenscerts.crt"
+        mode: '0644'
+      when: registry_type == "secure"
+
+    - name: Ensure Docker certs.d directory exists for CloudLens registry
+      file:
+        path: "/etc/docker/certs.d/{{ cloudlens_manager_ip_or_FQDN }}"
+        state: directory
+        mode: '0755'
+      when: registry_type == "secure"
+
+    - name: Copy CA cert to Docker trusted certs directory
+      copy:
+        src: "{{ local_ca_path }}"
+        dest: "/etc/docker/certs.d/{{ cloudlens_manager_ip_or_FQDN }}/ca.crt"
+        mode: '0644'
+      when: registry_type == "secure"
+
+    - name: Update CA certificates on Ubuntu
+      ansible.builtin.command: update-ca-certificates
+      when: registry_type == "secure"
+
+    - name: Restart Docker service to apply configuration changes
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+      when: docker_config.changed or docker_config_secure.changed
+
+    - name: Wait for Docker to be ready after restart
+      ansible.builtin.pause:
+        seconds: 5
+      when: docker_config.changed or docker_config_secure.changed
+
+    - name: Remove existing CloudLens container if exists
+      ansible.builtin.shell: docker rm -f "{{ cloudlens_agent_container_name }}"
+      ignore_errors: yes
+
+    - name: Pull CloudLens sensor image
+      ansible.builtin.shell: docker pull "{{ cloudlens_manager_ip_or_FQDN }}/sensor"
+      register: docker_pull_result
+
+    - name: Display pull result
+      debug:
+        var: docker_pull_result.stdout_lines
+
+    - name: Deploy CloudLens Agent container
+      ansible.builtin.shell: |
+        docker run -d \
+        -v /lib/modules:/lib/modules \
+        -v /var/log/cloudlens:/var/log/cloudlens \
+        -v /:/host \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        {% if registry_type == 'secure' %}-v "{{ ca_cert_dir }}:/usr/local/share/ca-certificates:ro" {% endif %} \
+        --cap-add NET_BROADCAST \
+        --cap-add SYS_ADMIN \
+        --cap-add SYS_MODULE \
+        --cap-add SYS_RESOURCE \
+        --cap-add NET_RAW \
+        --cap-add NET_ADMIN \
+        {% if registry_type == 'secure' %}--env REQUESTS_CA_BUNDLE="{{ ca_cert_dir }}/cloudlenscerts.crt" {% endif %} \
+        --name "{{ cloudlens_agent_container_name }}" \
+        --restart=always \
+        --net=host \
+        --log-opt max-size="{{ log_max_size }}" \
+        --log-opt max-file="{{ log_max_file }}" \
+        "{{ cloudlens_manager_ip_or_FQDN }}/sensor" \
+        --accept_eula yes \
+        --project_key "{{ project_key }}" \
+        --server "{{ cloudlens_manager_ip_or_FQDN }}" \
+        --custom_tags "{{ custom_tags }}" \
+        --ssl_verify {% if registry_type == 'secure' %}yes{% else %}no{% endif %}
+      register: docker_run_result
+
+    - name: Display container deployment output
+      debug:
+        var: docker_run_result
+
+    - name: Wait for container to initialize
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Verify CloudLens Agent container is running
+      ansible.builtin.shell: >
+        docker ps --filter name={{ cloudlens_agent_container_name }} --format '{{"{{"}}.Names{{"}}"}}'
+      register: docker_agent_status
+      changed_when: false
+      failed_when: docker_agent_status.stdout | trim == ""
+
+    - name: Display container status
+      debug:
+        msg: "CloudLens agent container '{{ docker_agent_status.stdout }}' is running"
+
+    - name: Get container logs on failure
+      ansible.builtin.shell: docker logs {{ cloudlens_agent_container_name }}
+      register: container_logs
+      when: docker_agent_status.stdout | trim == ""
+      ignore_errors: yes
+
+    - name: Display container logs if failed
+      debug:
+        var: container_logs.stdout_lines
+      when: container_logs is defined and container_logs.stdout is defined

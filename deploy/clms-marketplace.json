@@ -1,0 +1,244 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Keysight CloudLens Manager (CLMS) from Azure Marketplace",
+    "description": "One-click deployment of CloudLens Manager v6.13.076 from Azure Marketplace. Provisions a single CLMS VM with a public IP, NSG (SSH + HTTPS), and a new VNet (or attaches to one you already own). Default UI credentials: admin / Cl0udLens@dm!n (change on first login). The web UI typically responds within 60 seconds, and full system initialization completes in about 15 minutes.",
+    "author": "Keysight Technologies"
+  },
+  "parameters": {
+    "vmName": {
+      "type": "string",
+      "defaultValue": "clms",
+      "metadata": {
+        "description": "Name of the CloudLens Manager VM. Used as the computer name and as a prefix for the public IP, NSG, NIC, and (when creating one) the VNet. Lowercase letters, digits, and hyphens are recommended."
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser",
+      "metadata": {
+        "description": "Linux admin username used for SSH access to the underlying VM. This is the OS-level account; the CLMS web UI uses its own separate admin account (admin / Cl0udLens@dm!n)."
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Linux admin password for SSH access. Must be 12+ characters and include uppercase, lowercase, a digit, and a symbol. This is the OS-level password, not the CLMS web UI password."
+      }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D4s_v5",
+      "metadata": {
+        "description": "VM size for the CloudLens Manager. Standard_D4s_v5 (4 vCPU, 16 GB RAM) is recommended for most deployments. Recommended values: Standard_D2s_v5, Standard_D4s_v5, Standard_D8s_v5, Standard_D16s_v5. Scale up for environments managing thousands of sensors."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for deployment. Defaults to the resource group location. Pick the region closest to your monitored workloads to minimize latency."
+      }
+    },
+    "vnetName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing VNet name to deploy into. Leave blank to create a new VNet sized by Address space below. When set, you must also provide an existing Subnet name."
+      }
+    },
+    "existingVnetResourceGroup": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Resource group of the existing VNet (only used when VNet name is set). Leave blank to use the current resource group."
+      }
+    },
+    "subnetName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing subnet name to attach the CLMS NIC to (required when deploying into an existing VNet). Leave blank to create a new subnet named clms-subnet."
+      }
+    },
+    "addressSpace": {
+      "type": "string",
+      "defaultValue": "10.50.0.0/16",
+      "metadata": {
+        "description": "VNet address space in CIDR notation. Only used when creating a new VNet. Must not overlap with VNets you plan to peer with."
+      }
+    },
+    "subnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.50.1.0/24",
+      "metadata": {
+        "description": "Subnet prefix in CIDR notation, contained within the VNet address space. Only used when creating a new VNet."
+      }
+    }
+  },
+  "variables": {
+    "createNewVnet": "[empty(parameters('vnetName'))]",
+    "vnetResourceGroup": "[if(empty(parameters('existingVnetResourceGroup')), resourceGroup().name, parameters('existingVnetResourceGroup'))]",
+    "effectiveVnetName": "[if(variables('createNewVnet'), concat(parameters('vmName'), '-vnet'), parameters('vnetName'))]",
+    "effectiveSubnetName": "[if(empty(parameters('subnetName')), 'clms-subnet', parameters('subnetName'))]",
+    "subnetId": "[if(variables('createNewVnet'), resourceId('Microsoft.Network/virtualNetworks/subnets', variables('effectiveVnetName'), variables('effectiveSubnetName')), resourceId(variables('vnetResourceGroup'), 'Microsoft.Network/virtualNetworks/subnets', variables('effectiveVnetName'), variables('effectiveSubnetName')))]",
+    "pipName": "[concat(parameters('vmName'), '-pip')]",
+    "nsgName": "[concat(parameters('vmName'), '-nsg')]",
+    "nicName": "[concat(parameters('vmName'), '-nic')]",
+    "imagePublisher": "keysight-technologies-cloudlens",
+    "imageOffer": "keysight-cloudlens-manager-preview",
+    "imageSku": "clms-6-13-0_76"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('pipName')]",
+      "location": "[parameters('location')]",
+      "sku": { "name": "Standard" },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "dnsSettings": {
+          "domainNameLabel": "[concat(parameters('vmName'), '-', uniqueString(resourceGroup().id))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowSSH",
+            "properties": {
+              "priority": 100,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "22"
+            }
+          },
+          {
+            "name": "AllowHTTPS",
+            "properties": {
+              "priority": 110,
+              "protocol": "Tcp",
+              "access": "Allow",
+              "direction": "Inbound",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "443"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[variables('createNewVnet')]",
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('effectiveVnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["[parameters('addressSpace')]"] },
+        "subnets": [
+          {
+            "name": "[variables('effectiveSubnetName')]",
+            "properties": { "addressPrefix": "[parameters('subnetPrefix')]" }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('effectiveVnetName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": { "id": "[variables('subnetId')]" },
+              "publicIPAddress": { "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]" },
+              "privateIPAllocationMethod": "Dynamic"
+            }
+          }
+        ],
+        "networkSecurityGroup": { "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]" }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2024-11-01",
+      "name": "[parameters('vmName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+      ],
+      "plan": {
+        "name": "clms-6-13-0_76",
+        "publisher": "keysight-technologies-cloudlens",
+        "product": "keysight-cloudlens-manager-preview"
+      },
+      "properties": {
+        "hardwareProfile": { "vmSize": "[parameters('vmSize')]" },
+        "osProfile": {
+          "computerName": "[parameters('vmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('imagePublisher')]",
+            "offer": "[variables('imageOffer')]",
+            "sku": "[variables('imageSku')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": { "storageAccountType": "Premium_LRS" }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            { "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]" }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": { "enabled": true }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "clmsPublicIp": {
+      "type": "string",
+      "value": "[reference(variables('pipName')).ipAddress]"
+    },
+    "clmsUiUrl": {
+      "type": "string",
+      "value": "[concat('https://', reference(variables('pipName')).ipAddress)]"
+    },
+    "defaultCredentials": {
+      "type": "string",
+      "value": "admin / Cl0udLens@dm!n (change on first login)"
+    },
+    "nextStep": {
+      "type": "string",
+      "value": "[concat('CLMS is initializing. The web UI will be reachable at https://', reference(variables('pipName')).ipAddress, ' within about 60 seconds; full system initialization takes around 15 minutes. Log in with admin / Cl0udLens@dm!n, create a Project, copy the project key, then return to https://keysight-tech.github.io/cloudlens-ansible-azure/ to deploy sensors.')]"
+    }
+  }
+}

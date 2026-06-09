@@ -1,0 +1,3 @@
+# This directory holds the CloudLens Windows installer (cloudlens-win-sensor-*.exe).
+# The installer is NOT committed to git (see .gitignore).
+# Download from your CloudLens Manager → Sensor Downloads → Windows Installer.

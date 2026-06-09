@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# Ansible
+**/ansible.log
+.ansible_facts_cache/
+*.retry
+
+# Customer-specific (NEVER commit)
+customer_input.yaml
+inventory/group_vars/secrets.yaml
+
+# Azure SP credentials
+azure_sp_creds.json
+.azure/
+
+# Windows installer (download separately — too large for git, may have licensing)
+files/*.exe
+files/*.msi
+files/cloudlenscerts.crt
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Build artifacts
+*.pyc
+__pycache__/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
