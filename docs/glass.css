@@ -7,7 +7,7 @@
 
 :root {
   /* Keysight accent — replaces the reference's blue */
-  --accent-h: 348;            /* red hue */
+  --accent-h: 25;            /* red hue */
   --accent-c: 0.22;           /* high chroma */
   --accent-l: 50%;            /* mid lightness */
   --accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
@@ -39,8 +39,8 @@
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", system-ui, sans-serif;
 
   /* Compat with our old code */
-  --ks-red: oklch(50% 0.22 348);
-  --ks-red-soft: oklch(62% 0.22 348);
+  --ks-red: oklch(53% 0.24 25);
+  --ks-red-soft: oklch(64% 0.22 25);
   --ks-red-glow: var(--accent-glow);
   --shadow-glass: 0 14px 28px -14px oklch(0% 0 0 / .35);
   --shadow-glass-lg: 0 26px 54px -22px oklch(0% 0 0 / .5);
