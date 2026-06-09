@@ -304,7 +304,7 @@ done</code></pre>
                 <span class="step-time">1 minute</span>
               </summary>
               <div class="step-body">
-                <p>Use the wizard below to fill four fields and download <code>customer_input.yaml</code>.</p>
+                <p>Use the wizard below to fill the fields and download <code>customer_input.yaml</code>.</p>
                 <p><a class="btn btn-primary inline-btn" href="#wizard">Jump to wizard &darr;</a></p>
                 <p class="callout">Tip: the wizard shows the YAML rendering live as you type. Each field has inline help so you know exactly what to enter.</p>
               </div>
@@ -446,14 +446,14 @@ aws cloudformation create-stack \
             </div>
             <div class="step" data-step="4">
               <div class="step-head"><span class="step-num">4</span><h3>Resource groups</h3></div>
-              <label for="rgs">Allowed source CIDRs for SSH/Web (comma-separated)</label>
-              <input id="rgs" name="resource_groups" type="text" placeholder="203.0.113.5/32, 198.51.100.0/24" value="0.0.0.0/0" />
+              <label for="rgs">AWS regions to scan (comma-separated)</label>
+              <input id="rgs" name="resource_groups" type="text" placeholder="us-east-1, us-west-2" value="us-east-1" />
               <details class="field-help">
                 <summary>What if I leave this blank?</summary>
                 <p>Blank means scan ALL VPCs in your subscription for tagged VMs. List specific RGs (comma-separated) to limit discovery.</p>
               </details>
               <div class="connection-mode">
-                <label for="mode">Deployment mode</label>
+                <label for="mode">Windows connection mode</label>
                 <select id="mode" name="mode">
                   <option value="greenfield">greenfield — new VPC (CFT or Terraform)</option>
                   <option value="existing-vpc">existing-vpc — brownfield (customer VPC)</option>
