@@ -455,8 +455,8 @@ aws cloudformation create-stack \
               <div class="connection-mode">
                 <label for="mode">Windows connection mode</label>
                 <select id="mode" name="mode">
-                  <option value="greenfield">greenfield — new VPC (CFT or Terraform)</option>
-                  <option value="existing-vpc">existing-vpc — brownfield (customer VPC)</option>
+                  <option value="ssm">SSM Session Manager (recommended, no inbound ports)</option>
+                  <option value="winrm">WinRM (port 5985/5986 must be open)</option>
                 </select>
               </div>
             </div>
