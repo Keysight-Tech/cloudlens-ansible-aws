@@ -74,8 +74,7 @@
     lines.push('#   2. Deploy CLMS via cloudlens-autopilot CFT/Terraform OR manual');
     lines.push('#   3. Get project_key from CLMS UI: Settings > Projects > API Keys');
     lines.push('#   4. Tag target EC2 instances: cloudlens=yes, os=ubuntu|rhel|windows, env=prod');
-    return lines.join('
-');
+    return lines.join('\n');
   }
 
   
