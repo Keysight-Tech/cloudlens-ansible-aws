@@ -77,10 +77,23 @@ if [[ "${1:-}" == "-c" ]] && [[ -n "${2:-}" ]]; then
   exit 0
 fi
 
-if ! $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
-     -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; exec $CLI"; then
-  echo "vpb: the CLI exited with an error. If this is a fresh appliance, the" >&2
-  echo "     management plane starts after first configuration: adopt this vPB" >&2
-  echo "     in KVO (https://<kvo-ip>) and retry. Health: sudo kubectl get pods -A" >&2
+# Pre-flight: probe the management plane BEFORE dropping into the CLI.
+# On a fresh, not-yet-adopted appliance the mgmt-plane socket does not
+# exist and xf-client retries forever with Python tracebacks. Catch that
+# state here and explain it instead.
+if ! $KUBECTL --kubeconfig="$KCFG" exec -n "$NAMESPACE" "$POD" -c "$CONTAINER" \
+     -- bash -c "mkdir -p /data/xfilter/logs; echo | timeout 10 $CLI" >/dev/null 2>&1; then
+  echo "vpb: the vPB management plane is not up yet, so the CLI cannot attach." >&2
+  echo "" >&2
+  echo "  This is normal for a freshly deployed appliance. The management plane" >&2
+  echo "  starts after the vPB is adopted and configured in KVO:" >&2
+  echo "    1. Open the KVO web UI:  https://<kvo-ip>" >&2
+  echo "    2. Add/adopt this vPB (management IP of this instance)" >&2
+  echo "    3. Re-run: sudo vpb" >&2
+  echo "" >&2
+  echo "  Meanwhile the cluster itself is healthy if pods are Running:" >&2
+  echo "    sudo kubectl get pods -A" >&2
   exit 1
 fi
+exec $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
+     -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; exec $CLI"
