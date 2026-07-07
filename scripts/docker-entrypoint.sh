@@ -7,7 +7,19 @@ cd /work
 case "${1:-deploy}" in
   deploy)
     [[ ! -f customer_input.yaml ]] && { echo "Mount customer_input.yaml: -v ./customer_input.yaml:/work/customer_input.yaml"; exit 1; }
-    [[ -z "${AZURE_SUBSCRIPTION_ID:-}" ]] && { echo "Set Azure env vars: AZURE_SUBSCRIPTION_ID, AZURE_TENANT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"; exit 1; }
+    # AWS auth for the amazon.aws.aws_ec2 inventory. Accept any of:
+    #   1. AWS_PROFILE       (with a mounted -v $HOME/.aws:/root/.aws:ro)
+    #   2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (env keys, optional token)
+    #   3. A mounted ~/.aws/credentials with a [default] profile
+    if [[ -z "${AWS_PROFILE:-}" \
+       && ( -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ) \
+       && ! -f /root/.aws/credentials ]]; then
+      echo "Set AWS credentials for the aws_ec2 inventory. Use one of:"
+      echo "  - AWS_PROFILE (mount creds: -v \$HOME/.aws:/root/.aws:ro)"
+      echo "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+ optional AWS_SESSION_TOKEN)"
+      echo "  - a mounted ~/.aws/credentials with a [default] profile"
+      exit 1
+    fi
 
     # Auto-tune forks
     VM_COUNT=$(ansible-inventory -i inventory/aws_ec2.yaml --list 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('_meta',{}).get('hostvars',{})))" || echo 0)

@@ -1,0 +1,54 @@
+###############################################################################
+# vController (CLMS) Terraform variables - example file
+#
+# WHAT YOU MUST CHANGE:
+#   - public_key OR key_name : how you will SSH into the instance
+#
+# Everything else has a sensible default. Copy this file to terraform.tfvars
+# and edit only what you need.
+###############################################################################
+
+# OPTIONAL: AWS region. CloudLens Marketplace AMIs in this repo are in us-east-1.
+region = "us-east-1"
+
+# OPTIONAL: named AWS profile. Leave blank to use the default credential chain
+# (environment variables, AWS SSO, or an instance role).
+profile = ""
+
+# OPTIONAL: instance name, also used as a prefix for the VPC, subnet, SG, and EIP.
+instance_name = "cloudlens-vcontroller"
+
+# REQUIRED (one of the two): how you SSH in.
+#   - key_name  : name of an existing EC2 key pair, OR
+#   - public_key: paste your SSH public key and Terraform creates the key pair.
+key_name   = ""
+public_key = ""
+
+# OPTIONAL: OS admin username used only to render the ssh_command output.
+admin_username = "cloudlens"
+
+# OPTIONAL: CloudLens vController Marketplace AMI (us-east-1). Requires a
+# one-time Marketplace subscription on the account.
+ami_id = "ami-0bebd5e730315337e"
+
+# OPTIONAL: instance type. Allowed: t3.xlarge, t3.2xlarge, m5.xlarge, m5.2xlarge.
+instance_type = "t3.xlarge"
+
+# OPTIONAL: bring your own VPC. Leave existing_vpc_id = "" to create a new VPC
+# with the vpc_cidr and subnet_cidr below (and an internet gateway + route).
+existing_vpc_id    = ""
+existing_subnet_id = ""
+
+# OPTIONAL: network ranges used only when creating a new VPC.
+vpc_cidr    = "10.99.0.0/16"
+subnet_cidr = "10.99.1.0/24"
+
+# OPTIONAL: restrict console/SSH access to your networks in production.
+ssh_ingress_cidrs   = ["0.0.0.0/0"]
+https_ingress_cidrs = ["0.0.0.0/0"]
+
+# OPTIONAL: tags applied to every created resource.
+tags = {
+  project = "cloudlens"
+  owner   = "network-visibility"
+}

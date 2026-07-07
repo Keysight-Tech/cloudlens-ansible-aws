@@ -1,12 +1,12 @@
 plugin: amazon.aws.aws_ec2
 
-# Regions to scan — leave empty to scan ALL enabled regions
+# Regions to scan - leave empty to scan ALL enabled regions
 # regions:
 #   - us-east-1
 #   - us-west-2
 
-# AWS auth — comes from environment:
-#   AWS_PROFILE       (preferred — for SSO)
+# AWS auth - comes from environment:
+#   AWS_PROFILE       (preferred - for SSO)
 #   AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY  (fallback)
 #   AWS_REGION
 

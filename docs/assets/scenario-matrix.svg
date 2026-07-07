@@ -29,7 +29,7 @@
 
   <!-- Title -->
   <text x="450" y="42" text-anchor="middle" font-size="22" font-weight="600" fill="#1B2A4A">Supported VM Scenarios</text>
-  <text x="450" y="64" text-anchor="middle" font-size="13" fill="#5B6478">Operating system × network topology — verified deployment paths</text>
+  <text x="450" y="64" text-anchor="middle" font-size="13" fill="#5B6478">Operating system × network topology - verified deployment paths</text>
 
   <!-- Matrix container -->
   <g class="fadein r1" filter="url(#card-shadow)" transform="translate(40,100)">
@@ -203,7 +203,7 @@
       <rect width="74" height="24" rx="12" fill="#F4F5F8" stroke="#D1D5DB"/>
       <text x="37" y="16" text-anchor="middle" font-size="10" font-weight="600" fill="#6B7280">planned</text>
     </g>
-    <text x="304" y="28" font-size="12" font-weight="600" fill="#1B2A4A">Planned — not yet tested</text>
+    <text x="304" y="28" font-size="12" font-weight="600" fill="#1B2A4A">Planned - not yet tested</text>
 
     <!-- Note -->
     <text x="812" y="28" text-anchor="end" font-size="11" fill="#5B6478" font-style="italic">Honest status. We mark only what we have validated end-to-end.</text>

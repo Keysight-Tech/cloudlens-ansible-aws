@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CloudLens Ansible for AWS — quickstart
+# CloudLens Ansible for AWS - quickstart
 # Detects environment, installs collections, runs deploy.yaml
 
 set -e
@@ -14,7 +14,7 @@ warn() { echo -e "${C_YELLOW}⚠${C_RESET} $1"; }
 fail() { echo -e "${C_RED}✗${C_RESET} $1"; exit 1; }
 
 echo "================================================================"
-echo " CloudLens Ansible for AWS — Quickstart"
+echo " CloudLens Ansible for AWS - Quickstart"
 echo " v1.0.0 · Keysight Technologies"
 echo "================================================================"
 
@@ -29,7 +29,7 @@ fi
 
 # === Verify customer_input.yaml exists ===
 if [ ! -f customer_input.yaml ]; then
-  warn "customer_input.yaml not found — creating from example"
+  warn "customer_input.yaml not found - creating from example"
   cp customer_input.yaml.example customer_input.yaml
   fail "Edit customer_input.yaml with your values and re-run: bash quickstart.sh"
 fi
@@ -43,7 +43,7 @@ ok "Ansible $(ansible --version | head -1 | awk '{print $2}') detected"
 
 # === Verify boto3 installed (required for AWS dynamic inventory) ===
 if ! python3 -c "import boto3" 2>/dev/null; then
-  warn "boto3 not installed — installing..."
+  warn "boto3 not installed - installing..."
   pip install boto3 botocore || fail "pip install boto3 failed"
 fi
 ok "boto3 $(python3 -c 'import boto3; print(boto3.__version__)') detected"
@@ -59,7 +59,7 @@ echo ""
 echo "→ Verifying AWS credentials..."
 if aws sts get-caller-identity >/dev/null 2>&1; then
   ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-  ok "AWS auth verified — account $ACCOUNT"
+  ok "AWS auth verified - account $ACCOUNT"
 else
   fail "AWS credentials invalid. Run: aws sso login   OR   aws configure"
 fi

@@ -2,7 +2,7 @@
 
 🌐 **Interactive sizing slider:** https://keysight-tech.github.io/cloudlens-ansible-aws/#scaling
 
-CloudLens Ansible scales linearly across thousands of EC2 instances using AWS Ansible (SSH/SSM/WinRM)'s native parallelism. No custom orchestration, no agent push servers — just AWS-native concurrency.
+CloudLens Ansible scales linearly across thousands of EC2 instances using AWS Ansible (SSH/SSM/WinRM)'s native parallelism. No custom orchestration, no agent push servers - just AWS-native concurrency.
 
 ## Sensor deployment time vs fleet size
 
@@ -28,7 +28,7 @@ Ansible (SSH/SSM/WinRM)'s `--max-concurrency` and `--max-errors` flags let you t
 | ≤ 10,000 sensors | `c5.4xlarge`* | `m5.2xlarge` | `c5.4xlarge` | 8–16 auto |
 | 10,000+ sensors | Federated KVOs | Multi-CLMS | Multi-vPB | Cross-region |
 
-\* KVO Marketplace AMI is locked to `c5.2xlarge` — going larger requires a custom Keysight build.
+\* KVO Marketplace AMI is locked to `c5.2xlarge` - going larger requires a custom Keysight build.
 
 ## VPC Traffic Mirroring at scale
 
@@ -39,7 +39,7 @@ Ansible (SSH/SSM/WinRM)'s `--max-concurrency` and `--max-errors` flags let you t
 | Mirror target bandwidth | Limited by collector ENI throughput | `c5.2xlarge` ≈ 10 Gbps |
 | Concurrent KVO Cloud Configs | Per-region | Federate KVOs for global fleets |
 
-KVO auto-distributes mirror sessions across collector SVMs as you scale source instances. Auto-Mirror Lambda's EventBridge rules tag new instances within seconds — no polling lag.
+KVO auto-distributes mirror sessions across collector SVMs as you scale source instances. Auto-Mirror Lambda's EventBridge rules tag new instances within seconds - no polling lag.
 
 ## Real-world deployment proof points
 
@@ -57,7 +57,7 @@ KVO auto-distributes mirror sessions across collector SVMs as you scale source i
 - Estimated full rollout: 2–3 quarters
 
 ### Nokia
-- 4G LTE private network — CMU containerized workloads
+- 4G LTE private network - CMU containerized workloads
 - E40 packet broker integration
 - VIAVI TSA downstream analytics
 - AutoPilot CFT + manual K8s sensor deployment for hybrid stack
@@ -78,11 +78,11 @@ You can tune sharding behavior in `deploy-sensors.sh`:
 
 ## What to monitor
 
-- **AWS Systems Manager > Run Command > Command History** — per-instance success/failure
-- **CLMS > Sensors** — registration rate over time
-- **CloudWatch > VPC Flow Logs** — traffic patterns, drops
-- **KVO > Cloud Fabric > Monitoring Policies** — mirror session count, collector load
-- **CloudWatch > Auto-Mirror Lambda invocations** — should match new EC2 launch rate
+- **AWS Systems Manager > Run Command > Command History** - per-instance success/failure
+- **CLMS > Sensors** - registration rate over time
+- **CloudWatch > VPC Flow Logs** - traffic patterns, drops
+- **KVO > Cloud Fabric > Monitoring Policies** - mirror session count, collector load
+- **CloudWatch > Auto-Mirror Lambda invocations** - should match new EC2 launch rate
 
 ## When to call Keysight Professional Services
 

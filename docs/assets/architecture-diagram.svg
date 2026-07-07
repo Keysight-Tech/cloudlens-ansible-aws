@@ -47,7 +47,7 @@
   <rect width="1200" height="600" fill="#FAFAFA"/>
 
   <!-- Title -->
-  <text x="600" y="38" text-anchor="middle" font-size="20" font-weight="600" fill="#1B2A4A">CloudLens AutoPilot — AWS Deployment Architecture</text>
+  <text x="600" y="38" text-anchor="middle" font-size="20" font-weight="600" fill="#1B2A4A">CloudLens AutoPilot - AWS Deployment Architecture</text>
   <text x="600" y="60" text-anchor="middle" font-size="13" fill="#5B6478">From customer machine to registered sensors on CLMS</text>
 
   <!-- ========== LEFT: Customer ========== -->
@@ -101,7 +101,7 @@
       <rect width="30" height="30" rx="6" fill="#D4AF37"/>
       <text x="15" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF">i</text>
     </g>
-    <text x="352" y="265" font-size="13" font-weight="600" fill="#1B2A4A">EC2 Discovery — boto3 / SSM</text>
+    <text x="352" y="265" font-size="13" font-weight="600" fill="#1B2A4A">EC2 Discovery - boto3 / SSM</text>
     <text x="352" y="282" font-size="11" fill="#5B6478">Discovers VMs by tag • groups by OS family • zero static IPs</text>
     <text x="352" y="295" font-size="10" font-family="SF Mono, Menlo, monospace" fill="#0078D4">tag:cloudlens=true → ubuntu / rhel / windows lanes</text>
   </g>
@@ -257,6 +257,6 @@
     <text x="570" y="20" font-size="11" fill="#1B2A4A">3. Deploy via SSH/SSM Run Command per OS</text>
     <circle cx="798" cy="16" r="5" fill="#22C55E"/>
     <text x="810" y="20" font-size="11" fill="#1B2A4A">4. Sensors register to CLMS</text>
-    <text x="20" y="36" font-size="10" fill="#5B6478">All paths use the same CloudFormation + Terraform stack — playbooks select OS lane dynamically.</text>
+    <text x="20" y="36" font-size="10" fill="#5B6478">All paths use the same CloudFormation + Terraform stack - playbooks select OS lane dynamically.</text>
   </g>
 </svg>

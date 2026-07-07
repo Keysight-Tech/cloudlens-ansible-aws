@@ -45,7 +45,7 @@
     <circle class="light-green" cx="62" cy="18" r="6.5" fill="#28C840"/>
 
     <!-- Title -->
-    <text x="450" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="#E5E7EB" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">CloudLens CloudFormation —AWSDeployment</text>
+    <text x="450" y="22" text-anchor="middle" font-size="11" font-weight="500" fill="#E5E7EB" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">CloudLens CloudFormation - AWSDeployment</text>
 
     <!-- Terminal text -->
     <g font-family="SF Mono, Menlo, Consolas, 'Liberation Mono', monospace" font-size="11.5">
@@ -69,7 +69,7 @@
           <text x="20" y="118">║</text>
           <text x="20" y="134">╚═══════════════════════════════════════════════════════════════════════════╝</text>
         </g>
-        <text x="40" y="102" fill="#FCD34D" font-weight="600">CloudLens CloudFormation —AWSDeployment Quickstart</text>
+        <text x="40" y="102" fill="#FCD34D" font-weight="600">CloudLens CloudFormation - AWSDeployment Quickstart</text>
         <text x="40" y="118" fill="#9CA3AF">v1.0.0  ·  Keysight Technologies</text>
         <text x="858" y="102" fill="#60A5FA">║</text>
         <text x="858" y="118" fill="#60A5FA">║</text>
@@ -177,7 +177,7 @@
       <g opacity="1">
         <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.333;0.35;0.95;1" dur="30s" repeatCount="indefinite"/>
         <text x="20" y="416" fill="#22C55E" font-weight="600">✓ Done</text>
-        <text x="68" y="416" fill="#E5E7EB"> — </text>
+        <text x="68" y="416" fill="#E5E7EB"> - </text>
         <text x="88" y="416" fill="#FCD34D" font-weight="600">3 sensors</text>
         <text x="156" y="416" fill="#E5E7EB"> registered to CLMS in </text>
         <text x="306" y="416" fill="#FCD34D" font-weight="600">8 minutes</text>

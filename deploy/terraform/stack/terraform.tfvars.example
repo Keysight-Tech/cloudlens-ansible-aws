@@ -1,0 +1,57 @@
+###############################################################################
+# CloudLens Stack: minimal tfvars example
+#
+# Copy to terraform.tfvars and edit. The defaults below produce a shared VPC
+# (10.99.0.0/16) with a vController and a vPB in one deployment. Set
+# deploy_kvo = true to add KVO, or deploy_vpb = false for vController-only.
+###############################################################################
+
+# REQUIRED (one of the two): how you SSH into every instance.
+key_name   = ""
+public_key = ""
+
+# OPTIONAL: region and profile
+region  = "us-east-1"
+profile = ""
+
+# OPTIONAL: vController (formerly CLMS)
+clms_instance_name = "cloudlens-vcontroller"
+clms_instance_type = "t3.xlarge"
+vcontroller_count  = 1
+
+# OPTIONAL: KVO (off by default). Qualified on c5.2xlarge only.
+deploy_kvo        = false
+kvo_instance_name = "cloudlens-kvo"
+kvo_instance_type = "c5.2xlarge"
+kvo_count         = 1
+
+# OPTIONAL: vPB. Qualified on t3.xlarge only. 1 mgmt + ingress + egress <= 4.
+deploy_vpb            = true
+vpb_instance_name     = "cloudlens-vpb"
+vpb_instance_type     = "t3.xlarge"
+vpb_count             = 1
+vpb_ingress_nic_count = 1
+vpb_egress_nic_count  = 1
+
+# OPTIONAL: networking (shared VPC by default)
+# vPB subnets must share one AZ, so availability_zone pins the shared subnets.
+shared_vpc              = true
+vpc_name                = "cloudlens-stack-vpc"
+vpc_cidr                = "10.99.0.0/16"
+availability_zone       = "us-east-1a"
+clms_subnet_cidr        = "10.99.1.0/24"
+kvo_subnet_cidr         = "10.99.5.0/24"
+vpb_mgmt_subnet_cidr    = "10.99.2.0/24"
+vpb_ingress_subnet_cidr = "10.99.3.0/24"
+vpb_egress_subnet_cidr  = "10.99.4.0/24"
+
+# OPTIONAL: restrict access to your networks in production.
+ssh_ingress_cidrs   = ["0.0.0.0/0"]
+https_ingress_cidrs = ["0.0.0.0/0"]
+
+# OPTIONAL: tags for everything in the stack
+tags = {
+  project = "cloudlens"
+  stack   = "vcontroller-kvo-vpb"
+  owner   = "network-visibility"
+}

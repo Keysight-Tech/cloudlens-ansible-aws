@@ -1,5 +1,5 @@
 ---
-# RHEL / Amazon Linux 2023 prod EC2 instances — connect via SSH
+# RHEL / Amazon Linux 2023 prod EC2 instances - connect via SSH
 ansible_connection: ssh
 ansible_user: "{{ aws.ssh_user_rhel | default('ec2-user') }}"
 ansible_ssh_private_key_file: "{{ aws.ssh_key_path | default('~/.aws/your-key.pem') }}"

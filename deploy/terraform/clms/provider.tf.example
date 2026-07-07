@@ -1,0 +1,14 @@
+###############################################################################
+# Standalone provider configuration for the vController (CLMS) module
+#
+# Copy this file to provider.tf when running the module by itself:
+#   cp provider.tf.example provider.tf
+#
+# It is NOT included by default so the module can be wrapped by the stack
+# module (deploy/terraform/stack/) with count or for_each.
+###############################################################################
+
+provider "aws" {
+  region  = var.region
+  profile = var.profile != "" ? var.profile : null
+}

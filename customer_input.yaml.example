@@ -1,5 +1,5 @@
 # =====================================================================
-# CloudLens Ansible for AWS — Customer Input File
+# CloudLens Ansible for AWS - Customer Input File
 # =====================================================================
 # Copy to customer_input.yaml and fill in your values.
 # DO NOT commit customer_input.yaml to git.

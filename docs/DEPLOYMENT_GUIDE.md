@@ -14,7 +14,7 @@ The full step-by-step runbook is in [`CloudLens-AutoPilot-Deployment-Runbook.doc
 3. **EC2 key pair** created in the target region
 4. **(Terraform path only)** Terraform v1.5+ installed
 
-## Path A — CloudFormation (recommended for customers)
+## Path A - CloudFormation (recommended for customers)
 
 ### Option 1: One-click via AWS Console
 
@@ -42,7 +42,7 @@ aws cloudformation describe-stacks --stack-name cloudlens-ansible-aws \
   --query "Stacks[0].Outputs" --output table
 ```
 
-## Path B — Terraform (SE / DevOps)
+## Path B - Terraform (SE / DevOps)
 
 ```bash
 git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
@@ -60,17 +60,17 @@ terraform apply -var-file=demo.tfvars
 terraform output urls    # KVO, CLMS, vPB URLs
 ```
 
-## Phase 2 — Product Configuration (~15 min)
+## Phase 2 - Product Configuration (~15 min)
 
 After Phase 1 completes, configure the products via their web UIs:
 
-1. **Accept KVO EULA** — open `https://<kvo-ip>/`, click Agree. _KVO blocks all access including the API until this is done._
-2. **Activate licenses** — KVO > Settings > Product Licensing > Activate (vPB Advanced, CloudLens Enterprise, KVO perpetual)
-3. **Adopt CLMS into KVO** — KVO > Inventory > CloudLens Manager > Discover. Use the CLMS **private** IP (`10.99.1.x` from outputs).
-4. **Onboard vPB to KVO** — SSH to vPB on port 9022, run `configure terminal / kvo / ip <kvo-ip> / port 443 / enable / monitored / end / write memory`. Then adopt in KVO with "Control the adopted device" enabled.
-5. **Create AWS Cloud Config** — KVO > Cloud Fabric > Cloud Configs > New > AWS. Paste IAM keys, pick region + VPC + subnets, commit.
+1. **Accept KVO EULA** - open `https://<kvo-ip>/`, click Agree. _KVO blocks all access including the API until this is done._
+2. **Activate licenses** - KVO > Settings > Product Licensing > Activate (vPB Advanced, CloudLens Enterprise, KVO perpetual)
+3. **Adopt CLMS into KVO** - KVO > Inventory > CloudLens Manager > Discover. Use the CLMS **private** IP (`10.99.1.x` from outputs).
+4. **Onboard vPB to KVO** - SSH to vPB on port 9022, run `configure terminal / kvo / ip <kvo-ip> / port 443 / enable / monitored / end / write memory`. Then adopt in KVO with "Control the adopted device" enabled.
+5. **Create AWS Cloud Config** - KVO > Cloud Fabric > Cloud Configs > New > AWS. Paste IAM keys, pick region + VPC + subnets, commit.
 
-## Phase 3 — Sensor Deployment (~5–60 min depending on fleet size)
+## Phase 3 - Sensor Deployment (~5–60 min depending on fleet size)
 
 ```bash
 ./scripts/deploy-sensors.sh \
@@ -80,7 +80,7 @@ After Phase 1 completes, configure the products via their web UIs:
   --project-key <clms-project-key>
 ```
 
-Sensors are pushed via AWS Ansible (SSH/SSM/WinRM) — no SSH, no WinRM. Target VMs must have:
+Sensors are pushed via AWS Ansible (SSH/SSM/WinRM) - no SSH, no WinRM. Target VMs must have:
 - IAM role with `AmazonSSMManagedInstanceCore` policy
 - SSM Agent running
 - Tags: `cloudlens=true` + `Platform=linux-docker` (or `linux-podman` or `windows`)
@@ -96,8 +96,8 @@ In CLMS UI:
 
 In KVO UI:
 1. Login `admin / admin`
-2. Go to **Inventory > Devices** — CLMS + vPB should show **CONNECTED**
-3. Go to **Cloud Fabric > Cloud Configs** — AWS config should show **COMMITTED**
+2. Go to **Inventory > Devices** - CLMS + vPB should show **CONNECTED**
+3. Go to **Cloud Fabric > Cloud Configs** - AWS config should show **COMMITTED**
 
 ## Tear down
 

@@ -19,7 +19,7 @@
       ignore_errors: true
 
     - debug:
-        msg: "CLMS {{ customer.cloudlens.manager_ip_or_fqdn }} — {{ 'reachable' if clms_check is success else 'NOT reachable (check SG + DNS)' }}"
+        msg: "CLMS {{ customer.cloudlens.manager_ip_or_fqdn }} - {{ 'reachable' if clms_check is success else 'NOT reachable (check SG + DNS)' }}"
 
 - import_playbook: playbooks/ubuntu.yaml
   vars:

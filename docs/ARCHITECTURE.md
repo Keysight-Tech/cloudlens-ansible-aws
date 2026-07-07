@@ -49,7 +49,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 
 All CIDRs are configurable in `customer_input.yaml` and CFT parameters.
 
-## Data flow — east-west AND north-south
+## Data flow - east-west AND north-south
 
 ```
                      ┌─────────────────┐
@@ -81,7 +81,7 @@ All CIDRs are configurable in `customer_input.yaml` and CFT parameters.
                    └──────────────────────┘
 ```
 
-**Both east-west (pod-to-pod, VM-to-VM within VPC) and north-south (VM-to-internet) traffic is captured** — the sensor lives in the target VM and taps at the vNIC level. AWS VPC Traffic Mirroring then forwards mirrored copies to the Collector SVMs.
+**Both east-west (pod-to-pod, VM-to-VM within VPC) and north-south (VM-to-internet) traffic is captured** - the sensor lives in the target VM and taps at the vNIC level. AWS VPC Traffic Mirroring then forwards mirrored copies to the Collector SVMs.
 
 ## Two deployment paths
 
@@ -102,7 +102,7 @@ All CIDRs are configurable in `customer_input.yaml` and CFT parameters.
                 └───────────────────────┘
 ```
 
-Choose based on your team's existing tooling — both produce **identical infrastructure**. CloudFormation includes the Auto-Mirror Lambda in the template; Terraform deploys it as a separate module (planned).
+Choose based on your team's existing tooling - both produce **identical infrastructure**. CloudFormation includes the Auto-Mirror Lambda in the template; Terraform deploys it as a separate module (planned).
 
 ## Why Auto-Mirror beats Gigamon ATS
 
@@ -113,7 +113,7 @@ Choose based on your team's existing tooling — both produce **identical infras
 | New VM coverage | Bounded by poll cycle | Instant |
 | Cost | Continuous API calls | Pay-per-event |
 
-Auto-Mirror auto-tags new EC2 instances with `cloudlens-mirror=true` in watched VPCs. KVO picks up the tag and starts mirroring immediately — no polling overhead.
+Auto-Mirror auto-tags new EC2 instances with `cloudlens-mirror=true` in watched VPCs. KVO picks up the tag and starts mirroring immediately - no polling overhead.
 
 ## Customer case study
 

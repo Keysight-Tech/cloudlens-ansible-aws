@@ -1,0 +1,1003 @@
+#!/usr/bin/env bash
+# =====================================================================
+# CloudLens Stack Deployment: vController + KVO + vPB + Sensors (AWS)
+# (vController is the new name for what used to be called CLMS)
+# =====================================================================
+# IMPORTANT: the entire script is wrapped in a { ... } brace block so
+# bash buffers the WHOLE thing from stdin before executing any of it.
+# Without this, when invoked via `curl ... | bash`, bash would start
+# executing partially-read content. The first `exec < /dev/tty` would
+# then close the pipe while curl was still writing to it, producing:
+#   curl: (56) Failure writing output to destination, passed N returned 0
+# The closing brace lives on the last line of the file.
+{
+# One paste, full stack. Detects AWS CloudShell vs local, subscribes to
+# the Marketplace AMIs, deploys vController, waits for init, optionally
+# adds KVO + vPB, and chains into the sensor playbook via quickstart.sh.
+#
+# Infrastructure is provisioned with CloudFormation by default (calls
+# deploy/cloudformation/stack.yaml). Pass --iac terraform to use the
+# Terraform stack under deploy/terraform instead. Both build the same
+# resources: a VPC, public subnet(s), security groups, and the CloudLens
+# appliance EC2 instances with Elastic IPs.
+#
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
+#   OR
+#   bash deploy/deploy-stack.sh [--dry-run]
+#
+# Flags:
+#   --dry-run        Walk the prompts, print every aws command, touch nothing
+#   --region         AWS region (e.g. us-east-1)
+#   --stack-name     CloudFormation stack / Terraform workspace name
+#   --iac cfn|terraform   Which infra engine to use (default: cfn)
+#   --no-kvo         Skip KVO deployment (default: prompt)
+#   --with-kvo       Deploy KVO without prompting
+#   --no-vpb         Skip vPB deployment
+#   --no-sensors     Skip sensor chain at the end
+#   --key-name NAME  EC2 key pair to attach (created if missing)
+#   --rollback       Delete the stack we created on any failure
+#   -h | --help      Show this banner and exit
+# =====================================================================
+set -euo pipefail
+
+# ---------------------------------------------------------------------
+# Re-attach stdin to the terminal when invoked via `curl ... | bash`.
+# Without this, every `read` would try to consume bytes from the curl
+# pipe (which is the script itself), so the very first prompt fails.
+# ---------------------------------------------------------------------
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+  # Non-fatal: in a headless environment /dev/tty may exist but not be
+  # usable. Probe it on a spare fd (stderr silenced) before reattaching;
+  # otherwise fall through (reads then come from the original stdin, which
+  # is fine for fully non-interactive runs).
+  if { exec 3</dev/tty; } 2>/dev/null; then
+    exec <&3 3<&-
+  fi
+fi
+
+# ---------------------------------------------------------------------
+# Config + globals
+# ---------------------------------------------------------------------
+REPO_OWNER="Keysight-Tech"
+REPO_NAME="cloudlens-ansible-aws"
+REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
+
+# CloudFormation template + Terraform dir (relative to repo root)
+CFN_TEMPLATE_REL="deploy/cloudformation/stack.yaml"
+TF_DIR_REL="deploy/terraform"
+
+# ---------------------------------------------------------------------
+# CloudLens Marketplace AMIs (us-east-1 defaults, all env/flag override).
+# Marketplace AMIs require a one-time subscription (accept terms) on the
+# AWS account before they can launch. Phase 4 handles that.
+# ---------------------------------------------------------------------
+DEFAULT_REGION="${CLOUDLENS_REGION:-us-east-1}"
+
+# vController (formerly CLMS)
+CLMS_AMI="${CLOUDLENS_VCONTROLLER_AMI:-ami-0bebd5e730315337e}"
+CLMS_TYPE="${CLOUDLENS_VCONTROLLER_TYPE:-t3.xlarge}"
+# KVO (Keysight Vision Orchestrator)
+KVO_AMI="${CLOUDLENS_KVO_AMI:-ami-017c0db8981569380}"
+KVO_TYPE="${CLOUDLENS_KVO_TYPE:-c5.2xlarge}"
+# vPB (Virtual Packet Broker) - management SSH is on port 9022, not 22
+VPB_AMI="${CLOUDLENS_VPB_AMI:-ami-0a561b450552b707d}"
+VPB_TYPE="${CLOUDLENS_VPB_TYPE:-t3.xlarge}"
+# Collector SVM (informational; not deployed by this stack directly)
+COLLECTOR_AMI="${CLOUDLENS_COLLECTOR_AMI:-ami-0c22ade3667f8d35a}"
+
+VPB_SSH_PORT="${CLOUDLENS_VPB_SSH_PORT:-9022}"
+
+# Naming
+DEFAULT_STACK_NAME="${CLOUDLENS_STACK_NAME:-cloudlens-stack}"
+DEFAULT_ADMIN_USER="${CLOUDLENS_ADMIN_USER:-ec2-user}"
+KEY_NAME="${CLOUDLENS_KEY_NAME:-}"
+
+# vPB multi-NIC counts (management NIC is always present, these are extra)
+VPB_INGRESS_NICS="${CLOUDLENS_VPB_INGRESS_NICS:-1}"
+VPB_EGRESS_NICS="${CLOUDLENS_VPB_EGRESS_NICS:-1}"
+
+# Who is allowed to reach the mgmt/UI ports. Default open; narrow for prod.
+ADMIN_CIDR="${CLOUDLENS_ADMIN_CIDR:-0.0.0.0/0}"
+
+# Workload discovery tag: which AWS tag marks EC2s that should get the
+# CloudLens sensor. Default cloudlens=yes (the canonical convention).
+DISCOVERY_TAG_KEY="${CLOUDLENS_DISCOVERY_TAG_KEY:-cloudlens}"
+DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
+
+# Rollback: when true AND we created the stack this run, on_error deletes it.
+ROLLBACK_ON_FAIL="${CLOUDLENS_ROLLBACK_ON_FAIL:-false}"
+
+SUMMARY_FILE="cloudlens-deploy-summary.txt"
+LOG_FILE="cloudlens-deploy-stack.log"
+
+# Flag defaults (set by argument parser)
+DRY_RUN=false
+IAC="cfn"                 # cfn | terraform
+DEPLOY_KVO=""
+DEPLOY_VPB=""
+CHAIN_SENSORS=""
+ARG_REGION=""
+ARG_STACK=""
+
+# State trackers (filled as we go) for trap reporting
+PHASE_NAME="init"
+CREATED_STACK=false
+CLMS_PUBLIC_IP=""
+KVO_PUBLIC_IP=""
+VPB_PUBLIC_IP=""
+
+# ---------------------------------------------------------------------
+# Pretty output
+# ---------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_GREEN='\033[0;32m'; C_YELLOW='\033[1;33m'; C_BLUE='\033[0;34m'
+  C_RED='\033[0;31m'; C_GREY='\033[0;90m'; C_BOLD='\033[1m'; C_RESET='\033[0m'
+else
+  C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_RED=''; C_GREY=''; C_BOLD=''; C_RESET=''
+fi
+
+banner() {
+  local msg="$1"
+  echo -e "${C_BLUE}================================================================${C_RESET}"
+  printf "${C_BLUE}  ${C_BOLD}%s${C_RESET}\n" "$msg"
+  echo -e "${C_BLUE}================================================================${C_RESET}"
+}
+ok()    { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
+warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
+fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; exit 1; }
+step()  { echo; echo -e "${C_BLUE}--- $1 ---${C_RESET}"; PHASE_NAME="$1"; }
+note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
+dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
+
+to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ---------------------------------------------------------------------
+# Logging: tee everything to log file
+# ---------------------------------------------------------------------
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ---------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------
+show_help() {
+  cat <<'HLP'
+CloudLens Stack Deployment (AWS)
+
+Usage:
+  bash deploy/deploy-stack.sh [options]
+
+Options:
+  --dry-run                 Walk through prompts and print would-be aws
+                            commands without touching AWS. Safe anywhere.
+
+Region + naming (all have sensible defaults, all overridable):
+  --region REGION           AWS region             (default: us-east-1)
+  --stack-name NAME         Stack / workspace name (default: cloudlens-stack)
+  --admin-user NAME         OS login user for SSH  (default: ec2-user)
+  --key-name NAME           EC2 key pair to attach (created if missing)
+
+Infrastructure engine:
+  --iac cfn|terraform       Provision with CloudFormation (default) or
+                            Terraform. CloudFormation calls
+                            deploy/cloudformation/stack.yaml; Terraform
+                            uses deploy/terraform.
+
+Instance types (override if your prod workload is bigger):
+  --vcontroller-type TYPE   vController instance    (default: t3.xlarge)
+  --kvo-type TYPE           KVO instance            (default: c5.2xlarge)
+  --vpb-type TYPE           vPB instance            (default: t3.xlarge)
+
+vPB multi-NIC (fan-in / fan-out for prod):
+  --vpb-ingress-nics N      Extra ingress NICs      (default: 1)
+  --vpb-egress-nics N       Extra egress NICs       (default: 1)
+
+Access control:
+  --admin-cidr CIDR         Source CIDR allowed to reach UI/SSH ports
+                            (default: 0.0.0.0/0 - narrow this for prod)
+
+Toggles:
+  --no-kvo                  Skip KVO deployment
+  --with-kvo                Deploy KVO (skip interactive prompt)
+  --no-vpb                  Skip vPB deployment
+  --no-sensors              Skip sensor playbook chain at the end
+  --rollback                On any failure, delete the stack we created
+                            (never touches a pre-existing stack).
+  --no-rollback             Force keep-partial behavior (default).
+  -h, --help                Show this help
+
+Env-var overrides (alternative to flags, useful for curl | bash):
+  CLOUDLENS_REGION, CLOUDLENS_STACK_NAME, CLOUDLENS_ADMIN_USER,
+  CLOUDLENS_KEY_NAME, CLOUDLENS_ADMIN_CIDR,
+  CLOUDLENS_VCONTROLLER_AMI / _TYPE,
+  CLOUDLENS_KVO_AMI / _TYPE,
+  CLOUDLENS_VPB_AMI / _TYPE,
+  CLOUDLENS_VPB_INGRESS_NICS, CLOUDLENS_VPB_EGRESS_NICS,
+  CLOUDLENS_DISCOVERY_TAG_KEY, CLOUDLENS_DISCOVERY_TAG_VALUE
+
+Example (full prod-style invocation):
+  CLOUDLENS_REGION=us-west-2 \
+  curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
+  | bash -s -- --with-kvo --vpb-ingress-nics 2 --vpb-egress-nics 2 \
+                --admin-cidr 203.0.113.0/24 --key-name my-ec2-key
+
+What it does (phases):
+  1. Banner + environment detection (CloudShell vs local)
+  2. Pre-flight checks (aws CLI, caller identity)
+  3. Customer input (region, stack name, key pair, toggles)
+  4. Marketplace AMI subscription check (vController + KVO + vPB)
+  5. Infra engine selection (CloudFormation or Terraform)
+  6. Deploy the stack (vController + optional KVO + optional vPB)
+  7. Wait for vController to initialize (~15 minutes)
+  8. Read stack outputs (Elastic IPs)
+  9. Manual project key step (from vController UI)
+ 10. Sensor chain (optional, runs quickstart.sh)
+ 11. Final summary written to cloudlens-deploy-summary.txt
+HLP
+}
+
+# ---------------------------------------------------------------------
+# Args
+# ---------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+
+    --iac) IAC="$(to_lower "$2")"; shift 2 ;;
+
+    --no-kvo) DEPLOY_KVO=false; shift ;;
+    --with-kvo) DEPLOY_KVO=true; shift ;;
+    --no-vpb) DEPLOY_VPB=false; shift ;;
+    --no-sensors) CHAIN_SENSORS=false; shift ;;
+
+    --rollback) ROLLBACK_ON_FAIL=true; shift ;;
+    --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
+
+    --discovery-tag-key) DISCOVERY_TAG_KEY="$2"; shift 2 ;;
+    --discovery-tag-value) DISCOVERY_TAG_VALUE="$2"; shift 2 ;;
+
+    --region) ARG_REGION="$2"; shift 2 ;;
+    --stack-name) ARG_STACK="$2"; shift 2 ;;
+    --admin-user) DEFAULT_ADMIN_USER="$2"; shift 2 ;;
+    --key-name) KEY_NAME="$2"; shift 2 ;;
+    --admin-cidr) ADMIN_CIDR="$2"; shift 2 ;;
+
+    --vcontroller-type) CLMS_TYPE="$2"; shift 2 ;;
+    --kvo-type) KVO_TYPE="$2"; shift 2 ;;
+    --vpb-type) VPB_TYPE="$2"; shift 2 ;;
+
+    --vpb-ingress-nics) VPB_INGRESS_NICS="$2"; shift 2 ;;
+    --vpb-egress-nics) VPB_EGRESS_NICS="$2"; shift 2 ;;
+
+    -h|--help) show_help; exit 0 ;;
+    *) warn "Unknown argument: $1"; show_help; exit 1 ;;
+  esac
+done
+
+if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
+  fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
+fi
+
+# Validate NIC count bounds
+for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
+  name="${v%%:*}"; rest="${v#*:}"; lo="${rest%%:*}"; hi="${rest##*:}"
+  val="${!name}"
+  if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < lo || val > hi )); then
+    fail "$name must be an integer between $lo and $hi (got '$val'). Run with -h for usage."
+  fi
+done
+
+ADMIN_USERNAME="$DEFAULT_ADMIN_USER"
+
+# ---------------------------------------------------------------------
+# aws wrappers (echo in dry-run)
+# ---------------------------------------------------------------------
+AWS_REGION_ARG=()   # populated once region is known
+run_aws() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "aws $*"
+    return 0
+  fi
+  aws "${AWS_REGION_ARG[@]}" "$@"
+}
+run_aws_capture() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "aws $* (would capture stdout)"
+    echo "DRY_RUN_VALUE"
+    return 0
+  fi
+  aws "${AWS_REGION_ARG[@]}" "$@"
+}
+
+# ---------------------------------------------------------------------
+# Error / interrupt traps
+# ---------------------------------------------------------------------
+on_error() {
+  local exit_code=$?
+  echo
+  echo -e "${C_RED}[x] FAILED in phase: ${PHASE_NAME}${C_RESET}"
+  echo -e "${C_RED}    exit code: ${exit_code}${C_RESET}"
+  echo
+  echo "What was created so far:"
+  [[ "$CREATED_STACK" == "true" ]] && echo "  - Stack: ${STACK_NAME:-unknown} (engine: ${IAC})"
+  echo
+
+  if [[ "$ROLLBACK_ON_FAIL" == "true" ]] && [[ "$CREATED_STACK" == "true" ]] && [[ -n "${STACK_NAME:-}" ]]; then
+    echo -e "${C_YELLOW}--rollback is ON. Tearing down ${STACK_NAME} in 5 seconds (Ctrl+C to abort)...${C_RESET}"
+    for i in 5 4 3 2 1; do printf "  %d... " "$i"; sleep 1; done
+    echo
+    if [[ "$IAC" == "terraform" ]]; then
+      ( cd "$REPO_DIR/$TF_DIR_REL" && terraform destroy -auto-approve ) \
+        && ok "Terraform destroy initiated" \
+        || warn "terraform destroy failed - inspect $REPO_DIR/$TF_DIR_REL"
+    else
+      if aws "${AWS_REGION_ARG[@]}" cloudformation delete-stack --stack-name "$STACK_NAME" >/dev/null 2>&1; then
+        ok "Stack delete initiated: aws cloudformation delete-stack --stack-name ${STACK_NAME}"
+      else
+        warn "Stack delete failed - inspect: aws cloudformation describe-stacks --stack-name ${STACK_NAME}"
+      fi
+    fi
+    return
+  fi
+
+  echo "Cleanup options:"
+  if [[ "$CREATED_STACK" == "true" ]] && [[ -n "${STACK_NAME:-}" ]]; then
+    echo "  Auto-rollback next time: re-run with --rollback"
+    if [[ "$IAC" == "terraform" ]]; then
+      echo "  Delete everything now:   (cd $REPO_DIR/$TF_DIR_REL && terraform destroy)"
+    else
+      echo "  Delete everything now:   aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}"
+    fi
+  fi
+  echo "  Re-run this script:      bash deploy/deploy-stack.sh    # idempotent"
+  echo "  Inspect log:             ${LOG_FILE}"
+}
+trap on_error ERR
+
+on_interrupt() {
+  echo
+  warn "Interrupted in phase: ${PHASE_NAME}"
+  [[ "$CREATED_STACK" == "true" ]] && [[ -n "${STACK_NAME:-}" ]] \
+    && warn "To remove what got created: see cleanup options in ${LOG_FILE}"
+  exit 130
+}
+trap on_interrupt INT TERM
+
+# =====================================================================
+# Phase 1: Banner + environment detection
+# =====================================================================
+step "Phase 1: Banner + environment detection"
+banner "CloudLens Stack (AWS): vController + KVO + vPB + Sensors"
+echo
+[[ "$DRY_RUN" == "true" ]] && warn "DRY-RUN MODE: no AWS resources will be created"
+echo
+
+IN_CLOUD_SHELL=false
+IN_WSL=false
+IS_NATIVE_WINDOWS=false
+KERNEL="$(uname -s 2>/dev/null || echo unknown)"
+
+# AWS CloudShell exports AWS_EXECUTION_ENV=CloudShell and CLOUDSHELL_USER.
+if [[ "${AWS_EXECUTION_ENV:-}" == *CloudShell* ]] \
+   || [[ -n "${CLOUDSHELL_USER:-}" ]] \
+   || [[ -d /usr/local/cloudshell ]]; then
+  IN_CLOUD_SHELL=true
+  ok "Detected: AWS CloudShell (pre-authenticated, Ansible-ready)"
+elif [[ "$KERNEL" == "Linux" ]] && grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
+  IN_WSL=true
+  ok "Detected: WSL on Windows"
+elif [[ "$KERNEL" == MINGW* ]] || [[ "$KERNEL" == MSYS* ]] || [[ "$KERNEL" == CYGWIN* ]]; then
+  IS_NATIVE_WINDOWS=true
+  warn "Detected: Windows shell ($KERNEL) - not fully supported"
+  echo
+  echo "  The infra-deploy phases MAY work in Git Bash/Cygwin but the sensor"
+  echo "  install (Ansible) does NOT - Ansible's control node cannot run"
+  echo "  natively on Windows."
+  echo
+  echo "  Better paths for Windows users:"
+  echo "    1. AWS CloudShell       (browser, https://console.aws.amazon.com/cloudshell)"
+  echo "    2. WSL                  (Windows Subsystem for Linux: 'wsl --install')"
+  echo "    3. Linux jumpbox EC2    (small EC2 you SSH into)"
+  echo
+  read -rp "Continue anyway in this Windows shell? [y/N]: " yn
+  yn_lc=$(to_lower "${yn:-n}")
+  if [[ "$yn_lc" != "y" && "$yn_lc" != "yes" ]]; then
+    fail "Aborted. Open AWS CloudShell and rerun the curl line there for the smoothest experience."
+  fi
+  warn "Continuing on Windows. Expect the sensor chain to fail; infra will still deploy."
+else
+  ok "Detected: Local machine ($KERNEL)"
+fi
+
+# =====================================================================
+# Phase 2: Pre-flight checks
+# =====================================================================
+step "Phase 2: Pre-flight checks"
+
+install_aws_cli() {
+  local os; os="$(uname -s)"
+  echo "Detecting OS to install AWS CLI v2..."
+  if [[ "$os" == "Darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      note "Installing via Homebrew: brew install awscli"
+      brew install awscli
+    else
+      note "Installing via the official AWS pkg installer"
+      curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o /tmp/AWSCLIV2.pkg
+      sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+    fi
+  elif [[ "$os" == "Linux" ]]; then
+    local arch; arch="$(uname -m)"
+    local url="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+    [[ "$arch" == "aarch64" || "$arch" == "arm64" ]] && url="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip"
+    note "Installing via the official AWS bundle ($arch)"
+    curl -sSL "$url" -o /tmp/awscliv2.zip
+    ( cd /tmp && unzip -q -o awscliv2.zip && sudo ./aws/install --update )
+  else
+    fail "Unsupported OS ($os). Install AWS CLI v2 manually from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
+  fi
+}
+
+if ! command -v aws >/dev/null 2>&1; then
+  if [[ "$DRY_RUN" == "true" ]]; then
+    warn "aws CLI not installed (dry-run continues)"
+  else
+    warn "AWS CLI not installed."
+    read -rp "Install it now? Pulls the official AWS CLI v2. [Y/n]: " yn
+    yn_lc=$(to_lower "${yn:-y}")
+    if [[ "$yn_lc" == "n" || "$yn_lc" == "no" ]]; then
+      fail "AWS CLI required. Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
+    fi
+    install_aws_cli
+    command -v aws >/dev/null 2>&1 || fail "AWS CLI installation did not succeed. Install manually and re-run."
+    ok "AWS CLI installed"
+  fi
+else
+  ok "AWS CLI present ($(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2 2>/dev/null || echo unknown))"
+fi
+
+# Verify caller identity (credentials present + valid)
+if [[ "$DRY_RUN" == "false" ]]; then
+  if ! aws sts get-caller-identity >/dev/null 2>&1; then
+    warn "AWS credentials missing or invalid."
+    echo "  Configure them one of these ways, then re-run:"
+    echo "    aws configure                 # static access key"
+    echo "    aws sso login --profile NAME  # IAM Identity Center / SSO"
+    echo "    bash scripts/setup_aws_creds.sh   # guided setup"
+    fail "Cannot proceed without valid AWS credentials."
+  fi
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+  CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+  ok "AWS account: ${ACCOUNT_ID}"
+  note "Caller: ${CALLER_ARN}"
+else
+  ACCOUNT_ID="000000000000"
+  CALLER_ARN="arn:aws:iam::000000000000:user/dry-run"
+  ok "AWS account: ${ACCOUNT_ID}  [dry-run placeholder]"
+fi
+
+# Locate the repo root so we can find the CFN template / Terraform dir.
+# When curl|bash'd we may not be inside the repo; clone lazily if needed.
+if [[ -f "$SCRIPT_DIR/../$CFN_TEMPLATE_REL" ]] || [[ -d "$SCRIPT_DIR/../$TF_DIR_REL" ]]; then
+  REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+elif [[ -f "$PWD/$CFN_TEMPLATE_REL" ]]; then
+  REPO_DIR="$PWD"
+else
+  REPO_DIR="$HOME/${REPO_NAME}"
+fi
+
+# =====================================================================
+# Phase 3: Customer input
+# =====================================================================
+step "Phase 3: Customer input"
+
+# Region
+echo
+echo "AWS region (e.g. us-east-1, us-west-2, eu-west-1):"
+if [[ -n "$ARG_REGION" ]]; then
+  REGION="$ARG_REGION"; ok "Region: ${REGION} (from --region)"
+else
+  read -rp "AWS region [${DEFAULT_REGION}]: " input_region; echo
+  REGION="${input_region:-$DEFAULT_REGION}"; ok "Region: ${REGION}"
+fi
+AWS_REGION_ARG=(--region "$REGION")
+export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
+
+# Stack name
+echo
+echo "Stack name is the CloudFormation stack (and Terraform workspace) that"
+echo "owns every VPC, subnet, security group, and EC2 in this deploy."
+if [[ -n "$ARG_STACK" ]]; then
+  STACK_NAME="$ARG_STACK"; ok "Stack name: ${STACK_NAME} (from --stack-name)"
+else
+  read -rp "Stack name [${DEFAULT_STACK_NAME}]: " input_stack; echo
+  STACK_NAME="${input_stack:-$DEFAULT_STACK_NAME}"; ok "Stack name: ${STACK_NAME}"
+fi
+
+# EC2 key pair. AWS appliances use SSH key auth, not passwords. Create one
+# on demand if the customer does not already have a key pair.
+ensure_key_pair() {
+  local name="$1"
+  [[ "$DRY_RUN" == "true" ]] && { note "would ensure key pair $name exists"; return 0; }
+  if aws "${AWS_REGION_ARG[@]}" ec2 describe-key-pairs --key-names "$name" >/dev/null 2>&1; then
+    ok "Key pair '${name}' exists in ${REGION}"
+    return 0
+  fi
+  note "Key pair '${name}' not found in ${REGION}. Creating it..."
+  local pem="$HOME/.ssh/${name}.pem"
+  mkdir -p "$HOME/.ssh"
+  aws "${AWS_REGION_ARG[@]}" ec2 create-key-pair --key-name "$name" \
+    --query 'KeyMaterial' --output text > "$pem"
+  chmod 600 "$pem"
+  ok "Created key pair '${name}', private key saved to ${pem}"
+}
+
+echo
+echo "Every appliance is reached over SSH with an EC2 key pair (no password)."
+echo "  vController / KVO: ssh -i <key>.pem ${ADMIN_USERNAME}@<ip>"
+echo "  vPB:               ssh -i <key>.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@<ip>"
+if [[ -z "$KEY_NAME" ]]; then
+  read -rp "EC2 key pair name [cloudlens-key]: " input_key; echo
+  KEY_NAME="${input_key:-cloudlens-key}"
+fi
+ensure_key_pair "$KEY_NAME"
+
+# Deploy KVO?
+if [[ -z "$DEPLOY_KVO" ]]; then
+  read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn
+  yn_lc=$(to_lower "$yn")
+  [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_KVO=true || DEPLOY_KVO=false
+fi
+ok "Deploy KVO: ${DEPLOY_KVO}"
+
+# Deploy vPB?
+if [[ -z "$DEPLOY_VPB" ]]; then
+  read -rp "Deploy vPB alongside vController? [y/N]: " yn
+  yn_lc=$(to_lower "$yn")
+  [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_VPB=true || DEPLOY_VPB=false
+fi
+ok "Deploy vPB: ${DEPLOY_VPB}"
+
+# Chain to sensor deployment?
+if [[ -z "$CHAIN_SENSORS" ]]; then
+  read -rp "Chain to sensor deployment after stack is up? [y/N]: " yn
+  yn_lc=$(to_lower "$yn")
+  [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && CHAIN_SENSORS=true || CHAIN_SENSORS=false
+fi
+ok "Chain sensors: ${CHAIN_SENSORS}"
+ok "Discovery tag: ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+
+echo
+printf "${C_BOLD}Resolved configuration:${C_RESET}\n"
+printf "  %-22s %s\n" "Region:" "$REGION"
+printf "  %-22s %s\n" "Stack name:" "$STACK_NAME"
+printf "  %-22s %s\n" "Infra engine:" "$IAC"
+printf "  %-22s %s\n" "Key pair:" "$KEY_NAME"
+printf "  %-22s %s (%s)\n" "vController:" "$CLMS_AMI" "$CLMS_TYPE"
+[[ "$DEPLOY_KVO" == "true" ]] && printf "  %-22s %s (%s)\n" "KVO:" "$KVO_AMI" "$KVO_TYPE"
+[[ "$DEPLOY_VPB" == "true" ]] && printf "  %-22s %s (%s, +%s ingress/%s egress NICs, SSH %s)\n" \
+  "vPB:" "$VPB_AMI" "$VPB_TYPE" "$VPB_INGRESS_NICS" "$VPB_EGRESS_NICS" "$VPB_SSH_PORT"
+printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
+printf "  %-22s %s\n" "Rollback on failure:" "$ROLLBACK_ON_FAIL"
+echo
+
+# =====================================================================
+# Phase 4: Marketplace AMI subscription check
+# =====================================================================
+step "Phase 4: Marketplace AMI subscriptions"
+
+# AWS Marketplace AMIs must be subscribed (terms accepted) on the account
+# before they can launch. Unlike Azure, there is no CLI to accept terms;
+# the subscribe click happens in the Marketplace console. We PROBE each AMI
+# with describe-images: if it resolves, the account can launch it; if not,
+# we surface the console URL and let the customer subscribe, then continue.
+check_ami_subscription() {
+  local label="$1" ami="$2"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "aws ec2 describe-images --image-ids ${ami}  (${label})"
+    return 0
+  fi
+  if aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" \
+        --query 'Images[0].ImageId' --output text >/dev/null 2>/tmp/ami-err; then
+    ok "${label} AMI reachable: ${ami}"
+    return 0
+  fi
+  warn "${label} AMI ${ami} is not launchable by this account yet."
+  echo "    Most likely you have not accepted the Marketplace terms for it."
+  echo "    Subscribe once (free to subscribe, you pay only for the EC2 hours):"
+  echo "      https://aws.amazon.com/marketplace  ->  search 'Keysight CloudLens ${label}'"
+  echo "      Click 'Continue to Subscribe' -> 'Accept Terms'."
+  echo "    Details:"; sed 's/^/      /' /tmp/ami-err | head -3
+  echo
+  read -rp "    Press Enter once you have accepted the terms (or Ctrl+C to abort): " _
+  # Re-probe once after they subscribe.
+  if aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" >/dev/null 2>&1; then
+    ok "${label} AMI now reachable: ${ami}"
+  else
+    warn "${label} AMI still not reachable. The stack deploy will fail if terms are truly not accepted."
+  fi
+}
+
+check_ami_subscription "vController" "$CLMS_AMI"
+[[ "$DEPLOY_KVO" == "true" ]] && check_ami_subscription "KVO" "$KVO_AMI"
+[[ "$DEPLOY_VPB" == "true" ]] && check_ami_subscription "vPB" "$VPB_AMI"
+
+# =====================================================================
+# Phase 5: Infra engine selection
+# =====================================================================
+step "Phase 5: Infrastructure engine (${IAC})"
+
+# Make sure the repo (template + terraform dir) is on disk. If curl|bash'd
+# outside the repo, clone it so both engines have their sources.
+if [[ ! -f "$REPO_DIR/$CFN_TEMPLATE_REL" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  note "Repo sources not found locally; cloning to $REPO_DIR"
+  if [[ ! -d "$REPO_DIR/.git" ]]; then
+    git clone -q "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "$REPO_DIR" 2>/dev/null \
+      || warn "Could not clone repo. Run this script from inside a checkout of ${REPO_NAME}."
+  fi
+fi
+
+if [[ "$IAC" == "terraform" ]]; then
+  if ! command -v terraform >/dev/null 2>&1 && [[ "$DRY_RUN" != "true" ]]; then
+    warn "Terraform not installed."
+    echo "  Install from https://developer.hashicorp.com/terraform/install then re-run,"
+    echo "  or re-run with --iac cfn to use CloudFormation (no extra tooling needed)."
+    fail "Terraform selected but not found on PATH."
+  fi
+  ok "Using Terraform (deploy/terraform)"
+else
+  ok "Using CloudFormation (deploy/cloudformation/stack.yaml)"
+fi
+
+# =====================================================================
+# Phase 6: Deploy the stack
+# =====================================================================
+step "Phase 6: Deploy stack (vController + optional KVO + optional vPB)"
+
+# The CloudFormation template (deploy/cloudformation/stack.yaml) takes yes/no
+# toggles and resolves the CloudLens AMIs from an in-template RegionMap, so we
+# do NOT pass AMI ids to it. Instance types are constrained to the qualified
+# size per appliance. deploy-stack.sh's boolean toggles map to yes/no here.
+deploy_cfn() {
+  local tpl="$REPO_DIR/$CFN_TEMPLATE_REL"
+  local kvo_yn="no" vpb_yn="no"
+  [[ "$DEPLOY_KVO" == "true" ]] && kvo_yn="yes"
+  [[ "$DEPLOY_VPB" == "true" ]] && vpb_yn="yes"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "aws cloudformation deploy --stack-name ${STACK_NAME} --template-file ${tpl} \\
+      --capabilities CAPABILITY_NAMED_IAM \\
+      --parameter-overrides KeyPairName=${KEY_NAME} DeployKVO=${kvo_yn} DeployVPB=${vpb_yn} \\
+        AdminIngressCidr=${ADMIN_CIDR} \\
+        VcontrollerInstanceType=${CLMS_TYPE} KvoInstanceType=${KVO_TYPE} VpbInstanceType=${VPB_TYPE}"
+    return 0
+  fi
+  [[ -f "$tpl" ]] || fail "CloudFormation template not found: $tpl"
+  if [[ "$REGION" != "us-east-1" ]]; then
+    warn "The CloudFormation RegionMap only ships us-east-1 AMIs. For ${REGION},"
+    warn "add a RegionMap entry to ${CFN_TEMPLATE_REL} or use --iac terraform"
+    warn "(the Terraform stack takes AMI ids directly)."
+  fi
+  aws "${AWS_REGION_ARG[@]}" cloudformation deploy \
+    --stack-name "$STACK_NAME" \
+    --template-file "$tpl" \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --parameter-overrides \
+      KeyPairName="$KEY_NAME" \
+      DeployKVO="$kvo_yn" \
+      DeployVPB="$vpb_yn" \
+      AdminIngressCidr="$ADMIN_CIDR" \
+      VcontrollerInstanceType="$CLMS_TYPE" \
+      KvoInstanceType="$KVO_TYPE" \
+      VpbInstanceType="$VPB_TYPE"
+  CREATED_STACK=true
+}
+
+cfn_output() {
+  local key="$1"
+  [[ "$DRY_RUN" == "true" ]] && { echo "203.0.113.10"; return 0; }
+  aws "${AWS_REGION_ARG[@]}" cloudformation describe-stacks --stack-name "$STACK_NAME" \
+    --query "Stacks[0].Outputs[?OutputKey=='${key}'].OutputValue | [0]" --output text 2>/dev/null || echo ""
+}
+
+deploy_terraform() {
+  local dir="$REPO_DIR/$TF_DIR_REL"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "cd ${dir} && terraform init && terraform apply -auto-approve \\
+      -var region=${REGION} -var stack_name=${STACK_NAME} -var key_name=${KEY_NAME} \\
+      -var deploy_kvo=${DEPLOY_KVO} -var deploy_vpb=${DEPLOY_VPB} \\
+      -var controller_ami=${CLMS_AMI} -var controller_type=${CLMS_TYPE} \\
+      -var kvo_ami=${KVO_AMI} -var kvo_type=${KVO_TYPE} \\
+      -var vpb_ami=${VPB_AMI} -var vpb_type=${VPB_TYPE} -var vpb_ssh_port=${VPB_SSH_PORT} \\
+      -var vpb_ingress_nics=${VPB_INGRESS_NICS} -var vpb_egress_nics=${VPB_EGRESS_NICS} \\
+      -var admin_cidr=${ADMIN_CIDR}"
+    return 0
+  fi
+  [[ -d "$dir" ]] || fail "Terraform directory not found: $dir"
+  ( cd "$dir" && terraform init -input=false >/dev/null && \
+    terraform apply -auto-approve \
+      -var "region=$REGION" -var "stack_name=$STACK_NAME" -var "key_name=$KEY_NAME" \
+      -var "deploy_kvo=$DEPLOY_KVO" -var "deploy_vpb=$DEPLOY_VPB" \
+      -var "controller_ami=$CLMS_AMI" -var "controller_type=$CLMS_TYPE" \
+      -var "kvo_ami=$KVO_AMI" -var "kvo_type=$KVO_TYPE" \
+      -var "vpb_ami=$VPB_AMI" -var "vpb_type=$VPB_TYPE" -var "vpb_ssh_port=$VPB_SSH_PORT" \
+      -var "vpb_ingress_nics=$VPB_INGRESS_NICS" -var "vpb_egress_nics=$VPB_EGRESS_NICS" \
+      -var "admin_cidr=$ADMIN_CIDR" )
+  CREATED_STACK=true
+}
+
+tf_output() {
+  local key="$1"
+  [[ "$DRY_RUN" == "true" ]] && { echo "203.0.113.10"; return 0; }
+  ( cd "$REPO_DIR/$TF_DIR_REL" && terraform output -raw "$key" 2>/dev/null ) || echo ""
+}
+
+if [[ "$IAC" == "terraform" ]]; then
+  deploy_terraform
+  CLMS_PUBLIC_IP="$(tf_output controller_public_ip)"
+  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(tf_output kvo_public_ip)"
+  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(tf_output vpb_public_ip)"
+else
+  deploy_cfn
+  CLMS_PUBLIC_IP="$(cfn_output VcontrollerPublicIp)"
+  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(cfn_output KvoPublicIp)"
+  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(cfn_output VpbPublicIp)"
+fi
+
+ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
+[[ "$DEPLOY_KVO" == "true" ]] && ok "KVO at ${KVO_PUBLIC_IP:-unknown}"
+[[ "$DEPLOY_VPB" == "true" ]] && ok "vPB at ${VPB_PUBLIC_IP:-unknown} (SSH on port ${VPB_SSH_PORT})"
+
+# =====================================================================
+# Phase 7: Wait for vController init
+# =====================================================================
+step "Phase 7: Wait for vController initialization"
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  dryrun_say "would poll https://${CLMS_PUBLIC_IP}:443 every 15s for up to 17 minutes"
+elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
+  warn "No public IP available, skipping wait"
+else
+  echo "vController needs ~15 minutes to initialize. The 443 UI typically responds"
+  echo "within 60 seconds, with a further settle for backend services."
+  deadline=$(( $(date +%s) + 17*60 ))
+  while (( $(date +%s) < deadline )); do
+    remaining=$(( deadline - $(date +%s) ))
+    printf "\r%s seconds remaining, probing port 443..." "$remaining"
+    if (echo > /dev/tcp/"${CLMS_PUBLIC_IP}"/443) >/dev/null 2>&1; then
+      echo; ok "vController port 443 is open"
+      echo "Settling 2 more minutes for backend init..."; sleep 120; break
+    fi
+    sleep 15
+  done
+  echo
+fi
+
+# =====================================================================
+# Phase 8: vPB bootstrap hint (KVO adoption + traffic config)
+# =====================================================================
+if [[ "$DEPLOY_VPB" == "true" ]]; then
+  step "Phase 8: vPB post-deploy bootstrap"
+  note "vPB management SSH is reachable on port ${VPB_SSH_PORT} within ~5 minutes."
+  note "Finish the vPB one-time bootstrap (KCOS wait + vpb CLI wrapper) with:"
+  note "  ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}"
+  note "  curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash"
+fi
+
+# =====================================================================
+# Phase 9: Manual project key step
+# =====================================================================
+step "Phase 9: Get project key from vController"
+
+cat <<EOM
+
+vController is now reachable. To deploy sensors, you need a project key.
+
+  1. Open the vController UI: https://${CLMS_PUBLIC_IP}
+  2. Sign in with the default credentials: admin / Cl0udLens@dm!n
+  3. You will be prompted to change the password on first login.
+  4. Go to Projects -> Add Project, give it a name, then open the
+     project and copy the API key.
+
+  (Or automate this with scripts/vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} --insecure)
+
+EOM
+
+# Pre-flight: count already-tagged EC2s using the chosen discovery tag.
+if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  TAGGED_COUNT=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
+    --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" "Name=instance-state-name,Values=running" \
+    --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo "?")
+  if [[ "$TAGGED_COUNT" == "0" ]]; then
+    echo "  Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: 0"
+    echo "  Tag a running instance so the sensor installs on it:"
+    echo "    aws ec2 create-tags --resources <instance-id> \\"
+    echo "        --tags Key=${DISCOVERY_TAG_KEY},Value=${DISCOVERY_TAG_VALUE} Key=os,Value=ubuntu Key=env,Value=prod"
+    echo "  (Tag os = ubuntu | rhel | windows ; env = prod | dev)"
+  else
+    echo "  Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: ${TAGGED_COUNT}"
+    echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
+  fi
+  echo
+fi
+
+PROJECT_KEY=""
+if [[ "$CHAIN_SENSORS" == "true" ]]; then
+  read -rp "Paste project key (or press Enter to skip sensor deployment): " PROJECT_KEY
+  if [[ -z "$PROJECT_KEY" ]]; then
+    warn "No project key supplied. Skipping sensor chain."
+    CHAIN_SENSORS=false
+  fi
+fi
+
+# =====================================================================
+# Phase 10: Sensor chain (optional)
+# =====================================================================
+if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; then
+  warn "Sensor chain disabled: Ansible cannot run on Windows shells."
+  warn "Run sensors from AWS CloudShell, WSL, or a Linux EC2 with:"
+  warn "  curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+  CHAIN_SENSORS=write_yaml_only
+fi
+
+if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
+  step "Phase 10: Chain into sensor deployment"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would generate customer_input.yaml and run bash quickstart.sh"
+  else
+    # Linux SSH auth: prefer the key pair PEM we know about.
+    KEY_PEM="$HOME/.ssh/${KEY_NAME}.pem"
+    if [[ -f "$KEY_PEM" ]]; then
+      SSH_KEY_LINE="ssh_key_path:    \"${KEY_PEM}\""
+    else
+      SSH_KEY_LINE="ssh_key_path:    \"~/.ssh/${KEY_NAME}.pem\""
+    fi
+
+    cat > customer_input.yaml <<YAML
+# Auto-generated by deploy-stack.sh on $(date -u +%FT%TZ)
+# Edit BEFORE running quickstart.sh ONLY if:
+#   - Your workload EC2s use a different ssh_user than the defaults
+#   - You want to filter by more tags than just ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}
+
+aws:
+  profile: "${AWS_PROFILE:-default}"
+  regions:
+    - ${REGION}
+  tag_filters:
+    ${DISCOVERY_TAG_KEY}: "${DISCOVERY_TAG_VALUE}"
+  windows_connection: "ssm"
+  linux_connection:   "ssh"
+  ${SSH_KEY_LINE}
+  ssh_user_ubuntu: "ubuntu"
+  ssh_user_rhel:   "ec2-user"
+
+cloudlens:
+  manager_ip_or_fqdn: "${CLMS_PUBLIC_IP}"
+  project_key:        "${PROJECT_KEY}"
+  custom_tags:        "DeployedBy=stack Region=${REGION}"
+  registry_type:      "insecure"
+  linux_runtime:      "auto"
+
+vpc_ids:    []
+subnet_ids: []
+YAML
+    ok "Wrote customer_input.yaml"
+
+    # Locate quickstart.sh (current dir, repo dir, or clone).
+    QS_DIR=""
+    if [[ -f quickstart.sh ]]; then
+      QS_DIR="$PWD"
+    elif [[ -f "$REPO_DIR/quickstart.sh" ]]; then
+      QS_DIR="$REPO_DIR"
+      ( cd "$REPO_DIR" && git pull -q origin main 2>/dev/null ) || true
+    else
+      note "Cloning repo to $REPO_DIR to run quickstart.sh"
+      git clone -q "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "$REPO_DIR" 2>/dev/null \
+        && QS_DIR="$REPO_DIR" || warn "Could not clone the repo."
+    fi
+
+    if [[ "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
+      ok "Saved customer_input.yaml for later use from CloudShell or WSL."
+      QS_DIR=""
+    fi
+
+    if [[ -n "$QS_DIR" ]]; then
+      cp customer_input.yaml "$QS_DIR/customer_input.yaml" 2>/dev/null || true
+      chmod +x "$QS_DIR/quickstart.sh" 2>/dev/null || true
+      ok "Launching quickstart.sh from $QS_DIR"
+      ( cd "$QS_DIR" && bash quickstart.sh ) \
+        || warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
+    fi
+  fi
+else
+  step "Phase 10: Sensor chain (skipped)"
+fi
+
+# =====================================================================
+# Phase 11: Final summary
+# =====================================================================
+step "Phase 11: Final summary"
+
+write_summary() {
+  cat <<SUMMARY
+========================================================================
+CloudLens Stack Deployment Summary (AWS)
+Generated: $(date -u +%FT%TZ)
+========================================================================
+
+AWS account:        ${ACCOUNT_ID}
+Region:             ${REGION}
+Stack name:         ${STACK_NAME}
+Infra engine:       ${IAC}
+Key pair:           ${KEY_NAME}  (private key: ~/.ssh/${KEY_NAME}.pem)
+
+--- vController (formerly CLMS) ---
+Public IP:          ${CLMS_PUBLIC_IP}
+Web UI:             https://${CLMS_PUBLIC_IP}
+SSH:                ssh -i ~/.ssh/${KEY_NAME}.pem ${ADMIN_USERNAME}@${CLMS_PUBLIC_IP}
+Default UI creds:   admin / Cl0udLens@dm!n  (change on first login)
+
+SUMMARY
+
+  if [[ "$DEPLOY_KVO" == "true" ]]; then
+    cat <<KSUMMARY
+--- KVO (Keysight Vision Orchestrator) ---
+Public IP:          ${KVO_PUBLIC_IP}
+Web UI:             https://${KVO_PUBLIC_IP}
+SSH:                ssh -i ~/.ssh/${KEY_NAME}.pem ${ADMIN_USERNAME}@${KVO_PUBLIC_IP}
+Default UI creds:   see Keysight KVO documentation
+Purpose:            Centralized vPB fleet orchestration and configuration
+
+KSUMMARY
+  fi
+
+  if [[ "$DEPLOY_VPB" == "true" ]]; then
+    cat <<VSUMMARY
+--- vPB ---
+Public IP:          ${VPB_PUBLIC_IP}
+Management SSH:     ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}
+Bootstrap:          curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash
+vPB CLI:            sudo vpb        (after bootstrap)
+Note:               SSH is reachable ~5 minutes after deploy
+
+VSUMMARY
+  fi
+
+  cat <<EOM
+--- Next steps ---
+1. Open https://${CLMS_PUBLIC_IP} and change the default vController password
+2. Create a project in the vController UI and copy the project key
+3. To deploy sensors later:
+     curl -sSL ${REPO_RAW}/quickstart.sh | bash
+
+--- Cleanup ---
+EOM
+  if [[ "$IAC" == "terraform" ]]; then
+    echo "Delete everything: (cd ${REPO_DIR}/${TF_DIR_REL} && terraform destroy)"
+  else
+    echo "Delete everything: aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}"
+  fi
+  cat <<EOM
+
+--- Log ---
+Full deployment log: ${LOG_FILE}
+========================================================================
+EOM
+}
+
+write_summary | tee "$SUMMARY_FILE" >/dev/null
+
+banner "Stack deployment complete"
+echo
+echo "Summary saved to:    ${SUMMARY_FILE}"
+echo "Log saved to:        ${LOG_FILE}"
+echo "vController UI:      https://${CLMS_PUBLIC_IP}"
+[[ "$DEPLOY_KVO" == "true" ]] && echo "KVO UI:              https://${KVO_PUBLIC_IP}"
+[[ "$DEPLOY_VPB" == "true" ]] && echo "vPB management:      ${VPB_PUBLIC_IP} (SSH port ${VPB_SSH_PORT})"
+echo
+ok "Done."
+trap - ERR
+exit 0
+
+} # End of curl|bash brace-wrap (see top of file)

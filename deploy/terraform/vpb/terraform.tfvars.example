@@ -1,0 +1,70 @@
+###############################################################################
+# vPB Terraform variables - example file
+#
+# WHAT YOU MUST CHANGE:
+#   - public_key OR key_name : how you will SSH into the instance
+#
+# Everything else has a sensible default. Copy this file to terraform.tfvars
+# and edit only what you need.
+###############################################################################
+
+# OPTIONAL: AWS region. CloudLens Marketplace AMIs in this repo are in us-east-1.
+region = "us-east-1"
+
+# OPTIONAL: named AWS profile. Leave blank to use the default credential chain.
+profile = ""
+
+# OPTIONAL: instance name, also used as a prefix for the VPC, subnets, NICs,
+# security groups, and EIP.
+instance_name = "cloudlens-vpb"
+
+# REQUIRED (one of the two): how you SSH in. vPB SSH is on port 9022.
+key_name   = ""
+public_key = ""
+
+# OPTIONAL: OS admin username used only to render the ssh_command output.
+admin_username = "cloudlens"
+
+# OPTIONAL: vPB Marketplace AMI (us-east-1). Requires a one-time Marketplace
+# subscription on the account.
+ami_id = "ami-0a561b450552b707d"
+
+# NOTE: instance_type is fixed to t3.xlarge. The vPB AMI is qualified on
+# t3.xlarge only and the module rejects any other value.
+instance_type = "t3.xlarge"
+
+# OPTIONAL: data plane scale. Total NICs (1 mgmt + ingress + egress) must be
+# <= 4 on t3.xlarge, so ingress + egress <= 3.
+ingress_nic_count = 1
+egress_nic_count  = 1
+
+# OPTIONAL: bring your own VPC. Leave existing_vpc_id = "" to create a new VPC
+# with three subnets (mgmt, ingress, egress) using the CIDRs below.
+# If you supply an existing VPC, the three existing subnet IDs are required.
+existing_vpc_id            = ""
+existing_mgmt_subnet_id    = ""
+existing_ingress_subnet_id = ""
+existing_egress_subnet_id  = ""
+
+# OPTIONAL: network ranges used only when creating a new VPC.
+vpc_cidr            = "10.99.0.0/16"
+mgmt_subnet_cidr    = "10.99.2.0/24"
+ingress_subnet_cidr = "10.99.3.0/24"
+egress_subnet_cidr  = "10.99.4.0/24"
+
+# All three subnets must share one AZ (a single instance cannot span AZs).
+availability_zone = "us-east-1a"
+
+# OPTIONAL: restrict access to your networks in production.
+ssh_ingress_cidrs   = ["0.0.0.0/0"]
+https_ingress_cidrs = ["0.0.0.0/0"]
+vxlan_ingress_cidrs = ["0.0.0.0/0"]
+
+# OPTIONAL: run the bootstrap script at first boot via user_data.
+enable_auto_bootstrap = true
+
+# OPTIONAL: tags applied to every created resource.
+tags = {
+  project = "cloudlens"
+  owner   = "network-visibility"
+}

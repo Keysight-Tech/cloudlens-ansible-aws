@@ -15,7 +15,7 @@ Common issues encountered during CloudLens Ansible AWS deployments and their fix
 **Fix:**
 - KVO **must** use `c5.2xlarge` (Marketplace restriction)
 - vPB-KVO **must** use `t3.xlarge` (Marketplace restriction)
-- CLMS is flexible — `t3.xlarge` recommended
+- CLMS is flexible - `t3.xlarge` recommended
 
 Cannot be changed in `customer_input.yaml` or CFT parameters without breaking the Marketplace EULA binding.
 
@@ -35,7 +35,7 @@ Cannot be changed in `customer_input.yaml` or CFT parameters without breaking th
 2. [Keysight CloudLens Manager](https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+CloudLens+Manager)
 3. [Keysight CloudLens Virtual Packet Broker](https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+CloudLens+Virtual+Packet+Broker)
 
-This step **cannot** be automated — AWS requires interactive EULA acceptance.
+This step **cannot** be automated - AWS requires interactive EULA acceptance.
 
 ### Terraform state lock error
 
@@ -51,7 +51,7 @@ This step **cannot** be automated — AWS requires interactive EULA acceptance.
 
 **Cause:** EULA not accepted in browser.
 
-**Fix:** Open `https://<kvo-public-ip>/` in a browser, read the Keysight Software EULA, click **Agree**. The EULA blocks the API too — you must do this in a browser, the CLI cannot accept on your behalf.
+**Fix:** Open `https://<kvo-public-ip>/` in a browser, read the Keysight Software EULA, click **Agree**. The EULA blocks the API too - you must do this in a browser, the CLI cannot accept on your behalf.
 
 ### vPB not appearing in KVO Inventory > Devices
 
@@ -99,7 +99,7 @@ The vPB now appears in **KVO > Inventory > Devices**. Adopt it with **"Control t
 **Cause:** Target VM can't reach CLMS on port 443, OR the project key is wrong.
 
 **Fix:**
-1. Verify outbound HTTPS (443) from target VM to CLMS public IP — check security groups, NACLs, VPC endpoints
+1. Verify outbound HTTPS (443) from target VM to CLMS public IP - check security groups, NACLs, VPC endpoints
 2. Get a fresh project key from CLMS UI: **Settings > Projects > API Keys**
 3. Redeploy the sensor with the correct key
 
@@ -132,7 +132,7 @@ Wait 60 seconds, then re-run the SSM command.
 **Cause:** KVO Cloud Config not configured, or tags missing on source instances.
 
 **Fix:**
-1. KVO > **Cloud Fabric > Cloud Configs** — verify the AWS Cloud Config status is "COMMITTED"
+1. KVO > **Cloud Fabric > Cloud Configs** - verify the AWS Cloud Config status is "COMMITTED"
 2. Tag source instances with whatever the Cloud Collection workload selector specifies (typically `cloudlens-mirror=true`)
 3. Auto-Mirror Lambda should pick them up within 1–2 seconds via EventBridge
 
@@ -140,7 +140,7 @@ Wait 60 seconds, then re-run the SSM command.
 
 **Cause:** AWS hard limit of 10 Mirror sessions per ENI.
 
-**Fix:** Add more collector SVMs by scaling the KVO Cloud Config — KVO auto-distributes mirror sessions across collectors.
+**Fix:** Add more collector SVMs by scaling the KVO Cloud Config - KVO auto-distributes mirror sessions across collectors.
 
 ---
 

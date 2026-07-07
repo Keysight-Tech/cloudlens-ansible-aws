@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# CloudLens Ansible Azure Cleanup Wrapper
+# CloudLens Ansible AWS Cleanup Wrapper
 # =====================================================================
 set -euo pipefail
 
@@ -16,7 +16,7 @@ if [[ ! -f "$INPUT_FILE" ]]; then
 fi
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "CloudLens Ansible for Azure: CLEANUP"
+echo "CloudLens Ansible for AWS: CLEANUP"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "This will REMOVE CloudLens sensors from all matching VMs."

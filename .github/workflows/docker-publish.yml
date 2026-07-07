@@ -1,0 +1,103 @@
+name: Publish Docker Image
+
+# Builds the CloudLens Ansible for AWS deployment image and pushes it to
+# GitHub Container Registry (ghcr.io) so customers can pull it directly.
+#
+# Triggers:
+#   - Push to main when Dockerfile or its inputs change (publishes :latest)
+#   - Tag v*.*.* (publishes :vX.Y.Z and :latest)
+#   - Manual dispatch (for ad-hoc rebuilds)
+#
+# Output image:
+#   ghcr.io/keysight-tech/cloudlens-ansible-aws:latest
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+    paths:
+      - 'Dockerfile'
+      - 'scripts/docker-entrypoint.sh'
+      - 'requirements.yml'
+      - 'playbooks/**'
+      - 'inventory/**'
+      - 'deploy.yaml'
+      - 'cleanup.yaml'
+      - '.github/workflows/docker-publish.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=main-,format=short,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=CloudLens Ansible for AWS
+            org.opencontainers.image.description=Automated CloudLens sensor deployment to AWS EC2 (Linux and Windows) at scale
+            org.opencontainers.image.vendor=Keysight Technologies
+            org.opencontainers.image.licenses=Proprietary
+            org.opencontainers.image.url=https://keysight-tech.github.io/cloudlens-ansible-aws/
+            org.opencontainers.image.documentation=https://github.com/Keysight-Tech/cloudlens-ansible-aws#readme
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Image summary
+        # Inject expression values via env vars instead of inlining them in
+        # the shell so any unexpected metacharacters cannot become shell
+        # syntax. github-actions-injection-safe pattern.
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        run: |
+          {
+            printf 'Published tags:\n'
+            printf '```\n'
+            printf '%s\n' "$IMAGE_TAGS"
+            printf '```\n\n'
+            printf 'Pull it:\n'
+            printf '```bash\n'
+            printf 'docker pull %s\n' "$IMAGE_REF"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"

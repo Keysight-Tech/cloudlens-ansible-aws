@@ -1,0 +1,123 @@
+---
+# =====================================================================
+# AWS Windows WinRM Bootstrap
+# =====================================================================
+# Most Windows EC2s have WinRM disabled for remote PowerShell over the
+# network. This playbook uses `aws ssm send-command` (NOT WinRM) to enable
+# WinRM on every Windows EC2 in the target group, then opens the security
+# group for port 5985.
+#
+# Prereqs on each target: the SSM Agent running (default on modern Windows
+# AMIs) and an instance profile allowing SSM (AmazonSSMManagedInstanceCore).
+#
+# NOTE: prefer SSM connections end to end (windows_connection: ssm in
+# customer_input.yaml) - they need no inbound ports. Run this only when a
+# playbook specifically needs WinRM. Run it ONCE per EC2 before windows.yaml.
+# =====================================================================
+- name: Bootstrap WinRM on AWS Windows EC2s via SSM Run Command
+  hosts: "{{ target_group | default('windows_prod_vms') }}"
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ../vars/cloudlens.yaml
+  vars:
+    # PowerShell to enable WinRM. Kept on one line for SSM parameter passing.
+    winrm_ps: >-
+      winrm quickconfig -force;
+      Enable-PSRemoting -Force;
+      New-NetFirewallRule -DisplayName 'WinRM-HTTP' -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -ErrorAction SilentlyContinue;
+      Set-Item WSMan:\localhost\Service\Auth\Basic $true -Force;
+      Set-Item WSMan:\localhost\Service\AllowUnencrypted $true -Force;
+      Restart-Service WinRM;
+      'WinRM enabled successfully'
+
+  tasks:
+    - name: Verify AWS CLI is available
+      ansible.builtin.command: aws --version
+      delegate_to: localhost
+      run_once: true
+      register: aws_check
+      changed_when: false
+      failed_when: aws_check.rc != 0
+
+    - name: Resolve instance id + region from inventory facts
+      ansible.builtin.set_fact:
+        ec2_instance_id: "{{ aws_instance_id | default(instance_id) }}"
+        ec2_region: "{{ aws_region | default(placement.region) | default('us-east-1') }}"
+
+    - name: Send WinRM-enable PowerShell via SSM
+      ansible.builtin.command: >
+        aws ssm send-command
+        --region "{{ ec2_region }}"
+        --instance-ids "{{ ec2_instance_id }}"
+        --document-name "AWS-RunPowerShellScript"
+        --comment "CloudLens WinRM bootstrap"
+        --parameters commands="{{ winrm_ps }}"
+        --query 'Command.CommandId' --output text
+      delegate_to: localhost
+      register: ssm_send
+      retries: 2
+      delay: 10
+      until: ssm_send.rc == 0
+      changed_when: ssm_send.rc == 0
+      failed_when: ssm_send.rc != 0
+
+    - name: Wait for the SSM command to finish
+      ansible.builtin.command: >
+        aws ssm wait command-executed
+        --region "{{ ec2_region }}"
+        --command-id "{{ ssm_send.stdout | trim }}"
+        --instance-id "{{ ec2_instance_id }}"
+      delegate_to: localhost
+      register: ssm_wait
+      changed_when: false
+      failed_when: false
+
+    - name: Read the SSM command result
+      ansible.builtin.command: >
+        aws ssm get-command-invocation
+        --region "{{ ec2_region }}"
+        --command-id "{{ ssm_send.stdout | trim }}"
+        --instance-id "{{ ec2_instance_id }}"
+        --query 'Status' --output text
+      delegate_to: localhost
+      register: ssm_status
+      changed_when: false
+      failed_when: false
+
+    - name: Resolve the instance's first security group
+      ansible.builtin.command: >
+        aws ec2 describe-instances
+        --region "{{ ec2_region }}"
+        --instance-ids "{{ ec2_instance_id }}"
+        --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId'
+        --output text
+      delegate_to: localhost
+      register: sg_lookup
+      changed_when: false
+      failed_when: false
+
+    - name: Open security group ingress for WinRM port 5985
+      ansible.builtin.command: >
+        aws ec2 authorize-security-group-ingress
+        --region "{{ ec2_region }}"
+        --group-id "{{ sg_lookup.stdout | trim }}"
+        --protocol tcp --port 5985 --cidr 0.0.0.0/0
+      delegate_to: localhost
+      register: sg_rule
+      changed_when: "'GroupId' in sg_rule.stdout or sg_rule.rc == 0"
+      failed_when: false
+      when: sg_lookup.stdout | trim not in ['', 'None']
+
+    - name: Wait for WinRM to be reachable
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 5985
+        timeout: 120
+        delay: 5
+      delegate_to: localhost
+      when: sg_lookup.stdout | trim not in ['', 'None']
+
+    - name: Display bootstrap status
+      ansible.builtin.debug:
+        msg: "WinRM bootstrap on {{ ec2_instance_id }} ({{ ansible_host }}): SSM status {{ ssm_status.stdout | default('unknown') | trim }}"
