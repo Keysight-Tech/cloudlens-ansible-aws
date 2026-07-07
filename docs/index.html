@@ -139,6 +139,7 @@
             <li>One shared VPC with mgmt / data / tool subnets</li>
             <li>vController + KVO + vPB deployed together, each with its own Elastic IP</li>
             <li>Instance types fixed to what each AMI is qualified on (t3.xlarge vController, c5.2xlarge KVO, t3.xlarge vPB)</li>
+            <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/stack.yaml" target="_blank" rel="noopener">CloudFormation template</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">Terraform stack module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/deploy-stack.sh" target="_blank" rel="noopener">deploy-stack.sh</a></li>
           </ul>
           <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
         </div>
@@ -153,6 +154,7 @@
               <li>Version from the Marketplace AMI (CLMS_6.12.x)</li>
               <li>One instance, <code>t3.xlarge</code>, ready in about 15 minutes</li>
               <li>Access: web UI over HTTPS (appliance shell uses password auth, not your key pair)</li>
+              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/clms" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/clms.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
               <li>Web UI: <code>https://&lt;vcontroller-ip&gt;</code></li>
               <li>UI login: <code>admin / Cl0udLens@dm!n</code> (change on first login)</li>
             </ul>
@@ -165,6 +167,7 @@
               <li>Version from the Marketplace AMI (KVO 2.13.x)</li>
               <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;kvo-ip&gt;</code> (port 9022, not 22)</li>
+              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/kvo.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
               <li>Web UI: <code>https://&lt;kvo-ip&gt;</code></li>
               <li>UI login: <code>admin / admin</code> (change on first login)</li>
             </ul>
@@ -177,6 +180,7 @@
               <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
               <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
+              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/vpb.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
               <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
             </ul>
             <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
@@ -191,7 +195,7 @@
 
         <details class="terraform-note">
           <summary>Prefer Terraform?</summary>
-          <p>vController, KVO, and vPB are all available as Terraform modules in <code>deploy/terraform</code>. The stack root module composes all three; the per-component modules (<code>deploy/terraform/clms</code>, <code>deploy/terraform/kvo</code>, <code>deploy/terraform/vpb</code>) deploy them individually. Same Marketplace AMIs, IaC-friendly for pipelines and repeatable deployments.</p>
+          <p>vController, KVO, and vPB are all available as Terraform modules in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform" target="_blank" rel="noopener"><code>deploy/terraform</code></a>. The <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">stack module</a> composes all three; the per-component modules deploy them individually: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/clms" target="_blank" rel="noopener"><code>clms</code></a> (vController), <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener"><code>kvo</code></a>, <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener"><code>vpb</code></a>. Same Marketplace AMIs, IaC-friendly for pipelines and repeatable deployments. The CloudFormation equivalents live in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/cloudformation" target="_blank" rel="noopener"><code>deploy/cloudformation</code></a>.</p>
           <pre><code>cd deploy/terraform/stack
 terraform init
 terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
@@ -222,6 +226,7 @@ terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=tr
             <p>Single command, vController plus KVO and vPB. Best for: IaC pipelines and repeatable infra.</p>
 <pre><code>cd deploy/terraform &amp;&amp; terraform init &amp;&amp; terraform apply \
   -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
+            <p class="hint"><a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform" target="_blank" rel="noopener">Browse the Terraform code on GitHub &rarr;</a></p>
           </div>
           <div class="path-card">
             <h4><span class="path-icon" aria-hidden="true">&#128214;</span> Printable Runbook</h4>

@@ -76,6 +76,18 @@ terraform output
 
 Same Marketplace AMIs, same result. The `stack` module wraps the per-component `clms`, `kvo`, and `vpb` child modules under `deploy/terraform/`. Use the child modules directly for bring-your-own-VPC deployments.
 
+**Jump straight to the code:**
+
+| Component | Terraform module | CloudFormation template |
+|---|---|---|
+| Full stack (vController + KVO + vPB) | [deploy/terraform/stack](deploy/terraform/stack) | [stack.yaml](deploy/cloudformation/stack.yaml) |
+| One-shot flat root module (used by `deploy-stack.sh --iac terraform`) | [deploy/terraform](deploy/terraform) | n/a |
+| vController (formerly CLMS) | [deploy/terraform/clms](deploy/terraform/clms) | [clms.yaml](deploy/cloudformation/clms.yaml) |
+| KVO | [deploy/terraform/kvo](deploy/terraform/kvo) | [kvo.yaml](deploy/cloudformation/kvo.yaml) |
+| vPB | [deploy/terraform/vpb](deploy/terraform/vpb) | [vpb.yaml](deploy/cloudformation/vpb.yaml) |
+
+Each Terraform module ships its own README, `variables.tf`, and `terraform.tfvars.example`. The CloudFormation directory has its own [README with Launch Stack links](deploy/cloudformation/README.md).
+
 ### Printable runbook
 
 [CloudLens_Stack_Deployment_Runbook.pdf](docs/CloudLens_Stack_Deployment_Runbook.pdf) is the executive-facing stack guide. [CloudLens_Ansible_AWS_Customer_Runbook.pdf](docs/CloudLens_Ansible_AWS_Customer_Runbook.pdf) is the sensor-deployment runbook. Hand either to procurement or training teams.
