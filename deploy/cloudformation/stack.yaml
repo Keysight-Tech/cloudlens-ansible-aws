@@ -356,6 +356,15 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb"
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # Auto-bootstrap (mirrors the Azure CustomScript extension): waits for
+          # KCOS, installs system-wide KUBECONFIG and the sudo vpb wrapper so
+          # SSH-in just works. Log: /var/log/cloudlens-bootstrap.log
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/bootstrap-vpb.sh -o /tmp/bootstrap-vpb.sh
+          bash /tmp/bootstrap-vpb.sh > /var/log/cloudlens-bootstrap.log 2>&1
 
   VpbEip:
     Type: AWS::EC2::EIP

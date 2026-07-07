@@ -180,6 +180,7 @@
               <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
               <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
+              <li>Bootstrap runs automatically at first boot (EC2 user data): kubeconfig + <code>sudo vpb</code> ready on first SSH</li>
               <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/vpb.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
               <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
             </ul>
