@@ -1,13 +1,17 @@
-/* CloudLens Ansible for Azure - iOS 26 Skeuomorphic Kit */
-/* Design tokens, glass cards, neumorphic depth, OKLCH palette */
+/* CloudLens Autopilot for AWS - iOS 26 Skeuomorphic Kit */
+/* Design tokens, glass cards, neumorphic depth, OKLCH palette (AWS themed) */
 
 :root {
-  /* Azure-tuned accent (0078D4 in OKLCH) */
-  --accent-h: 235; --accent-c: 0.19; --accent-l: 56%;
+  /* AWS orange accent (FF9900 / ff6138 in OKLCH), squid-ink navy for depth */
+  --accent-h: 52; --accent-c: 0.19; --accent-l: 64%;
   --accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
   --accent-bright: oklch(calc(var(--accent-l) + 12%) calc(var(--accent-c) + 0.02) var(--accent-h));
-  --accent-deep: oklch(calc(var(--accent-l) - 16%) var(--accent-c) var(--accent-h));
+  --accent-deep: oklch(calc(var(--accent-l) - 18%) calc(var(--accent-c) + 0.01) 42);
   --accent-glow: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .42);
+
+  /* Squid-ink / navy (AWS console chrome) */
+  --navy: #232F3E;
+  --navy-2: #2f3d4f;
 
   /* Keysight gold as second accent */
   --gold-h: 75; --gold-c: 0.15; --gold-l: 72%;
@@ -95,7 +99,7 @@ img, svg, object { max-width: 100%; display: block; }
 a { color: var(--accent-deep); text-decoration: none; transition: color .2s ease; }
 a:hover { color: var(--accent); }
 html[data-theme="dark"] a { color: var(--accent-bright); }
-html[data-theme="dark"] a:hover { color: oklch(85% 0.08 235); }
+html[data-theme="dark"] a:hover { color: oklch(85% 0.11 62); }
 
 ::selection { background: var(--accent-glow); }
 
@@ -108,6 +112,52 @@ html[data-theme="dark"] a:hover { color: oklch(85% 0.08 235); }
   box-shadow: 0 8px 20px var(--accent-glow);
 }
 .skip-link:focus { top: 14px; }
+
+/* ============================================================
+   KEYSIGHT BRAND BAR - bold red strip with white wordmark, pinned at top
+   ============================================================ */
+.internal-banner {
+  position: relative; z-index: 60;
+  background: linear-gradient(180deg,
+    oklch(60% 0.22 25),
+    oklch(46% 0.23 25));
+  border-bottom: 2px solid oklch(36% 0.20 25);
+  box-shadow:
+    inset 0 -1px 0 oklch(0% 0 0 / .18),
+    inset 0 1px 0 oklch(100% 0 0 / .22),
+    0 2px 8px oklch(50% 0.22 25 / .25);
+  padding: 16px 0;
+  color: #fff;
+}
+html[data-theme="dark"] .internal-banner {
+  background: linear-gradient(180deg,
+    oklch(54% 0.23 25),
+    oklch(40% 0.22 25));
+  border-bottom-color: oklch(30% 0.20 25);
+}
+.internal-banner-inner {
+  display: flex; align-items: center; justify-content: center;
+  text-align: center;
+}
+.internal-banner .ib-mark {
+  font-family: var(--font);
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: .32em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow:
+    0 1px 0 oklch(0% 0 0 / .35),
+    0 2px 4px oklch(0% 0 0 / .25);
+}
+@media (max-width: 760px) {
+  .internal-banner { padding: 13px 0; }
+  .internal-banner .ib-mark { font-size: 17px; letter-spacing: .28em; }
+}
+@media (max-width: 480px) {
+  .internal-banner { padding: 11px 0; }
+  .internal-banner .ib-mark { font-size: 14px; letter-spacing: .22em; }
+}
 
 /* ============================================================
    SITE HEADER - floating glass island
@@ -281,7 +331,7 @@ h1 .lg, h1 strong {
 .btn::before {
   content: ""; position: absolute; inset: 1px 1px 50% 1px; border-radius: calc(var(--radius) - 1px);
   background: linear-gradient(180deg, var(--top-gloss), transparent);
-  pointer-events: none; z-index: 2; opacity: .55;
+  pointer-events: none; z-index: 0; opacity: .55;
   transition: opacity .35s var(--spring);
 }
 /* Primary (pigmented) buttons get a subtler gloss so white text stays crisp */
@@ -295,6 +345,26 @@ h1 .lg, h1 strong {
 .btn:hover { transform: translateY(-2px); }
 .btn:hover::before { opacity: .35; }
 .btn-primary:hover::before, .btn.primary:hover::before { opacity: .55; }
+/* Anchor-tag buttons inherit the global a:hover blue, which makes text
+   invisible on the blue primary background. Pin text color per variant.
+   Use the a.btn- prefix to BEAT the global a:hover (specificity 0,1,1)
+   AND beat any well-meaning catch-all (do not add `a.btn:hover { color:
+   inherit }` here, it would win on specificity and break the variants). */
+a.btn-primary:hover, a.btn.primary:hover,
+a.btn-primary:focus, a.btn.primary:focus,
+button.btn-primary:hover, button.btn.primary:hover,
+button.btn-primary:focus, button.btn.primary:focus { color: #fff; }
+a.btn-secondary:hover, a.btn.glass:hover,
+a.btn-secondary:focus, a.btn.glass:focus,
+button.btn-secondary:hover, button.btn.glass:hover { color: var(--ink); }
+a.btn-tertiary:hover, a.btn.tinted:hover,
+a.btn-tertiary:focus, a.btn.tinted:focus { color: oklch(34% 0.06 80); }
+html[data-theme="dark"] a.btn-tertiary:hover,
+html[data-theme="dark"] a.btn.tinted:hover { color: var(--gold-bright); }
+a.btn.tinted-accent:hover, a.btn.tinted-accent:focus { color: var(--accent-deep); }
+html[data-theme="dark"] a.btn.tinted-accent:hover { color: var(--accent-bright); }
+/* copy-btn is a <button>, not <a>, but pin its hover too for safety */
+button.copy-btn:hover, button.copy-btn:focus { color: #fff; }
 /* Tier button title + subtitle get extra legibility against the blue gradient */
 .btn-primary .tier-label strong, .btn.primary .tier-label strong { text-shadow: 0 1px 1px oklch(0% 0 0 / .35); }
 .btn-primary .tier-label small, .btn.primary .tier-label small { opacity: .95; text-shadow: 0 1px 1px oklch(0% 0 0 / .25); }
@@ -708,7 +778,28 @@ html[data-theme="dark"] .card.link:hover h3 { color: var(--accent-bright); }
 .prereq-section .lede { margin-bottom: 26px; }
 
 .prereq-cards {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 18px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 18px;
+}
+@media (max-width: 1100px) {
+  .prereq-cards { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 720px) {
+  .prereq-cards { grid-template-columns: 1fr; }
+}
+.rebrand-tag, .new-tag {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 999px; margin-left: 6px;
+  vertical-align: middle;
+}
+.rebrand-tag {
+  background: oklch(72% 0.03 250 / .28); color: oklch(42% 0.04 250);
+  border: 1px solid oklch(55% 0.03 250 / .45);
+}
+html[data-theme="dark"] .rebrand-tag { color: oklch(80% 0.03 250); }
+.new-tag {
+  background: linear-gradient(180deg, oklch(65% 0.22 25), oklch(48% 0.22 25));
+  color: #FFFFFF; border: 1px solid oklch(38% 0.20 25);
+  box-shadow: inset 0 1px 0 oklch(100% 0 0 / .25);
 }
 .prereq-card {
   position: relative; border-radius: 24px; padding: 26px; overflow: hidden;
@@ -803,8 +894,11 @@ html[data-theme="dark"] .card.link:hover h3 { color: var(--accent-bright); }
   font-size: 12.5px; font-family: var(--mono);
   box-shadow: inset 0 2px 5px oklch(0% 0 0 / .3);
 }
-.terraform-note code { font-family: var(--mono); color: var(--ink); }
+/* Block code (inside the dark <pre>) inherits the light code-ink color */
+.terraform-note pre code { font-family: var(--mono); color: inherit; background: transparent; box-shadow: none; padding: 0; }
+/* Inline code (inside the paragraph) keeps the dark ink-on-light pill look */
 .terraform-note p code {
+  font-family: var(--mono); color: var(--ink);
   background: var(--bg-2); padding: 1px 6px; border-radius: 6px; font-size: 12px;
   box-shadow: inset 0 1px 2px var(--inner-dark);
 }
@@ -1113,7 +1207,7 @@ html[data-theme="dark"] .hint { color: oklch(72% 0.18 150); }
 .preview code {
   font-family: var(--mono); color: var(--code-ink);
 }
-.preview code .yk { color: oklch(78% 0.14 235); }
+.preview code .yk { color: oklch(82% 0.11 200); }
 .preview code .yv { color: oklch(80% 0.16 75); }
 .preview code .yc { color: oklch(58% 0.02 260); font-style: italic; }
 

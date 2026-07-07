@@ -12,55 +12,51 @@
     } catch (e) {}
   </script>
   <meta name="color-scheme" content="light dark" />
-  <title>CloudLens Ansible for AWS | Keysight Technologies</title>
-  <meta name="description" content="Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes. Linux, Windows, fully automated. Ansible playbook, CloudShell, or Docker." />
-  <meta name="theme-color" content="#0078D4" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0F172A" media="(prefers-color-scheme: dark)" />
+  <title>CloudLens Autopilot for AWS | Keysight Technologies</title>
+  <meta name="description" content="Deploy the full CloudLens stack (vController + KVO + vPB) and sensors to your EC2 instances in minutes. Linux, Windows, fully automated. CloudFormation, CloudShell, or Docker." />
+  <meta name="theme-color" content="#FF9900" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#232F3E" media="(prefers-color-scheme: dark)" />
 
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="CloudLens Ansible for AWS" />
-  <meta property="og:description" content="Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes. Linux, Windows, fully automated." />
+  <meta property="og:title" content="CloudLens Autopilot for AWS" />
+  <meta property="og:description" content="Deploy the full CloudLens stack and sensors to your EC2 instances in minutes. Linux, Windows, fully automated." />
   <meta property="og:url" content="https://keysight-tech.github.io/cloudlens-ansible-aws/" />
   <meta property="og:image" content="https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/docs/assets/architecture-diagram.svg" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230078D4'/%3E%3Cpath d='M8 20 L16 8 L24 20 Z' fill='%23D4AF37'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9900'/%3E%3Cpath d='M8 20 L16 8 L24 20 Z' fill='%23232F3E'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="glass.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" />
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <!-- Full-width Keysight brand banner -->
   <a href="https://www.keysight.com" target="_blank" rel="noopener" class="keysight-top-banner" aria-label="Keysight Technologies">
     <span class="keysight-top-banner__text">KEYSIGHT TECHNOLOGIES</span>
   </a>
 
   <header class="site-header" role="banner">
     <div class="container nav">
-      <a href="#top" class="brand" aria-label="CloudLens Ansible for AWS home">
+      <a href="#top" class="brand" aria-label="CloudLens Autopilot for AWS home">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1 0-8 5 5 0 0 1 9.5-1A4 4 0 0 1 17 18H7z"/><circle cx="12" cy="14" r="1.6" fill="#fff"/></svg>
         </span>
         <span class="brand-text">
           <strong>CloudLens</strong>
-          <span class="brand-sub">Ansible for AWS</span>
+          <span class="brand-sub">Autopilot for AWS</span>
         </span>
       </a>
       <nav class="primary-nav" aria-label="Primary">
-        <a href="#full-stack">Quickstart</a>
-        <a href="#prereq-deploys">Marketplace</a>
-        <a href="#start-here">Deploy</a>
-        <a href="#configuration">Configure</a>
-        <a href="#prep-vms">Prep VMs</a>
-        <a href="#sensors">Sensors</a>
-        <a href="#mirroring">Mirroring</a>
-        <a href="#teardown">Teardown</a>
-        <a href="#appendix">Appendix</a>
-        <a href="#faq">Troubleshoot</a>
+        <a href="#full-stack">Full Stack</a>
+        <a href="#test-fixture">Test Fixture</a>
+        <a href="#prereq-deploys">Deploy vController / KVO / vPB</a>
+        <a href="#start-here">Get Started</a>
+        <a href="#why">Why</a>
+        <a href="#wizard">Wizard</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#scaling">Scaling</a>
+        <a href="#faq">Common issues</a>
+        <a href="#docs">Docs</a>
       </nav>
       <div class="nav-actions">
         <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
@@ -83,26 +79,26 @@
         <div class="hero-copy">
           <span class="eyebrow">
             <span class="dot"></span>
-            Verified May 2026 on real AWS account 466778915280
+            Verified July 2026 on real AWS
           </span>
-          <h1>CloudLens Ansible for AWS</h1>
-          <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (small deployments) or 30 to 60 minutes (thousands of VMs). Linux, Windows, fully automated.</p>
+          <h1>CloudLens Autopilot for AWS</h1>
+          <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (small deployments) or 30 to 60 minutes (thousands of instances). A full 3-component stack (vController + KVO + vPB) was launched live in AWS us-east-1 and reached CREATE_COMPLETE. Linux, Windows, fully automated.</p>
           <div class="cta-row">
-            <a class="btn btn-primary tier" href="https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws" target="_blank" rel="noopener">
+            <a class="btn btn-primary tier" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">
               <span class="tier-num">1</span>
               <span class="tier-label">
-                <strong>Deploy via Ansible</strong>
-                <small>Ansible playbook, browser only</small>
+                <strong>Launch Stack</strong>
+                <small>CloudFormation, one click</small>
               </span>
             </a>
-            <a class="btn btn-secondary tier" href="https://us-east-1.console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">
+            <a class="btn btn-secondary tier" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">
               <span class="tier-num">2</span>
               <span class="tier-label">
-                <strong>Run in CloudShell</strong>
+                <strong>Open in CloudShell</strong>
                 <small>One curl command</small>
               </span>
             </a>
-            <a class="btn btn-tertiary tier" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">
+            <a class="btn btn-tertiary tier" href="#docker">
               <span class="tier-num">3</span>
               <span class="tier-label">
                 <strong>Pull Docker Image</strong>
@@ -121,11 +117,84 @@
           <div class="demo-frame">
             <div class="demo-chrome">
               <span></span><span></span><span></span>
-              <em>quickstart.sh</em>
+              <em>deploy-stack.sh</em>
             </div>
-            <object data="assets/deploy-demo.svg" type="image/svg+xml" aria-label="Animated terminal showing CloudLens Ansible deployment"></object>
+            <object data="assets/deploy-demo.svg" type="image/svg+xml" aria-label="Animated terminal showing CloudLens deployment"></object>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- 1.25 PREREQUISITE DEPLOYS: vController + KVO + vPB MARKETPLACE -->
+    <section id="prereq-deploys" class="prereq-section">
+      <div class="container">
+        <h2>Don't have vController, KVO, or vPB yet?</h2>
+        <p class="lede">Deploy them from AWS Marketplace in one click before running sensor deployments.</p>
+
+        <div class="prereq-card prereq-card-stack">
+          <h3>&#9889; Deploy the full CloudLens Stack (recommended)</h3>
+          <p>One CloudFormation stack. Provisions vController + KVO + vPB into a shared VPC with purpose-built mgmt, data, and tool subnets. About 15 minutes from click to ready.</p>
+          <ul>
+            <li>One shared VPC with mgmt / data / tool subnets</li>
+            <li>vController + KVO + vPB deployed together, each with its own Elastic IP</li>
+            <li>Instance types fixed to what each AMI is qualified on (t3.xlarge vController, c5.2xlarge KVO, t3.xlarge vPB)</li>
+          </ul>
+          <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
+        </div>
+
+        <p class="prereq-or">Or deploy each product separately:</p>
+
+        <div class="prereq-cards">
+          <div class="prereq-card">
+            <h3>CloudLens vController <span class="rebrand-tag">formerly CLMS</span></h3>
+            <p>Central management for sensors. Required for any sensor deployment.</p>
+            <ul>
+              <li>Version from the Marketplace AMI (CLMS_6.12.x)</li>
+              <li>One instance, <code>t3.xlarge</code>, ready in about 15 minutes</li>
+              <li>SSH: <code>ssh ec2-user@&lt;vcontroller-ip&gt;</code> (port 22)</li>
+              <li>Web UI: <code>https://&lt;vcontroller-ip&gt;</code></li>
+              <li>UI login: <code>admin / Cl0udLens@dm!n</code> (change on first login)</li>
+            </ul>
+            <a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fclms.yaml&amp;stackName=cloudlens-vcontroller" target="_blank" rel="noopener">&#9654; Launch vController</a>
+          </div>
+          <div class="prereq-card">
+            <h3>Vision Orchestrator (KVO) <span class="new-tag">NEW</span></h3>
+            <p>Optional. Centralizes the vPB fleet and automates AWS VPC Traffic Mirroring.</p>
+            <ul>
+              <li>Version from the Marketplace AMI (KVO 2.13.x)</li>
+              <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
+              <li>SSH: <code>ssh ec2-user@&lt;kvo-ip&gt;</code> (port 22)</li>
+              <li>Web UI: <code>https://&lt;kvo-ip&gt;</code></li>
+              <li>UI login: <code>admin / admin</code> (change on first login)</li>
+            </ul>
+            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fkvo.yaml&amp;stackName=cloudlens-kvo" target="_blank" rel="noopener">&#9654; Launch KVO</a>
+          </div>
+          <div class="prereq-card">
+            <h3>Virtual Packet Broker (vPB)</h3>
+            <p>Optional. For inline traffic processing and VXLAN aggregation.</p>
+            <ul>
+              <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
+              <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
+              <li>SSH: <code>ssh -p 9022 ec2-user@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
+              <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
+            </ul>
+            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
+          </div>
+        </div>
+
+        <aside class="marketplace-note" aria-label="Marketplace listing names">
+          <p>In the AWS console, the products appear as <strong>"Keysight CloudLens vController"</strong>, <strong>"Keysight Vision Orchestrator"</strong>, and <strong>"Keysight CloudLens Virtual Packet Broker"</strong>. The first launch of each requires accepting the AWS Marketplace subscription for that AMI. Unlike Azure, there is no CLI to accept the terms, so do it once in the console per product, then all future stacks in that account launch without prompting. vController was formerly named CLMS.</p>
+        </aside>
+
+        <p class="callout">After vController finishes initializing (about 15 minutes), open the UI, create a project, copy the project key, then return here to run the sensor deployment.</p>
+
+        <details class="terraform-note">
+          <summary>Prefer Terraform?</summary>
+          <p>vController, KVO, and vPB are all available as Terraform modules in <code>deploy/terraform</code>. The stack root module composes all three; the per-component modules (<code>deploy/terraform/clms</code>, <code>deploy/terraform/kvo</code>, <code>deploy/terraform/vpb</code>) deploy them individually. Same Marketplace AMIs, IaC-friendly for pipelines and repeatable deployments.</p>
+          <pre><code>cd deploy/terraform/stack
+terraform init
+terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
+        </details>
       </div>
     </section>
 
@@ -133,14 +202,14 @@
     <section id="full-stack" class="full-stack-section">
       <div class="container">
         <h2>One command, full stack</h2>
-        <p class="lede">CLMS, vPB, and sensors. End to end. From a single paste.</p>
+        <p class="lede">vController, KVO, and vPB plus sensors. End to end. From a single paste.</p>
 
         <div class="full-stack-cmd-wrap">
-          <pre id="full-stack-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudlens-ansible-aws.yaml | bash</code></pre>
+          <pre id="full-stack-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash</code></pre>
           <button class="copy-btn" data-copy="full-stack-cmd" type="button" aria-label="Copy curl command">Copy</button>
         </div>
 
-        <p class="full-stack-note">Prompts for VPC and region, accepts Marketplace terms, deploys CLMS, waits for initialization, optionally adds vPB, and chains to sensor deployment. Run from AWS CloudShell or any machine with AWS CLI.</p>
+        <p class="full-stack-note">Prompts for region and key pair, accepts Marketplace terms, deploys vController, waits for initialization, optionally adds KVO and vPB, then chains to sensor deployment. Run from AWS CloudShell or any machine with the AWS CLI.</p>
 
         <div class="full-stack-paths">
           <div class="path-card">
@@ -149,93 +218,77 @@
           </div>
           <div class="path-card">
             <h4><span class="path-icon" aria-hidden="true">&#128230;</span> Terraform Stack Module</h4>
-            <p>Single tfvars, both CLMS and vPB. Best for: IaC pipelines and repeatable infra.</p>
-<pre><code>cd deploy/terraform/stack
-cp customer_input.yaml.example customer_input.yaml
-terraform init &amp;&amp; terraform apply</code></pre>
+            <p>Single command, vController plus KVO and vPB. Best for: IaC pipelines and repeatable infra.</p>
+<pre><code>cd deploy/terraform &amp;&amp; terraform init &amp;&amp; terraform apply \
+  -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
           </div>
           <div class="path-card">
             <h4><span class="path-icon" aria-hidden="true">&#128214;</span> Printable Runbook</h4>
             <p>Executive-friendly PDF guide. Best for: customer CTO, procurement, training.</p>
-            <a class="btn btn-primary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/CloudLens-Ansible-Deployment-Runbook.docx" target="_blank" rel="noopener">Download Runbook</a>
+            <a class="btn btn-primary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/docs/CloudLens_Stack_Deployment_Runbook.pdf" target="_blank" rel="noopener">Download Runbook</a>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 1.25 PREREQUISITE DEPLOYS: CLMS + vPB MARKETPLACE -->
-    <section id="prereq-deploys" class="prereq-section">
+    <!-- 1.15 TEST FIXTURE: 3 disposable workload VMs for SE demos / verification -->
+    <section id="test-fixture" class="full-stack-section">
       <div class="container">
-        <header class="section-head">
-          <h2>AWS Marketplace prerequisites</h2>
-          <p class="lede">CloudLens Ansible deploys three Keysight products from AWS Marketplace. Subscribe to all three <strong>once per AWS account</strong> before running the Ansible or Terraform stack &mdash; this is a one-time EULA step that cannot be automated.</p>
-        </header>
+        <h2>Verify it end-to-end on disposable VMs</h2>
+        <p class="lede">For SE demos or first-call verification: stand up 3 throwaway workload EC2 instances (Ubuntu 22.04 + RHEL 9 + Windows Server 2022) tagged with a discovery tag, then run the stack with the matching tag flags. Proves sensors install on every supported OS in one pass.</p>
 
-        <div class="prereq-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
+        <div class="full-stack-cmd-wrap">
+          <pre><code id="test-fixture-cmd"># 1. Stand up the 3 test workload instances (default tag: cloudlens=yes)
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/deploy-test-workload-vms.sh | bash
 
-          <div class="prereq-card card">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-              <span style="display:inline-block;padding:4px 10px;background:linear-gradient(135deg,#E90029,#FB3D5E);color:white;border-radius:999px;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;">CORE &middot; REQUIRED</span>
-            </div>
-            <h3>Keysight Vision One (KVO)</h3>
-            <p>Master orchestrator. Analytics, CloudConfig pipeline, AWS VPC Traffic Mirroring automation, monitoring policies. The brain of the Ansible stack.</p>
-            <ul>
-              <li>AMI <code>ami-017c0db8981569380</code> from AWS Marketplace</li>
-              <li><strong>Instance type:</strong> <code>c5.2xlarge</code> only (Marketplace restriction)</li>
-              <li>Three licenses activated on first login: vPB Advanced, CloudLens Enterprise, KVO perpetual</li>
-              <li>Default UI: <code>admin / admin</code> (change on first login)</li>
-              <li>EULA accept in browser is mandatory before API access</li>
-            </ul>
-            <a class="btn btn-primary" href="https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+Vision+One" target="_blank" rel="noopener">&#9654; Subscribe to KVO</a>
-          </div>
+# 2. Deploy the CloudLens stack, then run sensor deployment against the tagged instances
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
 
-          <div class="prereq-card card">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-              <span style="display:inline-block;padding:4px 10px;background:linear-gradient(135deg,#FF9900,#FFAA33);color:#232F3E;border-radius:999px;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;">SENSOR PLANE &middot; REQUIRED</span>
-            </div>
-            <h3>CloudLens Manager (CLMS / vController)</h3>
-            <p>Central management for sensors. Adopted into KVO as the sensor control plane. Required for any sensor deployment.</p>
-            <ul>
-              <li>AMI <code>ami-0bebd5e730315337e</code> from AWS Marketplace</li>
-              <li><strong>Instance type:</strong> <code>t3.xlarge</code> (recommended)</li>
-              <li>Adopted by KVO from <strong>Inventory &rsaquo; CloudLens Manager &rsaquo; Discover</strong></li>
-              <li>Default UI: <code>admin / Cl0udLens@dm!n</code></li>
-            </ul>
-            <a class="btn btn-secondary" href="https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+CloudLens+Manager" target="_blank" rel="noopener">&#9654; Subscribe to CLMS</a>
-          </div>
-
-          <div class="prereq-card card">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-              <span style="display:inline-block;padding:4px 10px;background:linear-gradient(135deg,#475569,#64748B);color:white;border-radius:999px;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;">DATA PLANE &middot; OPTIONAL</span>
-            </div>
-            <h3>Virtual Packet Broker (vPB-KVO)</h3>
-            <p>Traffic filtering, deduplication, and load balancing for the collector tier. SSL-Payload decapsulation and GREoUDP termination.</p>
-            <ul>
-              <li>AMI <code>ami-0a561b450552b707d</code> from AWS Marketplace</li>
-              <li><strong>Instance type:</strong> <code>t3.xlarge</code> only (Marketplace restriction)</li>
-              <li><strong>SSH on port <code>9022</code> &mdash; NOT 22</strong></li>
-              <li>CLI onboarding: <code>kvo &rsaquo; ip &lt;kvo&gt; &rsaquo; port 443 &rsaquo; enable</code></li>
-              <li>Default: <code>admin / ixia</code></li>
-            </ul>
-            <a class="btn btn-secondary" href="https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+CloudLens+Virtual+Packet+Broker" target="_blank" rel="noopener">&#9654; Subscribe to vPB</a>
-          </div>
-
+# 3. Cleanup when done
+aws cloudformation delete-stack --stack-name cloudlens-test-vms --region us-east-1</code></pre>
+          <button type="button" class="copy-btn" data-copy="test-fixture-cmd" aria-label="Copy command">Copy</button>
         </div>
 
-        <div class="callout-warning" style="margin-top:32px;">
-          <strong>One-time EULA step:</strong> AWS Marketplace EULAs must be accepted <strong>once per Marketplace product per AWS account</strong> via the AWS Marketplace console. This <em>cannot</em> be automated by Ansible or Terraform. Click each <strong>Subscribe</strong> button above, accept the terms, and you're set for all future Ansible deployments in that account.
+        <p class="full-stack-note">The fixture launches three instances tagged <code>cloudlens=yes</code> with an <code>os</code> tag per platform. The sensor deployment installs on all three and they register with vController. Total round trip: about 25 to 30 minutes. Override the tag pair with <code>TESTVMS_TAG_KEY</code> / <code>TESTVMS_TAG_VALUE</code> environment variables if you want to mirror a customer's existing convention.</p>
+      </div>
+    </section>
+
+    <!-- 1.2 DOCKER PATH (Tier 3 deep-link target) -->
+    <section id="docker" class="full-stack-section">
+      <div class="container">
+        <h2>Run from Docker</h2>
+        <p class="lede">Pinned image with Ansible, the AWS SDKs, and pywinrm. Works from your laptop, a CI runner, or any container host.</p>
+
+        <div class="full-stack-cmd-wrap">
+          <pre id="docker-cmd"><code>docker run --rm -it \
+  -v $(pwd)/customer_input.yaml:/work/customer_input.yaml \
+  -v $HOME/.ssh:/root/.ssh:ro \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_DEFAULT_REGION \
+  ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
+          <button class="copy-btn" data-copy="docker-cmd" type="button" aria-label="Copy docker run command">Copy</button>
         </div>
 
-        <details class="card" style="margin-top:24px;">
-          <summary style="cursor:pointer;font-weight:700;">Auto-deployed by Ansible: Collector SVM &amp; Auto-Mirror Lambda</summary>
-          <div style="padding-top:16px;">
-            <p>In addition to the 3 Marketplace products above, Ansible deploys two more components automatically (no Marketplace subscription needed):</p>
-            <ul>
-              <li><strong>Collector SVM (Service VM)</strong> &mdash; AMI <code>ami-0c22ade3667f8d35a</code> (v6.13.0), auto-deployed by KVO Zone Tapping when you create a Cloud Config. Acts as the AWS VPC Traffic Mirroring collector.</li>
-              <li><strong>Auto-Mirror Lambda</strong> &mdash; Python 3.12 function (<code>demo-auto-mirror</code>) + 3 EventBridge rules. Tags new EC2 instances with <code>cloudlens-mirror=true</code> in watched VPCs so KVO picks them up instantly &mdash; sub-second from launch to mirror session.</li>
-            </ul>
+        <p class="full-stack-note">AWS credentials are passed via environment variables (use <code>scripts/setup_aws_creds.sh</code> to configure a profile). Same behavior as the CloudShell quickstart, just packaged for CI/CD or repeat customer deployments.</p>
+
+        <div class="full-stack-paths">
+          <div class="path-card">
+            <h4><span class="path-icon" aria-hidden="true">&#128230;</span> Image registry</h4>
+            <p>Image is published to GitHub Container Registry on every push to <code>main</code>: <code>ghcr.io/keysight-tech/cloudlens-ansible-aws</code>.</p>
+            <a class="btn btn-secondary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/pkgs/container/cloudlens-ansible-aws" target="_blank" rel="noopener">View on ghcr.io</a>
           </div>
-        </details>
+          <div class="path-card">
+            <h4><span class="path-icon" aria-hidden="true">&#128295;</span> Build locally</h4>
+            <p>Prefer to build your own image instead of pulling? The Dockerfile is in the repo root.</p>
+<pre><code>git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
+cd cloudlens-ansible-aws
+docker build -t cloudlens-ansible-aws .</code></pre>
+          </div>
+          <div class="path-card">
+            <h4><span class="path-icon" aria-hidden="true">&#129302;</span> CI/CD pattern</h4>
+            <p>Drop the same <code>docker run</code> into GitHub Actions, GitLab CI, Jenkins, or CodeBuild. Mount your <code>customer_input.yaml</code> as a build artifact.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -244,7 +297,7 @@ terraform init &amp;&amp; terraform apply</code></pre>
       <div class="container">
         <header class="section-head">
           <h2>Get started in 5 steps</h2>
-          <p class="lede">Most deployments under 50 VMs complete in 5 to 10 minutes.</p>
+          <p class="lede">Most deployments under 50 instances complete in 5 to 10 minutes.</p>
         </header>
 
         <ol class="steps">
@@ -259,12 +312,12 @@ terraform init &amp;&amp; terraform apply</code></pre>
               <div class="step-body">
                 <p>You need these in place before deploying:</p>
                 <ul>
-                  <li>AWS account with Reader and Virtual Machine Contributor roles</li>
-                  <li>CloudLens Manager (CLMS) deployed and reachable from your target VMs</li>
-                  <li>A project key from CLMS (Settings, Projects, API Keys)</li>
-                  <li>SSH key (for Linux targets) or admin password (for Windows targets)</li>
+                  <li>AWS account with EC2 and CloudFormation permissions in your target region</li>
+                  <li>CloudLens vController (formerly CLMS) deployed and reachable from your target instances</li>
+                  <li>A project key from vController (Settings, Projects, API Keys)</li>
+                  <li>An EC2 key pair (for SSH targets) or SSM enabled (for Windows targets)</li>
                 </ul>
-                <p class="callout">If you do not have CLMS deployed yet, use the <a href="#prereq-deploys">Deploy CLMS button above</a>.</p>
+                <p class="callout">If you do not have vController deployed yet, use the <a href="#prereq-deploys">Launch vController button above</a>.</p>
               </div>
             </details>
           </li>
@@ -278,7 +331,7 @@ terraform init &amp;&amp; terraform apply</code></pre>
                 <span class="step-time">5 minutes</span>
               </summary>
               <div class="step-body">
-                <p>The deployment discovers VMs by tag. Apply these to every target VM:</p>
+                <p>The deployment discovers instances by tag. Apply these to every target instance:</p>
                 <table class="step-table">
                   <thead><tr><th>Tag</th><th>Value</th></tr></thead>
                   <tbody>
@@ -287,10 +340,9 @@ terraform init &amp;&amp; terraform apply</code></pre>
                     <tr><td><code>env</code></td><td><code>prod</code> (or <code>dev</code>, <code>qa</code>)</td></tr>
                   </tbody>
                 </table>
-                <p>Bulk tag a VPC:</p>
-<pre><code>for vm in $(az vm list -g &lt;RG&gt; --query "[?storageProfile.osDisk.osType=='Linux'].name" -o tsv); do
-  az vm update -g &lt;RG&gt; -n $vm --set tags.cloudlens=yes tags.os=ubuntu tags.env=prod
-done</code></pre>
+                <p>Tag a single instance:</p>
+<pre><code>aws ec2 create-tags --resources i-0123456789abcdef0 \
+  --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod</code></pre>
               </div>
             </details>
           </li>
@@ -323,24 +375,19 @@ done</code></pre>
                 <p>Place your downloaded <code>customer_input.yaml</code> in your working directory, then pick one of the three deploy paths.</p>
                 <div class="step-paths">
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: One-command quickstart</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: CloudFormation</h4>
                     <p>One click. No local tools. Best for: trying it for the first time.</p>
-                    <a class="btn btn-primary inline-btn" href="https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws" target="_blank" rel="noopener">Deploy from Portal</a>
+                    <a class="btn btn-primary inline-btn" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">Launch Stack</a>
                   </div>
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: AWS CloudShell</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: CloudShell</h4>
                     <p>Already authenticated. One curl command. Best for: most customers.</p>
-<pre><code># One-click via AWS Console:
-aws cloudformation create-stack \
-  --stack-name cloudlens-ansible-aws \
-  --template-url https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1</code></pre>
+<pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/quickstart.sh | bash</code></pre>
                   </div>
                   <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker container</h4>
+                    <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker</h4>
                     <p>Reproducible. Pinned versions. Best for: CI or repeat deployments.</p>
-<pre><code>docker run --rm -it -v $(pwd)/customer_input.yaml:/work/customer_input.yaml https://github.com/Keysight-Tech/cloudlens-ansible-aws</code></pre>
+<pre><code>docker run --rm -it -v $(pwd)/customer_input.yaml:/work/customer_input.yaml ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
                   </div>
                 </div>
               </div>
@@ -352,17 +399,17 @@ aws cloudformation create-stack \
             <details>
               <summary>
                 <span class="step-icon" aria-hidden="true">&#9989;</span>
-                <span class="step-title">Verify in CLMS</span>
+                <span class="step-title">Verify in vController</span>
                 <span class="step-time">2 minutes</span>
               </summary>
               <div class="step-body">
-                <p>Open your CLMS web UI and confirm:</p>
+                <p>Open your vController web UI and confirm:</p>
                 <ul>
-                  <li>Each tagged VM appears as a registered sensor (under Sensors)</li>
-                  <li>Custom tags from your config match what you see in CLMS</li>
+                  <li>Each tagged instance appears as a registered sensor (under Sensors)</li>
+                  <li>Custom tags from your config match what you see in vController</li>
                   <li>Sensors show as connected and reporting</li>
                 </ul>
-                <p class="callout">Stuck? See the troubleshooting section below or the full <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/TROUBLESHOOTING.md">troubleshooting docs</a>.</p>
+                <p class="callout">Stuck? See the troubleshooting section below or the full <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/TROUBLESHOOTING.md" target="_blank" rel="noopener">troubleshooting docs</a>.</p>
               </div>
             </details>
           </li>
@@ -383,21 +430,21 @@ aws cloudformation create-stack \
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg>
             </div>
             <h3>Automated end to end</h3>
-            <p>Discovery, bootstrap, install, register. One command, one playbook run, zero per VM steps.</p>
+            <p>Discovery, bootstrap, install, register. One command, one playbook run, zero per-instance steps.</p>
           </article>
           <article class="card lift">
             <div class="card-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
             </div>
-            <h3>Works for any VM</h3>
+            <h3>Works for any instance</h3>
             <p>Ubuntu, RHEL, Rocky, Alma, Windows Server. Public IP, jumpbox, SSM Session Manager, or CloudShell.</p>
           </article>
           <article class="card lift">
             <div class="card-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
             </div>
-            <h3>Scales to 5,000+ VMs</h3>
-            <p>Auto scales sensor deployment workers based on EC2 inventory size. Sharded execution past 2,000 instances, parallel SSM execution beyond 10,000.</p>
+            <h3>Scales to 5,000+ instances</h3>
+            <p>Auto tunes Ansible forks based on inventory size. Sharded execution past 2,000 instances, AWX beyond 10,000.</p>
           </article>
         </div>
       </div>
@@ -413,50 +460,50 @@ aws cloudformation create-stack \
         <div class="wizard-grid">
           <form class="wizard" id="wizard-form" autocomplete="off">
             <div class="step" data-step="1">
-              <div class="step-head"><span class="step-num">1</span><h3>CloudLens Manager</h3></div>
-              <label for="clms-ip">CLMS public IP (post-deploy)</label>
-              <input id="clms-ip" name="clms_ip" type="text" placeholder="10.0.0.10 or clms.example.com" value="10.0.0.10" required />
+              <div class="step-head"><span class="step-num">1</span><h3>CloudLens vController</h3></div>
+              <label for="clms-ip">vController IP or FQDN</label>
+              <input id="clms-ip" name="clms_ip" type="text" placeholder="10.0.1.10 or vcontroller.example.com" value="10.0.1.10" required />
               <details class="field-help">
                 <summary>Where do I find this?</summary>
-                <p>The IP or hostname of your CloudLens Manager deployment. You can find it in your AWS Console under the CLMS VM details, or in the output of your CLMS Terraform deployment.</p>
+                <p>The IP or hostname of your vController deployment. You can find it in the AWS console under the vController EC2 instance details, or in the Outputs of your CloudFormation stack.</p>
               </details>
             </div>
             <div class="step" data-step="2">
               <div class="step-head"><span class="step-num">2</span><h3>Project key</h3></div>
-              <label for="project-key">CLMS project key (Phase 2 ref)</label>
+              <label for="project-key">vController project API key</label>
               <div class="input-row">
-                <input id="project-key" name="project_key" type="password" placeholder="paste from CLMS UI" value="" required />
+                <input id="project-key" name="project_key" type="password" placeholder="paste from vController UI" value="" required />
                 <button type="button" class="icon-btn small" id="toggle-key" aria-label="Show or hide key" title="Show or hide key">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
                 </button>
               </div>
               <details class="field-help">
                 <summary>Where do I find this?</summary>
-                <p>In CLMS web UI: Settings, Projects, API Keys, copy the key for the project you want sensors to register under.</p>
+                <p>In the vController web UI: Settings, Projects, API Keys, copy the key for the project you want sensors to register under.</p>
               </details>
             </div>
             <div class="step" data-step="3">
               <div class="step-head"><span class="step-num">3</span><h3>Custom tags</h3></div>
-              <label for="tags">Resource tags (key=value, comma-separated)</label>
-              <input id="tags" name="tags" type="text" placeholder="Env=AWS,Owner=cloudlens-se,Region=us-east-1" value="Env=AWS,Owner=cloudlens-se" />
+              <label for="tags">Tags applied to sensors</label>
+              <input id="tags" name="tags" type="text" placeholder="Env=AWS Region=us-east-1 Customer=Acme" value="Env=AWS Region=us-east-1 Customer=Acme" />
               <details class="field-help">
                 <summary>What does this do?</summary>
-                <p>These tags are attached to each registered sensor and visible in CLMS. Use them to filter and group sensors (for example: Customer=Acme, Region=us-east-1).</p>
+                <p>These tags are attached to each registered sensor and visible in vController. Use them to filter and group sensors (for example: Customer=Acme, Region=us-east-1). Space-separated key=value pairs.</p>
               </details>
             </div>
             <div class="step" data-step="4">
-              <div class="step-head"><span class="step-num">4</span><h3>Resource groups</h3></div>
+              <div class="step-head"><span class="step-num">4</span><h3>Regions</h3></div>
               <label for="rgs">AWS regions to scan (comma-separated)</label>
-              <input id="rgs" name="resource_groups" type="text" placeholder="us-east-1, us-west-2" value="us-east-1" />
+              <input id="rgs" name="regions" type="text" placeholder="us-east-1, us-west-2" value="us-east-1" />
               <details class="field-help">
-                <summary>What if I leave this blank?</summary>
-                <p>Blank means scan ALL VPCs in your subscription for tagged VMs. List specific RGs (comma-separated) to limit discovery.</p>
+                <summary>What goes here?</summary>
+                <p>The AWS regions the deployment scans for tagged EC2 instances. List one or more, comma-separated. Defaults to us-east-1.</p>
               </details>
               <div class="connection-mode">
                 <label for="mode">Windows connection mode</label>
                 <select id="mode" name="mode">
-                  <option value="ssm">SSM Session Manager (recommended, no inbound ports)</option>
-                  <option value="winrm">WinRM (port 5985/5986 must be open)</option>
+                  <option value="ssm">ssm (SSM Session Manager, no inbound ports)</option>
+                  <option value="winrm">winrm (ports 5985/5986 must be open)</option>
                 </select>
               </div>
             </div>
@@ -475,7 +522,7 @@ aws cloudformation create-stack \
               <h4>Once you have customer_input.yaml</h4>
               <ol>
                 <li>Save the file to your working directory</li>
-                <li>Choose a deploy path above (Portal, CloudShell, or Docker)</li>
+                <li>Choose a deploy path above (CloudFormation, CloudShell, or Docker)</li>
                 <li>The deploy command will pick up your customer_input.yaml automatically</li>
               </ol>
             </aside>
@@ -496,12 +543,12 @@ aws cloudformation create-stack \
       <div class="container">
         <header class="section-head">
           <h2>Live architecture flow</h2>
-          <p>A single Ansible playbook run provisions KVO + CLMS + vPB from AWS Marketplace, IAM roles, and a Lambda mirror tagger. Sensors are deployed via Ansible SSH/SSM/WinRM to EC2 instances, and every sensor self-registers with CLMS on first start.</p>
+          <p>A single Ansible control point authenticates to AWS, discovers EC2 instances by tag, and routes each host to the right OS lane. The CloudLens sensor on each EC2 instance mirrors traffic (mirror / VXLAN) to the vPB, which forwards to your monitoring tool. Every sensor self registers with vController on first start.</p>
         </header>
         <div class="diagram-frame">
-          <object data="assets/architecture-diagram.svg" type="image/svg+xml" aria-label="CloudLens Ansible AWS architecture diagram"></object>
+          <object data="assets/architecture-diagram.svg" type="image/svg+xml" aria-label="CloudLens AWS architecture diagram"></object>
         </div>
-        <p class="caption">Hover any block above to highlight the path. The dotted line shows sensor registration traffic back to CLMS.</p>
+        <p class="caption">Flow: CloudLens sensor on EC2 to mirror / VXLAN to vPB to monitoring tool. The dotted line shows sensor registration traffic back to vController.</p>
       </div>
     </section>
 
@@ -514,11 +561,11 @@ aws cloudformation create-stack \
         </header>
         <div class="scaling">
           <div class="scaling-controls">
-            <label for="vm-count">Number of VMs</label>
+            <label for="vm-count">Number of instances</label>
             <input id="vm-count" type="range" min="1" max="15000" step="1" value="100" />
             <div class="scale-readout">
               <div class="readout">
-                <span class="readout-label">VMs</span>
+                <span class="readout-label">Instances</span>
                 <strong id="vm-readout">100</strong>
               </div>
               <div class="readout">
@@ -546,38 +593,82 @@ aws cloudformation create-stack \
       </div>
     </section>
 
-    <!-- PHASE 2: PRODUCT CONFIGURATION -->
-    <section id="configuration" class="section">
+    <!-- 6. VERIFIED RESULTS -->
+    <section id="verified" class="section">
       <div class="container">
         <header class="section-head">
-          <h2>CLMS configuration (one-time)</h2>
-          <p class="lede">Once Terraform or Ansible finishes, configure the three Keysight products via their web UIs. One-time setup, about 15 minutes end to end.</p>
+          <h2>Verified against real AWS</h2>
+          <p>A full 3-component stack was launched via CloudFormation in us-east-1 and reached CREATE_COMPLETE, July 2026.</p>
+        </header>
+        <div class="metrics-grid">
+          <div class="metric">
+            <strong>3 / 3</strong>
+            <span>Stack components live</span>
+            <em>vController, KVO, vPB</em>
+          </div>
+          <div class="metric accent">
+            <strong>CREATE_<br>COMPLETE</strong>
+            <span>CloudFormation status</span>
+            <em>Region us-east-1</em>
+          </div>
+          <div class="metric">
+            <strong>3 AMIs</strong>
+            <span>Correct Marketplace AMIs</span>
+            <em>t3.xlarge / c5.2xlarge / t3.xlarge</em>
+          </div>
+          <div class="metric">
+            <strong>July 2026</strong>
+            <span>Last verified</span>
+            <em>Live CloudFormation launch</em>
+          </div>
+        </div>
+
+        <div class="results-table" role="region" aria-label="Verified scenarios">
+          <table>
+            <thead><tr><th>Component</th><th>Result</th><th>Instance type</th></tr></thead>
+            <tbody>
+              <tr><td>CloudLens vController (control plane)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>t3.xlarge</td></tr>
+              <tr><td>Vision Orchestrator (KVO)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>c5.2xlarge</td></tr>
+              <tr><td>Virtual Packet Broker (vPB)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>t3.xlarge</td></tr>
+              <tr><td>Full stack (stack.yaml)</td><td><span class="pill ok">3/3 live in us-east-1</span></td><td>Shared VPC</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- EXTRA: PRODUCT CONFIGURATION (one-time) -->
+    <section id="configuration" class="section alt">
+      <div class="container">
+        <header class="section-head">
+          <h2>vController configuration (one-time)</h2>
+          <p class="lede">Once CloudFormation or Terraform finishes, configure the Keysight products via their web UIs. One-time setup, about 15 minutes end to end. vController was formerly named CLMS.</p>
         </header>
 
-        <div class="steps">
-          <article class="card step-card">
-            <span class="step-num-big">1</span>
+        <div class="info-grid">
+          <article class="card">
+            <span class="num-badge">1</span>
             <h3>Accept the KVO EULA</h3>
-            <p>KVO blocks <strong>all</strong> access including the API until the EULA is accepted in the browser. Open <code>https://&lt;kvo-ip&gt;</code>, read the Keysight Software EULA, click <strong>Agree</strong>, then log in with <code>admin / admin</code>.</p>
-            <div class="callout-warning">⚠ This must be done in the browser. The CLI cannot accept the EULA on your behalf.</div>
+            <p>KVO blocks all access, including the API, until the EULA is accepted in the browser. Open <code>https://&lt;kvo-ip&gt;</code>, read the Keysight Software EULA, click <strong>Agree</strong>, then log in with <code>admin / admin</code>.</p>
+            <div class="callout-warning">This must be done in the browser. The CLI cannot accept the EULA on your behalf.</div>
           </article>
 
-          <article class="card step-card">
-            <span class="step-num-big">2</span>
+          <article class="card">
+            <span class="num-badge">2</span>
             <h3>Activate licenses on KVO</h3>
-            <p>Navigate to <strong>Settings &rsaquo; Product Licensing &rsaquo; Activate</strong>. Three licenses must be enabled: <code>vPB Advanced</code>, <code>CloudLens Enterprise</code>, and <code>KVO perpetual</code>. If the license server is unreachable, copy the offline activation key from your Keysight portal.</p>
+            <p>Navigate to <strong>Settings, Product Licensing, Activate</strong>. Three licenses must be enabled: <code>vPB Advanced</code>, <code>CloudLens Enterprise</code>, and <code>KVO perpetual</code>. If the license server is unreachable, copy the offline activation key from your Keysight portal.</p>
           </article>
 
-          <article class="card step-card">
-            <span class="step-num-big">3</span>
-            <h3>Adopt CLMS into KVO</h3>
-            <p>From KVO: <strong>Inventory &rsaquo; CloudLens Manager &rsaquo; Discover</strong>. Enter the CLMS <em>private</em> IP (the <code>10.99.1.x</code> address from Terraform outputs) and the CLMS admin credentials (<code>admin / Cl0udLens@dm!n</code>). Status must turn <span style="color:#10B981;font-weight:700;">CONNECTED</span> before proceeding.</p>
+          <article class="card">
+            <span class="num-badge">3</span>
+            <h3>Adopt vController into KVO</h3>
+            <p>From KVO: <strong>Inventory, CloudLens Manager, Discover</strong>. Enter the vController private IP (the <code>10.0.1.x</code> address from the stack Outputs) and the admin credentials (<code>admin / Cl0udLens@dm!n</code>). Status must turn <strong>CONNECTED</strong> before proceeding.</p>
           </article>
 
-          <article class="card step-card">
-            <span class="step-num-big">4</span>
+          <article class="card">
+            <span class="num-badge">4</span>
             <h3>Onboard the vPB to KVO</h3>
-            <p>SSH to the vPB on port <code>9022</code> (not 22) with <code>admin / ixia</code>. Then run:</p>
+            <p>SSH to the vPB on port <code>9022</code> (not 22), then run <code>sudo vpb</code> and:</p>
             <pre data-lang="vpb-cli"><code>configure terminal
 kvo
 ip &lt;kvo-private-ip&gt;
@@ -586,84 +677,57 @@ enable
 monitored
 end
 write memory</code></pre>
-            <p>Back in KVO, the vPB shows up under <strong>Inventory &rsaquo; Devices</strong>. Adopt it with <strong>Control the adopted device</strong> enabled (default). A Device Config is auto-created, and the vPB will now appear in port-binding dropdowns.</p>
+            <p>Back in KVO, the vPB shows up under <strong>Inventory, Devices</strong>. Adopt it with <strong>Control the adopted device</strong> enabled (default).</p>
           </article>
 
-          <article class="card step-card">
-            <span class="step-num-big">5</span>
+          <article class="card">
+            <span class="num-badge">5</span>
             <h3>Create the AWS Cloud Config</h3>
-            <p>On KVO: <strong>Cloud Fabric &rsaquo; Cloud Configs &rsaquo; New &rsaquo; AWS</strong>. Paste the IAM access key + secret (from <code>terraform output</code>), click <strong>Connect</strong>, pick the target region + VPC, set the deployment instance type to <code>c5.2xlarge</code>, choose 3 subnets, and commit. KVO will auto-deploy collector SVMs as Service VMs.</p>
+            <p>On KVO: <strong>Cloud Fabric, Cloud Configs, New, AWS</strong>. Paste the IAM access key and secret (from the stack Outputs), click <strong>Connect</strong>, pick the target region and VPC, set the deployment instance type to <code>c5.2xlarge</code>, choose the subnets, and commit. KVO auto-deploys collector Service VMs.</p>
           </article>
         </div>
       </div>
     </section>
 
-    <!-- SECTION 5: PREPARING EXISTING CUSTOMER VMs -->
-    <section id="prep-vms" class="section alt">
+    <!-- EXTRA: PREPARING EXISTING CUSTOMER VMs -->
+    <section id="prep-vms" class="section">
       <div class="container">
         <header class="section-head">
-          <h2>Preparing Existing Customer VMs</h2>
-          <p class="lede">Skip this if you used Ansible's <code>demo-targets</code> Terraform &mdash; those VMs are already configured. Deploying sensors to existing customer EC2 instances? Prep them with the included script in scan-then-fix mode.</p>
+          <h2>Preparing existing customer VMs</h2>
+          <p class="lede">Skip this if you used the disposable test fixture, those instances are already configured. Deploying sensors to existing customer EC2 instances? Prep them with the included script in scan-then-fix mode.</p>
         </header>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:40px;">
+        <div class="info-grid">
           <article class="card">
-            <h3>🪪 IAM Role</h3>
-            <p><strong>Auto-fix:</strong> Yes</p>
-            <p>Each VM needs <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. The prep script creates a <code>CloudLens-SSM-Role</code> and attaches it for you. If the VM already has an IAM role, the script adds the SSM policy to it instead of replacing.</p>
+            <h3>IAM role</h3>
+            <p class="muted-note">Auto-fix: Yes</p>
+            <p>Each instance needs <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. The prep script creates a <code>CloudLens-SSM-Role</code> and attaches it for you. If the instance already has an IAM role, the script adds the SSM policy to it instead of replacing.</p>
           </article>
 
           <article class="card">
-            <h3>📡 SSM Agent</h3>
-            <p><strong>Auto-fix:</strong> Mostly</p>
-            <p>Pre-installed on Amazon Linux, Ubuntu 16.04+, Windows Server 2016+. Must be installed manually on RHEL/CentOS &mdash; commands below.</p>
+            <h3>SSM Agent</h3>
+            <p class="muted-note">Auto-fix: Mostly</p>
+            <p>Pre-installed on Amazon Linux, Ubuntu 16.04+, Windows Server 2016+. Must be installed manually on RHEL/CentOS, commands below.</p>
           </article>
 
           <article class="card">
-            <h3>🏷 Tags</h3>
-            <p><strong>Auto-fix:</strong> Yes</p>
-            <p>The script auto-detects each VM's OS and applies <code>cloudlens=true</code> plus the correct <code>Platform</code> tag (<code>linux-docker</code>, <code>linux-podman</code>, or <code>windows</code>).</p>
+            <h3>Tags</h3>
+            <p class="muted-note">Auto-fix: Yes</p>
+            <p>The script auto-detects each instance OS and applies <code>cloudlens=yes</code> plus the correct <code>os</code> tag (<code>ubuntu</code>, <code>rhel</code>, or <code>windows</code>).</p>
           </article>
         </div>
 
-        <h3 style="margin-top:48px;">Step 1 &mdash; Scan your environment first</h3>
-        <p>Run scan-only mode to see what's missing before changing anything:</p>
-        <pre data-lang="bash"><code>./scripts/prep-targets.sh \
-  --region us-east-1 \
-  --profile customer \
-  --scan-only</code></pre>
+        <h3 class="sub-head">Step 1 - Scan your environment first</h3>
+        <p>Run scan-only mode to see what is missing before changing anything:</p>
+        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --scan-only</code></pre>
 
-        <p>Example output you should expect:</p>
-        <pre data-lang="report"><code>========================================
-TARGET VM READINESS REPORT
-========================================
-Ready for sensor deployment: 12 instances
-Missing tags (cloudlens + Platform):  20 instances
-Missing SSM Agent:                     8 instances
-Missing IAM role:                      7 instances
-Total running instances:              47</code></pre>
+        <h3 class="sub-head">Step 2 - Auto-fix every issue</h3>
+        <p>Once you have reviewed the scan, run with <code>--auto-fix</code> to remediate every gap in one shot:</p>
+        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --auto-fix</code></pre>
+        <p>Omit <code>--auto-fix</code> for interactive mode, the script prompts before each change.</p>
 
-        <h3 style="margin-top:48px;">Step 2 &mdash; Auto-fix every issue</h3>
-        <p>Once you've reviewed the scan, run with <code>--auto-fix</code> to remediate every gap in one shot:</p>
-        <pre data-lang="bash"><code>./scripts/prep-targets.sh \
-  --region us-east-1 \
-  --profile customer \
-  --auto-fix</code></pre>
-        <p>This will, in order:</p>
-        <ul>
-          <li>Create the <code>CloudLens-SSM-Role</code> IAM role with SSM + S3 permissions</li>
-          <li>Attach the role to instances that don't have one</li>
-          <li>Add the SSM policy to instances that already have a different IAM role</li>
-          <li>Install SSM Agent on Linux via <strong>EC2 Instance Connect</strong> &mdash; no standing SSH needed</li>
-          <li>Auto-detect each VM's OS and apply the correct <code>Platform</code> tag</li>
-          <li>Tag everything with <code>cloudlens=true</code> for sensor targeting</li>
-        </ul>
-        <p>Omit <code>--auto-fix</code> for <strong>interactive mode</strong> &mdash; the script will prompt before each change.</p>
-
-        <h3 style="margin-top:48px;">Step 3 &mdash; Manual SSM Agent install (when Instance Connect isn't available)</h3>
-        <p>For VMs with no public IP or SGs that block SSH, install SSM Agent in-OS:</p>
-
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px;">
+        <h3 class="sub-head">Step 3 - Manual SSM Agent install (when Instance Connect is not available)</h3>
+        <div class="info-grid">
           <article class="card">
             <h3>Ubuntu / Debian</h3>
             <pre data-lang="bash"><code>sudo snap install amazon-ssm-agent --classic
@@ -682,284 +746,179 @@ sudo systemctl start amazon-ssm-agent</code></pre>
           <article class="card">
             <h3>Windows (PowerShell admin)</h3>
             <pre data-lang="powershell"><code># SSM Agent is pre-installed on Windows Server 2016+
-# If it's not responding, restart it:
+# If it is not responding, restart it:
 Restart-Service AmazonSSMAgent</code></pre>
           </article>
         </div>
 
-        <div class="callout-warning" style="margin-top:32px;">
-          ⚠ After installing SSM Agent, wait 30&ndash;60 seconds for it to register with AWS Systems Manager. Verify with: <code>aws ssm describe-instance-information --region us-east-1</code>
-        </div>
-
-        <details class="card" style="margin-top:24px;">
-          <summary style="cursor:pointer;font-weight:700;">Remove SSM Agent after sensor deployment (optional)</summary>
-          <div style="padding-top:16px;">
-            <p>Once CloudLens sensors are running, they talk directly to CLMS on port 443 &mdash; SSM Agent is no longer required for operation. We recommend keeping it for future updates, troubleshooting, and bulk removal, but if compliance requires removal:</p>
-            <pre data-lang="bash"><code># Ubuntu / Debian
-sudo snap remove amazon-ssm-agent
-
-# RHEL / CentOS
-sudo dnf remove -y amazon-ssm-agent
-
-# Windows (PowerShell admin)
-msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
-          </div>
-        </details>
+        <div class="callout-warning">After installing SSM Agent, wait 30 to 60 seconds for it to register with AWS Systems Manager. Verify with: <code>aws ssm describe-instance-information --region us-east-1</code></div>
       </div>
     </section>
 
-    <!-- PHASE 3: SENSOR DEPLOYMENT -->
-    <section id="sensors" class="section">
+    <!-- EXTRA: SENSOR DEPLOYMENT -->
+    <section id="sensors" class="section alt">
       <div class="container">
         <header class="section-head">
-          <h2>Sensor Deployment via Ansible</h2>
-          <p class="lede">Push CloudLens sensors to every tagged EC2 instance at fleet scale. No SSH. No WinRM. Just AWS Systems Manager and outbound HTTPS from each VM.</p>
+          <h2>Sensor deployment via Ansible</h2>
+          <p class="lede">Push CloudLens sensors to every tagged EC2 instance at fleet scale over SSH, SSM, or WinRM, with outbound HTTPS from each instance back to vController.</p>
         </header>
 
-        <div class="prereq-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:48px;">
+        <div class="info-grid">
           <article class="card">
-            <h3>🏷 Tag targets first</h3>
-            <p>Apply two tags to every target EC2 instance. Without these the SSM Document skips the host.</p>
+            <h3>Tag targets first</h3>
+            <p>Apply the marker tag <code>cloudlens = yes</code> and an <code>os</code> tag to every target instance. Without these the deployment skips the host.</p>
             <table class="step-table">
-              <thead><tr><th>OS</th><th>Tag <code>Platform</code></th></tr></thead>
+              <thead><tr><th>OS</th><th>Tag <code>os</code></th></tr></thead>
               <tbody>
-                <tr><td>Ubuntu / Debian</td><td><code>linux-docker</code></td></tr>
-                <tr><td>RHEL / CentOS / Amazon Linux 2023</td><td><code>linux-podman</code></td></tr>
+                <tr><td>Ubuntu / Debian</td><td><code>ubuntu</code></td></tr>
+                <tr><td>RHEL / CentOS / Amazon Linux</td><td><code>rhel</code></td></tr>
                 <tr><td>Windows Server 2016+</td><td><code>windows</code></td></tr>
               </tbody>
             </table>
-            <p>And the marker tag: <code>cloudlens = true</code></p>
           </article>
 
           <article class="card">
-            <h3>🪪 IAM role on every target</h3>
-            <p>Each VM needs the managed policy <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. Our <code>prep-targets.sh</code> script can attach this for you and verify the SSM Agent is running.</p>
-            <pre data-lang="bash"><code>./scripts/prep-targets.sh \
-  --region us-east-1 \
-  --profile autopilot</code></pre>
+            <h3>IAM role on every target</h3>
+            <p>Each instance needs the managed policy <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile for the SSM connection path. The included prep step can attach this for you and verify the SSM Agent is running.</p>
           </article>
 
           <article class="card">
-            <h3>📡 SSM Agent reachability</h3>
-            <p>Each VM must reach <code>ssm.&lt;region&gt;.amazonaws.com</code>, <code>ec2messages.&lt;region&gt;.amazonaws.com</code>, and <code>ssmmessages.&lt;region&gt;.amazonaws.com</code> on 443 outbound - or have a VPC endpoint to those services.</p>
+            <h3>SSM Agent reachability</h3>
+            <p>Each instance must reach <code>ssm.&lt;region&gt;.amazonaws.com</code>, <code>ec2messages.&lt;region&gt;.amazonaws.com</code>, and <code>ssmmessages.&lt;region&gt;.amazonaws.com</code> on 443 outbound, or have a VPC endpoint to those services.</p>
           </article>
         </div>
 
-        <h3 style="margin-top:48px;">Run the deployment</h3>
-        <pre data-lang="ssm-run-command"><code># Deploy to ALL tagged targets in the region
-./scripts/deploy-sensors.sh \
-  --region us-east-1 \
-  --profile autopilot \
-  --clms-ip &lt;clms-public-ip&gt; \
-  --project-key &lt;clms-project-key&gt;
+        <h3 class="sub-head">Run the deployment</h3>
+        <pre data-lang="bash"><code># Deploy to ALL tagged targets in the region
+bash quickstart.sh
 
-# Targeted: only Windows
-./scripts/deploy-sensors.sh --platform windows --region us-east-1 --profile autopilot
-
-# Dry run: see what would happen, no changes
-./scripts/deploy-sensors.sh --dry-run --region us-east-1 --profile autopilot</code></pre>
-
-        <p style="margin-top:32px;color:#4A5568;">The script ships with live progress bars, per-platform targeting, and dry-run. Ansible SSH/SSM/WinRM invokes the CloudLens Sensor installer on every matching VM in parallel - Docker on Linux, MSI on Windows. Status streams to <strong>AWS Systems Manager &rsaquo; Run Command &rsaquo; Command History</strong>.</p>
+# Or run the playbook directly with your customer_input.yaml
+ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
+        <p>The playbook invokes the CloudLens sensor installer on every matching instance in parallel, Docker or Podman on Linux, MSI on Windows. Sensors register with vController on first start.</p>
       </div>
     </section>
 
-    <!-- PHASE 4: AWS TRAFFIC MIRRORING -->
+    <!-- EXTRA: VERIFY / MIRRORING -->
     <section id="mirroring" class="section">
       <div class="container">
         <header class="section-head">
-          <h2>Verify in CLMS</h2>
-          <p class="lede">KVO natively manages AWS VPC Traffic Mirroring. Auto-deploys collector SVMs, creates Mirror filters / targets / sessions, and auto-scales by tapped-interface count. No custom Lambda needed - but ours is included.</p>
+          <h2>Verify in vController and mirroring</h2>
+          <p class="lede">KVO natively manages AWS VPC Traffic Mirroring. It auto-deploys collector Service VMs, creates mirror filters, targets, and sessions, and auto-scales by tapped-interface count.</p>
         </header>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
+        <div class="info-grid">
           <article class="card">
-            <h3>1 &nbsp; IAM ready out of the box</h3>
-            <p>Terraform/Ansible already provisions an IAM user with the full <strong>CloudLens v6.13.0 12-statement policy</strong>, scoped with the <code>cloudlens:monitored:vpcid</code> condition tag. Includes EC2, Traffic Mirror, Auto Scaling, and Launch Template permissions.</p>
+            <h3>1. IAM ready out of the box</h3>
+            <p>CloudFormation and Terraform provision an IAM user with the CloudLens mirroring policy, scoped with the <code>cloudlens:monitored:vpcid</code> condition tag. Includes EC2, Traffic Mirror, Auto Scaling, and Launch Template permissions.</p>
           </article>
 
           <article class="card">
-            <h3>2 &nbsp; Auto-mirror Lambda</h3>
-            <p>Our optional Lambda + EventBridge rules fire on <code>RunInstances</code>, <code>CreateTags</code>, and instance state changes. Auto-tags new EC2 instances with <code>cloudlens-mirror = true</code> in watched VPCs/subnets. KVO picks up the tag and starts mirroring instantly - no polling.</p>
+            <h3>2. Auto-mirror on new instances</h3>
+            <p>Optional Lambda plus EventBridge rules fire on <code>RunInstances</code>, <code>CreateTags</code>, and instance state changes. New EC2 instances in watched VPCs are tagged for mirroring, and KVO starts mirroring instantly, no polling.</p>
           </article>
 
           <article class="card">
-            <h3>3 &nbsp; Outpacing Gigamon</h3>
-            <p>Gigamon GigaVUE-FM uses <strong>ATS</strong> (Automatic Target Selection) which <em>polls</em> the AWS APIs on an interval. Ours fires on EventBridge - sub-second from tag to mirror session. No polling overhead, no missed targets.</p>
+            <h3>3. Confirm sensor registration</h3>
+            <p>In vController, open <strong>Sensors</strong>. Each tagged instance should appear as connected and reporting, with your custom tags visible. This is the fastest end-to-end confirmation the pipeline is healthy.</p>
           </article>
 
           <article class="card">
-            <h3>4 &nbsp; Monitoring Policies</h3>
-            <p>In KVO: <strong>Cloud Fabric &rsaquo; Monitoring Policies &rsaquo; New</strong>. Pick the source (tag-based: <code>cloudlens-mirror = true</code>), the tool (vPB + downstream analytics), and KVO will deploy collector SVMs, configure the mirror sessions, and route packets.</p>
+            <h3>4. Monitoring policies</h3>
+            <p>In KVO: <strong>Cloud Fabric, Monitoring Policies, New</strong>. Pick the source (tag-based), the tool (vPB plus downstream analytics), and KVO deploys collector Service VMs, configures the mirror sessions, and routes packets.</p>
           </article>
         </div>
       </div>
     </section>
 
-    <!-- TEARDOWN -->
+    <!-- EXTRA: TEARDOWN -->
     <section id="teardown" class="section alt">
       <div class="container">
         <header class="section-head">
           <h2>Teardown</h2>
-          <p class="lede">Clean removal of sensors and infrastructure. Always run in this order - sensors first, infrastructure second.</p>
+          <p class="lede">Clean removal of sensors and infrastructure. Always run in this order, sensors first, infrastructure second.</p>
         </header>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:24px;">
+        <div class="info-grid">
           <article class="card">
-            <h3>Step 1 &mdash; Remove sensors via SSM</h3>
-            <pre data-lang="bash"><code># Remove from ALL platforms
-./scripts/remove-sensors.sh --region us-east-1 --profile autopilot
+            <h3>Step 1 - Remove sensors</h3>
+            <pre data-lang="bash"><code># Remove sensors from all tagged targets
+bash cleanup.yaml
 
-# Or scope to one platform
-./scripts/remove-sensors.sh --platform docker --region us-east-1 --profile autopilot
-./scripts/remove-sensors.sh --platform podman --region us-east-1 --profile autopilot
-./scripts/remove-sensors.sh --platform windows --region us-east-1 --profile autopilot</code></pre>
+# Or via the playbook
+ansible-playbook cleanup.yaml -e @customer_input.yaml</code></pre>
           </article>
 
           <article class="card">
-            <h3>Step 2 &mdash; Destroy infrastructure</h3>
+            <h3>Step 2 - Destroy infrastructure</h3>
             <p>Terraform path:</p>
-            <pre data-lang="bash"><code>cd terraform/environments/demo
-terraform destroy -var-file=demo.tfvars</code></pre>
-            <p>Ansible path:</p>
+            <pre data-lang="bash"><code>cd deploy/terraform
+terraform destroy</code></pre>
+            <p>CloudFormation path:</p>
             <pre data-lang="bash"><code>aws cloudformation delete-stack \
-  --stack-name cloudlens-demo \
+  --stack-name cloudlens-stack \
   --region us-east-1
 
 aws cloudformation wait stack-delete-complete \
-  --stack-name cloudlens-demo \
+  --stack-name cloudlens-stack \
   --region us-east-1</code></pre>
           </article>
         </div>
       </div>
     </section>
 
-    <!-- APPENDIX -->
+    <!-- EXTRA: APPENDIX -->
     <section id="appendix" class="section">
       <div class="container">
         <header class="section-head">
-          <h2>Appendix &mdash; Reference</h2>
-          <p class="lede">Default credentials, network topology, SSM Command Documents, and the AWS Service Catalog self-service roadmap. Keep this open in a tab during deployment.</p>
+          <h2>Appendix - reference</h2>
+          <p class="lede">Default credentials, network topology, and Marketplace AMIs. Keep this open in a tab during deployment.</p>
         </header>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
-
+        <div class="info-grid">
           <article class="card">
-            <h3>🔑 Default Credentials</h3>
+            <h3>Default credentials</h3>
             <table class="step-table">
               <thead><tr><th>Product</th><th>Username</th><th>Password</th></tr></thead>
               <tbody>
                 <tr><td>KVO</td><td><code>admin</code></td><td><code>admin</code></td></tr>
-                <tr><td>CLMS</td><td><code>admin</code></td><td><code>Cl0udLens@dm!n</code></td></tr>
-                <tr><td>vPB SSH (port 9022)</td><td><code>admin</code></td><td><code>ixia</code></td></tr>
+                <tr><td>vController</td><td><code>admin</code></td><td><code>Cl0udLens@dm!n</code></td></tr>
+                <tr><td>vPB SSH (port 9022)</td><td><code>ec2-user</code></td><td>key pair</td></tr>
               </tbody>
             </table>
-            <p style="margin-top:12px;font-size:0.88rem;color:#4A5568;">⚠ Change these on first login. Default passwords are <strong>not</strong> for production.</p>
+            <p class="muted-note">Change these on first login. Default passwords are not for production.</p>
           </article>
 
           <article class="card">
-            <h3>🌐 Network Topology</h3>
+            <h3>Network topology</h3>
             <table class="step-table">
-              <thead><tr><th>Subnet</th><th>CIDR</th><th>Purpose</th><th>Resources</th></tr></thead>
+              <thead><tr><th>Subnet</th><th>CIDR</th><th>Purpose</th></tr></thead>
               <tbody>
-                <tr><td>Management</td><td><code>10.0.1.0/24</code></td><td>SSH, HTTPS, REST API</td><td>KVO, CLMS, vPB <code>eth0</code></td></tr>
-                <tr><td>Data</td><td><code>10.0.2.0/24</code></td><td>Sensor traffic (GRE / VXLAN)</td><td>vPB <code>eth1</code> (ingress)</td></tr>
-                <tr><td>Tool</td><td><code>10.0.3.0/24</code></td><td>Processed traffic to tools</td><td>vPB <code>eth2</code> (egress)</td></tr>
+                <tr><td>Management</td><td><code>10.0.1.0/24</code></td><td>SSH, HTTPS, REST API</td></tr>
+                <tr><td>Data</td><td><code>10.0.2.0/24</code></td><td>Sensor traffic (mirror / VXLAN)</td></tr>
+                <tr><td>Tool</td><td><code>10.0.3.0/24</code></td><td>Processed traffic to tools</td></tr>
               </tbody>
             </table>
-            <p style="margin-top:12px;font-size:0.88rem;color:#4A5568;">CIDRs are configurable in <code>customer_input.yaml</code> and CFT parameters.</p>
+            <p class="muted-note">CIDRs are configurable in the CloudFormation parameters.</p>
           </article>
 
           <article class="card">
-            <h3>🛰 AWS Marketplace AMIs</h3>
+            <h3>Marketplace AMIs and instance types</h3>
             <table class="step-table">
-              <thead><tr><th>Product</th><th>AMI ID</th><th>Instance</th></tr></thead>
+              <thead><tr><th>Product</th><th>Instance</th></tr></thead>
               <tbody>
-                <tr><td>KVO</td><td><code>ami-017c0db8981569380</code></td><td><code>c5.2xlarge</code> only</td></tr>
-                <tr><td>CLMS</td><td><code>ami-0bebd5e730315337e</code></td><td><code>t3.xlarge</code></td></tr>
-                <tr><td>vPB-KVO</td><td><code>ami-0a561b450552b707d</code></td><td><code>t3.xlarge</code> only</td></tr>
-                <tr><td>Collector SVM</td><td><code>ami-0c22ade3667f8d35a</code> v6.13.0</td><td>auto-deployed by KVO</td></tr>
+                <tr><td>vController (CLMS_6.12.x)</td><td><code>t3.xlarge</code></td></tr>
+                <tr><td>KVO (2.13.x)</td><td><code>c5.2xlarge</code> only</td></tr>
+                <tr><td>vPB-KVO (3.13.x)</td><td><code>t3.xlarge</code></td></tr>
               </tbody>
             </table>
-            <p style="margin-top:12px;font-size:0.88rem;color:#4A5568;">KVO and vPB-KVO have AWS Marketplace instance-type restrictions &mdash; cannot change.</p>
+            <p class="muted-note">KVO has an AWS Marketplace instance-type restriction and cannot be changed.</p>
           </article>
-
-          <article class="card">
-            <h3>📜 SSM Command Documents</h3>
-            <p>Auto-registered by Terraform/Ansible:</p>
-            <table class="step-table">
-              <thead><tr><th>Document Name</th><th>Target</th></tr></thead>
-              <tbody>
-                <tr><td><code>&lt;prefix&gt;-Deploy-CloudLens-Docker</code></td><td>Ubuntu, Debian</td></tr>
-                <tr><td><code>&lt;prefix&gt;-Deploy-CloudLens-Podman</code></td><td>RHEL, CentOS, Amazon Linux 2023</td></tr>
-                <tr><td><code>&lt;prefix&gt;-Deploy-CloudLens-Windows</code></td><td>Windows Server 2016+</td></tr>
-              </tbody>
-            </table>
-            <p style="margin-top:12px;font-size:0.88rem;color:#4A5568;">Invoke directly via <code>aws ssm send-command</code> or through the <code>deploy-sensors.sh</code> wrapper.</p>
-          </article>
-
-          <article class="card" style="grid-column:1/-1;">
-            <h3>🛣 Roadmap &mdash; AWS Service Catalog Self-Service</h3>
-            <p>The next milestone packages Ansible as an AWS Service Catalog product. Customer-facing flow:</p>
-            <ol style="padding-left:20px;">
-              <li>Customer opens <strong>AWS Console &rsaquo; Service Catalog</strong></li>
-              <li>Selects <strong>"Keysight CloudLens Visibility Stack"</strong></li>
-              <li>Fills parameters (region, instance sizes, key pair)</li>
-              <li>Clicks <strong>Launch</strong> &mdash; infrastructure deploys automatically</li>
-              <li>Follows Phase 2 in this runbook for product configuration</li>
-              <li>Tags target VMs and runs sensor deployment from the included EC2 user-data script</li>
-            </ol>
-            <p>Zero Terraform install on the customer's machine. Fully governed within their own AWS account. Targeted for the Airtel 1,700-site rollout.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- 6. VERIFIED RESULTS -->
-    <section id="verified" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>Verified against real AWS</h2>
-          <p>Numbers from the smoke test run on 2026 06 02, subscription CloudLensPublic, region us-east-1.</p>
-        </header>
-        <div class="metrics-grid">
-          <div class="metric">
-            <strong>3 / 3</strong>
-            <span>VMs deployed</span>
-            <em>Ubuntu, Ubuntu, Windows 2022</em>
-          </div>
-          <div class="metric accent">
-            <strong>8 min</strong>
-            <span>End to end run time</span>
-            <em>Discovery, install, register</em>
-          </div>
-          <div class="metric">
-            <strong>100%</strong>
-            <span>Sensor registration rate</span>
-            <em>CLMS 6.14.141</em>
-          </div>
-          <div class="metric">
-            <strong>2026 06 02</strong>
-            <span>Last verified</span>
-            <em>CloudLensPublic / us-east-1</em>
-          </div>
-        </div>
-
-        <div class="results-table" role="region" aria-label="Verified scenarios">
-          <table>
-            <thead><tr><th>Scenario</th><th>Result</th><th>Time</th></tr></thead>
-            <tbody>
-              <tr><td>Ubuntu 22.04 (private IP via jumpbox)</td><td><span class="pill ok">Sensor running</span></td><td>4 min</td></tr>
-              <tr><td>Ubuntu 22.04 (private IP via jumpbox)</td><td><span class="pill ok">Sensor running</span></td><td>4 min</td></tr>
-              <tr><td>Windows Server 2022 (Ansible SSH/SSM/WinRM direct)</td><td><span class="pill ok">Sensor running</span></td><td>6 min</td></tr>
-              <tr><td>CLMS 6.14.141 registration</td><td><span class="pill ok">3/3 registered</span></td><td>&lt;1 min</td></tr>
-            </tbody>
-          </table>
         </div>
       </div>
     </section>
 
     <!-- 6.5 FAQ / COMMON ISSUES -->
-    <section id="faq" class="faq-section section">
+    <section id="faq" class="faq-section section alt">
       <div class="container">
         <header class="section-head">
           <h2>Common issues</h2>
@@ -968,59 +927,62 @@ aws cloudformation wait stack-delete-complete \
 
         <div class="faq-grid">
           <details class="faq-item">
-            <summary>I don't have CLMS yet. Where do I start?</summary>
+            <summary>I don't have vController (formerly CLMS) yet. Where do I start?</summary>
             <div class="faq-body">
-              <p>Use the <a href="#prereq-deploys">Deploy CLMS button</a> at the top of this page. CLMS comes from AWS Marketplace, deploys in 15 minutes, and is ready before you start tagging your VMs.</p>
+              <p>Use the <a href="#prereq-deploys">Launch vController button</a> at the top of this page, or launch the full stack with the <a href="#prereq-deploys">Launch CloudLens Stack button above</a>. vController comes from AWS Marketplace, deploys in about 15 minutes, and is ready before you start tagging your instances. While you are there, also deploy <strong>KVO</strong> if you want centralized fleet orchestration across multiple vPB instances.</p>
             </div>
           </details>
 
           <details class="faq-item">
             <summary>vPB just deployed. Why can't I SSH yet?</summary>
             <div class="faq-body">
-              <p><strong>Expected:</strong> vPB takes 10 to 15 minutes after the AWS deployment finishes before SSH on port 22 is reachable. The VM itself is up, but the internal CLI service and SSH daemon are still initializing.</p>
-              <p><strong>What to do:</strong> wait 15 minutes after deploy succeeds, then try <code>ssh -p 9022 admin@&lt;vpb-public-ip&gt;</code> (vPB SSH is on port 9022, NOT 22, default password: <code>ixia</code>).</p>
-              <p><strong>Same applies to CLMS:</strong> the web UI on port 443 is usually ready within 60 seconds, but full system initialization (including the registry and project creation) takes around 15 minutes.</p>
+              <p><strong>The vPB image uses port 9022 for SSH, NOT the default port 22.</strong> Keysight CloudLens OS (KCOS) binds sshd only to <code>9022</code> on the public interface. Connections to <code>:22</code> time out forever even after the instance is fully booted.</p>
+              <p><strong>What to do:</strong> wait 10 to 15 minutes after deploy succeeds for KCOS to initialize, then:</p>
+              <pre data-lang="bash"><code>ssh -p 9022 ec2-user@&lt;vpb-public-ip&gt;   # OS shell
+sudo vpb                                # vPB CLI</code></pre>
+              <p><strong>Security group rule:</strong> make sure the security group on the vPB management ENI allows inbound TCP on port 9022. The stack template opens this automatically; if you deployed via a custom path, add the rule manually.</p>
+              <p><strong>Same vController note:</strong> the web UI on port 443 is usually ready within 60 seconds, but full system initialization (registry and project creation) takes around 15 minutes.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary>Inventory finds 0 VMs</summary>
+            <summary>Inventory finds 0 instances</summary>
             <div class="faq-body">
               <p><strong>Cause:</strong> tags missing or misspelled.</p>
-              <p><strong>Fix:</strong> verify with <code>az vm show -g RG -n VM --query tags</code>. The cloudlens, os, and env tags must all be present.</p>
+              <p><strong>Fix:</strong> verify with <code>aws ec2 describe-tags --filters "Name=resource-id,Values=i-0123..."</code>. The cloudlens, os, and env tags must all be present.</p>
             </div>
           </details>
 
           <details class="faq-item">
             <summary>SSH Permission denied</summary>
             <div class="faq-body">
-              <p><strong>Cause:</strong> your public key is not on the target VM.</p>
-              <p><strong>Fix:</strong> bootstrap with <code>az vm run-command invoke</code> to push your key, then re-run the deploy.</p>
+              <p><strong>Cause:</strong> your key pair is not on the target instance, or the wrong SSH user.</p>
+              <p><strong>Fix:</strong> use <code>ubuntu</code> for Ubuntu and <code>ec2-user</code> for RHEL/Amazon Linux, and confirm <code>ssh_key_path</code> in customer_input.yaml points at the right .pem. For no-key targets, use the SSM connection path instead.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary>Ansible SSH/SSM/WinRM timeout on Windows VMs</summary>
+            <summary>WinRM or SSM timeout on Windows instances</summary>
             <div class="faq-body">
-              <p><strong>Cause:</strong> Ansible SSH/SSM/WinRM disabled by default on Windows Server.</p>
-              <p><strong>Fix:</strong> run <code>playbooks/bootstrap_windows_ssm.yaml</code> first to enable Ansible SSH/SSM/WinRM via AWS Run Command.</p>
+              <p><strong>Cause:</strong> for the SSM path, the SSM Agent is not registered or the instance lacks the SSM IAM role; for the WinRM path, ports 5985/5986 are closed.</p>
+              <p><strong>Fix:</strong> prefer <code>windows_connection: "ssm"</code>, attach <code>AmazonSSMManagedInstanceCore</code>, and confirm the instance appears in <code>aws ssm describe-instance-information</code>.</p>
             </div>
           </details>
 
           <details class="faq-item">
-            <summary>Sensor does not appear in CLMS</summary>
+            <summary>Sensor does not appear in vController</summary>
             <div class="faq-body">
-              <p><strong>Cause:</strong> wrong project key, or sensor cannot reach CLMS network.</p>
-              <p><strong>Fix:</strong> double-check the project key from CLMS UI. Verify the VM can reach CLMS on port 443.</p>
+              <p><strong>Cause:</strong> wrong project key, or sensor cannot reach vController on the network.</p>
+              <p><strong>Fix:</strong> double-check the project key from the vController UI. Verify the instance can reach vController on port 443.</p>
             </div>
           </details>
 
           <details class="faq-item">
             <summary>How long should this take?</summary>
             <div class="faq-body">
-              <p><strong>1 to 50 VMs:</strong> 5 to 10 minutes.</p>
-              <p><strong>50 to 500 VMs:</strong> 15 to 30 minutes.</p>
-              <p><strong>500 to 2000 VMs:</strong> 30 to 60 minutes.</p>
+              <p><strong>1 to 50 instances:</strong> 5 to 10 minutes.</p>
+              <p><strong>50 to 500 instances:</strong> 15 to 30 minutes.</p>
+              <p><strong>500 to 2000 instances:</strong> 30 to 60 minutes.</p>
               <p><strong>Thousands:</strong> sharded automatically, 30 to 60 minutes for up to 10K.</p>
             </div>
           </details>
@@ -1028,7 +990,7 @@ aws cloudformation wait stack-delete-complete \
           <details class="faq-item">
             <summary>What if I need help?</summary>
             <div class="faq-body">
-              <p>Open an issue on <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues">GitHub</a>, or contact your Keysight account team for direct engineering support.</p>
+              <p>Open an issue on <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues" target="_blank" rel="noopener">GitHub</a>, or contact your Keysight account team for direct engineering support.</p>
             </div>
           </details>
         </div>
@@ -1036,13 +998,20 @@ aws cloudformation wait stack-delete-complete \
     </section>
 
     <!-- 7. QUICK DOCS -->
-    <section id="docs" class="section alt">
+    <section id="docs" class="section">
       <div class="container">
         <header class="section-head">
           <h2>Docs and support</h2>
           <p>Everything you need to deploy with confidence.</p>
         </header>
         <div class="card-grid four">
+          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/OPERATIONS.md" target="_blank" rel="noopener">
+            <div class="card-icon book">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            </div>
+            <h3>Operations guide <span class="new-tag">NEW</span></h3>
+            <p>Every port, password, SSH gotcha, KVO adoption step, and security group rule. Read this before filing a support ticket.</p>
+          </a>
           <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws#readme" target="_blank" rel="noopener">
             <div class="card-icon book">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -1050,19 +1019,19 @@ aws cloudformation wait stack-delete-complete \
             <h3>Full README</h3>
             <p>Scenarios, architecture, scaling, and troubleshooting on GitHub.</p>
           </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/CloudLens-Ansible-Deployment-Runbook.docx" target="_blank" rel="noopener">
+          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/docs/CloudLens_Ansible_AWS_Customer_Runbook.pdf" target="_blank" rel="noopener">
             <div class="card-icon pdf">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             </div>
             <h3>PDF runbook</h3>
-            <p>Printable customer ready guide with screenshots and checklists.</p>
+            <p>Printable customer-ready guide with screenshots and checklists.</p>
           </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/CUSTOMER_EMAIL.md" target="_blank" rel="noopener">
+          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/CUSTOMER_EMAIL.md" target="_blank" rel="noopener">
             <div class="card-icon mail">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             </div>
             <h3>Customer email template</h3>
-            <p>Copy paste handoff message for your account team.</p>
+            <p>Copy-paste handoff message for your account team.</p>
           </a>
           <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues" target="_blank" rel="noopener">
             <div class="card-icon issues">
@@ -1090,17 +1059,17 @@ aws cloudformation wait stack-delete-complete \
       <div class="foot-links">
         <h4>Project</h4>
         <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">GitHub repository</a>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">License</a>
+        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
         <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/releases" target="_blank" rel="noopener">Releases</a>
       </div>
       <div class="foot-links">
         <h4>Related</h4>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">Ansible Playbooks</a>
+        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/cloudformation" target="_blank" rel="noopener">CloudFormation templates</a>
         <a href="https://www.keysight.com" target="_blank" rel="noopener">Keysight.com</a>
       </div>
       <div class="foot-meta">
-        <span>Version v1.0.0 (June 2026)</span>
-        <span>Tested on AWS us-east-1</span>
+        <span>Version v1.0.0 (July 2026)</span>
+        <span>Verified on AWS us-east-1</span>
         <span>&copy; 2026 Keysight Technologies</span>
       </div>
     </div>
