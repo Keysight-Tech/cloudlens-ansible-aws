@@ -2,12 +2,12 @@
 /* Design tokens, glass cards, neumorphic depth, OKLCH palette (AWS themed) */
 
 :root {
-  /* AWS orange accent (FF9900 / ff6138 in OKLCH), squid-ink navy for depth */
-  --accent-h: 52; --accent-c: 0.19; --accent-l: 64%;
+  /* Keysight red accent (E90029 in OKLCH), squid-ink navy for depth */
+  --accent-h: 21; --accent-c: 0.21; --accent-l: 56%;
   --accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
   --accent-bright: oklch(calc(var(--accent-l) + 12%) calc(var(--accent-c) + 0.02) var(--accent-h));
-  --accent-deep: oklch(calc(var(--accent-l) - 18%) calc(var(--accent-c) + 0.01) 42);
-  --accent-glow: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .42);
+  --accent-deep: oklch(calc(var(--accent-l) - 16%) calc(var(--accent-c) + 0.01) var(--accent-h));
+  --accent-glow: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .38);
 
   /* Squid-ink / navy (AWS console chrome) */
   --navy: #232F3E;
@@ -350,6 +350,9 @@ h1 .lg, h1 strong {
    Use the a.btn- prefix to BEAT the global a:hover (specificity 0,1,1)
    AND beat any well-meaning catch-all (do not add `a.btn:hover { color:
    inherit }` here, it would win on specificity and break the variants). */
+a.btn-primary, a.btn.primary,
+button.btn-primary, button.btn.primary,
+html[data-theme="dark"] a.btn-primary, html[data-theme="dark"] a.btn.primary,
 a.btn-primary:hover, a.btn.primary:hover,
 a.btn-primary:focus, a.btn.primary:focus,
 button.btn-primary:hover, button.btn.primary:hover,
