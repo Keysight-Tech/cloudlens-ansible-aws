@@ -1,13 +1,13 @@
 /* =====================================================================
-   World-Class iOS 26 Skeuomorphic Kit — adapted for Keysight CloudLens
+   World-Class iOS 26 Skeuomorphic Kit - adapted for Keysight CloudLens
    Replaces glass.css / glass-upgrade.css across all 3 sites
    Patterns: OKLCH color, multi-layer neumorphic shadows, liquid-glass
    specular shine, top gloss, iOS spring easing, press feedback.
    ===================================================================== */
 
 :root {
-  /* Keysight accent — replaces the reference's blue */
-  /* True Keysight red — replaced OKLCH (was rendering pink/magenta in gradients) */
+  /* Keysight accent - replaces the reference's blue */
+  /* True Keysight red - replaced OKLCH (was rendering pink/magenta in gradients) */
   --accent-h: 25;            /* kept for compat */
   --accent-c: 0.22;
   --accent-l: 50%;
@@ -187,7 +187,7 @@ p, .lede { color: var(--ink-soft) !important; line-height: 1.55 !important; }
 }
 
 /* ============================== */
-/*  BUTTONS — iOS 26 skeuomorphic */
+/*  BUTTONS - iOS 26 skeuomorphic */
 /* ============================== */
 .btn, button:not(.icon-btn):not(.copy-btn):not(.theme-toggle-fab):not(#ks-theme-toggle):not(.iconbtn) {
   position: relative;

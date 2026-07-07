@@ -70,7 +70,7 @@
     <rect x="60" y="220" width="240" height="120" rx="10" fill="#FFFFFF" stroke="#22C55E" stroke-width="2"/>
     <rect x="60" y="220" width="240" height="32" rx="10" fill="#22C55E"/>
     <rect x="60" y="244" width="240" height="8" fill="#22C55E"/>
-    <text x="78" y="241" font-size="12" font-weight="700" fill="#FFFFFF">TIER 1 — EASIEST</text>
+    <text x="78" y="241" font-size="12" font-weight="700" fill="#FFFFFF">TIER 1 - EASIEST</text>
     <text x="180" y="282" text-anchor="middle" font-size="14" font-weight="700" fill="#1B2A4A">Click-to-Deploy</text>
     <text x="180" y="302" text-anchor="middle" font-size="12" fill="#1B2A4A">ARM Template</text>
     <text x="180" y="324" text-anchor="middle" font-size="10" font-family="SF Mono, Menlo, monospace" fill="#0078D4">Deploy toAWS→</text>
@@ -104,7 +104,7 @@
     <rect x="470" y="350" width="240" height="120" rx="10" fill="#FFFFFF" stroke="#0078D4" stroke-width="2"/>
     <rect x="470" y="350" width="240" height="32" rx="10" fill="#0078D4"/>
     <rect x="470" y="374" width="240" height="8" fill="#0078D4"/>
-    <text x="488" y="371" font-size="12" font-weight="700" fill="#FFFFFF">TIER 3 — REPEATABLE</text>
+    <text x="488" y="371" font-size="12" font-weight="700" fill="#FFFFFF">TIER 3 - REPEATABLE</text>
     <text x="590" y="412" text-anchor="middle" font-size="14" font-weight="700" fill="#1B2A4A">Docker Container</text>
     <text x="590" y="432" text-anchor="middle" font-size="11" fill="#5B6478">Zero host deps · CI-friendly</text>
     <text x="590" y="456" text-anchor="middle" font-size="10" font-family="SF Mono, Menlo, monospace" fill="#0078D4">docker run cloudlens-autopilot</text>
@@ -116,7 +116,7 @@
     <rect x="720" y="350" width="160" height="120" rx="10" fill="#FFFFFF" stroke="#F59E0B" stroke-width="2"/>
     <rect x="720" y="350" width="160" height="32" rx="10" fill="#F59E0B"/>
     <rect x="720" y="374" width="160" height="8" fill="#F59E0B"/>
-    <text x="730" y="371" font-size="11" font-weight="700" fill="#FFFFFF">TIER 2 — FAST</text>
+    <text x="730" y="371" font-size="11" font-weight="700" fill="#FFFFFF">TIER 2 - FAST</text>
     <text x="800" y="412" text-anchor="middle" font-size="13" font-weight="700" fill="#1B2A4A">CloudShell</text>
     <text x="800" y="430" text-anchor="middle" font-size="11" fill="#5B6478">or</text>
     <text x="800" y="448" text-anchor="middle" font-size="12" font-weight="600" fill="#1B2A4A">quickstart.sh</text>

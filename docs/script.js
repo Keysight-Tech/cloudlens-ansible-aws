@@ -1,4 +1,4 @@
-/* CloudLens AutoPilot for AWS — landing site behaviors */
+/* CloudLens AutoPilot for AWS - landing site behaviors */
 (function () {
   'use strict';
 
@@ -139,7 +139,7 @@
     });
   }
 
-  // download — now emits terraform.tfvars
+  // download - now emits terraform.tfvars
   var dl = document.getElementById('download-yaml'); // keep ID, change behaviour
   if (dl) {
     var dlLabel = dl.querySelector('.label, span');
@@ -187,7 +187,7 @@
     document.body.removeChild(ta);
   }
 
-  // Hero "Run in CloudShell" — copies the curl command
+  // Hero "Run in CloudShell" - copies the curl command
   var cp = document.getElementById('copy-curl');
   if (cp) {
     cp.addEventListener('click', function () {

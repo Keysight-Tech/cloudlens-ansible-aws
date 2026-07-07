@@ -1,8 +1,8 @@
 ---
-# Windows prod EC2 instances — two connection modes
+# Windows prod EC2 instances - two connection modes
 # Selected at run time by customer_input.yaml -> aws.windows_connection
 
-# Mode: ssm (preferred — no inbound ports, IAM-scoped)
+# Mode: ssm (preferred - no inbound ports, IAM-scoped)
 # Requires:  IAM role with AmazonSSMManagedInstanceCore on the instance
 #            SSM Agent running (pre-installed on Windows Server 2016+)
 #            boto3 + community.aws collection

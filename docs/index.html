@@ -741,7 +741,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
 
           <article class="card">
             <h3>📡 SSM Agent reachability</h3>
-            <p>Each VM must reach <code>ssm.&lt;region&gt;.amazonaws.com</code>, <code>ec2messages.&lt;region&gt;.amazonaws.com</code>, and <code>ssmmessages.&lt;region&gt;.amazonaws.com</code> on 443 outbound — or have a VPC endpoint to those services.</p>
+            <p>Each VM must reach <code>ssm.&lt;region&gt;.amazonaws.com</code>, <code>ec2messages.&lt;region&gt;.amazonaws.com</code>, and <code>ssmmessages.&lt;region&gt;.amazonaws.com</code> on 443 outbound - or have a VPC endpoint to those services.</p>
           </article>
         </div>
 
@@ -759,7 +759,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
 # Dry run: see what would happen, no changes
 ./scripts/deploy-sensors.sh --dry-run --region us-east-1 --profile autopilot</code></pre>
 
-        <p style="margin-top:32px;color:#4A5568;">The script ships with live progress bars, per-platform targeting, and dry-run. Ansible SSH/SSM/WinRM invokes the CloudLens Sensor installer on every matching VM in parallel — Docker on Linux, MSI on Windows. Status streams to <strong>AWS Systems Manager &rsaquo; Run Command &rsaquo; Command History</strong>.</p>
+        <p style="margin-top:32px;color:#4A5568;">The script ships with live progress bars, per-platform targeting, and dry-run. Ansible SSH/SSM/WinRM invokes the CloudLens Sensor installer on every matching VM in parallel - Docker on Linux, MSI on Windows. Status streams to <strong>AWS Systems Manager &rsaquo; Run Command &rsaquo; Command History</strong>.</p>
       </div>
     </section>
 
@@ -768,7 +768,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
       <div class="container">
         <header class="section-head">
           <h2>Verify in CLMS</h2>
-          <p class="lede">KVO natively manages AWS VPC Traffic Mirroring. Auto-deploys collector SVMs, creates Mirror filters / targets / sessions, and auto-scales by tapped-interface count. No custom Lambda needed — but ours is included.</p>
+          <p class="lede">KVO natively manages AWS VPC Traffic Mirroring. Auto-deploys collector SVMs, creates Mirror filters / targets / sessions, and auto-scales by tapped-interface count. No custom Lambda needed - but ours is included.</p>
         </header>
 
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;">
@@ -779,12 +779,12 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
 
           <article class="card">
             <h3>2 &nbsp; Auto-mirror Lambda</h3>
-            <p>Our optional Lambda + EventBridge rules fire on <code>RunInstances</code>, <code>CreateTags</code>, and instance state changes. Auto-tags new EC2 instances with <code>cloudlens-mirror = true</code> in watched VPCs/subnets. KVO picks up the tag and starts mirroring instantly — no polling.</p>
+            <p>Our optional Lambda + EventBridge rules fire on <code>RunInstances</code>, <code>CreateTags</code>, and instance state changes. Auto-tags new EC2 instances with <code>cloudlens-mirror = true</code> in watched VPCs/subnets. KVO picks up the tag and starts mirroring instantly - no polling.</p>
           </article>
 
           <article class="card">
             <h3>3 &nbsp; Outpacing Gigamon</h3>
-            <p>Gigamon GigaVUE-FM uses <strong>ATS</strong> (Automatic Target Selection) which <em>polls</em> the AWS APIs on an interval. Ours fires on EventBridge — sub-second from tag to mirror session. No polling overhead, no missed targets.</p>
+            <p>Gigamon GigaVUE-FM uses <strong>ATS</strong> (Automatic Target Selection) which <em>polls</em> the AWS APIs on an interval. Ours fires on EventBridge - sub-second from tag to mirror session. No polling overhead, no missed targets.</p>
           </article>
 
           <article class="card">
@@ -800,7 +800,7 @@ msiexec /x {SSM_AGENT_GUID} /quiet</code></pre>
       <div class="container">
         <header class="section-head">
           <h2>Teardown</h2>
-          <p class="lede">Clean removal of sensors and infrastructure. Always run in this order — sensors first, infrastructure second.</p>
+          <p class="lede">Clean removal of sensors and infrastructure. Always run in this order - sensors first, infrastructure second.</p>
         </header>
 
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:24px;">

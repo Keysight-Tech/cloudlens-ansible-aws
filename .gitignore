@@ -14,7 +14,7 @@ inventory/group_vars/secrets.yaml
 azure_sp_creds.json
 .azure/
 
-# Windows installer (download separately — too large for git, may have licensing)
+# Windows installer (download separately - too large for git, may have licensing)
 files/*.exe
 files/*.msi
 files/cloudlenscerts.crt
@@ -39,3 +39,13 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# deploy-stack.sh runtime logs
+cloudlens-deploy-stack.log
+cloudlens-deploy-summary.txt
+load_aws_creds.sh
+
+# ansible-galaxy local install target
+collections/
+.venv/
+.ansible/

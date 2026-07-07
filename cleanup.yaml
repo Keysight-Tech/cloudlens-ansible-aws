@@ -1,5 +1,5 @@
 ---
-# CloudLens Ansible for AWS — master cleanup playbook
+# CloudLens Ansible for AWS - master cleanup playbook
 # Removes CloudLens sensors from every tagged EC2 instance
 
 - import_playbook: playbooks/ubuntu_cleanup.yaml

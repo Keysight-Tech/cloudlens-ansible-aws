@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Keysight CloudLens vController (formerly CLMS) on AWS from the CloudLens
+  Marketplace AMI. vController is the CloudLens control plane where you create
+  projects, mint project keys, and manage sensors. Provisions a single
+  vController EC2 instance (t3.xlarge) with an Elastic IP, a security group
+  (SSH, vPB SSH, HTTPS), and a new VPC and subnet (or attaches to a VPC and
+  subnet you already own). Default UI credentials are admin / Cl0udLens@dm!n
+  (change on first login). The vController AMI requires an active AWS Marketplace
+  subscription before launch.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Instance
+        Parameters:
+          - InstanceType
+          - KeyPairName
+      - Label:
+          default: Network
+        Parameters:
+          - ExistingVpcId
+          - ExistingSubnetId
+          - VpcCidr
+          - SubnetCidr
+          - AdminIngressCidr
+    ParameterLabels:
+      InstanceType:
+        default: vController instance type
+      KeyPairName:
+        default: EC2 key pair for SSH
+      ExistingVpcId:
+        default: Existing VPC ID (blank to create a new VPC)
+      ExistingSubnetId:
+        default: Existing subnet ID (required when using an existing VPC)
+      VpcCidr:
+        default: New VPC CIDR
+      SubnetCidr:
+        default: New subnet CIDR
+      AdminIngressCidr:
+        default: Admin source CIDR for SSH, vPB SSH, and HTTPS
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.xlarge
+    AllowedValues:
+      - t3.xlarge
+    Description: >
+      Instance type for the vController AMI. The CloudLens vController image is
+      qualified on t3.xlarge, so this is the single allowed value.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 key pair for OS-level SSH access to the vController instance.
+  ExistingVpcId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing VPC to deploy into (for example vpc-0abc123).
+      Leave blank to create a new VPC sized by New VPC CIDR. When set, you must
+      also provide an existing subnet ID.
+  ExistingSubnetId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing subnet to attach the vController instance to.
+      Required when Existing VPC ID is set. Leave blank when creating a new VPC.
+  VpcCidr:
+    Type: String
+    Default: 10.99.0.0/16
+    Description: CIDR block for the new VPC. Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  SubnetCidr:
+    Type: String
+    Default: 10.99.1.0/24
+    Description: CIDR block for the new vController subnet, contained within the VPC CIDR. Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  AdminIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      Source CIDR allowed to reach SSH (22), vPB SSH (9022), and HTTPS (443).
+      Narrow this to your admin network. Default 0.0.0.0/0 is open to the internet.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      Ami: ami-0bebd5e730315337e
+
+Conditions:
+  CreateVpc: !Equals [!Ref ExistingVpcId, ""]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateVpc
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateVpc
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller-subnet"
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-rt"
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateVpc
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: vController management access (SSH, vPB SSH, HTTPS)
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupIngress:
+        - Description: SSH
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIngressCidr
+        - Description: vPB SSH (KCOS)
+          IpProtocol: tcp
+          FromPort: 9022
+          ToPort: 9022
+          CidrIp: !Ref AdminIngressCidr
+        - Description: HTTPS UI
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AdminIngressCidr
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller-sg"
+
+  ClmsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ami]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller"
+
+  ClmsEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ClmsInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller-eip"
+
+Outputs:
+  VcontrollerPublicIp:
+    Description: Public Elastic IP of the vController instance.
+    Value: !Ref ClmsEip
+  VcontrollerPrivateIp:
+    Description: Private IP of the vController instance.
+    Value: !GetAtt ClmsInstance.PrivateIp
+  VcontrollerUiUrl:
+    Description: vController web UI URL. Default login admin / Cl0udLens@dm!n (change on first login).
+    Value: !Sub "https://${ClmsEip}"
+  VcontrollerSshCommand:
+    Description: SSH command for OS-level access to the vController instance.
+    Value: !Sub "ssh ec2-user@${ClmsEip}"

@@ -1,0 +1,424 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Keysight CloudLens Stack (vController + KVO + vPB) on AWS from the CloudLens
+  Marketplace AMIs. Creates a shared VPC with three purpose-built subnets
+  (mgmt, data, tool), then deploys vController (control plane, always), KVO
+  (orchestrator, optional), and vPB (data plane, optional). Each instance gets
+  its own Elastic IP and a security group scoped to your admin CIDR. Instance
+  types are fixed to the size each CloudLens AMI is qualified on: vController
+  t3.xlarge, KVO c5.2xlarge, vPB t3.xlarge. All three AMIs require an active AWS
+  Marketplace subscription before launch. Default vController UI credentials are
+  admin / Cl0udLens@dm!n (change on first login).
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Components to deploy
+        Parameters:
+          - DeployKVO
+          - DeployVPB
+      - Label:
+          default: Access
+        Parameters:
+          - KeyPairName
+          - AdminIngressCidr
+      - Label:
+          default: Instance sizes
+        Parameters:
+          - VcontrollerInstanceType
+          - KvoInstanceType
+          - VpbInstanceType
+      - Label:
+          default: Network
+        Parameters:
+          - ExistingVpcId
+          - ExistingSubnetId
+          - VpcCidr
+          - MgmtSubnetCidr
+          - DataSubnetCidr
+          - ToolSubnetCidr
+    ParameterLabels:
+      DeployKVO:
+        default: Deploy KVO orchestrator?
+      DeployVPB:
+        default: Deploy vPB data plane?
+      KeyPairName:
+        default: EC2 key pair for SSH
+      AdminIngressCidr:
+        default: Admin source CIDR for SSH, vPB SSH, HTTPS, and VXLAN
+      VcontrollerInstanceType:
+        default: vController instance type
+      KvoInstanceType:
+        default: KVO instance type (c5.2xlarge only)
+      VpbInstanceType:
+        default: vPB instance type (t3.xlarge only)
+      ExistingVpcId:
+        default: Existing VPC ID (blank to create a shared VPC)
+      ExistingSubnetId:
+        default: Existing subnet ID (required when using an existing VPC)
+      VpcCidr:
+        default: New shared VPC CIDR
+      MgmtSubnetCidr:
+        default: Management subnet CIDR
+      DataSubnetCidr:
+        default: Data (ingress) subnet CIDR
+      ToolSubnetCidr:
+        default: Tool (egress) subnet CIDR
+
+Parameters:
+  DeployKVO:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: Deploy the KVO orchestrator instance alongside vController.
+  DeployVPB:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: Deploy the vPB data-plane instance alongside vController.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 key pair for OS-level SSH access to all instances.
+  AdminIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      Source CIDR allowed to reach SSH (22), vPB SSH (9022), HTTPS (443), and
+      VXLAN (4789, 10800-10801). Narrow this to your admin and sensor network.
+      Default 0.0.0.0/0 is open to the internet.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  VcontrollerInstanceType:
+    Type: String
+    Default: t3.xlarge
+    AllowedValues:
+      - t3.xlarge
+    Description: Instance type for vController. Qualified on t3.xlarge.
+  KvoInstanceType:
+    Type: String
+    Default: c5.2xlarge
+    AllowedValues:
+      - c5.2xlarge
+    Description: Instance type for KVO. Qualified on c5.2xlarge only.
+  VpbInstanceType:
+    Type: String
+    Default: t3.xlarge
+    AllowedValues:
+      - t3.xlarge
+    Description: Instance type for vPB. Qualified on t3.xlarge only.
+  ExistingVpcId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing VPC to deploy into (for example vpc-0abc123).
+      Leave blank to create a new shared VPC. When set, you must also provide an
+      existing subnet ID.
+  ExistingSubnetId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing subnet to place all instances in. Required when
+      Existing VPC ID is set. Leave blank when creating a new shared VPC.
+  VpcCidr:
+    Type: String
+    Default: 10.99.0.0/16
+    Description: CIDR block for the new shared VPC. Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  MgmtSubnetCidr:
+    Type: String
+    Default: 10.99.1.0/24
+    Description: Management subnet CIDR (hosts vController, KVO, and the vPB mgmt interface). Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  DataSubnetCidr:
+    Type: String
+    Default: 10.99.11.0/24
+    Description: Data subnet CIDR (vPB ingress, receives mirrored traffic). Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  ToolSubnetCidr:
+    Type: String
+    Default: 10.99.12.0/24
+    Description: Tool subnet CIDR (vPB egress, forwards to monitoring tools). Only used when Existing VPC ID is blank.
+    AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      VcontrollerAmi: ami-0bebd5e730315337e
+      KvoAmi: ami-017c0db8981569380
+      VpbAmi: ami-0a561b450552b707d
+
+Conditions:
+  ExistingVPC: !Not [!Equals [!Ref ExistingVpcId, ""]]
+  CreateVpc: !Not [Condition: ExistingVPC]
+  DeployKVO: !Equals [!Ref DeployKVO, "yes"]
+  DeployVPB: !Equals [!Ref DeployVPB, "yes"]
+
+Resources:
+  # ---------- Shared network (only when creating a new VPC) ----------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateVpc
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateVpc
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  MgmtSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref MgmtSubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-mgmt-subnet"
+
+  DataSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref DataSubnetCidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-data-subnet"
+
+  ToolSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref ToolSubnetCidr
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-tool-subnet"
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-rt"
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateVpc
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  MgmtSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref MgmtSubnet
+      RouteTableId: !Ref RouteTable
+
+  DataSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref DataSubnet
+      RouteTableId: !Ref RouteTable
+
+  ToolSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVpc
+    Properties:
+      SubnetId: !Ref ToolSubnet
+      RouteTableId: !Ref RouteTable
+
+  # ---------- Shared security group ----------
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudLens stack access (SSH, vPB SSH, HTTPS, VXLAN)
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupIngress:
+        - Description: SSH
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIngressCidr
+        - Description: vPB SSH (KCOS)
+          IpProtocol: tcp
+          FromPort: 9022
+          ToPort: 9022
+          CidrIp: !Ref AdminIngressCidr
+        - Description: HTTPS UI
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AdminIngressCidr
+        - Description: VXLAN standard
+          IpProtocol: udp
+          FromPort: 4789
+          ToPort: 4789
+          CidrIp: !Ref AdminIngressCidr
+        - Description: VXLAN Keysight
+          IpProtocol: udp
+          FromPort: 10800
+          ToPort: 10801
+          CidrIp: !Ref AdminIngressCidr
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-sg"
+
+  # ---------- vController (always) ----------
+  VcontrollerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VcontrollerAmi]
+      InstanceType: !Ref VcontrollerInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller"
+
+  VcontrollerEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref VcontrollerInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vcontroller-eip"
+
+  # ---------- KVO (optional) ----------
+  KvoInstance:
+    Type: AWS::EC2::Instance
+    Condition: DeployKVO
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", KvoAmi]
+      InstanceType: !Ref KvoInstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-kvo"
+
+  KvoEip:
+    Type: AWS::EC2::EIP
+    Condition: DeployKVO
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref KvoInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-kvo-eip"
+
+  # ---------- vPB (optional) ----------
+  VpbInstance:
+    Type: AWS::EC2::Instance
+    Condition: DeployVPB
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VpbAmi]
+      InstanceType: !Ref VpbInstanceType
+      KeyName: !Ref KeyPairName
+      SourceDestCheck: false
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpb"
+
+  VpbEip:
+    Type: AWS::EC2::EIP
+    Condition: DeployVPB
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref VpbInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpb-eip"
+
+Outputs:
+  SharedVpcId:
+    Description: VPC the stack deployed into.
+    Value: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+  VcontrollerPublicIp:
+    Description: Public Elastic IP of the vController instance.
+    Value: !Ref VcontrollerEip
+  VcontrollerPrivateIp:
+    Description: Private IP of the vController instance.
+    Value: !GetAtt VcontrollerInstance.PrivateIp
+  VcontrollerUiUrl:
+    Description: vController web UI URL. Default login admin / Cl0udLens@dm!n (change on first login).
+    Value: !Sub "https://${VcontrollerEip}"
+  VcontrollerSshCommand:
+    Description: SSH command for the vController instance.
+    Value: !Sub "ssh ec2-user@${VcontrollerEip}"
+  KvoPublicIp:
+    Condition: DeployKVO
+    Description: Public Elastic IP of the KVO instance.
+    Value: !Ref KvoEip
+  KvoPrivateIp:
+    Condition: DeployKVO
+    Description: Private IP of the KVO instance.
+    Value: !GetAtt KvoInstance.PrivateIp
+  KvoUiUrl:
+    Condition: DeployKVO
+    Description: KVO web UI URL.
+    Value: !Sub "https://${KvoEip}"
+  KvoSshCommand:
+    Condition: DeployKVO
+    Description: SSH command for the KVO instance.
+    Value: !Sub "ssh ec2-user@${KvoEip}"
+  VpbPublicIp:
+    Condition: DeployVPB
+    Description: Public Elastic IP of the vPB instance.
+    Value: !Ref VpbEip
+  VpbPrivateIp:
+    Condition: DeployVPB
+    Description: Private IP of the vPB instance.
+    Value: !GetAtt VpbInstance.PrivateIp
+  VpbUiUrl:
+    Condition: DeployVPB
+    Description: vPB web UI URL.
+    Value: !Sub "https://${VpbEip}"
+  VpbSshCommand:
+    Condition: DeployVPB
+    Description: SSH command for the vPB instance (port 9022).
+    Value: !Sub "ssh -p 9022 ec2-user@${VpbEip}"
+  NextSteps:
+    Description: What to do after the stack finishes.
+    Value: >
+      Allow about 15 minutes for full initialization. Open the vController UI,
+      log in with admin / Cl0udLens@dm!n, create a Project, and copy the project
+      key. Then run the sensor installer from the repo quickstart to register
+      workloads. Marketplace subscription to all CloudLens AMIs is required.

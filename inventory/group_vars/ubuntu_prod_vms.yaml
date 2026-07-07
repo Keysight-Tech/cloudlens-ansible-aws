@@ -1,5 +1,5 @@
 ---
-# Ubuntu prod EC2 instances — connect via SSH
+# Ubuntu prod EC2 instances - connect via SSH
 ansible_connection: ssh
 ansible_user: "{{ aws.ssh_user_ubuntu | default('ubuntu') }}"
 ansible_ssh_private_key_file: "{{ aws.ssh_key_path | default('~/.aws/your-key.pem') }}"

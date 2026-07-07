@@ -1,6 +1,26 @@
 ---
-# Global vars applied to ALL discovered EC2 instances
-ansible_python_interpreter: /usr/bin/env python3
+# =====================================================================
+# Global vars applied to ALL discovered EC2 instances.
+#
+# The cloudlens.* values are loaded from customer_input.yaml at runtime
+# (quickstart.sh and scripts/deploy.sh both pass it with
+#   --extra-vars "@customer_input.yaml").
+# This file maps that nested block onto the flat variable names the
+# playbooks consume, with safe defaults for anything the customer omits.
+# =====================================================================
 
-# Load customer config from the repo root
-customer_input_file: "{{ playbook_dir | dirname }}/customer_input.yaml"
+# EC2 instances ship a system python3; let Ansible discover it quietly.
+ansible_python_interpreter: auto_silent
+
+# --- CloudLens sensor registration (from customer_input.yaml -> cloudlens:) ---
+cloudlens_manager_ip_or_FQDN: "{{ cloudlens.manager_ip_or_fqdn }}"
+project_key: "{{ cloudlens.project_key }}"
+custom_tags: "{{ cloudlens.custom_tags }}"
+cloudlens_agent_container_name: "{{ cloudlens.agent_container_name | default('cloudlens-agent') }}"
+registry_type: "{{ cloudlens.registry_type | default('insecure') }}"
+local_ca_path: "{{ cloudlens.local_ca_path | default('files/cloudlenscerts.crt') }}"
+ca_cert_dir: "{{ cloudlens.ca_cert_dir | default('/etc/ssl/certs') }}"
+ssl_verify: "{{ cloudlens.ssl_verify | default('no') }}"
+auto_update: "{{ cloudlens.auto_update | default('yes') }}"
+log_max_size: "{{ cloudlens.log_max_size | default('50m') }}"
+log_max_file: "{{ cloudlens.log_max_file | default('5') }}"
