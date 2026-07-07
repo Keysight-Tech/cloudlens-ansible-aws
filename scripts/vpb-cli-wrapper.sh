@@ -60,9 +60,11 @@ if [[ -z "${POD:-}" ]]; then
 fi
 
 if [[ "${1:-}" == "-c" ]] && [[ -n "${2:-}" ]]; then
+  # vPB 3.13 images: xf-client crashes if /data/xfilter/logs does not exist
+  # yet on a fresh appliance, so create it before invoking the CLI.
   exec $KUBECTL --kubeconfig="$KCFG" exec -i -n "$NAMESPACE" "$POD" \
-       -c "$CONTAINER" -- bash -c "echo '$2' | $CLI"
+       -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; echo '$2' | $CLI"
 fi
 
 exec $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
-     -c "$CONTAINER" -- "$CLI"
+     -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; exec $CLI"

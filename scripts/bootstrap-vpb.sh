@@ -93,6 +93,13 @@ export KUBECONFIG=$KCFG
 EOF
 chmod +x "$PROFILE"
 ok "$PROFILE installed"
+
+# profile.d only reaches the login shell; sudo strips KUBECONFIG from the
+# environment. Link the kubeconfig at root's default path so a plain
+# `sudo kubectl ...` works with no env at all.
+mkdir -p /root/.kube
+ln -sf "$KCFG" /root/.kube/config
+ok "/root/.kube/config -> $KCFG (plain sudo kubectl works)"
 note "New SSH sessions: kubectl will work without --kubeconfig"
 note "This session: run  source $PROFILE  before using kubectl"
 
