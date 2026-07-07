@@ -4,10 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <script>
-    // Apply saved theme BEFORE styles paint to prevent flash of incorrect theme.
-    // Defaults to light if no preference saved.
+    // The site always lands LIGHT. The dark toggle only persists for the
+    // current browsing session (sessionStorage), never across visits.
     try {
-      var t = localStorage.getItem('cl-theme') || 'light';
+      localStorage.removeItem('cl-theme'); // clear any old cross-visit preference
+      var t = sessionStorage.getItem('cl-theme') || 'light';
       document.documentElement.setAttribute('data-theme', t);
     } catch (e) {}
   </script>

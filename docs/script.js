@@ -6,7 +6,7 @@
   // Default to light mode on first visit. If the user explicitly toggles to
   // dark, that preference is saved to localStorage and respected on return.
   var root = document.documentElement;
-  var stored = localStorage.getItem('cl-theme');
+  var stored = sessionStorage.getItem('cl-theme');
   var theme = stored || 'light';
   root.setAttribute('data-theme', theme);
 
@@ -15,7 +15,7 @@
     toggle.addEventListener('click', function () {
       var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       root.setAttribute('data-theme', next);
-      localStorage.setItem('cl-theme', next);
+      sessionStorage.setItem('cl-theme', next);
     });
   }
 
