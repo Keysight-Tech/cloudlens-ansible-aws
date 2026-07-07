@@ -62,9 +62,25 @@ fi
 if [[ "${1:-}" == "-c" ]] && [[ -n "${2:-}" ]]; then
   # vPB 3.13 images: xf-client crashes if /data/xfilter/logs does not exist
   # yet on a fresh appliance, so create it before invoking the CLI.
-  exec $KUBECTL --kubeconfig="$KCFG" exec -i -n "$NAMESPACE" "$POD" \
-       -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; echo '$2' | $CLI"
+  if ! $KUBECTL --kubeconfig="$KCFG" exec -i -n "$NAMESPACE" "$POD" \
+       -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; echo '$2' | $CLI" 2>/tmp/vpb-cli.err; then
+    if grep -q "FileNotFoundError\|Connection refused" /tmp/vpb-cli.err 2>/dev/null; then
+      echo "vpb: the vPB management plane is not answering yet." >&2
+      echo "     A fresh appliance starts its management plane after first configuration." >&2
+      echo "     Adopt this vPB in KVO (https://<kvo-ip>) and retry." >&2
+      echo "     Cluster health meanwhile: sudo kubectl get pods -A" >&2
+    else
+      cat /tmp/vpb-cli.err >&2
+    fi
+    exit 1
+  fi
+  exit 0
 fi
 
-exec $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
-     -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; exec $CLI"
+if ! $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
+     -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; exec $CLI"; then
+  echo "vpb: the CLI exited with an error. If this is a fresh appliance, the" >&2
+  echo "     management plane starts after first configuration: adopt this vPB" >&2
+  echo "     in KVO (https://<kvo-ip>) and retry. Health: sudo kubectl get pods -A" >&2
+  exit 1
+fi
