@@ -12,8 +12,8 @@
 🌐 **Live docs:** https://keysight-tech.github.io/cloudlens-ansible-aws/
 
 <p align="center">
-  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudformation/stack.yaml&stackName=cloudlens-stack"><img src="https://img.shields.io/badge/▶_Launch_Stack-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Launch Stack"/></a>
-  <a href="https://console.aws.amazon.com/cloudshell?region=us-east-1"><img src="https://img.shields.io/badge/☁_Open_in_CloudShell-232F3E?style=for-the-badge&logo=amazonaws&logoColor=FF9900" alt="Open in CloudShell"/></a>
+  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudformation/stack.yaml&stackName=cloudlens-stack"><img src="https://img.shields.io/badge/▶_Launch_Stack-E90029?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Launch Stack"/></a>
+  <a href="https://console.aws.amazon.com/cloudshell?region=us-east-1"><img src="https://img.shields.io/badge/☁_Open_in_CloudShell-232F3E?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Open in CloudShell"/></a>
   <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/pkgs/container/cloudlens-ansible-aws"><img src="https://img.shields.io/badge/🐳_Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"/></a>
 </p>
 
@@ -45,7 +45,7 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 ### CloudFormation (one click)
 
 <p>
-  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudformation/stack.yaml&stackName=cloudlens-stack"><img src="https://img.shields.io/badge/▶_Launch_Stack-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Launch Stack"/></a>
+  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudformation/stack.yaml&stackName=cloudlens-stack"><img src="https://img.shields.io/badge/▶_Launch_Stack-E90029?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Launch Stack"/></a>
 </p>
 
 The button opens the CloudFormation quick-create console with `deploy/cloudformation/stack.yaml` pre-loaded from this repo. Pick your key pair and admin CIDR, acknowledge IAM capabilities, and click Create Stack. About 5 minutes to `CREATE_COMPLETE`; read the Outputs tab for the vController, KVO, and vPB URLs.
