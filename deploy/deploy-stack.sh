@@ -62,7 +62,17 @@ fi
 REPO_OWNER="Keysight-Tech"
 REPO_NAME="cloudlens-ansible-aws"
 REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
+# BASH_SOURCE is unset when piped via curl | bash; fall back to $0/PWD.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
+
+# CloudFormation stack names must match [a-zA-Z][-a-zA-Z0-9]* (no spaces).
+valid_stack_name() { [[ "$1" =~ ^[a-zA-Z][-a-zA-Z0-9]*$ ]]; }
+sanitize_stack_name() {
+  local s="$1"
+  s="${s// /-}"; s="$(printf '%s' "$s" | tr -cd 'a-zA-Z0-9-')"
+  [[ "$s" =~ ^[a-zA-Z] ]] || s="cloudlens-${s}"
+  printf '%s' "$s"
+}
 
 # CloudFormation template + Terraform dir (relative to repo root)
 CFN_TEMPLATE_REL="deploy/cloudformation/stack.yaml"
@@ -91,7 +101,7 @@ VPB_SSH_PORT="${CLOUDLENS_VPB_SSH_PORT:-9022}"
 
 # Naming
 DEFAULT_STACK_NAME="${CLOUDLENS_STACK_NAME:-cloudlens-stack}"
-DEFAULT_ADMIN_USER="${CLOUDLENS_ADMIN_USER:-ec2-user}"
+DEFAULT_ADMIN_USER="${CLOUDLENS_ADMIN_USER:-admin}"   # KVO/vPB KCOS images log in as admin
 KEY_NAME="${CLOUDLENS_KEY_NAME:-}"
 
 # vPB multi-NIC counts (management NIC is always present, these are extra)
@@ -175,7 +185,7 @@ Options:
 Region + naming (all have sensible defaults, all overridable):
   --region REGION           AWS region             (default: us-east-1)
   --stack-name NAME         Stack / workspace name (default: cloudlens-stack)
-  --admin-user NAME         OS login user for SSH  (default: ec2-user)
+  --admin-user NAME         OS login user for SSH  (default: admin)
   --key-name NAME           EC2 key pair to attach (created if missing)
 
 Infrastructure engine:
@@ -200,6 +210,7 @@ Access control:
 Toggles:
   --no-kvo                  Skip KVO deployment
   --with-kvo                Deploy KVO (skip interactive prompt)
+  --with-vpb                Deploy vPB (skip interactive prompt)
   --no-vpb                  Skip vPB deployment
   --no-sensors              Skip sensor playbook chain at the end
   --rollback                On any failure, delete the stack we created
@@ -248,6 +259,7 @@ while [[ $# -gt 0 ]]; do
 
     --no-kvo) DEPLOY_KVO=false; shift ;;
     --with-kvo) DEPLOY_KVO=true; shift ;;
+    --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
     --no-sensors) CHAIN_SENSORS=false; shift ;;
 
@@ -400,7 +412,7 @@ elif [[ "$KERNEL" == MINGW* ]] || [[ "$KERNEL" == MSYS* ]] || [[ "$KERNEL" == CY
   echo "    2. WSL                  (Windows Subsystem for Linux: 'wsl --install')"
   echo "    3. Linux jumpbox EC2    (small EC2 you SSH into)"
   echo
-  read -rp "Continue anyway in this Windows shell? [y/N]: " yn
+  read -rp "Continue anyway in this Windows shell? [y/N]: " yn || true
   yn_lc=$(to_lower "${yn:-n}")
   if [[ "$yn_lc" != "y" && "$yn_lc" != "yes" ]]; then
     fail "Aborted. Open AWS CloudShell and rerun the curl line there for the smoothest experience."
@@ -444,7 +456,7 @@ if ! command -v aws >/dev/null 2>&1; then
     warn "aws CLI not installed (dry-run continues)"
   else
     warn "AWS CLI not installed."
-    read -rp "Install it now? Pulls the official AWS CLI v2. [Y/n]: " yn
+    read -rp "Install it now? Pulls the official AWS CLI v2. [Y/n]: " yn || true
     yn_lc=$(to_lower "${yn:-y}")
     if [[ "$yn_lc" == "n" || "$yn_lc" == "no" ]]; then
       fail "AWS CLI required. Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
@@ -498,7 +510,7 @@ echo "AWS region (e.g. us-east-1, us-west-2, eu-west-1):"
 if [[ -n "$ARG_REGION" ]]; then
   REGION="$ARG_REGION"; ok "Region: ${REGION} (from --region)"
 else
-  read -rp "AWS region [${DEFAULT_REGION}]: " input_region; echo
+  read -rp "AWS region [${DEFAULT_REGION}]: " input_region; echo || true
   REGION="${input_region:-$DEFAULT_REGION}"; ok "Region: ${REGION}"
 fi
 AWS_REGION_ARG=(--region "$REGION")
@@ -509,10 +521,22 @@ echo
 echo "Stack name is the CloudFormation stack (and Terraform workspace) that"
 echo "owns every VPC, subnet, security group, and EC2 in this deploy."
 if [[ -n "$ARG_STACK" ]]; then
-  STACK_NAME="$ARG_STACK"; ok "Stack name: ${STACK_NAME} (from --stack-name)"
+  STACK_NAME="$ARG_STACK"
+  if ! valid_stack_name "$STACK_NAME"; then
+    fail "Invalid stack name '${STACK_NAME}'. CloudFormation names must start with a letter and use only letters, digits, and hyphens (try: $(sanitize_stack_name "$STACK_NAME"))."
+  fi
+  ok "Stack name: ${STACK_NAME} (from --stack-name)"
 else
-  read -rp "Stack name [${DEFAULT_STACK_NAME}]: " input_stack; echo
-  STACK_NAME="${input_stack:-$DEFAULT_STACK_NAME}"; ok "Stack name: ${STACK_NAME}"
+  while true; do
+    read -rp "Stack name [${DEFAULT_STACK_NAME}]: " input_stack; echo || true
+    STACK_NAME="${input_stack:-$DEFAULT_STACK_NAME}"
+    if valid_stack_name "$STACK_NAME"; then break; fi
+    suggestion="$(sanitize_stack_name "$STACK_NAME")"
+    warn "Invalid name '${STACK_NAME}': CloudFormation names must start with a letter and use only letters, digits, and hyphens (no spaces)."
+    read -rp "Use '${suggestion}' instead? [Y/n]: " use_sugg; echo || true
+    if [[ "${use_sugg,,}" != "n" ]]; then STACK_NAME="$suggestion"; break; fi
+  done
+  ok "Stack name: ${STACK_NAME}"
 fi
 
 # EC2 key pair. AWS appliances use SSH key auth, not passwords. Create one
@@ -534,18 +558,18 @@ ensure_key_pair() {
 }
 
 echo
-echo "Every appliance is reached over SSH with an EC2 key pair (no password)."
-echo "  vController / KVO: ssh -i <key>.pem ${ADMIN_USERNAME}@<ip>"
-echo "  vPB:               ssh -i <key>.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@<ip>"
+echo "KVO and vPB are reached over SSH with an EC2 key pair (no password):"
+echo "  KVO / vPB: ssh -i <key>.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@<ip>"
+echo "vController is appliance-managed via its web UI (admin / Cl0udLens@dm!n)."
 if [[ -z "$KEY_NAME" ]]; then
-  read -rp "EC2 key pair name [cloudlens-key]: " input_key; echo
+  read -rp "EC2 key pair name [cloudlens-key]: " input_key; echo || true
   KEY_NAME="${input_key:-cloudlens-key}"
 fi
 ensure_key_pair "$KEY_NAME"
 
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then
-  read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn
+  read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn || true
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_KVO=true || DEPLOY_KVO=false
 fi
@@ -553,7 +577,7 @@ ok "Deploy KVO: ${DEPLOY_KVO}"
 
 # Deploy vPB?
 if [[ -z "$DEPLOY_VPB" ]]; then
-  read -rp "Deploy vPB alongside vController? [y/N]: " yn
+  read -rp "Deploy vPB alongside vController? [y/N]: " yn || true
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_VPB=true || DEPLOY_VPB=false
 fi
@@ -561,7 +585,7 @@ ok "Deploy vPB: ${DEPLOY_VPB}"
 
 # Chain to sensor deployment?
 if [[ -z "$CHAIN_SENSORS" ]]; then
-  read -rp "Chain to sensor deployment after stack is up? [y/N]: " yn
+  read -rp "Chain to sensor deployment after stack is up? [y/N]: " yn || true
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && CHAIN_SENSORS=true || CHAIN_SENSORS=false
 fi
@@ -610,7 +634,7 @@ check_ami_subscription() {
   echo "      Click 'Continue to Subscribe' -> 'Accept Terms'."
   echo "    Details:"; sed 's/^/      /' /tmp/ami-err | head -3
   echo
-  read -rp "    Press Enter once you have accepted the terms (or Ctrl+C to abort): " _
+  read -rp "    Press Enter once you have accepted the terms (or Ctrl+C to abort): " _ || true
   # Re-probe once after they subscribe.
   if aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" >/dev/null 2>&1; then
     ok "${label} AMI now reachable: ${ami}"
@@ -823,7 +847,7 @@ fi
 
 PROJECT_KEY=""
 if [[ "$CHAIN_SENSORS" == "true" ]]; then
-  read -rp "Paste project key (or press Enter to skip sensor deployment): " PROJECT_KEY
+  read -rp "Paste project key (or press Enter to skip sensor deployment): " PROJECT_KEY || true
   if [[ -z "$PROJECT_KEY" ]]; then
     warn "No project key supplied. Skipping sensor chain."
     CHAIN_SENSORS=false
@@ -935,7 +959,7 @@ Key pair:           ${KEY_NAME}  (private key: ~/.ssh/${KEY_NAME}.pem)
 --- vController (formerly CLMS) ---
 Public IP:          ${CLMS_PUBLIC_IP}
 Web UI:             https://${CLMS_PUBLIC_IP}
-SSH:                ssh -i ~/.ssh/${KEY_NAME}.pem ${ADMIN_USERNAME}@${CLMS_PUBLIC_IP}
+Access:             web UI (appliance shell uses password auth, not the key pair)
 Default UI creds:   admin / Cl0udLens@dm!n  (change on first login)
 
 SUMMARY
@@ -945,7 +969,7 @@ SUMMARY
 --- KVO (Keysight Vision Orchestrator) ---
 Public IP:          ${KVO_PUBLIC_IP}
 Web UI:             https://${KVO_PUBLIC_IP}
-SSH:                ssh -i ~/.ssh/${KEY_NAME}.pem ${ADMIN_USERNAME}@${KVO_PUBLIC_IP}
+SSH:                ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${KVO_PUBLIC_IP}
 Default UI creds:   see Keysight KVO documentation
 Purpose:            Centralized vPB fleet orchestration and configuration
 
@@ -957,8 +981,8 @@ KSUMMARY
 --- vPB ---
 Public IP:          ${VPB_PUBLIC_IP}
 Management SSH:     ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}
-Bootstrap:          curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash
-vPB CLI:            sudo vpb        (after bootstrap)
+Bootstrap:          runs automatically at first boot (log: /var/log/cloudlens-bootstrap.log)
+vPB CLI:            sudo vpb        (re-run bootstrap manually: curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash)
 Note:               SSH is reachable ~5 minutes after deploy
 
 VSUMMARY
