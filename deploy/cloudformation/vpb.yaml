@@ -125,6 +125,7 @@ Resources:
     Condition: CreateVpc
     Properties:
       VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref SubnetCidr
       MapPublicIpOnLaunch: true
       Tags:

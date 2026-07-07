@@ -190,6 +190,7 @@ Resources:
     Condition: CreateVpc
     Properties:
       VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref MgmtSubnetCidr
       MapPublicIpOnLaunch: true
       Tags:
@@ -201,6 +202,7 @@ Resources:
     Condition: CreateVpc
     Properties:
       VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref DataSubnetCidr
       MapPublicIpOnLaunch: false
       Tags:
@@ -212,6 +214,7 @@ Resources:
     Condition: CreateVpc
     Properties:
       VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref ToolSubnetCidr
       MapPublicIpOnLaunch: false
       Tags:
