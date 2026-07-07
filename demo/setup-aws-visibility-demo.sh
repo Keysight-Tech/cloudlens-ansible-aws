@@ -631,7 +631,7 @@ UIs to open:
   Tool receiver: http://${TOOL_IP}
 
 SSH:
-  ssh ${SSH_USER_UBUNTU}@${VC_IP}                 # vController host (if enabled)
+  open https://${VC_IP}$1# vController web UI (admin / Cl0udLens@dm!n)
   ssh -p ${VPB_SSH_PORT} admin@${VPB_MGMT_IP}      # vPB mgmt (SSH port ${VPB_SSH_PORT})
   ssh ${SSH_USER_UBUNTU}@${TOOL_IP}               # tool receiver
   ssh ${SSH_USER_UBUNTU}@${APP01_IP}              # app01-ubuntu sensor target

@@ -382,7 +382,7 @@ Outputs:
     Value: !Sub "https://${VcontrollerEip}"
   VcontrollerSshCommand:
     Description: SSH command for the vController instance.
-    Value: !Sub "ssh ec2-user@${VcontrollerEip}"
+    Value: !Sub "Web UI https://${VcontrollerEip} (admin / Cl0udLens@dm!n). Appliance shell uses password auth, not the key pair."
   KvoPublicIp:
     Condition: DeployKVO
     Description: Public Elastic IP of the KVO instance.
@@ -398,7 +398,7 @@ Outputs:
   KvoSshCommand:
     Condition: DeployKVO
     Description: SSH command for the KVO instance.
-    Value: !Sub "ssh ec2-user@${KvoEip}"
+    Value: !Sub "ssh -i <your-key>.pem -p 9022 admin@${KvoEip}"
   VpbPublicIp:
     Condition: DeployVPB
     Description: Public Elastic IP of the vPB instance.
@@ -414,7 +414,7 @@ Outputs:
   VpbSshCommand:
     Condition: DeployVPB
     Description: SSH command for the vPB instance (port 9022).
-    Value: !Sub "ssh -p 9022 ec2-user@${VpbEip}"
+    Value: !Sub "ssh -i <your-key>.pem -p 9022 admin@${VpbEip}"
   NextSteps:
     Description: What to do after the stack finishes.
     Value: >

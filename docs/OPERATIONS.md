@@ -81,7 +81,8 @@ and KVO UIs still use the shared default web credentials.
 ### vController (SSH port 22, web 443)
 
 ```bash
-ssh -i ~/.ssh/<your-key>.pem ec2-user@<vcontroller-eip>
+# vController is appliance-managed: use the web UI (https://<vcontroller-eip>).
+# Its shell uses password auth, not your key pair.
 ```
 
 If SSH is refused right after launch, the image is still initialising. Open
@@ -95,7 +96,7 @@ blocks all access, including the REST API, until the EULA is accepted in a
 browser.
 
 ```bash
-ssh -i ~/.ssh/<your-key>.pem ec2-user@<kvo-eip>
+ssh -i ~/.ssh/<your-key>.pem -p 9022 admin@<kvo-eip>
 ```
 
 ### vPB (SSH + CLI on port 9022, NOT 22)

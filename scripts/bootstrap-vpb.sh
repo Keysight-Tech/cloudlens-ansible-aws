@@ -17,7 +17,7 @@
 # This script makes both go away in one command.
 #
 # NOTE: the vPB management SSH port on AWS is 9022, not 22. Reach the box
-# with:  ssh -i <key>.pem -p 9022 ec2-user@<vpb-eip>
+# with:  ssh -i <key>.pem -p 9022 admin@<vpb-eip>
 #
 # Usage (from inside the vPB EC2, after the SSH above):
 #   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/bootstrap-vpb.sh | sudo bash

@@ -226,4 +226,4 @@ Outputs:
     Value: !Sub "https://${VpbEip}"
   VpbSshCommand:
     Description: SSH command for OS-level access to the vPB instance (port 9022).
-    Value: !Sub "ssh -p 9022 ec2-user@${VpbEip}"
+    Value: !Sub "ssh -i <your-key>.pem -p 9022 admin@${VpbEip}"

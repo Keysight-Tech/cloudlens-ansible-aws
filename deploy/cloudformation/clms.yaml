@@ -214,4 +214,4 @@ Outputs:
     Value: !Sub "https://${ClmsEip}"
   VcontrollerSshCommand:
     Description: SSH command for OS-level access to the vController instance.
-    Value: !Sub "ssh ec2-user@${ClmsEip}"
+    Value: !Sub "Web UI https://${ClmsEip} (admin / Cl0udLens@dm!n). Appliance shell uses password auth, not the key pair."

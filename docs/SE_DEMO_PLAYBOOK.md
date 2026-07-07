@@ -121,7 +121,7 @@ carry to a demo.
    are pre-buffered:
 
    ```bash
-   ssh -i ~/.ssh/<demo-key>.pem ec2-user@<tool-eip> \
+   ssh -i ~/.ssh/<demo-key>.pem ubuntu@<tool-eip> \
      'sudo nohup timeout 1800 tcpdump -i any -nn -w /tmp/vxlan-capture.pcap udp port 4789 > /tmp/tcpdump.log 2>&1 &'
    ```
 
@@ -268,7 +268,7 @@ The lab is idempotent. After a demo:
 ssh -i ~/.ssh/<demo-key>.pem ubuntu@<app01-eip> 'pkill -f "while true; do curl"' || true
 
 # Clear the tcpdump capture so the next demo starts at 0 bytes
-ssh -i ~/.ssh/<demo-key>.pem ec2-user@<tool-eip> 'sudo truncate -s 0 /tmp/vxlan-capture.pcap'
+ssh -i ~/.ssh/<demo-key>.pem ubuntu@<tool-eip> 'sudo truncate -s 0 /tmp/vxlan-capture.pcap'
 
 # In KVO: leave the Cloud Config committed, or un-commit it so the next demo
 # starts dark and you can show the commit live again.

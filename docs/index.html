@@ -151,7 +151,7 @@
             <ul>
               <li>Version from the Marketplace AMI (CLMS_6.12.x)</li>
               <li>One instance, <code>t3.xlarge</code>, ready in about 15 minutes</li>
-              <li>SSH: <code>ssh ec2-user@&lt;vcontroller-ip&gt;</code> (port 22)</li>
+              <li>Access: web UI over HTTPS (appliance shell uses password auth, not your key pair)</li>
               <li>Web UI: <code>https://&lt;vcontroller-ip&gt;</code></li>
               <li>UI login: <code>admin / Cl0udLens@dm!n</code> (change on first login)</li>
             </ul>
@@ -163,7 +163,7 @@
             <ul>
               <li>Version from the Marketplace AMI (KVO 2.13.x)</li>
               <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
-              <li>SSH: <code>ssh ec2-user@&lt;kvo-ip&gt;</code> (port 22)</li>
+              <li>SSH: <code>ssh -p 9022 admin@&lt;kvo-ip&gt;</code> (port 9022, not 22)</li>
               <li>Web UI: <code>https://&lt;kvo-ip&gt;</code></li>
               <li>UI login: <code>admin / admin</code> (change on first login)</li>
             </ul>
@@ -175,7 +175,7 @@
             <ul>
               <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
               <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
-              <li>SSH: <code>ssh -p 9022 ec2-user@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
+              <li>SSH: <code>ssh -p 9022 admin@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
               <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
             </ul>
             <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
@@ -938,7 +938,7 @@ aws cloudformation wait stack-delete-complete \
             <div class="faq-body">
               <p><strong>The vPB image uses port 9022 for SSH, NOT the default port 22.</strong> Keysight CloudLens OS (KCOS) binds sshd only to <code>9022</code> on the public interface. Connections to <code>:22</code> time out forever even after the instance is fully booted.</p>
               <p><strong>What to do:</strong> wait 10 to 15 minutes after deploy succeeds for KCOS to initialize, then:</p>
-              <pre data-lang="bash"><code>ssh -p 9022 ec2-user@&lt;vpb-public-ip&gt;   # OS shell
+              <pre data-lang="bash"><code>ssh -p 9022 admin@&lt;vpb-public-ip&gt;   # OS shell
 sudo vpb                                # vPB CLI</code></pre>
               <p><strong>Security group rule:</strong> make sure the security group on the vPB management ENI allows inbound TCP on port 9022. The stack template opens this automatically; if you deployed via a custom path, add the rule manually.</p>
               <p><strong>Same vController note:</strong> the web UI on port 443 is usually ready within 60 seconds, but full system initialization (registry and project creation) takes around 15 minutes.</p>

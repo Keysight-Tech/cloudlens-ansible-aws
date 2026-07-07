@@ -19,7 +19,7 @@ variable "instance_name" {
 variable "admin_username" {
   description = "OS-level admin username used to build the SSH command output. vPB SSH listens on port 9022."
   type        = string
-  default     = "cloudlens"
+  default     = "admin"
 }
 
 variable "key_name" {

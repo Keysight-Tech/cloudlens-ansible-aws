@@ -25,7 +25,7 @@ output "next_step" {
 
 output "ssh_command" {
   description = "SSH command for OS-level access to the KVO instance."
-  value       = "ssh ${var.admin_username}@${aws_eip.kvo.public_ip}"
+  value       = "ssh -p 9022 ${var.admin_username}@${aws_eip.kvo.public_ip}"
 }
 
 output "instance_id" {

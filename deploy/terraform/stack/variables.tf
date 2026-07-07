@@ -18,9 +18,9 @@ variable "profile" {
 }
 
 variable "admin_username" {
-  description = "OS-level admin username used across all components (for the ssh_command outputs)."
+  description = "OS-level admin username used across all components (for the ssh_command outputs). The CloudLens KCOS images (KVO, vPB) ship with the admin login."
   type        = string
-  default     = "cloudlens"
+  default     = "admin"
 }
 
 variable "key_name" {

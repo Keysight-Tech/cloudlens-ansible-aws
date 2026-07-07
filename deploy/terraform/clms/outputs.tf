@@ -25,7 +25,7 @@ output "next_step" {
 
 output "ssh_command" {
   description = "SSH command for OS-level access to the vController instance."
-  value       = "ssh ${var.admin_username}@${aws_eip.clms.public_ip}"
+  value       = "Web UI https://${aws_eip.clms.public_ip} (admin / Cl0udLens@dm!n). Appliance shell uses password auth."
 }
 
 output "instance_id" {

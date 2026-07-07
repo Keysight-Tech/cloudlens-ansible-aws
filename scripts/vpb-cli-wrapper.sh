@@ -13,7 +13,7 @@
 #
 # AWS note: you reach the vPB host itself over SSH on port 9022, then run
 # this wrapper on the box:
-#   ssh -i <key>.pem -p 9022 ec2-user@<vpb-eip>
+#   ssh -i <key>.pem -p 9022 admin@<vpb-eip>
 #   sudo vpb
 #
 # Kubeconfig is auto-detected: both kubeadm (/etc/kubernetes/admin.conf)
