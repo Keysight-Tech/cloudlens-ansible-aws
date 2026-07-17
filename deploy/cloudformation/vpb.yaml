@@ -22,9 +22,11 @@ Metadata:
         Parameters:
           - ExistingVpcId
           - ExistingSubnetId
+          - ExistingSecurityGroupId
           - VpcCidr
           - SubnetCidr
           - AdminIngressCidr
+          - AssignPublicIp
     ParameterLabels:
       InstanceType:
         default: vPB instance type (t3.xlarge only)
@@ -34,12 +36,16 @@ Metadata:
         default: Existing VPC ID (blank to create a new VPC)
       ExistingSubnetId:
         default: Existing subnet ID (required when using an existing VPC)
+      ExistingSecurityGroupId:
+        default: Existing security group ID (blank to create one)
       VpcCidr:
         default: New VPC CIDR
       SubnetCidr:
         default: New subnet CIDR
       AdminIngressCidr:
         default: Admin source CIDR for SSH, vPB SSH, HTTPS, and VXLAN
+      AssignPublicIp:
+        default: Assign public Elastic IPs?
 
 Parameters:
   InstanceType:
@@ -66,6 +72,28 @@ Parameters:
     Description: >
       Optional. ID of an existing subnet to attach the vPB instance to. Required
       when Existing VPC ID is set. Leave blank when creating a new VPC.
+  ExistingSecurityGroupId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing security group to attach to the vPB instance
+      (for example sg-0abc123). Blank = the template creates one scoped to your
+      Admin source CIDR. Supply your own when your org requires pre-approved
+      security groups. You are responsible for opening vPB SSH (9022), SSH (22),
+      HTTPS (443), and VXLAN (4789, 10800-10801).
+  AssignPublicIp:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: >
+      yes = attach a public Elastic IP to the instance (default; reach the UI
+      over the internet). no = private IP only, no Elastic IP - use this for
+      private subnets, no-public-IP SCPs, or when you reach the vPB over
+      VPN / Direct Connect / VPC peering. When no, the private subnet still needs
+      outbound internet (NAT or VPC endpoints) for Marketplace activation and
+      first-boot bootstrap.
   VpcCidr:
     Type: String
     Default: 10.99.0.0/16
@@ -92,6 +120,8 @@ Mappings:
 
 Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]
+  WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
+  CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
 
 Resources:
   Vpc:
@@ -127,7 +157,7 @@ Resources:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref SubnetCidr
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: !If [WithPublicIp, true, false]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb-mgmt-subnet"
@@ -159,6 +189,7 @@ Resources:
 
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateSecurityGroup
     Properties:
       GroupDescription: vPB management and data access (vPB SSH, SSH, HTTPS, VXLAN)
       VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
@@ -201,7 +232,7 @@ Resources:
       SourceDestCheck: false
       SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
       SecurityGroupIds:
-        - !Ref SecurityGroup
+        - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb"
@@ -217,6 +248,7 @@ Resources:
 
   VpbEip:
     Type: AWS::EC2::EIP
+    Condition: WithPublicIp
     Properties:
       Domain: vpc
       InstanceId: !Ref VpbInstance
@@ -225,15 +257,31 @@ Resources:
           Value: !Sub "${AWS::StackName}-vpb-eip"
 
 Outputs:
-  VpbPublicIp:
-    Description: Public Elastic IP of the vPB instance.
-    Value: !Ref VpbEip
+  AccessMode:
+    Description: How the instances are reachable.
+    Value: !If
+      - WithPublicIp
+      - "Public Elastic IPs assigned. Reach the UIs over the internet."
+      - "Private IPs only. Reach the UIs over VPN / Direct Connect / VPC peering."
+  VpbAddress:
+    Description: Reachable address of the vPB (public EIP if assigned, else private IP).
+    Value: !If [WithPublicIp, !Ref VpbEip, !GetAtt VpbInstance.PrivateIp]
   VpbPrivateIp:
     Description: Private IP of the vPB instance.
     Value: !GetAtt VpbInstance.PrivateIp
   VpbUiUrl:
     Description: vPB web UI URL.
-    Value: !Sub "https://${VpbEip}"
+    Value: !If
+      - WithPublicIp
+      - !Sub "https://${VpbEip}"
+      - !Sub
+        - "https://${Ip}"
+        - Ip: !GetAtt VpbInstance.PrivateIp
   VpbSshCommand:
     Description: SSH command for OS-level access to the vPB instance (port 9022).
-    Value: !Sub "ssh -i <your-key>.pem -p 9022 admin@${VpbEip}"
+    Value: !If
+      - WithPublicIp
+      - !Sub "ssh -i <your-key>.pem -p 9022 admin@${VpbEip}"
+      - !Sub
+        - "ssh -i <your-key>.pem -p 9022 admin@${Ip}  (reachable over VPN/peering)"
+        - Ip: !GetAtt VpbInstance.PrivateIp

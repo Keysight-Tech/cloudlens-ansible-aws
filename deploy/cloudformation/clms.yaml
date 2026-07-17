@@ -16,30 +16,39 @@ Metadata:
           default: Instance
         Parameters:
           - InstanceType
+      - Label:
+          default: Access
+        Parameters:
           - KeyPairName
+          - AdminIngressCidr
+          - AssignPublicIp
       - Label:
           default: Network
         Parameters:
           - ExistingVpcId
           - ExistingSubnetId
+          - ExistingSecurityGroupId
           - VpcCidr
           - SubnetCidr
-          - AdminIngressCidr
     ParameterLabels:
       InstanceType:
         default: vController instance type
       KeyPairName:
         default: EC2 key pair for SSH
+      AdminIngressCidr:
+        default: Admin source CIDR for SSH, vPB SSH, and HTTPS
+      AssignPublicIp:
+        default: Assign public Elastic IP?
       ExistingVpcId:
         default: Existing VPC ID (blank to create a new VPC)
       ExistingSubnetId:
         default: Existing subnet ID (required when using an existing VPC)
+      ExistingSecurityGroupId:
+        default: Existing security group ID (blank to create one)
       VpcCidr:
         default: New VPC CIDR
       SubnetCidr:
         default: New subnet CIDR
-      AdminIngressCidr:
-        default: Admin source CIDR for SSH, vPB SSH, and HTTPS
 
 Parameters:
   InstanceType:
@@ -66,6 +75,15 @@ Parameters:
     Description: >
       Optional. ID of an existing subnet to attach the vController instance to.
       Required when Existing VPC ID is set. Leave blank when creating a new VPC.
+  ExistingSecurityGroupId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing security group to attach to the vController
+      instance (for example sg-0abc123). Blank = the template creates one scoped
+      to your Admin source CIDR. Supply your own when your org requires
+      pre-approved security groups. You are responsible for opening SSH (22),
+      vPB SSH (9022), and HTTPS (443).
   VpcCidr:
     Type: String
     Default: 10.99.0.0/16
@@ -82,7 +100,21 @@ Parameters:
     Description: >
       Source CIDR allowed to reach SSH (22), vPB SSH (9022), and HTTPS (443).
       Narrow this to your admin network. Default 0.0.0.0/0 is open to the internet.
+      Ignored when you supply an existing security group.
     AllowedPattern: ^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$
+  AssignPublicIp:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: >
+      yes = attach a public Elastic IP to each instance (default; reach the UIs
+      over the internet). no = private IPs only, no Elastic IPs - use this for
+      private subnets, no-public-IP SCPs, or when you reach the stack over
+      VPN / Direct Connect / VPC peering. When no, the private subnet still needs
+      outbound internet (NAT or VPC endpoints) for Marketplace activation and
+      first-boot bootstrap.
 
 Mappings:
   RegionMap:
@@ -91,6 +123,8 @@ Mappings:
 
 Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]
+  WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
+  CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
 
 Resources:
   Vpc:
@@ -126,7 +160,7 @@ Resources:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref SubnetCidr
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: !If [WithPublicIp, true, false]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vcontroller-subnet"
@@ -158,6 +192,7 @@ Resources:
 
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateSecurityGroup
     Properties:
       GroupDescription: vController management access (SSH, vPB SSH, HTTPS)
       VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
@@ -189,13 +224,14 @@ Resources:
       KeyName: !Ref KeyPairName
       SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
       SecurityGroupIds:
-        - !Ref SecurityGroup
+        - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vcontroller"
 
   ClmsEip:
     Type: AWS::EC2::EIP
+    Condition: WithPublicIp
     Properties:
       Domain: vpc
       InstanceId: !Ref ClmsInstance
@@ -204,15 +240,31 @@ Resources:
           Value: !Sub "${AWS::StackName}-vcontroller-eip"
 
 Outputs:
-  VcontrollerPublicIp:
-    Description: Public Elastic IP of the vController instance.
-    Value: !Ref ClmsEip
+  AccessMode:
+    Description: How the instance is reachable.
+    Value: !If
+      - WithPublicIp
+      - "Public Elastic IP assigned. Reach the UI over the internet."
+      - "Private IP only. Reach the UI over VPN / Direct Connect / VPC peering."
+  VcontrollerAddress:
+    Description: Reachable address of the vController (public EIP if assigned, else private IP).
+    Value: !If [WithPublicIp, !Ref ClmsEip, !GetAtt ClmsInstance.PrivateIp]
   VcontrollerPrivateIp:
     Description: Private IP of the vController instance.
     Value: !GetAtt ClmsInstance.PrivateIp
   VcontrollerUiUrl:
     Description: vController web UI URL. Default login admin / Cl0udLens@dm!n (change on first login).
-    Value: !Sub "https://${ClmsEip}"
+    Value: !If
+      - WithPublicIp
+      - !Sub "https://${ClmsEip}"
+      - !Sub
+        - "https://${Ip}"
+        - Ip: !GetAtt ClmsInstance.PrivateIp
   VcontrollerSshCommand:
     Description: SSH command for OS-level access to the vController instance.
-    Value: !Sub "Web UI https://${ClmsEip} (admin / Cl0udLens@dm!n). Appliance shell uses password auth, not the key pair."
+    Value: !If
+      - WithPublicIp
+      - !Sub "Web UI https://${ClmsEip} (admin / Cl0udLens@dm!n). Appliance shell uses password auth, not the key pair."
+      - !Sub
+        - "Web UI https://${Ip} (admin / Cl0udLens@dm!n), reachable over VPN/peering. Appliance shell uses password auth, not the key pair."
+        - Ip: !GetAtt ClmsInstance.PrivateIp

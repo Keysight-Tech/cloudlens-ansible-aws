@@ -16,11 +16,13 @@ Metadata:
         Parameters:
           - InstanceType
           - KeyPairName
+          - AssignPublicIp
       - Label:
           default: Network
         Parameters:
           - ExistingVpcId
           - ExistingSubnetId
+          - ExistingSecurityGroupId
           - VpcCidr
           - SubnetCidr
           - AdminIngressCidr
@@ -29,10 +31,14 @@ Metadata:
         default: KVO instance type (c5.2xlarge only)
       KeyPairName:
         default: EC2 key pair for SSH
+      AssignPublicIp:
+        default: Assign public Elastic IPs?
       ExistingVpcId:
         default: Existing VPC ID (blank to create a new VPC)
       ExistingSubnetId:
         default: Existing subnet ID (required when using an existing VPC)
+      ExistingSecurityGroupId:
+        default: Existing security group ID (blank to create one)
       VpcCidr:
         default: New VPC CIDR
       SubnetCidr:
@@ -52,6 +58,19 @@ Parameters:
   KeyPairName:
     Type: AWS::EC2::KeyPair::KeyName
     Description: Name of an existing EC2 key pair for OS-level SSH access to the KVO instance.
+  AssignPublicIp:
+    Type: String
+    Default: "yes"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: >
+      yes = attach a public Elastic IP to the instance (default; reach the UI
+      over the internet). no = private IP only, no Elastic IP - use this for
+      private subnets, no-public-IP SCPs, or when you reach the stack over
+      VPN / Direct Connect / VPC peering. When no, the private subnet still needs
+      outbound internet (NAT or VPC endpoints) for Marketplace activation and
+      first-boot bootstrap.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -65,6 +84,15 @@ Parameters:
     Description: >
       Optional. ID of an existing subnet to attach the KVO instance to. Required
       when Existing VPC ID is set. Leave blank when creating a new VPC.
+  ExistingSecurityGroupId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of an existing security group to attach to the instance
+      (for example sg-0abc123). Blank = the template creates one scoped to your
+      Admin source CIDR. Supply your own when your org requires pre-approved
+      security groups. You are responsible for opening SSH (22), vPB SSH (9022),
+      and HTTPS (443).
   VpcCidr:
     Type: String
     Default: 10.99.0.0/16
@@ -90,6 +118,8 @@ Mappings:
 
 Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]
+  WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
+  CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
 
 Resources:
   Vpc:
@@ -125,7 +155,7 @@ Resources:
       VpcId: !Ref Vpc
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: !Ref SubnetCidr
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: !If [WithPublicIp, true, false]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-kvo-subnet"
@@ -157,6 +187,7 @@ Resources:
 
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateSecurityGroup
     Properties:
       GroupDescription: KVO management access (SSH, vPB SSH, HTTPS)
       VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
@@ -188,13 +219,14 @@ Resources:
       KeyName: !Ref KeyPairName
       SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
       SecurityGroupIds:
-        - !Ref SecurityGroup
+        - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-kvo"
 
   KvoEip:
     Type: AWS::EC2::EIP
+    Condition: WithPublicIp
     Properties:
       Domain: vpc
       InstanceId: !Ref KvoInstance
@@ -203,15 +235,31 @@ Resources:
           Value: !Sub "${AWS::StackName}-kvo-eip"
 
 Outputs:
-  KvoPublicIp:
-    Description: Public Elastic IP of the KVO instance.
-    Value: !Ref KvoEip
+  AccessMode:
+    Description: How the instance is reachable.
+    Value: !If
+      - WithPublicIp
+      - "Public Elastic IP assigned. Reach the UI over the internet."
+      - "Private IP only. Reach the UI over VPN / Direct Connect / VPC peering."
+  KvoAddress:
+    Description: Reachable address of the KVO (public EIP if assigned, else private IP).
+    Value: !If [WithPublicIp, !Ref KvoEip, !GetAtt KvoInstance.PrivateIp]
   KvoPrivateIp:
     Description: Private IP of the KVO instance.
     Value: !GetAtt KvoInstance.PrivateIp
   KvoUiUrl:
     Description: KVO web UI URL. Allow about 15 minutes for full initialization.
-    Value: !Sub "https://${KvoEip}"
+    Value: !If
+      - WithPublicIp
+      - !Sub "https://${KvoEip}"
+      - !Sub
+        - "https://${Ip}"
+        - Ip: !GetAtt KvoInstance.PrivateIp
   KvoSshCommand:
     Description: SSH command for OS-level access to the KVO instance.
-    Value: !Sub "ssh -i <your-key>.pem -p 9022 admin@${KvoEip}"
+    Value: !If
+      - WithPublicIp
+      - !Sub "ssh -i <your-key>.pem -p 9022 admin@${KvoEip}"
+      - !Sub
+        - "ssh -i <your-key>.pem -p 9022 admin@${Ip}  (reachable over VPN/peering)"
+        - Ip: !GetAtt KvoInstance.PrivateIp

@@ -118,9 +118,38 @@ component.
 | --- | --- |
 | `KeyPairName` | Existing EC2 key pair for SSH. |
 | `InstanceType` | Fixed to the size the AMI is qualified on (single allowed value per component). |
-| `AdminIngressCidr` | Source CIDR allowed to reach SSH, vPB SSH, HTTPS, and VXLAN. Narrow this. |
+| `AdminIngressCidr` | Source CIDR allowed to reach SSH, vPB SSH, HTTPS, and VXLAN. Narrow this. Ignored when you supply your own security group. |
 | `ExistingVpcId` / `ExistingSubnetId` | Deploy into a VPC you already own. Leave blank to create a new one. |
+| `ExistingDataSubnetId` | (stack only) Separate subnet for the vPB data plane. Blank = vPB reuses the subnet above. |
+| `ExistingSecurityGroupId` | Attach a pre-approved security group instead of creating one. Blank = template creates one from `AdminIngressCidr`. |
+| `AssignPublicIp` | `yes` (default) = public Elastic IPs. `no` = private IPs only, no EIPs. |
 | `VpcCidr` | CIDR for the new VPC (default `10.99.0.0/16`) when not using an existing VPC. |
+
+## Deploy into existing infrastructure (any infra)
+
+Every template deploys greenfield (new VPC) by default, or into whatever the
+customer already runs. Mix and match these to fit the target environment:
+
+**Existing VPC + subnet.** Set `ExistingVpcId` and `ExistingSubnetId`. The
+template creates no VPC, IGW, subnets, or routes: instances land in the subnet
+you name. On the `stack` template, optionally set `ExistingDataSubnetId` to keep
+the vPB data plane in a separate subnet from the control plane.
+
+**Private subnet / no public IPs.** Set `AssignPublicIp` to `no`. No Elastic IPs
+are attached; the stack outputs private IPs and expects you to reach the UIs over
+VPN, Direct Connect, or VPC peering. The chosen subnet still needs outbound
+internet (NAT gateway or VPC endpoints) so the Marketplace AMIs can activate and
+the vPB first-boot bootstrap can run. Without egress, instances launch but never
+finish initializing.
+
+**Customer-managed security group.** Set `ExistingSecurityGroupId` to attach a
+security group your org already approved. The template then skips creating one,
+and `AdminIngressCidr` is ignored. You are responsible for opening SSH (22),
+vPB SSH (9022), HTTPS (443), and VXLAN (4789, 10800-10801).
+
+All four combinations are backward compatible: leave the new parameters at their
+defaults and the deploy behaves exactly as before (new VPC, public EIPs,
+template-managed security group).
 
 ## After deploy
 
