@@ -8,6 +8,30 @@ mirror the Azure ARM templates in the sibling `cloudlens-ansible-azure` repo.
 Region: **us-east-1**. Each template uses a `RegionMap` for the CloudLens
 Marketplace AMIs, so extend the mapping to add more regions.
 
+## Where the Launch Stack buttons fetch templates from
+
+CloudFormation's `?templateURL=` deeplink only accepts S3 URLs. GitHub raw
+URLs (`raw.githubusercontent.com`) are silently rejected with `TemplateURL
+must be a supported URL`. The docs site's Launch buttons point at a public
+S3 mirror of this directory:
+
+```
+https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/<name>.yaml
+```
+
+After changing any `*.yaml` here, re-sync so the buttons deploy the current
+template:
+
+```bash
+AWS_PROFILE=AdministratorAccess-466778915280 \
+  bash deploy/scripts/sync-cfn-templates-to-s3.sh
+```
+
+The script lints (cfn-lint), uploads, verifies public HTTPS reads, and calls
+`aws cloudformation validate-template` on the S3 URL to prove the button
+will work. See `.github/workflows/sync-cfn-templates.yml` for the CI path
+(opt-in via `AWS_ROLE_ARN` secret).
+
 ## Prerequisites
 
 1. **Subscribe to the CloudLens Marketplace AMIs** in your AWS account before
@@ -35,10 +59,10 @@ pre-loaded with the template from the `main` branch of this repo.
 
 ### Full stack (vController + KVO + vPB)
 
-[**Launch Stack**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&stackName=cloudlens-stack)
+[**Launch Stack**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&stackName=cloudlens-stack)
 
 ```
-https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&stackName=cloudlens-stack
+https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&stackName=cloudlens-stack
 ```
 
 The stack template has `DeployKVO` and `DeployVPB` toggles (`yes`/`no`) so you
@@ -49,26 +73,26 @@ and tool subnets.
 
 vController (CLMS):
 
-[**Launch vController**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fclms.yaml&stackName=cloudlens-vcontroller)
+[**Launch vController**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fclms.yaml&stackName=cloudlens-vcontroller)
 
 ```
-https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fclms.yaml&stackName=cloudlens-vcontroller
+https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fclms.yaml&stackName=cloudlens-vcontroller
 ```
 
 KVO:
 
-[**Launch KVO**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fkvo.yaml&stackName=cloudlens-kvo)
+[**Launch KVO**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fkvo.yaml&stackName=cloudlens-kvo)
 
 ```
-https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fkvo.yaml&stackName=cloudlens-kvo
+https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fkvo.yaml&stackName=cloudlens-kvo
 ```
 
 vPB:
 
-[**Launch vPB**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&stackName=cloudlens-vpb)
+[**Launch vPB**](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fvpb.yaml&stackName=cloudlens-vpb)
 
 ```
-https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&stackName=cloudlens-vpb
+https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fvpb.yaml&stackName=cloudlens-vpb
 ```
 
 ## Deploy from the CLI

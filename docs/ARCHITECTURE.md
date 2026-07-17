@@ -20,7 +20,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 | **CLMS** (CloudLens Manager) | Sensor management and registration | `t3.xlarge` | AWS Marketplace `ami-0bebd5e730315337e` |
 | **vPB-KVO** (Virtual Packet Broker) | Traffic filtering, dedup, load balancing | `t3.xlarge` only, SSH on port 9022 | AWS Marketplace `ami-0a561b450552b707d` |
 | **Collector SVM** (Service VM) | AWS VPC Traffic Mirror collector | Auto-deployed by KVO Zone Tapping | `ami-0c22ade3667f8d35a` v6.13.0 |
-| **Auto-Mirror Lambda** | EventBridge-driven instance tagger | python3.12, 128 MB | This repo's `cloudlens-ansible-aws.yaml` |
+| **Auto-Mirror Lambda** | EventBridge-driven instance tagger | python3.12, 128 MB | `deploy/cloudformation/stack.yaml` |
 
 ## Network topology
 

@@ -26,7 +26,7 @@ Copy-paste templates for SEs sending CloudLens Ansible intros, kickoff invites, 
 > https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/CloudLens-AutoPilot-Deployment-Runbook.docx
 >
 > **One-click deploy from your AWS Console:**
-> https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws
+> https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/stack.yaml&stackName=cloudlens-ansible-aws
 >
 > Before deploying, please subscribe to the 3 Keysight Marketplace products (one-time per AWS account). Direct links are on the public docs page under "AWS Marketplace prerequisites."
 >

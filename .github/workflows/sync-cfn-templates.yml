@@ -1,0 +1,73 @@
+name: Sync CFN Templates to S3
+
+# Keeps the public S3 copy of deploy/cloudformation/*.yaml aligned with
+# git. The docs site's "Launch Stack" buttons point at S3 (AWS CFN
+# refuses raw.githubusercontent.com URLs), so any drift breaks the
+# one-click deploy.
+#
+# Two modes:
+#   1. workflow_dispatch  - manual, always available
+#   2. push to main       - auto, ONLY if AWS_ROLE_ARN secret is set
+#                           (uses OIDC federation, no long-lived creds)
+#
+# One-time setup for auto mode (optional):
+#   a. In AWS: create an IAM role that trusts token.actions.githubusercontent.com
+#      with a condition on repo:Keysight-Tech/cloudlens-ansible-aws:ref:refs/heads/main.
+#      Attach a policy allowing s3:PutObject on
+#      arn:aws:s3:::keysight-cloudlens-templates/aws/*.
+#   b. In GitHub repo Settings > Secrets and variables > Actions:
+#      Add secret AWS_ROLE_ARN = arn of the role from step (a).
+#
+# Until then, run the manual "Sync CFN Templates to S3" workflow
+# from the Actions tab after any template change.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/cloudformation/**.yaml'
+      - 'deploy/scripts/sync-cfn-templates-to-s3.sh'
+      - '.github/workflows/sync-cfn-templates.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether AWS_ROLE_ARN is configured
+        id: check
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          if [[ -z "$AWS_ROLE_ARN" ]]; then
+            echo "AWS_ROLE_ARN secret not set. Skipping S3 sync."
+            echo "To enable: add repo secret AWS_ROLE_ARN pointing to the IAM role for OIDC federation."
+            echo "Meanwhile: run bash deploy/scripts/sync-cfn-templates-to-s3.sh locally after each template change."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.check.outputs.skip == 'false'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Install cfn-lint
+        if: steps.check.outputs.skip == 'false'
+        run: pip install cfn-lint
+
+      - name: Run sync script
+        if: steps.check.outputs.skip == 'false'
+        env:
+          BUCKET: keysight-cloudlens-templates
+          REGION: us-east-1
+        run: bash deploy/scripts/sync-cfn-templates-to-s3.sh

@@ -18,7 +18,7 @@ The full step-by-step runbook is in [`CloudLens-AutoPilot-Deployment-Runbook.doc
 
 ### Option 1: One-click via AWS Console
 
-[**▶ Deploy from AWS Console**](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml&stackName=cloudlens-ansible-aws)
+[**▶ Deploy from AWS Console**](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/stack.yaml&stackName=cloudlens-ansible-aws)
 
 The deeplink pre-loads the CFT from this repo. Fill the parameters (key pair, allowed CIDRs) and click **Create Stack**. ~5 minutes.
 
@@ -27,7 +27,7 @@ The deeplink pre-loads the CFT from this repo. Fill the parameters (key pair, al
 ```bash
 aws cloudformation create-stack \
   --stack-name cloudlens-ansible-aws \
-  --template-url https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/cloudlens-ansible-aws.yaml \
+  --template-url https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/stack.yaml \
   --parameters \
     ParameterKey=KeyPairName,ParameterValue=your-key-pair \
     ParameterKey=AllowedSshCidrs,ParameterValue=your.ip/32 \

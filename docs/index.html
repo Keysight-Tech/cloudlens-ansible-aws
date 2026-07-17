@@ -85,7 +85,7 @@
           <h1>CloudLens Autopilot for AWS</h1>
           <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (small deployments) or 30 to 60 minutes (thousands of instances). A full 3-component stack (vController + KVO + vPB) was launched live in AWS us-east-1 and reached CREATE_COMPLETE. Linux, Windows, fully automated.</p>
           <div class="cta-row">
-            <a class="btn btn-primary tier" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">
+            <a class="btn btn-primary tier" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">
               <span class="tier-num">1</span>
               <span class="tier-label">
                 <strong>Launch Stack</strong>
@@ -141,7 +141,7 @@
             <li>Instance types fixed to what each AMI is qualified on (t3.xlarge vController, c5.2xlarge KVO, t3.xlarge vPB)</li>
             <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/stack.yaml" target="_blank" rel="noopener">CloudFormation template</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">Terraform stack module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/deploy-stack.sh" target="_blank" rel="noopener">deploy-stack.sh</a></li>
           </ul>
-          <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
+          <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
         </div>
 
         <p class="prereq-or">Or deploy each product separately:</p>
@@ -158,7 +158,7 @@
               <li>Web UI: <code>https://&lt;vcontroller-ip&gt;</code></li>
               <li>UI login: <code>admin / Cl0udLens@dm!n</code> (change on first login)</li>
             </ul>
-            <a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fclms.yaml&amp;stackName=cloudlens-vcontroller" target="_blank" rel="noopener">&#9654; Launch vController</a>
+            <a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fclms.yaml&amp;stackName=cloudlens-vcontroller" target="_blank" rel="noopener">&#9654; Launch vController</a>
           </div>
           <div class="prereq-card">
             <h3>Vision Orchestrator (KVO) <span class="new-tag">NEW</span></h3>
@@ -171,7 +171,7 @@
               <li>Web UI: <code>https://&lt;kvo-ip&gt;</code></li>
               <li>UI login: <code>admin / admin</code> (change on first login)</li>
             </ul>
-            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fkvo.yaml&amp;stackName=cloudlens-kvo" target="_blank" rel="noopener">&#9654; Launch KVO</a>
+            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fkvo.yaml&amp;stackName=cloudlens-kvo" target="_blank" rel="noopener">&#9654; Launch KVO</a>
           </div>
           <div class="prereq-card">
             <h3>Virtual Packet Broker (vPB)</h3>
@@ -184,7 +184,7 @@
               <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/vpb.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
               <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
             </ul>
-            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
+            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
           </div>
         </div>
 
@@ -384,7 +384,7 @@ docker build -t cloudlens-ansible-aws .</code></pre>
                   <div class="path-card">
                     <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: CloudFormation</h4>
                     <p>One click. No local tools. Best for: trying it for the first time.</p>
-                    <a class="btn btn-primary inline-btn" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2FKeysight-Tech%2Fcloudlens-ansible-aws%2Fmain%2Fdeploy%2Fcloudformation%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">Launch Stack</a>
+                    <a class="btn btn-primary inline-btn" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">Launch Stack</a>
                   </div>
                   <div class="path-card">
                     <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: CloudShell</h4>

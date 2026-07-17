@@ -55,12 +55,22 @@ python3 -m http.server 8080
 The site's primary call to action is a CloudFormation quick-create deep link:
 
 ```
-https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/cloudformation/stack.yaml&stackName=cloudlens-stack
+https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/stack.yaml&stackName=cloudlens-stack
 ```
 
-Keep the `templateURL` pointed at the `main` branch raw URL so the button always
-pulls the current template. If you cut a release branch, update the URL in
-`index.html` to match.
+The `templateURL` points at the public S3 bucket
+`keysight-cloudlens-templates` (account 466778915280), not GitHub raw -
+CloudFormation refuses `raw.githubusercontent.com` URLs. Re-sync S3 after
+any template change:
+
+```bash
+AWS_PROFILE=AdministratorAccess-466778915280 \
+  bash deploy/scripts/sync-cfn-templates-to-s3.sh
+```
+
+If you cut a release branch and want the button to pin to that branch's
+templates, add a matching prefix (e.g. `aws/v1.2/`) in the sync script and
+update the URLs in `index.html`.
 
 ## Self-contained, no build step
 
