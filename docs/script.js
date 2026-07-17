@@ -263,4 +263,46 @@
   var style = document.createElement('style');
   style.textContent = '@keyframes cl-ripple { to { transform: scale(20); opacity: 0; } }';
   document.head.appendChild(style);
+
+  // ----- REGION PICKER -----
+  // Rewrites the region= query param in every AWS console Launch link so all
+  // buttons deploy into the region the user picks. Only the console region is
+  // changed; the S3 templateURL host (s3.us-east-1) is left untouched - one
+  // bucket serves the templates to CloudFormation in every region.
+  (function () {
+    var select = document.getElementById('region-select');
+    if (!select) return;
+
+    // Snapshot each console link's original href once, so repeated switches
+    // rewrite from a clean baseline instead of stacking replacements.
+    var links = [];
+    document.querySelectorAll('a[href*="console.aws.amazon.com"]').forEach(function (a) {
+      links.push({ el: a, base: a.getAttribute('href') });
+    });
+
+    function applyRegion(region) {
+      links.forEach(function (item) {
+        // Replace only the region= query parameter value. The S3 host uses a
+        // dotted region (s3.us-east-1.amazonaws.com), never region=, so it is
+        // never matched.
+        item.el.setAttribute(
+          'href',
+          item.base.replace(/([?&]region=)[a-z0-9-]+/g, '$1' + region)
+        );
+      });
+    }
+
+    // Persist the choice across page loads for convenience.
+    var saved = null;
+    try { saved = window.localStorage.getItem('cl-region'); } catch (e) {}
+    if (saved) {
+      var match = Array.prototype.some.call(select.options, function (o) { return o.value === saved; });
+      if (match) { select.value = saved; applyRegion(saved); }
+    }
+
+    select.addEventListener('change', function () {
+      applyRegion(select.value);
+      try { window.localStorage.setItem('cl-region', select.value); } catch (e) {}
+    });
+  })();
 })();

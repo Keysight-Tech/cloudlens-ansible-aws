@@ -193,7 +193,51 @@ Mappings:
     us-east-1:
       VcontrollerAmi: ami-0bebd5e730315337e
       KvoAmi: ami-017c0db8981569380
-      VpbAmi: ami-0a561b450552b707d
+      VpbAmi: ami-0d00b42a9748d580c
+    us-east-2:
+      VcontrollerAmi: ami-085c6b0cf292a110f
+      KvoAmi: ami-09ba4a3a96b404131
+      VpbAmi: ami-0bdb147359362e451
+    us-west-1:
+      VcontrollerAmi: ami-0420c02f2c555a402
+      KvoAmi: ami-078dcfe6ef376cbf8
+      VpbAmi: ami-0f4c90de5b6218bcb
+    us-west-2:
+      VcontrollerAmi: ami-0f3fba668617b18f1
+      KvoAmi: ami-0461fbb90a12fc90d
+      VpbAmi: ami-0b21fd86f3ef95d20
+    eu-west-1:
+      VcontrollerAmi: ami-0bf7638d1e75aac19
+      KvoAmi: ami-073bf2fb4534dbd7a
+      VpbAmi: ami-0a326441326d1a1ba
+    eu-west-2:
+      VcontrollerAmi: ami-0c8189014261e3c7f
+      KvoAmi: ami-0f0b3a8233656bee1
+      VpbAmi: ami-0c2424fa82af5583d
+    eu-central-1:
+      VcontrollerAmi: ami-0e8c6cc855fccfc22
+      KvoAmi: ami-0fcc45a154c9e0a9c
+      VpbAmi: ami-081212375359e9f18
+    ca-central-1:
+      VcontrollerAmi: ami-0b4ec2f46fc51cd6d
+      KvoAmi: ami-0164ddd77416f2ca2
+      VpbAmi: ami-036351ce1ebb5bf52
+    ap-southeast-1:
+      VcontrollerAmi: ami-04955ec1c6899170d
+      KvoAmi: ami-0c9a3935cfbc53ac8
+      VpbAmi: ami-0fd9d87d31db91dbb
+    ap-southeast-2:
+      VcontrollerAmi: ami-00fb08ffc483a3ea1
+      KvoAmi: ami-0b38af1afe0f11695
+      VpbAmi: ami-0c35e40887fa8547c
+    ap-northeast-1:
+      VcontrollerAmi: ami-05383c85ebe460ee6
+      KvoAmi: ami-096430c7ccaba7a2c
+      VpbAmi: ami-0cb2da0165c37db78
+    ap-south-1:
+      VcontrollerAmi: ami-0de9998616b04343e
+      KvoAmi: ami-0e579f93331cd8712
+      VpbAmi: ami-0fd34a7cce0d8aaaa
 
 Conditions:
   ExistingVPC: !Not [!Equals [!Ref ExistingVpcId, ""]]

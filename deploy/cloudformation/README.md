@@ -5,8 +5,15 @@ stack: **vController** (formerly CLMS, the control plane), **KVO** (Keysight
 Vision Orchestrator), and **vPB** (Virtual Packet Broker, the data plane). These
 mirror the Azure ARM templates in the sibling `cloudlens-ansible-azure` repo.
 
-Region: **us-east-1**. Each template uses a `RegionMap` for the CloudLens
-Marketplace AMIs, so extend the mapping to add more regions.
+**Multi-region.** Each template ships a `RegionMap` with the CloudLens
+Marketplace AMIs for 12 regions: us-east-1, us-east-2, us-west-1, us-west-2,
+ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
+ap-southeast-2, ap-northeast-1, ap-south-1. All regions pin the same product
+versions (vController CLMS 6.12.1-32, KVO 2.13.0, vPB 3.13.0-7 security-update-1),
+so the stack deploys identical software everywhere. The template resolves the
+right AMIs from `AWS::Region`, so just launch it in your target region (the docs
+site has a region picker, or change `region=` in the console URL). Subscribe to
+the Marketplace AMIs in each region before launching there.
 
 ## Where the Launch Stack buttons fetch templates from
 

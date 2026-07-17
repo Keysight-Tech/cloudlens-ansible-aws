@@ -132,6 +132,31 @@
         <h2>Don't have vController, KVO, or vPB yet?</h2>
         <p class="lede">Deploy them from AWS Marketplace in one click before running sensor deployments.</p>
 
+        <div class="region-picker" id="region-picker">
+          <label for="region-select">&#127760; Deploy to region</label>
+          <select id="region-select" aria-label="AWS region for all Launch buttons">
+            <optgroup label="North America">
+              <option value="us-east-1">US East (N. Virginia) &middot; us-east-1</option>
+              <option value="us-east-2">US East (Ohio) &middot; us-east-2</option>
+              <option value="us-west-1">US West (N. California) &middot; us-west-1</option>
+              <option value="us-west-2">US West (Oregon) &middot; us-west-2</option>
+              <option value="ca-central-1">Canada (Central) &middot; ca-central-1</option>
+            </optgroup>
+            <optgroup label="Europe">
+              <option value="eu-west-1">Europe (Ireland) &middot; eu-west-1</option>
+              <option value="eu-west-2">Europe (London) &middot; eu-west-2</option>
+              <option value="eu-central-1">Europe (Frankfurt) &middot; eu-central-1</option>
+            </optgroup>
+            <optgroup label="Asia Pacific">
+              <option value="ap-southeast-1">Asia Pacific (Singapore) &middot; ap-southeast-1</option>
+              <option value="ap-southeast-2">Asia Pacific (Sydney) &middot; ap-southeast-2</option>
+              <option value="ap-northeast-1">Asia Pacific (Tokyo) &middot; ap-northeast-1</option>
+              <option value="ap-south-1">Asia Pacific (Mumbai) &middot; ap-south-1</option>
+            </optgroup>
+          </select>
+          <span class="region-hint">Every Launch button below deploys the same CloudLens version in your chosen region. <strong>Subscribe to the Marketplace AMIs in that region first.</strong></span>
+        </div>
+
         <div class="prereq-card prereq-card-stack">
           <h3>&#9889; Deploy the full CloudLens Stack (recommended)</h3>
           <p>One CloudFormation stack. Provisions vController + KVO + vPB into a shared VPC with purpose-built mgmt, data, and tool subnets. About 15 minutes from click to ready.</p>
