@@ -85,19 +85,45 @@ TF_DIR_REL="deploy/terraform"
 # ---------------------------------------------------------------------
 DEFAULT_REGION="${CLOUDLENS_REGION:-us-east-1}"
 
+# Regions the CloudFormation RegionMap ships AMIs for. Keep in lock-step with
+# the RegionMap blocks in deploy/cloudformation/*.yaml.
+SUPPORTED_CFN_REGIONS="us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-west-1 eu-west-2 eu-central-1 ap-southeast-1 ap-southeast-2 ap-northeast-1 ap-south-1"
+
+# CloudLens Marketplace product owner + AMI names (stable product-code suffix
+# across every region). We resolve the region-correct AMI id from these names
+# at runtime so Phase 4's subscription probe and the Terraform path work in any
+# supported region. The template itself resolves AMIs from its own RegionMap.
+MARKETPLACE_OWNER="679593333241"
+CLMS_AMI_NAME="CLMS_6.12.1-32-prod-m4ufj3qrd4shm"
+KVO_AMI_NAME="kvo-2.13.0-prod-ol4ektflnyxn2"
+VPB_AMI_NAME="cloudlens-vpb-kvo-3.13.0-7-security-update-1-prod-ltzj3zafoveok"
+
+# us-east-1 fallback ids (used if name resolution fails, e.g. offline dry-run).
+# An explicit CLOUDLENS_*_AMI env var always wins and disables auto-resolution.
+CLMS_AMI_OVERRIDE="${CLOUDLENS_VCONTROLLER_AMI:-}"
+KVO_AMI_OVERRIDE="${CLOUDLENS_KVO_AMI:-}"
+VPB_AMI_OVERRIDE="${CLOUDLENS_VPB_AMI:-}"
 # vController (formerly CLMS)
-CLMS_AMI="${CLOUDLENS_VCONTROLLER_AMI:-ami-0bebd5e730315337e}"
+CLMS_AMI="${CLMS_AMI_OVERRIDE:-ami-0bebd5e730315337e}"
 CLMS_TYPE="${CLOUDLENS_VCONTROLLER_TYPE:-t3.xlarge}"
 # KVO (Keysight Vision Orchestrator)
-KVO_AMI="${CLOUDLENS_KVO_AMI:-ami-017c0db8981569380}"
+KVO_AMI="${KVO_AMI_OVERRIDE:-ami-017c0db8981569380}"
 KVO_TYPE="${CLOUDLENS_KVO_TYPE:-c5.2xlarge}"
 # vPB (Virtual Packet Broker) - management SSH is on port 9022, not 22
-VPB_AMI="${CLOUDLENS_VPB_AMI:-ami-0a561b450552b707d}"
+VPB_AMI="${VPB_AMI_OVERRIDE:-ami-0d00b42a9748d580c}"
 VPB_TYPE="${CLOUDLENS_VPB_TYPE:-t3.xlarge}"
 # Collector SVM (informational; not deployed by this stack directly)
 COLLECTOR_AMI="${CLOUDLENS_COLLECTOR_AMI:-ami-0c22ade3667f8d35a}"
 
 VPB_SSH_PORT="${CLOUDLENS_VPB_SSH_PORT:-9022}"
+
+# Brownfield / access (all optional; blank keeps greenfield behavior). These
+# map 1:1 onto the CloudFormation stack parameters of the same intent.
+EXISTING_VPC_ID="${CLOUDLENS_EXISTING_VPC_ID:-}"
+EXISTING_SUBNET_ID="${CLOUDLENS_EXISTING_SUBNET_ID:-}"
+EXISTING_DATA_SUBNET_ID="${CLOUDLENS_EXISTING_DATA_SUBNET_ID:-}"
+EXISTING_SG_ID="${CLOUDLENS_EXISTING_SG_ID:-}"
+ASSIGN_PUBLIC_IP="${CLOUDLENS_ASSIGN_PUBLIC_IP:-yes}"   # yes | no
 
 # Naming
 DEFAULT_STACK_NAME="${CLOUDLENS_STACK_NAME:-cloudlens-stack}"
@@ -206,6 +232,18 @@ vPB multi-NIC (fan-in / fan-out for prod):
 Access control:
   --admin-cidr CIDR         Source CIDR allowed to reach UI/SSH ports
                             (default: 0.0.0.0/0 - narrow this for prod)
+  --no-public-ip            Deploy with private IPs only (no Elastic IPs).
+                            For private subnets or no-public-IP orgs; reach
+                            the stack over VPN / Direct Connect / peering.
+  --public-ip               Force public Elastic IPs (this is the default).
+
+Deploy into existing infrastructure (brownfield):
+  --existing-vpc-id ID      Deploy into a VPC you already own (needs subnet).
+  --existing-subnet-id ID   Subnet to place the instances in.
+  --existing-data-subnet-id ID
+                            Separate subnet for the vPB data plane (optional).
+  --existing-sg-id ID       Attach a pre-approved security group instead of
+                            creating one (then --admin-cidr is ignored).
 
 Toggles:
   --no-kvo                  Skip KVO deployment
@@ -218,9 +256,17 @@ Toggles:
   --no-rollback             Force keep-partial behavior (default).
   -h, --help                Show this help
 
+Multi-region: CloudFormation ships AMIs for us-east-1, us-east-2, us-west-1,
+  us-west-2, ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
+  ap-southeast-2, ap-northeast-1, ap-south-1. Just pass --region; the script
+  resolves the region-correct AMIs. Subscribe to the Marketplace AMIs in that
+  region first.
+
 Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_REGION, CLOUDLENS_STACK_NAME, CLOUDLENS_ADMIN_USER,
-  CLOUDLENS_KEY_NAME, CLOUDLENS_ADMIN_CIDR,
+  CLOUDLENS_KEY_NAME, CLOUDLENS_ADMIN_CIDR, CLOUDLENS_ASSIGN_PUBLIC_IP,
+  CLOUDLENS_EXISTING_VPC_ID, CLOUDLENS_EXISTING_SUBNET_ID,
+  CLOUDLENS_EXISTING_DATA_SUBNET_ID, CLOUDLENS_EXISTING_SG_ID,
   CLOUDLENS_VCONTROLLER_AMI / _TYPE,
   CLOUDLENS_KVO_AMI / _TYPE,
   CLOUDLENS_VPB_AMI / _TYPE,
@@ -228,10 +274,15 @@ Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_DISCOVERY_TAG_KEY, CLOUDLENS_DISCOVERY_TAG_VALUE
 
 Example (full prod-style invocation):
-  CLOUDLENS_REGION=us-west-2 \
   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
-  | bash -s -- --with-kvo --vpb-ingress-nics 2 --vpb-egress-nics 2 \
+  | bash -s -- --region us-west-2 --with-kvo --vpb-ingress-nics 2 \
                 --admin-cidr 203.0.113.0/24 --key-name my-ec2-key
+
+Example (into existing private infra, no public IPs):
+  curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
+  | bash -s -- --region eu-central-1 --existing-vpc-id vpc-0abc123 \
+                --existing-subnet-id subnet-0def456 --existing-sg-id sg-0aaa111 \
+                --no-public-ip --key-name my-ec2-key
 
 What it does (phases):
   1. Banner + environment detection (CloudShell vs local)
@@ -275,6 +326,14 @@ while [[ $# -gt 0 ]]; do
     --key-name) KEY_NAME="$2"; shift 2 ;;
     --admin-cidr) ADMIN_CIDR="$2"; shift 2 ;;
 
+    # Brownfield: deploy into existing infrastructure
+    --existing-vpc-id) EXISTING_VPC_ID="$2"; shift 2 ;;
+    --existing-subnet-id) EXISTING_SUBNET_ID="$2"; shift 2 ;;
+    --existing-data-subnet-id) EXISTING_DATA_SUBNET_ID="$2"; shift 2 ;;
+    --existing-sg-id) EXISTING_SG_ID="$2"; shift 2 ;;
+    --no-public-ip) ASSIGN_PUBLIC_IP="no"; shift ;;
+    --public-ip) ASSIGN_PUBLIC_IP="yes"; shift ;;
+
     --vcontroller-type) CLMS_TYPE="$2"; shift 2 ;;
     --kvo-type) KVO_TYPE="$2"; shift 2 ;;
     --vpb-type) VPB_TYPE="$2"; shift 2 ;;
@@ -299,6 +358,23 @@ for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
     fail "$name must be an integer between $lo and $hi (got '$val'). Run with -h for usage."
   fi
 done
+
+# Validate AssignPublicIp
+case "$(to_lower "$ASSIGN_PUBLIC_IP")" in
+  yes|no) ASSIGN_PUBLIC_IP="$(to_lower "$ASSIGN_PUBLIC_IP")" ;;
+  *) fail "--no-public-ip/--public-ip: ASSIGN_PUBLIC_IP must be 'yes' or 'no' (got '$ASSIGN_PUBLIC_IP')." ;;
+esac
+
+# Brownfield sanity: an existing subnet needs an existing VPC, and vice versa.
+if [[ -n "$EXISTING_VPC_ID" && -z "$EXISTING_SUBNET_ID" ]]; then
+  fail "--existing-vpc-id requires --existing-subnet-id (which subnet to place instances in)."
+fi
+if [[ -z "$EXISTING_VPC_ID" && -n "$EXISTING_SUBNET_ID" ]]; then
+  fail "--existing-subnet-id requires --existing-vpc-id."
+fi
+if [[ -n "$EXISTING_DATA_SUBNET_ID" && -z "$EXISTING_VPC_ID" ]]; then
+  fail "--existing-data-subnet-id only applies with --existing-vpc-id / --existing-subnet-id."
+fi
 
 ADMIN_USERNAME="$DEFAULT_ADMIN_USER"
 
@@ -516,6 +592,42 @@ fi
 AWS_REGION_ARG=(--region "$REGION")
 export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION"
 
+# Warn early if the region is outside what the CFN RegionMap covers. The
+# Terraform path takes AMI ids directly, so it can still work if we resolve
+# them below.
+region_supported() {
+  case " $SUPPORTED_CFN_REGIONS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+if ! region_supported "$REGION"; then
+  warn "Region '${REGION}' is not in the CloudFormation RegionMap."
+  echo "  CFN-supported regions: ${SUPPORTED_CFN_REGIONS}"
+  echo "  You can still use --iac terraform (AMIs are resolved by name below),"
+  echo "  or pick a supported region."
+fi
+
+# Resolve the region-correct Marketplace AMI id from its stable product name,
+# unless the user pinned an explicit id via CLOUDLENS_*_AMI. This keeps Phase 4's
+# subscription probe and the Terraform path correct in every region. The CFN
+# template resolves its own AMIs from RegionMap, so this does not feed CFN.
+resolve_ami_by_name() {
+  local ami_name="$1"
+  aws "${AWS_REGION_ARG[@]}" ec2 describe-images --owners "$MARKETPLACE_OWNER" \
+    --filters "Name=name,Values=${ami_name}" \
+    --query 'Images[0].ImageId' --output text 2>/dev/null
+}
+if [[ "$DRY_RUN" != "true" ]]; then
+  if [[ -z "$CLMS_AMI_OVERRIDE" ]]; then
+    r="$(resolve_ami_by_name "$CLMS_AMI_NAME")"; [[ -n "$r" && "$r" != "None" ]] && CLMS_AMI="$r"
+  fi
+  if [[ -z "$KVO_AMI_OVERRIDE" ]]; then
+    r="$(resolve_ami_by_name "$KVO_AMI_NAME")"; [[ -n "$r" && "$r" != "None" ]] && KVO_AMI="$r"
+  fi
+  if [[ -z "$VPB_AMI_OVERRIDE" ]]; then
+    r="$(resolve_ami_by_name "$VPB_AMI_NAME")"; [[ -n "$r" && "$r" != "None" ]] && VPB_AMI="$r"
+  fi
+  note "Resolved AMIs for ${REGION}: vController=${CLMS_AMI} KVO=${KVO_AMI} vPB=${VPB_AMI}"
+fi
+
 # Stack name
 echo
 echo "Stack name is the CloudFormation stack (and Terraform workspace) that"
@@ -603,6 +715,15 @@ printf "  %-22s %s (%s)\n" "vController:" "$CLMS_AMI" "$CLMS_TYPE"
 [[ "$DEPLOY_VPB" == "true" ]] && printf "  %-22s %s (%s, +%s ingress/%s egress NICs, SSH %s)\n" \
   "vPB:" "$VPB_AMI" "$VPB_TYPE" "$VPB_INGRESS_NICS" "$VPB_EGRESS_NICS" "$VPB_SSH_PORT"
 printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
+printf "  %-22s %s\n" "Public IPs:" "$ASSIGN_PUBLIC_IP"
+if [[ -n "$EXISTING_VPC_ID" ]]; then
+  printf "  %-22s %s\n" "Existing VPC:" "$EXISTING_VPC_ID"
+  printf "  %-22s %s\n" "Existing subnet:" "$EXISTING_SUBNET_ID"
+  [[ -n "$EXISTING_DATA_SUBNET_ID" ]] && printf "  %-22s %s\n" "vPB data subnet:" "$EXISTING_DATA_SUBNET_ID"
+else
+  printf "  %-22s %s\n" "Network:" "new VPC (greenfield)"
+fi
+[[ -n "$EXISTING_SG_ID" ]] && printf "  %-22s %s\n" "Existing SG:" "$EXISTING_SG_ID"
 printf "  %-22s %s\n" "Rollback on failure:" "$ROLLBACK_ON_FAIL"
 echo
 
@@ -688,32 +809,40 @@ deploy_cfn() {
   local kvo_yn="no" vpb_yn="no"
   [[ "$DEPLOY_KVO" == "true" ]] && kvo_yn="yes"
   [[ "$DEPLOY_VPB" == "true" ]] && vpb_yn="yes"
+
+  # Build parameter-overrides. Always pass the core set; append brownfield /
+  # access params only when the customer set them, so blank ones keep the
+  # template defaults (greenfield, public IPs, template-managed SG).
+  local -a params=(
+    "KeyPairName=$KEY_NAME"
+    "DeployKVO=$kvo_yn"
+    "DeployVPB=$vpb_yn"
+    "AdminIngressCidr=$ADMIN_CIDR"
+    "AssignPublicIp=$ASSIGN_PUBLIC_IP"
+    "VcontrollerInstanceType=$CLMS_TYPE"
+    "KvoInstanceType=$KVO_TYPE"
+    "VpbInstanceType=$VPB_TYPE"
+  )
+  [[ -n "$EXISTING_VPC_ID" ]]         && params+=("ExistingVpcId=$EXISTING_VPC_ID")
+  [[ -n "$EXISTING_SUBNET_ID" ]]      && params+=("ExistingSubnetId=$EXISTING_SUBNET_ID")
+  [[ -n "$EXISTING_DATA_SUBNET_ID" ]] && params+=("ExistingDataSubnetId=$EXISTING_DATA_SUBNET_ID")
+  [[ -n "$EXISTING_SG_ID" ]]          && params+=("ExistingSecurityGroupId=$EXISTING_SG_ID")
+
   if [[ "$DRY_RUN" == "true" ]]; then
     dryrun_say "aws cloudformation deploy --stack-name ${STACK_NAME} --template-file ${tpl} \\
       --capabilities CAPABILITY_NAMED_IAM \\
-      --parameter-overrides KeyPairName=${KEY_NAME} DeployKVO=${kvo_yn} DeployVPB=${vpb_yn} \\
-        AdminIngressCidr=${ADMIN_CIDR} \\
-        VcontrollerInstanceType=${CLMS_TYPE} KvoInstanceType=${KVO_TYPE} VpbInstanceType=${VPB_TYPE}"
+      --parameter-overrides ${params[*]}"
     return 0
   fi
   [[ -f "$tpl" ]] || fail "CloudFormation template not found: $tpl"
-  if [[ "$REGION" != "us-east-1" ]]; then
-    warn "The CloudFormation RegionMap only ships us-east-1 AMIs. For ${REGION},"
-    warn "add a RegionMap entry to ${CFN_TEMPLATE_REL} or use --iac terraform"
-    warn "(the Terraform stack takes AMI ids directly)."
+  if ! region_supported "$REGION"; then
+    fail "Region ${REGION} has no RegionMap entry in ${CFN_TEMPLATE_REL}. Use a supported region (${SUPPORTED_CFN_REGIONS}) or --iac terraform."
   fi
   aws "${AWS_REGION_ARG[@]}" cloudformation deploy \
     --stack-name "$STACK_NAME" \
     --template-file "$tpl" \
     --capabilities CAPABILITY_NAMED_IAM \
-    --parameter-overrides \
-      KeyPairName="$KEY_NAME" \
-      DeployKVO="$kvo_yn" \
-      DeployVPB="$vpb_yn" \
-      AdminIngressCidr="$ADMIN_CIDR" \
-      VcontrollerInstanceType="$CLMS_TYPE" \
-      KvoInstanceType="$KVO_TYPE" \
-      VpbInstanceType="$VPB_TYPE"
+    --parameter-overrides "${params[@]}"
   CREATED_STACK=true
 }
 
@@ -763,9 +892,11 @@ if [[ "$IAC" == "terraform" ]]; then
   [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(tf_output vpb_public_ip)"
 else
   deploy_cfn
-  CLMS_PUBLIC_IP="$(cfn_output VcontrollerPublicIp)"
-  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(cfn_output KvoPublicIp)"
-  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(cfn_output VpbPublicIp)"
+  # Outputs are named *Address (public EIP when AssignPublicIp=yes, else the
+  # private IP). Same variable is used downstream for the wait + sensor chain.
+  CLMS_PUBLIC_IP="$(cfn_output VcontrollerAddress)"
+  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(cfn_output KvoAddress)"
+  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(cfn_output VpbAddress)"
 fi
 
 ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
@@ -780,7 +911,16 @@ step "Phase 7: Wait for vController initialization"
 if [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would poll https://${CLMS_PUBLIC_IP}:443 every 15s for up to 17 minutes"
 elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
-  warn "No public IP available, skipping wait"
+  warn "No address available, skipping wait"
+elif [[ "$ASSIGN_PUBLIC_IP" == "no" ]]; then
+  # Private-IP deploy: the address is a private IP not reachable from here
+  # unless this host is inside the VPC (VPN / Direct Connect / peering).
+  # Probing would just hang, so skip and let the operator verify over their
+  # private path.
+  warn "Deployed with private IPs (--no-public-ip). Skipping the port-443 probe."
+  note "vController private IP: ${CLMS_PUBLIC_IP}"
+  note "Reach https://${CLMS_PUBLIC_IP} over your VPN / Direct Connect / VPC peering."
+  note "Allow ~15 minutes for full initialization before logging in."
 else
   echo "vController needs ~15 minutes to initialize. The 443 UI typically responds"
   echo "within 60 seconds, with a further settle for backend services."
