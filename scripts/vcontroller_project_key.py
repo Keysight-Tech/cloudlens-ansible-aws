@@ -70,21 +70,40 @@ def log(msg: str) -> None:
     print(f"[vc-project-key] {msg}", file=sys.stderr, flush=True)
 
 
-def wait_for_eula(base_url: str, verify: TLSVerify, max_seconds: int = 1200) -> None:
-    """Poll until vController serves the EULA page (proves init complete)."""
+def wait_for_api(base_url: str, verify: TLSVerify, max_seconds: int = 1200) -> None:
+    """Poll until the vController REST API is actually serving, not just nginx.
+
+    Do NOT probe GET / for a 200 containing "cloudlens". nginx starts serving
+    the single-page app roughly ten minutes before the API backend comes up,
+    and the SPA fallback returns 200 with that HTML for EVERY unmatched path,
+    including bogus ones. A probe like that reports ready far too early and the
+    first real call then fails with a confusing HTTP 405.
+
+    Probe the login endpoint itself instead. While only the SPA is up, POST is
+    unroutable and nginx answers 405. Once the API is live the route exists and
+    answers 400/401/422 for bad credentials, which is what we are waiting for.
+    """
     deadline = time.time() + max_seconds
     while time.time() < deadline:
         try:
-            r = requests.get(f"{base_url}/", verify=verify, timeout=8, allow_redirects=False)
-            if r.status_code in (200, 302, 401) and ("eula" in r.headers.get("Location", "").lower()
-                                                     or "vController" in r.text or "cloudlens" in r.text.lower()):
-                log(f"vController reachable (HTTP {r.status_code})")
+            r = requests.post(f"{base_url}{EP_LOGIN}",
+                              json={"username": "__readiness_probe__", "password": "__probe__"},
+                              verify=verify, timeout=8)
+            ctype = r.headers.get("Content-Type", "").lower()
+            # 405 = SPA fallback only. Anything else from this route, or any
+            # JSON body, means the API is answering.
+            if r.status_code != 405 and (r.status_code in (200, 400, 401, 403, 422)
+                                         or "json" in ctype):
+                log(f"vController API is serving (login probe HTTP {r.status_code})")
                 return
         except requests.RequestException:
             pass
         remaining = int(deadline - time.time())
-        log(f"  waiting for vController on {base_url} ({remaining}s remaining)")
+        log(f"  waiting for vController API on {base_url} ({remaining}s remaining)")
         time.sleep(15)
+    log("vController API did not start in time. The appliance needs about 15 "
+        "minutes after CREATE_COMPLETE, and a private subnet still needs "
+        "outbound internet for first-boot activation.")
     raise SystemExit(1)
 
 
@@ -205,7 +224,7 @@ def main() -> int:
         log("TLS verification ON using system CA store")
 
     base = f"https://{args.host}"
-    wait_for_eula(base, verify, max_seconds=args.wait)
+    wait_for_api(base, verify, max_seconds=args.wait)
 
     session = requests.Session()
     if not login(session, base, DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS, verify):

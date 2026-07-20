@@ -32,8 +32,14 @@ keyed_groups:
   - prefix: region
     key: placement.region
 
-# Map customer tags → Ansible groups our playbooks expect
-conditional_groups:
+# Map customer tags to the Ansible groups our playbooks target.
+#
+# This MUST be "groups", not "conditional_groups". The amazon.aws.aws_ec2
+# inventory plugin has no "conditional_groups" option, and an unrecognised
+# key is silently ignored rather than rejected: the groups below were never
+# created, deploy.yaml matched zero hosts, and the sensor run reported success
+# having installed nothing.
+groups:
   ubuntu_prod_vms: "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'prod'"
   redhat_prod_vms: "tags.os | default('') == 'rhel' and tags.env | default('') == 'prod'"
   windows_prod_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'prod'"
@@ -43,11 +49,17 @@ conditional_groups:
 
 # Convenience host-level facts (used by playbooks)
 compose:
-  # Windows VMs over WinRM → use public IP (or SSM-tunnelled if private-only)
-  # Linux VMs over SSH    → use private IP if same VPC, else public IP
+  # Reach every host on its public IP when it has one, else the private IP.
+  #
+  # The control node is usually OUTSIDE the workload VPC (a laptop, or AWS
+  # CloudShell, which does not live in your VPC), so a private-IP-only
+  # ansible_host makes every Linux host unreachable and the run dies on SSH
+  # timeouts. Preferring the public IP works from anywhere, and the private
+  # fallback still covers private-subnet fleets reached over VPN, Direct
+  # Connect, peering, or an in-VPC jumpbox.
   ansible_host: >-
-    (public_ip_address) if (tags.os | default('') == 'windows' and public_ip_address is defined and public_ip_address != '')
-    else (private_ip_address)
+    public_ip_address if (public_ip_address is defined and public_ip_address != '')
+    else private_ip_address
   aws_region: placement.region
   aws_instance_id: instance_id
   aws_private_ip: private_ip_address

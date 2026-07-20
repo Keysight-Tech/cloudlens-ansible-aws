@@ -1139,19 +1139,39 @@ elif [[ "$ASSIGN_PUBLIC_IP" == "no" ]]; then
   note "Reach https://${CLMS_PUBLIC_IP} over your VPN / Direct Connect / VPC peering."
   note "Allow ~15 minutes for full initialization before logging in."
 else
-  echo "vController needs ~15 minutes to initialize. The 443 UI typically responds"
-  echo "within 60 seconds, with a further settle for backend services."
-  deadline=$(( $(date +%s) + 17*60 ))
+  # Wait for the API, not just the port. nginx accepts connections on 443 and
+  # serves the single-page app about ten minutes before the REST API is up,
+  # and the SPA fallback answers 200 for every unmatched path. Treating an open
+  # port (or any 200) as "ready" declares success far too early, and the next
+  # step then fails against an API that is not listening yet.
+  #
+  # While only the SPA is up, POST to the login route is unroutable and nginx
+  # answers 405. Once the API is live that route answers 400/401/422 for bad
+  # credentials, which is the real readiness signal.
+  echo "vController needs ~15 minutes to initialize. Waiting for its REST API"
+  echo "(not just port 443, which opens much earlier)."
+  deadline=$(( $(date +%s) + 20*60 ))
+  api_ready=false
   while (( $(date +%s) < deadline )); do
     remaining=$(( deadline - $(date +%s) ))
-    printf "\r%s seconds remaining, probing port 443..." "$remaining"
-    if (echo > /dev/tcp/"${CLMS_PUBLIC_IP}"/443) >/dev/null 2>&1; then
-      echo; ok "vController port 443 is open"
-      echo "Settling 2 more minutes for backend init..."; sleep 120; break
-    fi
+    printf "\r  %s seconds remaining, probing the vController API..." "$remaining"
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 -X POST \
+             -H "Content-Type: application/json" \
+             -d '{"username":"__probe__","password":"__probe__"}' \
+             "https://${CLMS_PUBLIC_IP}/api/v3/users/login" 2>/dev/null || echo "000")
+    case "$code" in
+      200|400|401|403|422) echo; ok "vController API is serving (probe HTTP ${code})"; api_ready=true; break ;;
+    esac
     sleep 15
   done
   echo
+  if [[ "$api_ready" != "true" ]]; then
+    warn "vController API did not come up within 20 minutes."
+    note "The instance is running; it may just need longer, or the subnet may lack"
+    note "the outbound internet access the appliance needs on first boot."
+    note "Check manually: curl -sk -o /dev/null -w '%{http_code}\\n' \\"
+    note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/api/v3/users/login"
+  fi
 fi
 
 # =====================================================================
