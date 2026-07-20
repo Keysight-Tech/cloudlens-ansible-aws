@@ -383,9 +383,14 @@ for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
 done
 
 # Validate instance types against what each Marketplace AMI actually permits.
-# Verified with run-instances --dry-run: anything else is rejected by AWS at
-# launch with UnsupportedOperation ("instance configuration for this AWS
-# Marketplace product is not supported"). Fail here rather than 3 phases later.
+# Anything else is rejected by AWS at launch with UnsupportedOperation
+# ("instance configuration for this AWS Marketplace product is not supported"),
+# so fail here rather than 3 phases later.
+#
+# Probed with run-instances --dry-run across ALL 12 RegionMap regions (84
+# checks): the permitted set is identical in every region, so these lists are
+# region-independent. Re-probe with deploy/scripts/probe-instance-types.sh if
+# Keysight publishes new AMI versions.
 VCONTROLLER_ALLOWED="t3.xlarge m5.xlarge"
 KVO_ALLOWED="c5.2xlarge"
 VPB_ALLOWED="t3.xlarge"
