@@ -437,6 +437,13 @@ on_error() {
   [[ "$CREATED_STACK" == "true" ]] && echo "  - Stack: ${STACK_NAME:-unknown} (engine: ${IAC})"
   echo
 
+  # If CloudFormation rejected the launch because Marketplace terms are not
+  # accepted, say so plainly with the subscribe links: that error is otherwise
+  # buried in the stack events.
+  if [[ "$IAC" == "cfn" ]] && [[ -n "${STACK_NAME:-}" ]] && declare -f report_marketplace_failure >/dev/null 2>&1; then
+    report_marketplace_failure || true
+  fi
+
   if [[ "$ROLLBACK_ON_FAIL" == "true" ]] && [[ "$CREATED_STACK" == "true" ]] && [[ -n "${STACK_NAME:-}" ]]; then
     echo -e "${C_YELLOW}--rollback is ON. Tearing down ${STACK_NAME} in 5 seconds (Ctrl+C to abort)...${C_RESET}"
     for i in 5 4 3 2 1; do printf "  %d... " "$i"; sleep 1; done
@@ -548,6 +555,30 @@ install_aws_cli() {
     note "Installing via the official AWS bundle ($arch)"
     curl -sSL "$url" -o /tmp/awscliv2.zip
     ( cd /tmp && unzip -q -o awscliv2.zip && sudo ./aws/install --update )
+  elif [[ "$os" == MINGW* || "$os" == MSYS* || "$os" == CYGWIN* ]]; then
+    # Git Bash / MSYS / Cygwin: the Linux bundle does not apply. Point at the
+    # MSI and offer to run it through Windows' own installer if msiexec is
+    # reachable from this shell.
+    note "Windows shell detected ($os). AWS CLI v2 ships as an MSI."
+    echo "    Download: https://awscli.amazonaws.com/AWSCLIV2.msi"
+    if command -v msiexec >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
+      read -rp "    Download and run the MSI installer now? [Y/n]: " yn || true
+      if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
+        curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "$TMPDIR/AWSCLIV2.msi" 2>/dev/null \
+          || curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "./AWSCLIV2.msi"
+        if command -v msiexec >/dev/null 2>&1; then
+          msiexec //i "AWSCLIV2.msi" //qb || warn "msiexec did not complete: run the MSI by hand."
+        else
+          powershell.exe -Command "Start-Process msiexec.exe -Wait -ArgumentList '/i AWSCLIV2.msi /qb'" \
+            || warn "Installer did not complete: run AWSCLIV2.msi by hand."
+        fi
+        note "Close and reopen this shell afterwards so PATH picks up 'aws'."
+      fi
+    else
+      echo "    Run that MSI, reopen this shell, then re-run this installer."
+    fi
+    command -v aws >/dev/null 2>&1 \
+      || fail "AWS CLI still not on PATH. Install the MSI, reopen the shell, then re-run."
   else
     fail "Unsupported OS ($os). Install AWS CLI v2 manually from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
   fi
@@ -574,12 +605,40 @@ fi
 # Verify caller identity (credentials present + valid)
 if [[ "$DRY_RUN" == "false" ]]; then
   if ! aws sts get-caller-identity >/dev/null 2>&1; then
-    warn "AWS credentials missing or invalid."
-    echo "  Configure them one of these ways, then re-run:"
-    echo "    aws configure                 # static access key"
-    echo "    aws sso login --profile NAME  # IAM Identity Center / SSO"
-    echo "    bash scripts/setup_aws_creds.sh   # guided setup"
-    fail "Cannot proceed without valid AWS credentials."
+    warn "No valid AWS credentials found in this shell."
+    echo
+    echo "  How do you sign in to AWS?"
+    echo "    1) IAM Identity Center / SSO   (runs: aws sso login)"
+    echo "    2) Access key + secret         (runs: aws configure)"
+    echo "    3) I will sort it out myself   (exit)"
+    echo
+    read -rp "  Choose 1-3 [1]: " auth_choice || true
+    case "${auth_choice:-1}" in
+      1)
+        read -rp "  AWS profile name (blank = default): " auth_profile || true
+        if [[ -n "$auth_profile" ]]; then
+          export AWS_PROFILE="$auth_profile"
+          aws sso login --profile "$auth_profile" || true
+        else
+          aws sso login || true
+        fi
+        ;;
+      2)
+        note "aws configure will prompt for Access Key, Secret, region, and output format."
+        aws configure || true
+        ;;
+      *)
+        echo "  Sign in with one of these, then re-run this installer:"
+        echo "    aws sso login --profile NAME  # IAM Identity Center / SSO"
+        echo "    aws configure                 # static access key"
+        fail "Cannot proceed without valid AWS credentials."
+        ;;
+    esac
+    # Re-check after the assisted login.
+    if ! aws sts get-caller-identity >/dev/null 2>&1; then
+      fail "Still no valid credentials. Sign in, then re-run this installer."
+    fi
+    ok "Signed in."
   fi
   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
   CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
@@ -813,40 +872,87 @@ echo
 step "Phase 4: Marketplace AMI subscriptions"
 
 # AWS Marketplace AMIs must be subscribed (terms accepted) on the account
-# before they can launch. Unlike Azure, there is no CLI to accept terms;
-# the subscribe click happens in the Marketplace console. We PROBE each AMI
-# with describe-images: if it resolves, the account can launch it; if not,
-# we surface the console URL and let the customer subscribe, then continue.
-check_ami_subscription() {
-  local label="$1" ami="$2"
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "aws ec2 describe-images --image-ids ${ami}  (${label})"
-    return 0
-  fi
-  if aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" \
-        --query 'Images[0].ImageId' --output text >/dev/null 2>/tmp/ami-err; then
-    ok "${label} AMI reachable: ${ami}"
-    return 0
-  fi
-  warn "${label} AMI ${ami} is not launchable by this account yet."
-  echo "    Most likely you have not accepted the Marketplace terms for it."
-  echo "    Subscribe once (free to subscribe, you pay only for the EC2 hours):"
-  echo "      https://aws.amazon.com/marketplace  ->  search 'Keysight CloudLens ${label}'"
-  echo "      Click 'Continue to Subscribe' -> 'Accept Terms'."
-  echo "    Details:"; sed 's/^/      /' /tmp/ami-err | head -3
-  echo
-  read -rp "    Press Enter once you have accepted the terms (or Ctrl+C to abort): " _ || true
-  # Re-probe once after they subscribe.
-  if aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" >/dev/null 2>&1; then
-    ok "${label} AMI now reachable: ${ami}"
+# before they can launch, and there is no CLI to accept terms: the subscribe
+# click happens in the Marketplace console.
+#
+# There is also no reliable way to pre-check it. The CloudLens AMIs are public
+# images, so describe-images succeeds regardless of subscription (an earlier
+# version of this script treated that as proof and printed a false "reachable"
+# all-clear). run-instances --dry-run does report OptInRequired, but it needs a
+# subnet, which does not exist yet on a greenfield deploy.
+#
+# So: show the exact subscribe links, let the customer confirm, and if the
+# terms really are missing, translate the deploy failure via
+# report_marketplace_failure instead of pretending to have verified it.
+# Print the Marketplace subscribe URL for an AMI. The CloudLens AMIs are PUBLIC
+# images, so describe-images succeeds whether or not the account has accepted
+# the terms: it cannot be used as a subscription test. What it does give us is
+# the Marketplace ProductCode, which maps to the exact subscribe page.
+ami_subscribe_url() {
+  local ami="$1" code
+  code=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" \
+           --query 'Images[0].ProductCodes[0].ProductCodeId' --output text 2>/dev/null)
+  if [[ -n "$code" && "$code" != "None" ]]; then
+    echo "https://aws.amazon.com/marketplace/pp?sku=${code}"
   else
-    warn "${label} AMI still not reachable. The stack deploy will fail if terms are truly not accepted."
+    echo "https://aws.amazon.com/marketplace/search/results?searchTerms=Keysight+CloudLens"
   fi
 }
 
+# Show the subscribe links and let the customer confirm. There is deliberately
+# no "reachable = subscribed" claim here: AWS offers no pre-flight API for
+# "is this account subscribed", and run-instances --dry-run needs a subnet that
+# does not exist yet on a greenfield deploy. If terms really are missing, the
+# deploy fails with OptInRequired and report_marketplace_failure explains it.
+check_ami_subscription() {
+  local label="$1" ami="$2"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would show the Marketplace subscribe link for ${label} (${ami})"
+    return 0
+  fi
+  local url; url="$(ami_subscribe_url "$ami")"
+  printf "  %-12s %s\n" "$label" "$url"
+}
+
+# Translate a Marketplace terms failure into something actionable. AWS reports
+# OptInRequired on the failing resource and its message already carries the
+# product URL, so surface it verbatim rather than guessing.
+report_marketplace_failure() {
+  local reasons
+  reasons=$(aws "${AWS_REGION_ARG[@]}" cloudformation describe-stack-events \
+              --stack-name "$STACK_NAME" \
+              --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason' \
+              --output text 2>/dev/null | tr '\t' '\n' | grep -i "OptInRequired\|Marketplace" | head -3)
+  [[ -z "$reasons" ]] && return 1
+  echo
+  warn "This failed because the AWS Marketplace terms are not accepted on this account."
+  echo "$reasons" | sed 's/^/    /'
+  echo
+  echo "  Subscribe (free to subscribe: you pay only for EC2 hours), then re-run:"
+  echo "    vController  $(ami_subscribe_url "$CLMS_AMI")"
+  [[ "$DEPLOY_KVO" == "true" ]] && echo "    KVO          $(ami_subscribe_url "$KVO_AMI")"
+  [[ "$DEPLOY_VPB" == "true" ]] && echo "    vPB          $(ami_subscribe_url "$VPB_AMI")"
+  echo "  Each one: Continue to Subscribe -> Accept Terms. Takes about a minute."
+  return 0
+}
+
+if [[ "$DRY_RUN" != "true" ]]; then
+  echo "Each CloudLens product needs a one-time Marketplace subscription on this"
+  echo "AWS account. Free to subscribe: you pay only for the EC2 hours."
+  echo
+fi
 check_ami_subscription "vController" "$CLMS_AMI"
 [[ "$DEPLOY_KVO" == "true" ]] && check_ami_subscription "KVO" "$KVO_AMI"
 [[ "$DEPLOY_VPB" == "true" ]] && check_ami_subscription "vPB" "$VPB_AMI"
+
+if [[ "$DRY_RUN" != "true" ]]; then
+  echo
+  echo "  On each page: Continue to Subscribe -> Accept Terms (about a minute each)."
+  echo "  Already subscribed on this account? Nothing to do."
+  echo "  Check anytime: https://console.aws.amazon.com/marketplace/home#/subscriptions"
+  echo
+  read -rp "Press Enter to continue (Ctrl+C to abort and subscribe first): " _ || true
+fi
 
 # =====================================================================
 # Phase 5: Infra engine selection
