@@ -119,6 +119,11 @@ VPB_SSH_PORT="${CLOUDLENS_VPB_SSH_PORT:-9022}"
 
 # Brownfield / access (all optional; blank keeps greenfield behavior). These
 # map 1:1 onto the CloudFormation stack parameters of the same intent.
+# Per-VM Name tag overrides. Blank keeps <stack>-vcontroller / -kvo / -vpb.
+VCONTROLLER_NAME="${CLOUDLENS_VCONTROLLER_NAME:-}"
+KVO_NAME="${CLOUDLENS_KVO_NAME:-}"
+VPB_NAME="${CLOUDLENS_VPB_NAME:-}"
+
 EXISTING_VPC_ID="${CLOUDLENS_EXISTING_VPC_ID:-}"
 EXISTING_SUBNET_ID="${CLOUDLENS_EXISTING_SUBNET_ID:-}"
 EXISTING_DATA_SUBNET_ID="${CLOUDLENS_EXISTING_DATA_SUBNET_ID:-}"
@@ -245,6 +250,11 @@ Access control:
                             the stack over VPN / Direct Connect / peering.
   --public-ip               Force public Elastic IPs (this is the default).
 
+VM names (optional, default <stack-name>-vcontroller / -kvo / -vpb):
+  --vcontroller-name NAME   Name tag for the vController instance
+  --kvo-name NAME           Name tag for the KVO instance
+  --vpb-name NAME           Name tag for the vPB instance
+
 Deploy into existing infrastructure (brownfield):
   --existing-vpc-id ID      Deploy into a VPC you already own (needs subnet).
   --existing-subnet-id ID   Subnet to place the instances in.
@@ -333,6 +343,11 @@ while [[ $# -gt 0 ]]; do
     --admin-user) DEFAULT_ADMIN_USER="$2"; shift 2 ;;
     --key-name) KEY_NAME="$2"; shift 2 ;;
     --admin-cidr) ADMIN_CIDR="$2"; shift 2 ;;
+
+    # Per-VM Name tag overrides
+    --vcontroller-name) VCONTROLLER_NAME="$2"; shift 2 ;;
+    --kvo-name) KVO_NAME="$2"; shift 2 ;;
+    --vpb-name) VPB_NAME="$2"; shift 2 ;;
 
     # Brownfield: deploy into existing infrastructure
     --existing-vpc-id) EXISTING_VPC_ID="$2"; shift 2 ;;
@@ -853,6 +868,9 @@ printf "  %-22s %s (%s)\n" "vController:" "$CLMS_AMI" "$CLMS_TYPE"
 [[ "$DEPLOY_KVO" == "true" ]] && printf "  %-22s %s (%s)\n" "KVO:" "$KVO_AMI" "$KVO_TYPE"
 [[ "$DEPLOY_VPB" == "true" ]] && printf "  %-22s %s (%s, +%s ingress/%s egress NICs, SSH %s)\n" \
   "vPB:" "$VPB_AMI" "$VPB_TYPE" "$VPB_INGRESS_NICS" "$VPB_EGRESS_NICS" "$VPB_SSH_PORT"
+printf "  %-22s %s\n" "vController name:" "${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
+[[ "$DEPLOY_KVO" == "true" ]] && printf "  %-22s %s\n" "KVO name:" "${KVO_NAME:-${STACK_NAME}-kvo}"
+[[ "$DEPLOY_VPB" == "true" ]] && printf "  %-22s %s\n" "vPB name:" "${VPB_NAME:-${STACK_NAME}-vpb}"
 printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
 printf "  %-22s %s\n" "Public IPs:" "$ASSIGN_PUBLIC_IP"
 if [[ -n "$EXISTING_VPC_ID" ]]; then
@@ -1014,6 +1032,9 @@ deploy_cfn() {
     "KvoInstanceType=$KVO_TYPE"
     "VpbInstanceType=$VPB_TYPE"
   )
+  [[ -n "$VCONTROLLER_NAME" ]]        && params+=("VcontrollerName=$VCONTROLLER_NAME")
+  [[ -n "$KVO_NAME" ]]                && params+=("KvoName=$KVO_NAME")
+  [[ -n "$VPB_NAME" ]]                && params+=("VpbName=$VPB_NAME")
   [[ -n "$EXISTING_VPC_ID" ]]         && params+=("ExistingVpcId=$EXISTING_VPC_ID")
   [[ -n "$EXISTING_SUBNET_ID" ]]      && params+=("ExistingSubnetId=$EXISTING_SUBNET_ID")
   [[ -n "$EXISTING_DATA_SUBNET_ID" ]] && params+=("ExistingDataSubnetId=$EXISTING_DATA_SUBNET_ID")

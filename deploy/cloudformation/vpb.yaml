@@ -21,6 +21,7 @@ Metadata:
       - Label:
           default: Network
         Parameters:
+          - InstanceName
           - ExistingVpcId
           - ExistingSubnetId
           - ExistingSecurityGroupId
@@ -35,6 +36,8 @@ Metadata:
         default: SSH key pair
       KeyPairName:
         default: EC2 key pair for SSH
+      InstanceName:
+        default: vPB VM name (optional)
       ExistingVpcId:
         default: Existing VPC ID (blank to create a new VPC)
       ExistingSubnetId:
@@ -80,6 +83,13 @@ Parameters:
       Existing EC2 key pair, picked from the live list of key pairs in this
       region. Used when the action above is "Use an existing key pair"; ignored
       (but still required by AWS) when creating a new one.
+  InstanceName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Name tag for the vPB instance. Blank = <StackName>-vpb.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
+    ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -166,6 +176,7 @@ Conditions:
   WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
   CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
   CreateKeyPair: !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
+  CustomInstanceName: !Not [!Equals [!Ref InstanceName, ""]]
 
 Resources:
   Vpc:
@@ -293,7 +304,7 @@ Resources:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-vpb"
+          Value: !If [CustomInstanceName, !Ref InstanceName, !Sub "${AWS::StackName}-vpb"]
       UserData:
         Fn::Base64: |
           #!/bin/bash

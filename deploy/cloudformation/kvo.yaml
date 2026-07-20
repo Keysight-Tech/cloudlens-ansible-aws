@@ -21,6 +21,7 @@ Metadata:
       - Label:
           default: Network
         Parameters:
+          - InstanceName
           - ExistingVpcId
           - ExistingSubnetId
           - ExistingSecurityGroupId
@@ -36,6 +37,8 @@ Metadata:
         default: EC2 key pair for SSH
       AssignPublicIp:
         default: Assign public Elastic IPs?
+      InstanceName:
+        default: KVO VM name (optional)
       ExistingVpcId:
         default: Existing VPC ID (blank to create a new VPC)
       ExistingSubnetId:
@@ -92,6 +95,13 @@ Parameters:
       VPN / Direct Connect / VPC peering. When no, the private subnet still needs
       outbound internet (NAT or VPC endpoints) for Marketplace activation and
       first-boot bootstrap.
+  InstanceName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Name tag for the KVO instance. Blank = <StackName>-kvo.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
+    ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -164,6 +174,7 @@ Conditions:
   WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
   CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
   CreateKeyPair: !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
+  CustomInstanceName: !Not [!Equals [!Ref InstanceName, ""]]
 
 Resources:
   Vpc:
@@ -280,7 +291,7 @@ Resources:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-kvo"
+          Value: !If [CustomInstanceName, !Ref InstanceName, !Sub "${AWS::StackName}-kvo"]
 
   KvoEip:
     Type: AWS::EC2::EIP

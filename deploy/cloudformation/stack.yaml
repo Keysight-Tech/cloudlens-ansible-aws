@@ -32,6 +32,12 @@ Metadata:
           - KvoInstanceType
           - VpbInstanceType
       - Label:
+          default: VM names (optional - blank uses <StackName>-vcontroller / -kvo / -vpb)
+        Parameters:
+          - VcontrollerName
+          - KvoName
+          - VpbName
+      - Label:
           default: Deploy into existing infrastructure (brownfield)
         Parameters:
           - ExistingVpcId
@@ -64,6 +70,12 @@ Metadata:
         default: KVO instance type (c5.2xlarge only)
       VpbInstanceType:
         default: vPB instance type (t3.xlarge only)
+      VcontrollerName:
+        default: vController VM name
+      KvoName:
+        default: KVO VM name
+      VpbName:
+        default: vPB VM name
       ExistingVpcId:
         default: Existing VPC ID (blank to create a shared VPC)
       ExistingSubnetId:
@@ -161,6 +173,27 @@ Parameters:
     AllowedValues:
       - t3.xlarge
     Description: Instance type for vPB. Qualified on t3.xlarge only.
+  VcontrollerName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Name tag for the vController instance. Blank = <StackName>-vcontroller.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
+    ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
+  KvoName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Name tag for the KVO instance. Blank = <StackName>-kvo.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
+    ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
+  VpbName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. Name tag for the vPB instance. Blank = <StackName>-vpb.
+    AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
+    ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -272,6 +305,9 @@ Conditions:
   WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
   CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
   CreateKeyPair: !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
+  CustomVcontrollerName: !Not [!Equals [!Ref VcontrollerName, ""]]
+  CustomKvoName: !Not [!Equals [!Ref KvoName, ""]]
+  CustomVpbName: !Not [!Equals [!Ref VpbName, ""]]
   UseDataSubnet: !Not [!Equals [!Ref ExistingDataSubnetId, ""]]
   # Elastic IPs are per-component AND gated on the public-IP toggle.
   VcontrollerHasEip: !Condition WithPublicIp
@@ -444,7 +480,7 @@ Resources:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-vcontroller"
+          Value: !If [CustomVcontrollerName, !Ref VcontrollerName, !Sub "${AWS::StackName}-vcontroller"]
 
   VcontrollerEip:
     Type: AWS::EC2::EIP
@@ -469,7 +505,7 @@ Resources:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-kvo"
+          Value: !If [CustomKvoName, !Ref KvoName, !Sub "${AWS::StackName}-kvo"]
 
   KvoEip:
     Type: AWS::EC2::EIP
@@ -499,7 +535,7 @@ Resources:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-vpb"
+          Value: !If [CustomVpbName, !Ref VpbName, !Sub "${AWS::StackName}-vpb"]
       UserData:
         Fn::Base64: |
           #!/bin/bash
