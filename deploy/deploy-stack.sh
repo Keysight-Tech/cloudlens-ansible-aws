@@ -220,10 +220,18 @@ Infrastructure engine:
                             deploy/cloudformation/stack.yaml; Terraform
                             uses deploy/terraform.
 
-Instance types (override if your prod workload is bigger):
-  --vcontroller-type TYPE   vController instance    (default: t3.xlarge)
-  --kvo-type TYPE           KVO instance            (default: c5.2xlarge)
-  --vpb-type TYPE           vPB instance            (default: t3.xlarge)
+Instance types (constrained by what each Marketplace AMI permits):
+  --vcontroller-type TYPE   t3.xlarge (default) or m5.xlarge. m5 gives
+                            dedicated CPU instead of burstable: prefer it
+                            for production.
+  --kvo-type TYPE           c5.2xlarge only (default)
+  --vpb-type TYPE           t3.xlarge only (default)
+                            Any other size is rejected by AWS at launch.
+
+SSH key pair:
+  --key-name NAME           Use this key pair, creating it if missing.
+                            Omit it and the script lists the key pairs in the
+                            region so you can pick one or create a new one.
 
 vPB multi-NIC (fan-in / fan-out for prod):
   --vpb-ingress-nics N      Extra ingress NICs      (default: 1)
@@ -358,6 +366,24 @@ for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
     fail "$name must be an integer between $lo and $hi (got '$val'). Run with -h for usage."
   fi
 done
+
+# Validate instance types against what each Marketplace AMI actually permits.
+# Verified with run-instances --dry-run: anything else is rejected by AWS at
+# launch with UnsupportedOperation ("instance configuration for this AWS
+# Marketplace product is not supported"). Fail here rather than 3 phases later.
+VCONTROLLER_ALLOWED="t3.xlarge m5.xlarge"
+KVO_ALLOWED="c5.2xlarge"
+VPB_ALLOWED="t3.xlarge"
+check_type() {
+  local label="$1" value="$2" allowed="$3"
+  case " $allowed " in
+    *" $value "*) return 0 ;;
+    *) fail "$label instance type '$value' is not supported by the Marketplace AMI. Allowed: ${allowed}." ;;
+  esac
+}
+check_type "vController" "$CLMS_TYPE" "$VCONTROLLER_ALLOWED"
+check_type "KVO"         "$KVO_TYPE"  "$KVO_ALLOWED"
+check_type "vPB"         "$VPB_TYPE"  "$VPB_ALLOWED"
 
 # Validate AssignPublicIp
 case "$(to_lower "$ASSIGN_PUBLIC_IP")" in
@@ -669,15 +695,69 @@ ensure_key_pair() {
   ok "Created key pair '${name}', private key saved to ${pem}"
 }
 
+# Interactive key pair chooser. Unlike the CloudFormation console (where an
+# AWS-typed dropdown parameter cannot be optional, so it must hard-require a
+# pre-existing key), the CLI can list what the account actually has AND create
+# one on demand. Shows existing keys so a typo cannot silently mint a duplicate.
+select_key_pair() {
+  local existing=() line pick default_new="cloudlens-key"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    KEY_NAME="${KEY_NAME:-$default_new}"
+    note "would select or create key pair '${KEY_NAME}'"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && existing+=("$line")
+  done < <(aws "${AWS_REGION_ARG[@]}" ec2 describe-key-pairs \
+             --query 'KeyPairs[].KeyName' --output text 2>/dev/null | tr '\t' '\n' | sort)
+
+  if [[ ${#existing[@]} -eq 0 ]]; then
+    warn "No EC2 key pairs exist in ${REGION}."
+    read -rp "Name for a new key pair to create [${default_new}]: " pick || true
+    KEY_NAME="${pick:-$default_new}"
+    ensure_key_pair "$KEY_NAME"
+    return 0
+  fi
+
+  echo
+  echo "EC2 key pairs in ${REGION}:"
+  local i=1
+  for line in "${existing[@]}"; do
+    printf "  %2d) %s\n" "$i" "$line"
+    i=$((i+1))
+  done
+  printf "  %2d) Create a NEW key pair\n" "$i"
+  echo
+  read -rp "Choose 1-${i}, or type a key pair name [1]: " pick || true
+  pick="${pick:-1}"
+
+  if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
+    KEY_NAME="${existing[$((pick-1))]}"
+    ok "Using existing key pair '${KEY_NAME}'"
+    return 0
+  fi
+
+  if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick == i )); then
+    read -rp "Name for the new key pair [${default_new}]: " pick || true
+    pick="${pick:-$default_new}"
+  fi
+
+  KEY_NAME="$pick"
+  ensure_key_pair "$KEY_NAME"
+}
+
 echo
 echo "KVO and vPB are reached over SSH with an EC2 key pair (no password):"
 echo "  KVO / vPB: ssh -i <key>.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@<ip>"
 echo "vController is appliance-managed via its web UI (admin / Cl0udLens@dm!n)."
-if [[ -z "$KEY_NAME" ]]; then
-  read -rp "EC2 key pair name [cloudlens-key]: " input_key; echo || true
-  KEY_NAME="${input_key:-cloudlens-key}"
+if [[ -n "$KEY_NAME" ]]; then
+  # Explicit --key-name / CLOUDLENS_KEY_NAME: honor it, create if missing.
+  ensure_key_pair "$KEY_NAME"
+else
+  select_key_pair
 fi
-ensure_key_pair "$KEY_NAME"
 
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then

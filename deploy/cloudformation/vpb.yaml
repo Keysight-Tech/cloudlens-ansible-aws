@@ -61,29 +61,25 @@ Parameters:
       t3.xlarge only, so this is the single allowed value.
   KeyPairAction:
     Type: String
-    Default: "Create a new key pair for me"
+    Default: "Use an existing key pair"
     AllowedValues:
-      - "Create a new key pair for me"
       - "Use an existing key pair"
+      - "Create a new key pair for me"
     Description: >
-      How the vPB instance gets its SSH key (port 9022). "Create a new key pair
-      for me" makes one named <StackName>-key and stores the private key in SSM
-      Parameter Store; the stack outputs the command to download it (pick this
-      when the account has no key pair yet). "Use an existing key pair" uses the
-      name you type below.
+      "Use an existing key pair" launches with the key selected in the dropdown
+      below. "Create a new key pair for me" instead creates one named
+      <StackName>-key and stores its private key in SSM Parameter Store; the
+      stack outputs the command to download it. AWS still requires a value in
+      the dropdown below even when creating a new key pair: pick any entry, it
+      is ignored. If that dropdown is empty the account has no key pairs at all
+      - create one in the EC2 console first, or use the CLI installer, which
+      creates one for you.
   KeyPairName:
-    Type: String
-    Default: ""
+    Type: AWS::EC2::KeyPair::KeyName
     Description: >
-      Name of an existing EC2 key pair. Required only when the action above is
-      "Use an existing key pair"; leave blank when creating a new one. This is a
-      text box rather than a dropdown because CloudFormation cannot make a key
-      pair dropdown optional: a dropdown parameter must always resolve to an
-      existing key, which would block first-time deploys in an account that has
-      none. List your key pairs with:
-      aws ec2 describe-key-pairs --query "KeyPairs[].KeyName" --output text
-    AllowedPattern: "^$|^[A-Za-z0-9_.\\-]{1,255}$"
-    ConstraintDescription: Blank, or a valid key pair name (letters, digits, dot, dash, underscore).
+      Existing EC2 key pair, picked from the live list of key pairs in this
+      region. Used when the action above is "Use an existing key pair"; ignored
+      (but still required by AWS) when creating a new one.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -169,12 +165,7 @@ Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]
   WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
   CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
-  # Create a key pair when the customer asked for one, OR when they chose
-  # "use existing" but left the name blank (treat it as the safe default rather
-  # than failing with an opaque EC2 error).
-  CreateKeyPair: !Or
-    - !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
-    - !Equals [!Ref KeyPairName, ""]
+  CreateKeyPair: !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
 
 Resources:
   Vpc:
