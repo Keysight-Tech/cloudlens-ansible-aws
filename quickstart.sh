@@ -71,14 +71,25 @@ DISCOVERED=$(ansible-inventory --list -i inventory/aws_ec2.yaml 2>/dev/null | py
 ok "Discovered $DISCOVERED tagged EC2 instance(s)"
 
 if [ "$DISCOVERED" = "0" ]; then
-  warn "Zero discovered. Verify tags on your EC2 instances:"
-  warn "  cloudlens=yes  os=ubuntu|rhel|windows  env=prod"
-  warn "Or run: aws ec2 describe-instances --filters Name=tag:cloudlens,Values=yes"
+  warn "Zero instances discovered, so there is nothing to install a sensor on."
+  echo "  Tag the workloads you want monitored, then re-run this script:"
+  echo "    aws ec2 create-tags --resources <instance-id> \\"
+  echo "        --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod"
+  echo "  (os = ubuntu | rhel | windows ; env = prod | dev)"
+  echo "  Check what is currently tagged:"
+  echo "    aws ec2 describe-instances --filters Name=tag:cloudlens,Values=yes \\"
+  echo "        --query 'Reservations[].Instances[].InstanceId' --output text"
+  echo ""
+  # Running the playbook against an empty inventory installs nothing but still
+  # exits 0, which previously printed a "Deploy complete" that was not true.
+  fail "Nothing to deploy. Tag at least one running instance and re-run."
 fi
 
 # === Run the deploy ===
 echo ""
-echo "→ Running deploy.yaml..."
-ansible-playbook deploy.yaml --extra-vars "@customer_input.yaml"
-
-ok "Deploy complete. Verify in CLMS UI: https://$(grep manager_ip_or_fqdn customer_input.yaml | awk '{print $2}' | tr -d '\"')/"
+echo "→ Running deploy.yaml against $DISCOVERED instance(s)..."
+if ansible-playbook deploy.yaml --extra-vars "@customer_input.yaml"; then
+  ok "Deploy complete on $DISCOVERED instance(s). Verify in the vController UI: https://$(grep manager_ip_or_fqdn customer_input.yaml | awk '{print $2}' | tr -d '\"')/"
+else
+  fail "ansible-playbook failed. The output above shows which task and host failed."
+fi
