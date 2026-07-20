@@ -814,6 +814,11 @@ deploy_cfn() {
   # access params only when the customer set them, so blank ones keep the
   # template defaults (greenfield, public IPs, template-managed SG).
   local -a params=(
+    # The CLI already created/verified the key pair in ensure_key_pair, so tell
+    # the template to use it. Without this the template's default action
+    # ("Create a new key pair for me") would win and mint a second key,
+    # stranding the private key we saved to ~/.ssh/<name>.pem.
+    "KeyPairAction=Use an existing key pair"
     "KeyPairName=$KEY_NAME"
     "DeployKVO=$kvo_yn"
     "DeployVPB=$vpb_yn"

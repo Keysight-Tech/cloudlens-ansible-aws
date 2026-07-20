@@ -19,6 +19,7 @@ Metadata:
       - Label:
           default: Access
         Parameters:
+          - KeyPairAction
           - KeyPairName
           - AdminIngressCidr
           - AssignPublicIp
@@ -33,6 +34,8 @@ Metadata:
     ParameterLabels:
       InstanceType:
         default: vController instance type
+      KeyPairAction:
+        default: SSH key pair
       KeyPairName:
         default: EC2 key pair for SSH
       AdminIngressCidr:
@@ -56,12 +59,35 @@ Parameters:
     Default: t3.xlarge
     AllowedValues:
       - t3.xlarge
+      - m5.xlarge
     Description: >
       Instance type for the vController AMI. The CloudLens vController image is
       qualified on t3.xlarge, so this is the single allowed value.
+  KeyPairAction:
+    Type: String
+    Default: "Create a new key pair for me"
+    AllowedValues:
+      - "Create a new key pair for me"
+      - "Use an existing key pair"
+    Description: >
+      How the instance gets its SSH key. "Create a new key pair for me" makes
+      one named <StackName>-key and stores the private key in SSM Parameter
+      Store; the stack outputs the command to download it (pick this when the
+      account has no key pair yet). "Use an existing key pair" uses the name you
+      type below.
   KeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: Name of an existing EC2 key pair for OS-level SSH access to the vController instance.
+    Type: String
+    Default: ""
+    Description: >
+      Name of an existing EC2 key pair. Required only when the action above is
+      "Use an existing key pair"; leave blank when creating a new one. This is a
+      text box rather than a dropdown because CloudFormation cannot make a key
+      pair dropdown optional: a dropdown parameter must always resolve to an
+      existing key, which would block first-time deploys in an account that has
+      none. List your key pairs with:
+      aws ec2 describe-key-pairs --query "KeyPairs[].KeyName" --output text
+    AllowedPattern: "^$|^[A-Za-z0-9_.\\-]{1,255}$"
+    ConstraintDescription: Blank, or a valid key pair name (letters, digits, dot, dash, underscore).
   ExistingVpcId:
     Type: String
     Default: ""
@@ -147,6 +173,12 @@ Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]
   WithPublicIp: !Equals [!Ref AssignPublicIp, "yes"]
   CreateSecurityGroup: !Equals [!Ref ExistingSecurityGroupId, ""]
+  # Create a key pair when the customer asked for one, OR when they chose
+  # "use existing" but left the name blank (treat it as the safe default rather
+  # than failing with an opaque EC2 error).
+  CreateKeyPair: !Or
+    - !Equals [!Ref KeyPairAction, "Create a new key pair for me"]
+    - !Equals [!Ref KeyPairName, ""]
 
 Resources:
   Vpc:
@@ -212,6 +244,20 @@ Resources:
       SubnetId: !Ref Subnet
       RouteTableId: !Ref RouteTable
 
+  # ---------- Key pair (only when the customer did not name one) ----------
+  # EC2 generates the key and stores the PRIVATE key in SSM Parameter Store as
+  # a SecureString at /ec2/keypair/<key-pair-id>. The stack outputs the exact
+  # command to download it. This is what makes a first-ever deploy possible in
+  # an account that has no key pair yet.
+  GeneratedKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: CreateKeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-key"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-key"
+
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Condition: CreateSecurityGroup
@@ -243,7 +289,7 @@ Resources:
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ami]
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyPairName
+      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
       SecurityGroupIds:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
@@ -262,6 +308,17 @@ Resources:
           Value: !Sub "${AWS::StackName}-vcontroller-eip"
 
 Outputs:
+  KeyPairUsed:
+    Description: EC2 key pair the instance was launched with.
+    Value: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
+  DownloadPrivateKeyCommand:
+    Condition: CreateKeyPair
+    Description: >
+      The stack created a key pair for you. Run this to download the private
+      key, then chmod 400 it before using it with ssh.
+    Value: !Sub
+      - "aws ssm get-parameter --name /ec2/keypair/${KeyId} --region ${AWS::Region} --with-decryption --query Parameter.Value --output text > ${AWS::StackName}-key.pem && chmod 400 ${AWS::StackName}-key.pem"
+      - KeyId: !GetAtt GeneratedKeyPair.KeyPairId
   AccessMode:
     Description: How the instance is reachable.
     Value: !If
