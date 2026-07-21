@@ -51,6 +51,7 @@
         <a href="#full-stack">Full Stack</a>
         <a href="#test-fixture">Test Fixture</a>
         <a href="#prereq-deploys">Deploy vController / KVO / vPB</a>
+        <a href="#deploy-options">Deployment Options</a>
         <a href="#start-here">Get Started</a>
         <a href="#why">Why</a>
         <a href="#wizard">Wizard</a>
@@ -163,7 +164,7 @@
           <ul>
             <li>One shared VPC with mgmt / data / tool subnets</li>
             <li>vController + KVO + vPB deployed together, each with its own Elastic IP</li>
-            <li>Instance types fixed to what each AMI is qualified on (t3.xlarge vController, c5.2xlarge KVO, t3.xlarge vPB)</li>
+            <li>Instance types constrained to what each Marketplace AMI permits: vController t3.xlarge or m5.xlarge, KVO c5.2xlarge, vPB t3.xlarge</li>
             <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/stack.yaml" target="_blank" rel="noopener">CloudFormation template</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">Terraform stack module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/deploy-stack.sh" target="_blank" rel="noopener">deploy-stack.sh</a></li>
           </ul>
           <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
@@ -226,6 +227,64 @@
 terraform init
 terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
         </details>
+      </div>
+    </section>
+
+    <!-- 1.05 DEPLOYMENT OPTIONS: brownfield, private IPs, key pairs, naming -->
+    <section id="deploy-options" class="prereq-section">
+      <div class="container">
+        <h2>Fitting it into the customer's environment</h2>
+        <p class="lede">Every Launch button and the CLI take the same options. Leave them alone for a clean lab build, or set them to drop CloudLens into infrastructure the customer already runs.</p>
+
+        <div class="prereq-card">
+          <h3>&#127970; Deploy into an existing VPC (brownfield)</h3>
+          <p>Name a VPC and subnet and the stack creates <strong>no networking at all</strong>: no VPC, no subnets, no internet gateway, no routes. The instances land beside the workloads they monitor.</p>
+          <ul>
+            <li><code>ExistingVpcId</code> + <code>ExistingSubnetId</code> &mdash; required together</li>
+            <li><code>ExistingDataSubnetId</code> &mdash; optional, puts the vPB data plane in its own subnet</li>
+            <li><code>ExistingSecurityGroupId</code> &mdash; optional, attaches a pre-approved SG instead of creating one. <code>AdminIngressCidr</code> is then ignored.</li>
+          </ul>
+          <p class="muted">Leave <code>ExistingVpcId</code> blank and the four CIDR fields build a fresh VPC instead. That single field is the greenfield / brownfield switch.</p>
+          <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
+  --existing-vpc-id vpc-0abc123 \
+  --existing-subnet-id subnet-0def456 \
+  --existing-sg-id sg-0aaa111</code></pre>
+        </div>
+
+        <div class="prereq-card">
+          <h3>&#128274; Private subnets and no public IPs</h3>
+          <p>Many enterprises forbid Elastic IPs on workload subnets. Set <code>AssignPublicIp</code> to <code>no</code> (or pass <code>--no-public-ip</code>) and no EIPs are created. The stack outputs private IPs and you reach the UIs over VPN, Direct Connect, or VPC peering.</p>
+          <div class="callout callout-warn">
+            <strong>The subnet still needs outbound internet.</strong> A NAT gateway or VPC endpoints are required so the Marketplace AMIs can activate and the vPB first-boot bootstrap can run. With no egress the instances launch but never finish initializing, and the stack still reports success.
+          </div>
+        </div>
+
+        <div class="prereq-card">
+          <h3>&#128273; SSH key pair: use an existing one or have it created</h3>
+          <p>A brand new AWS account has no key pairs, which used to block the wizard entirely. Now you choose:</p>
+          <ul>
+            <li><strong>Create a new key pair for me</strong> (default) &mdash; the stack creates <code>&lt;StackName&gt;-key</code>, EC2 stores the private key in SSM Parameter Store, and the stack outputs the exact command to download it</li>
+            <li><strong>Use an existing key pair</strong> &mdash; type the name in <code>KeyPairName</code></li>
+          </ul>
+          <p class="muted">The CLI lists the key pairs in your region and lets you pick one or create a new one. In the console it is a text box rather than a dropdown, because CloudFormation cannot make a key pair dropdown optional: a dropdown must always resolve to an existing key, which is exactly what blocks a first deploy.</p>
+          <pre><code># Download the auto-created private key (the stack prints this command)
+aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;region&gt; \
+  --with-decryption --query Parameter.Value --output text &gt; my-key.pem &amp;&amp; chmod 400 my-key.pem</code></pre>
+        </div>
+
+        <div class="prereq-card">
+          <h3>&#127991; Naming and instance sizes</h3>
+          <p>Instance names default to <code>&lt;StackName&gt;-vcontroller</code>, <code>-kvo</code>, and <code>-vpb</code>. Override any of them independently with <code>VcontrollerName</code>, <code>KvoName</code>, <code>VpbName</code> (or <code>--vcontroller-name</code> and friends) to match a customer naming standard. This sets the Name tag only, so renaming on a stack update does not replace the instance.</p>
+          <table class="results-table">
+            <thead><tr><th>Component</th><th>Permitted sizes</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>vController</td><td><code>t3.xlarge</code>, <code>m5.xlarge</code></td><td>m5 gives dedicated rather than burstable CPU: prefer it for production</td></tr>
+              <tr><td>KVO</td><td><code>c5.2xlarge</code></td><td>only size the AMI accepts</td></tr>
+              <tr><td>vPB</td><td><code>t3.xlarge</code></td><td>only size the AMI accepts</td></tr>
+            </tbody>
+          </table>
+          <p class="muted">These are enforced by the AWS Marketplace product, not by us. Any other size is rejected at launch with <code>UnsupportedOperation</code>. Verified with dry-run launches across all twelve supported regions.</p>
+        </div>
       </div>
     </section>
 
