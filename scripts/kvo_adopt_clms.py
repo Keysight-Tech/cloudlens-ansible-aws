@@ -95,16 +95,32 @@ def kvo_adopt(base, token, name, clms_ip, kvo_user, kvo_pass, verify):
          "{ uid name ip user status } }")
     d = gql(base, token, m, verify)
     if "errors" in d:
-        log(f"adopt failed: {d['errors'][0]['message'][:200]}"); return None
+        msg = d["errors"][0]["message"]
+        if "already exists" in msg.lower():
+            log(f"CLM {name} already adopted; will verify its status"); return "EXISTS"
+        log(f"adopt failed: {msg[:200]}"); return None
     return d["data"]["createCloudLensManager"]
 
 def kvo_commit(base, token, verify):
-    d = gql(base, token, 'mutation { createChangeRequest(name: "adopt-clms") { uid } }', verify)
+    """Commit any change request the adopt staged.
+
+    Observed: via the API, createCloudLensManager returns status CONNECTED
+    immediately and no change request is left pending, so this is usually a
+    no-op. The UI raises a commit prompt, but the API path does not require it.
+    createChangeRequest returns a LIST of change requests, not a single object.
+    """
+    d = gql(base, token, 'mutation { createChangeRequest(name: "adopt-clms") { uid status } }', verify)
     if "errors" in d:
-        log(f"createChangeRequest failed: {d['errors'][0]['message'][:200]}"); return False
-    uid = d["data"]["createChangeRequest"]["uid"]
+        # Nothing to commit (adopt already applied) is fine, not a failure.
+        log(f"no change request to open ({d['errors'][0]['message'][:120]}); "
+            "adopt likely applied directly")
+        return True
+    crs = d.get("data", {}).get("createChangeRequest") or []
+    if not crs:
+        log("no change request staged; adopt applied directly"); return True
+    uid = crs[0]["uid"]
     log(f"change request {uid} opened; committing")
-    c = gql(base, token, f'mutation {{ commitChangeRequest(uid: {_q(uid)}, ignoreWarnings: true) }}', verify)
+    c = gql(base, token, f'mutation {{ commitChangeRequest(uid: {_q(uid)}, ignoreWarnings: true) {{ uid status }} }}', verify)
     if "errors" in c:
         log(f"commit failed: {c['errors'][0]['message'][:200]}"); return False
     log("change request committed"); return True
@@ -175,8 +191,12 @@ def main():
     adopted = kvo_adopt(kvo, ktok_probe, args.name, args.clms,
                         args.kvo_user_email, args.kvo_user_pass, verify)
     if not adopted: return 5
-    log(f"adopt staged: {adopted}")
-    if not kvo_commit(kvo, ktok_probe, verify): return 5
+    if adopted == "EXISTS":
+        # Idempotent re-run: nothing to stage, just confirm it is CONNECTED.
+        pass
+    else:
+        log(f"adopt staged: {adopted}")
+        if not kvo_commit(kvo, ktok_probe, verify): return 5
 
     # 6. wait for CONNECTED
     if not kvo_wait_connected(kvo, ktok_probe, args.name, verify): return 6
