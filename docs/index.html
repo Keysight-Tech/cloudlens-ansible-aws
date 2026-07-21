@@ -1026,6 +1026,26 @@ aws cloudformation wait stack-delete-complete \
 
         <div class="faq-grid">
           <details class="faq-item">
+            <summary>Stack rolled back: "The maximum number of addresses has been reached"</summary>
+            <div class="faq-body">
+              <p>You are out of Elastic IPs. <strong>The default quota is 5 per region</strong>, and the full stack needs 3 (one each for vController, KVO, and vPB). If the account already holds EIPs, the deploy runs for several minutes, allocates what it can, then fails on the last one and rolls the whole stack back.</p>
+              <p>The usual cause is <strong>orphaned EIPs</strong>: terminating a stack's instances from the EC2 console leaves the CloudFormation stack, and its Elastic IPs, in place. They bill hourly while attached to nothing, and they block the next deploy.</p>
+              <p>List anything unattached:</p>
+              <pre><code>aws ec2 describe-addresses --region us-east-1 \
+  --query 'Addresses[?AssociationId==`null`].[PublicIp,AllocationId,Tags[?Key==`Name`]|[0].Value]' \
+  --output table</code></pre>
+              <p>If they belong to a stack whose instances are already gone, delete the stack so it does not simply recreate them:</p>
+              <pre><code>aws cloudformation delete-stack --stack-name &lt;name&gt; --region us-east-1</code></pre>
+              <p>Otherwise release them directly:</p>
+              <pre><code>aws ec2 describe-addresses --region us-east-1 \
+  --query 'Addresses[?AssociationId==`null`].AllocationId' --output text \
+  | tr '\t' '\n' | xargs -I{} aws ec2 release-address --region us-east-1 --allocation-id {}</code></pre>
+              <p>Alternatives: <a href="https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-0263D0A3" target="_blank" rel="noopener">request a quota increase</a>, or deploy with no public IPs at all using <code>--no-public-ip</code> (see <a href="#deploy-options">Deployment options</a>) and reach the stack over VPN, Direct Connect, or peering.</p>
+              <p class="muted"><code>deploy-stack.sh</code> now checks this before deploying and tells you which addresses to free, so you get the message in seconds instead of after a rollback.</p>
+            </div>
+          </details>
+
+          <details class="faq-item">
             <summary>I don't have vController (formerly CLMS) yet. Where do I start?</summary>
             <div class="faq-body">
               <p>Use the <a href="#prereq-deploys">Launch vController button</a> at the top of this page, or launch the full stack with the <a href="#prereq-deploys">Launch CloudLens Stack button above</a>. vController comes from AWS Marketplace, deploys in about 15 minutes, and is ready before you start tagging your instances. While you are there, also deploy <strong>KVO</strong> if you want centralized fleet orchestration across multiple vPB instances.</p>

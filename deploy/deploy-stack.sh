@@ -977,6 +977,77 @@ if [[ "$DRY_RUN" != "true" ]]; then
   read -rp "Press Enter to continue (Ctrl+C to abort and subscribe first): " _ || true
 fi
 
+# ---------------------------------------------------------------------
+# Elastic IP headroom.
+#
+# Each component with a public IP consumes one EIP, and the default quota is
+# 5 per region. Orphaned EIPs are easy to accumulate: terminating a stack's
+# instances from the EC2 console leaves the stack, and its EIPs, in place. When
+# the quota is short the deploy still runs for several minutes, allocates what
+# it can, then dies on "The maximum number of addresses has been reached" and
+# rolls the whole stack back. Checking here turns a ten minute failure into an
+# immediate, actionable message.
+# ---------------------------------------------------------------------
+check_eip_headroom() {
+  [[ "$DRY_RUN" == "true" ]] && return 0
+  [[ "$ASSIGN_PUBLIC_IP" != "yes" ]] && { note "No public IPs requested, skipping Elastic IP quota check."; return 0; }
+
+  local need=1
+  [[ "$DEPLOY_KVO" == "true" ]] && need=$((need+1))
+  [[ "$DEPLOY_VPB" == "true" ]] && need=$((need+1))
+
+  local used limit free
+  used=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null)
+  [[ "$used" =~ ^[0-9]+$ ]] || { warn "Could not read Elastic IP usage; skipping quota check."; return 0; }
+
+  limit=$(aws "${AWS_REGION_ARG[@]}" service-quotas get-service-quota \
+            --service-code ec2 --quota-code L-0263D0A3 \
+            --query 'Quota.Value' --output text 2>/dev/null | cut -d. -f1)
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=5   # AWS default when the quota API is not permitted
+
+  free=$(( limit - used ))
+  if (( free >= need )); then
+    ok "Elastic IPs: ${used}/${limit} in use, need ${need}, ${free} free"
+    return 0
+  fi
+
+  warn "Not enough Elastic IPs in ${REGION}: need ${need}, only ${free} free (${used}/${limit} in use)."
+  echo "    The deploy would run for several minutes and then roll back."
+  echo
+
+  # Unattached EIPs are pure waste: they bill hourly and block deploys.
+  local orphans
+  orphans=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-addresses \
+    --query 'Addresses[?AssociationId==`null`].[PublicIp,AllocationId,Tags[?Key==`Name`]|[0].Value]' \
+    --output text 2>/dev/null)
+
+  if [[ -n "$orphans" ]]; then
+    echo "    Unattached Elastic IPs (billing hourly, attached to nothing):"
+    echo "$orphans" | while read -r ip alloc name; do
+      printf "      %-16s %-24s %s\n" "$ip" "$alloc" "${name:-untagged}"
+    done
+    echo
+    echo "    Release them all with:"
+    echo "      aws ec2 describe-addresses --region ${REGION} \\"
+    echo "        --query 'Addresses[?AssociationId==\`null\`].AllocationId' --output text \\"
+    echo "        | tr '\\t' '\\n' | xargs -I{} aws ec2 release-address --region ${REGION} --allocation-id {}"
+    echo
+    echo "    If they belong to a CloudFormation stack whose instances are gone,"
+    echo "    delete that stack instead so it does not recreate them:"
+    echo "      aws cloudformation delete-stack --stack-name <name> --region ${REGION}"
+  else
+    echo "    All Elastic IPs are in use by running instances. Request a quota increase:"
+    echo "      https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-0263D0A3"
+  fi
+  echo
+  echo "    Or deploy without public IPs and reach the stack privately:"
+  echo "      re-run with --no-public-ip"
+  echo
+  read -rp "    Continue anyway? [y/N]: " yn || true
+  [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
+}
+check_eip_headroom
+
 # =====================================================================
 # Phase 5: Infra engine selection
 # =====================================================================
