@@ -130,6 +130,11 @@ EXISTING_DATA_SUBNET_ID="${CLOUDLENS_EXISTING_DATA_SUBNET_ID:-}"
 EXISTING_SG_ID="${CLOUDLENS_EXISTING_SG_ID:-}"
 ASSIGN_PUBLIC_IP="${CLOUDLENS_ASSIGN_PUBLIC_IP:-yes}"   # yes | no
 
+# Optional test workloads deployed INTO the stack's own subnet, so sensors reach
+# vController privately and traffic mirroring between them and the vPB is
+# possible. Comma list: ubuntu,rhel,windows (or "none").
+TEST_VMS="${CLOUDLENS_TEST_VMS:-}"
+
 # Naming
 DEFAULT_STACK_NAME="${CLOUDLENS_STACK_NAME:-cloudlens-stack}"
 DEFAULT_ADMIN_USER="${CLOUDLENS_ADMIN_USER:-admin}"   # KVO/vPB KCOS images log in as admin
@@ -255,6 +260,13 @@ VM names (optional, default <stack-name>-vcontroller / -kvo / -vpb):
   --kvo-name NAME           Name tag for the KVO instance
   --vpb-name NAME           Name tag for the vPB instance
 
+Test workloads (optional, deployed into the stack's own subnet):
+  --test-vms LIST           Comma list of throwaway VMs to deploy alongside the
+                            stack so you can prove the sensor path immediately:
+                            ubuntu, rhel, windows, all, or none (default none).
+                            They are tagged with the discovery tag below, so the
+                            sensor step finds them with no extra work.
+
 Deploy into existing infrastructure (brownfield):
   --existing-vpc-id ID      Deploy into a VPC you already own (needs subnet).
   --existing-subnet-id ID   Subnet to place the instances in.
@@ -355,6 +367,7 @@ while [[ $# -gt 0 ]]; do
     --existing-data-subnet-id) EXISTING_DATA_SUBNET_ID="$2"; shift 2 ;;
     --existing-sg-id) EXISTING_SG_ID="$2"; shift 2 ;;
     --no-public-ip) ASSIGN_PUBLIC_IP="no"; shift ;;
+    --test-vms) TEST_VMS="$2"; shift 2 ;;
     --public-ip) ASSIGN_PUBLIC_IP="yes"; shift ;;
 
     --vcontroller-type) CLMS_TYPE="$2"; shift 2 ;;
@@ -404,6 +417,22 @@ check_type() {
 check_type "vController" "$CLMS_TYPE" "$VCONTROLLER_ALLOWED"
 check_type "KVO"         "$KVO_TYPE"  "$KVO_ALLOWED"
 check_type "vPB"         "$VPB_TYPE"  "$VPB_ALLOWED"
+
+# Parse --test-vms into per-OS toggles the template understands.
+TEST_UBUNTU=no; TEST_RHEL=no; TEST_WINDOWS=no
+if [[ -n "$TEST_VMS" && "$(to_lower "$TEST_VMS")" != "none" ]]; then
+  IFS=',' read -ra _tv <<< "$(to_lower "$TEST_VMS")"
+  for v in "${_tv[@]}"; do
+    case "${v// /}" in
+      ubuntu)  TEST_UBUNTU=yes ;;
+      rhel|redhat) TEST_RHEL=yes ;;
+      windows) TEST_WINDOWS=yes ;;
+      all)     TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes ;;
+      "")      ;;
+      *) fail "--test-vms: unknown value '$v'. Use ubuntu, rhel, windows, all, or none (comma separated)." ;;
+    esac
+  done
+fi
 
 # Validate AssignPublicIp
 case "$(to_lower "$ASSIGN_PUBLIC_IP")" in
@@ -1104,6 +1133,11 @@ deploy_cfn() {
     "DeployVPB=$vpb_yn"
     "AdminIngressCidr=$ADMIN_CIDR"
     "AssignPublicIp=$ASSIGN_PUBLIC_IP"
+    "DeployTestWorkloadUbuntu=$TEST_UBUNTU"
+    "DeployTestWorkloadRhel=$TEST_RHEL"
+    "DeployTestWorkloadWindows=$TEST_WINDOWS"
+    "DiscoveryTagKey=$DISCOVERY_TAG_KEY"
+    "DiscoveryTagValue=$DISCOVERY_TAG_VALUE"
     "VcontrollerInstanceType=$CLMS_TYPE"
     "KvoInstanceType=$KVO_TYPE"
     "VpbInstanceType=$VPB_TYPE"

@@ -40,6 +40,14 @@ Metadata:
           - KvoName
           - VpbName
       - Label:
+          default: Test workloads (optional - VMs to prove the sensor path)
+        Parameters:
+          - DeployTestWorkloadUbuntu
+          - DeployTestWorkloadRhel
+          - DeployTestWorkloadWindows
+          - DiscoveryTagKey
+          - DiscoveryTagValue
+      - Label:
           default: Deploy into existing infrastructure (brownfield)
         Parameters:
           - ExistingVpcId
@@ -78,6 +86,16 @@ Metadata:
         default: KVO VM name
       VpbName:
         default: vPB VM name
+      DeployTestWorkloadUbuntu:
+        default: Ubuntu 22.04 test VM?
+      DeployTestWorkloadRhel:
+        default: RHEL 9 test VM?
+      DeployTestWorkloadWindows:
+        default: Windows Server 2022 test VM?
+      DiscoveryTagKey:
+        default: Sensor discovery tag key
+      DiscoveryTagValue:
+        default: Sensor discovery tag value
       ExistingVpcId:
         default: Existing VPC ID (blank to create a shared VPC)
       ExistingSubnetId:
@@ -196,6 +214,52 @@ Parameters:
       Optional. Name tag for the vPB instance. Blank = <StackName>-vpb.
     AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
     ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
+  DeployTestWorkloadUbuntu:
+    Type: String
+    Default: "no"
+    AllowedValues: ["no", "yes"]
+    Description: >
+      Deploy an Ubuntu 22.04 test VM into this stack's subnet, tagged for sensor
+      discovery. For proving the sensor path end to end without hand-building a
+      workload. Uses t3.small.
+  DeployTestWorkloadRhel:
+    Type: String
+    Default: "no"
+    AllowedValues: ["no", "yes"]
+    Description: >
+      Deploy a RHEL 9 test VM into this stack's subnet, tagged for sensor
+      discovery. Uses t3.small.
+  DeployTestWorkloadWindows:
+    Type: String
+    Default: "no"
+    AllowedValues: ["no", "yes"]
+    Description: >
+      Deploy a Windows Server 2022 test VM into this stack's subnet, tagged for
+      sensor discovery. Uses t3.medium; Windows needs the extra memory.
+  DiscoveryTagKey:
+    Type: String
+    Default: cloudlens
+    Description: >
+      Tag key written on the test VMs so the sensor playbook finds them. Must
+      match the discovery tag the sensor deployment filters on.
+    AllowedPattern: "^[A-Za-z0-9_.:/=+@-]{1,128}$"
+  DiscoveryTagValue:
+    Type: String
+    Default: "yes"
+    Description: Tag value paired with the key above.
+    AllowedPattern: "^[A-Za-z0-9_.:/=+@ -]{1,256}$"
+  TestWorkloadUbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: >
+      Resolved automatically from Canonical's public SSM parameter, so it always
+      tracks the current Ubuntu 22.04 image. Leave as is.
+  TestWorkloadWindowsAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base
+    Description: >
+      Resolved automatically from the AWS public SSM parameter, so it always
+      tracks the current Windows Server 2022 image. Leave as is.
   ExistingVpcId:
     Type: String
     Default: ""
@@ -254,50 +318,62 @@ Mappings:
       VcontrollerAmi: ami-0bebd5e730315337e
       KvoAmi: ami-017c0db8981569380
       VpbAmi: ami-0d00b42a9748d580c
+      TestRhelAmi: ami-037b1265ce539a36b
     us-east-2:
       VcontrollerAmi: ami-085c6b0cf292a110f
       KvoAmi: ami-09ba4a3a96b404131
       VpbAmi: ami-0bdb147359362e451
+      TestRhelAmi: ami-00abb3be2c0a00884
     us-west-1:
       VcontrollerAmi: ami-0420c02f2c555a402
       KvoAmi: ami-078dcfe6ef376cbf8
       VpbAmi: ami-0f4c90de5b6218bcb
+      TestRhelAmi: ami-01bd9d5a15b53f425
     us-west-2:
       VcontrollerAmi: ami-0f3fba668617b18f1
       KvoAmi: ami-0461fbb90a12fc90d
       VpbAmi: ami-0b21fd86f3ef95d20
+      TestRhelAmi: ami-01a0de0b8c3e70f9b
     eu-west-1:
       VcontrollerAmi: ami-0bf7638d1e75aac19
       KvoAmi: ami-073bf2fb4534dbd7a
       VpbAmi: ami-0a326441326d1a1ba
+      TestRhelAmi: ami-02568ac5ddcbd31e7
     eu-west-2:
       VcontrollerAmi: ami-0c8189014261e3c7f
       KvoAmi: ami-0f0b3a8233656bee1
       VpbAmi: ami-0c2424fa82af5583d
+      TestRhelAmi: ami-069464cbf08dc03ee
     eu-central-1:
       VcontrollerAmi: ami-0e8c6cc855fccfc22
       KvoAmi: ami-0fcc45a154c9e0a9c
       VpbAmi: ami-081212375359e9f18
+      TestRhelAmi: ami-070b1015e2969b61e
     ca-central-1:
       VcontrollerAmi: ami-0b4ec2f46fc51cd6d
       KvoAmi: ami-0164ddd77416f2ca2
       VpbAmi: ami-036351ce1ebb5bf52
+      TestRhelAmi: ami-04abfc5870b97cb27
     ap-southeast-1:
       VcontrollerAmi: ami-04955ec1c6899170d
       KvoAmi: ami-0c9a3935cfbc53ac8
       VpbAmi: ami-0fd9d87d31db91dbb
+      TestRhelAmi: ami-0f88780df278d47eb
     ap-southeast-2:
       VcontrollerAmi: ami-00fb08ffc483a3ea1
       KvoAmi: ami-0b38af1afe0f11695
       VpbAmi: ami-0c35e40887fa8547c
+      TestRhelAmi: ami-00db6ff7f6494b853
     ap-northeast-1:
       VcontrollerAmi: ami-05383c85ebe460ee6
       KvoAmi: ami-096430c7ccaba7a2c
       VpbAmi: ami-0cb2da0165c37db78
+      TestRhelAmi: ami-0154353c91d5d85fd
     ap-south-1:
       VcontrollerAmi: ami-0de9998616b04343e
       KvoAmi: ami-0e579f93331cd8712
       VpbAmi: ami-0fd34a7cce0d8aaaa
+      TestRhelAmi: ami-07965f2ce18015293
 
 Conditions:
   ExistingVPC: !Not [!Equals [!Ref ExistingVpcId, ""]]
@@ -311,6 +387,10 @@ Conditions:
   CustomKvoName: !Not [!Equals [!Ref KvoName, ""]]
   CustomVpbName: !Not [!Equals [!Ref VpbName, ""]]
   UseDataSubnet: !Not [!Equals [!Ref ExistingDataSubnetId, ""]]
+  TestUbuntu: !Equals [!Ref DeployTestWorkloadUbuntu, "yes"]
+  TestRhel: !Equals [!Ref DeployTestWorkloadRhel, "yes"]
+  TestWindows: !Equals [!Ref DeployTestWorkloadWindows, "yes"]
+  AnyTestWorkload: !Or [!Condition TestUbuntu, !Condition TestRhel, !Condition TestWindows]
   # Elastic IPs are per-component AND gated on the public-IP toggle.
   VcontrollerHasEip: !Condition WithPublicIp
   KvoHasEip: !And [!Condition DeployKVO, !Condition WithPublicIp]
@@ -713,6 +793,101 @@ Resources:
       AllocationId: !GetAtt VpbEip.AllocationId
       InstanceId: !Ref VpbInstance
 
+  # ---------- Optional test workloads ----------
+  # Plain VMs that exist only to prove the sensor path. They land in THIS
+  # stack's subnet, not a separate VPC, so sensors reach vController over the
+  # private network and VPC Traffic Mirroring between them and the vPB is
+  # actually possible. A fixture in its own VPC cannot demonstrate either.
+  TestWorkloadSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: AnyTestWorkload
+    Properties:
+      GroupDescription: CloudLens test workload VMs
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupIngress:
+        - Description: SSH from the admin network
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIngressCidr
+        - Description: RDP from the admin network (Windows)
+          IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: !Ref AdminIngressCidr
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-testworkload-sg"
+
+  TestUbuntuInstance:
+    Type: AWS::EC2::Instance
+    Condition: TestUbuntu
+    # Gated on the same pre-check as the CloudLens instances: if the deploy
+    # is going to fail on Elastic IP quota, do not launch throwaway VMs first.
+    DependsOn: EipPreflight
+    Properties:
+      ImageId: !Ref TestWorkloadUbuntuAmi
+      InstanceType: t3.small
+      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref TestWorkloadSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-test-ubuntu"
+        - Key: !Ref DiscoveryTagKey
+          Value: !Ref DiscoveryTagValue
+        - Key: os
+          Value: ubuntu
+        - Key: env
+          Value: test
+
+  TestRhelInstance:
+    Type: AWS::EC2::Instance
+    Condition: TestRhel
+    # Gated on the same pre-check as the CloudLens instances: if the deploy
+    # is going to fail on Elastic IP quota, do not launch throwaway VMs first.
+    DependsOn: EipPreflight
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", TestRhelAmi]
+      InstanceType: t3.small
+      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref TestWorkloadSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-test-rhel"
+        - Key: !Ref DiscoveryTagKey
+          Value: !Ref DiscoveryTagValue
+        - Key: os
+          Value: rhel
+        - Key: env
+          Value: test
+
+  TestWindowsInstance:
+    Type: AWS::EC2::Instance
+    Condition: TestWindows
+    # Gated on the same pre-check as the CloudLens instances: if the deploy
+    # is going to fail on Elastic IP quota, do not launch throwaway VMs first.
+    DependsOn: EipPreflight
+    Properties:
+      ImageId: !Ref TestWorkloadWindowsAmi
+      InstanceType: t3.medium
+      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
+      SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+      SecurityGroupIds:
+        - !Ref TestWorkloadSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-test-windows"
+        - Key: !Ref DiscoveryTagKey
+          Value: !Ref DiscoveryTagValue
+        - Key: os
+          Value: windows
+        - Key: env
+          Value: test
+
 Outputs:
   SharedVpcId:
     Description: VPC the stack deployed into.
@@ -791,6 +966,16 @@ Outputs:
       - !Sub
         - "ssh -i <your-key>.pem -p 9022 admin@${Ip}  (reachable over VPN/peering)"
         - Ip: !GetAtt VpbInstance.PrivateIp
+  TestWorkloadsDeployed:
+    Condition: AnyTestWorkload
+    Description: Test VMs created by this stack, tagged for sensor discovery.
+    Value: !Sub
+      - "tag ${K}=${V} | ubuntu:${U} rhel:${R} windows:${W}"
+      - K: !Ref DiscoveryTagKey
+        V: !Ref DiscoveryTagValue
+        U: !If [TestUbuntu, !GetAtt TestUbuntuInstance.PrivateIp, "-"]
+        R: !If [TestRhel, !GetAtt TestRhelInstance.PrivateIp, "-"]
+        W: !If [TestWindows, !GetAtt TestWindowsInstance.PrivateIp, "-"]
   NextSteps:
     Description: What to do after the stack finishes.
     Value: >

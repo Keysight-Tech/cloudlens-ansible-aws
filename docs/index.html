@@ -60,6 +60,7 @@
         <a href="#test-fixture">Test Fixture</a>
         <a href="#prereq-deploys">Marketplace</a>
         <a href="#deploy-options">Options</a>
+        <a href="#deploy-progress">Progress</a>
         <a href="#start-here">Get Started</a>
         <a href="#why">Why</a>
         <a href="#wizard">Wizard</a>
@@ -280,6 +281,23 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
   --with-decryption --query Parameter.Value --output text &gt; my-key.pem &amp;&amp; chmod 400 my-key.pem</code></pre>
         </div>
 
+
+        <div class="prereq-card">
+          <h3>&#129514; Test workloads deployed with the stack</h3>
+          <p>Tick any combination of <strong>Ubuntu 22.04</strong>, <strong>RHEL 9</strong>, and <strong>Windows Server 2022</strong> and the stack brings them up alongside CloudLens, already tagged for sensor discovery. Nothing is deployed unless you ask: all three default to no.</p>
+          <p>The important part is <strong>where</strong> they land. They go into this stack's own subnet, not a separate VPC, which is what makes a real end-to-end test possible:</p>
+          <ul>
+            <li>Sensors reach vController over the <strong>private network</strong>, the same path a customer's workloads use</li>
+            <li><strong>VPC Traffic Mirroring between the test VM and the vPB works</strong>. Mirroring requires a shared or peered VPC, so a fixture in its own VPC can never exercise the data plane</li>
+            <li>They carry your discovery tag from launch, so the sensor step finds them with no extra work</li>
+          </ul>
+          <p>Set the tag to match whatever your sensor deployment filters on (defaults to <code>cloudlens=yes</code>).</p>
+          <pre><code># same thing from the CLI
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
+  --test-vms all                 # or: ubuntu,windows / rhel / none</code></pre>
+          <p class="muted">Ubuntu and Windows images resolve from public SSM parameters so they always track the current release. RHEL has no public parameter, so its AMIs are pinned per region and refreshed when Red Hat publishes a new build.</p>
+        </div>
+
         <div class="prereq-card">
           <h3>&#127991; Naming and instance sizes</h3>
           <p>Instance names default to <code>&lt;StackName&gt;-vcontroller</code>, <code>-kvo</code>, and <code>-vpb</code>. Override any of them independently with <code>VcontrollerName</code>, <code>KvoName</code>, <code>VpbName</code> (or <code>--vcontroller-name</code> and friends) to match a customer naming standard. This sets the Name tag only, so renaming on a stack update does not replace the instance.</p>
@@ -293,6 +311,73 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           </table>
           <p class="muted">These are enforced by the AWS Marketplace product, not by us. Any other size is rejected at launch with <code>UnsupportedOperation</code>. Verified with dry-run launches across all twelve supported regions.</p>
         </div>
+      </div>
+    </section>
+
+
+    <!-- 1.06 WHAT HAPPENS DURING DEPLOYMENT -->
+    <section id="deploy-progress" class="prereq-section">
+      <div class="container">
+        <h2>What happens after you click Create</h2>
+        <p class="lede">CloudFormation builds in dependency order, so resources appear in waves rather than all at once. Timings below are from a real deploy of vController plus three test VMs in us-east-1. Watch it live on the <strong>Events</strong> tab, or the <strong>Timeline view</strong> for a Gantt chart.</p>
+
+        <ol class="deploy-timeline">
+          <li>
+            <span class="dt-time">0:00</span>
+            <div>
+              <strong>Stack accepted</strong>
+              <p>Status goes <code>CREATE_IN_PROGRESS</code>. Nothing exists yet.</p>
+            </div>
+          </li>
+          <li>
+            <span class="dt-time">0:18</span>
+            <div>
+              <strong>Network foundation</strong>
+              <p>VPC, then the internet gateway and its attachment. Skipped entirely if you supplied an existing VPC.</p>
+            </div>
+          </li>
+          <li>
+            <span class="dt-time">0:23</span>
+            <div>
+              <strong>Subnets and routing</strong>
+              <p>The mgmt, data, and tool subnets appear together, then their route table associations. Also the security groups.</p>
+            </div>
+          </li>
+          <li>
+            <span class="dt-time">0:39</span>
+            <div>
+              <strong>Elastic IP pre-check</strong>
+              <p>A short Lambda confirms the account has enough Elastic IPs for this stack. <strong>This is the gate:</strong> if it fails, the stack stops here with a message naming the shortfall and no instance is ever launched. See <a href="#faq">Common issues</a>.</p>
+            </div>
+          </li>
+          <li>
+            <span class="dt-time">0:43</span>
+            <div>
+              <strong>Instances launch</strong>
+              <p>vController, then KVO and vPB if selected, plus any test workloads. They start in parallel, so this is one wave rather than three.</p>
+            </div>
+          </li>
+          <li>
+            <span class="dt-time">0:57</span>
+            <div>
+              <strong>Elastic IPs attached</strong>
+              <p>Addresses were allocated earlier; here they are associated with the running instances.</p>
+            </div>
+          </li>
+          <li class="dt-done">
+            <span class="dt-time">1:07</span>
+            <div>
+              <strong>CREATE_COMPLETE</strong>
+              <p>Infrastructure is done. Read the <strong>Outputs</strong> tab for UI URLs, SSH commands, and the test VM addresses.</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="callout callout-warn">
+          <strong>CREATE_COMPLETE is not "ready to log in".</strong> CloudFormation finishes when the EC2 instances are running, but the CloudLens appliances are still booting. Allow roughly <strong>15 minutes</strong> before the vController UI responds, and about <strong>5 minutes</strong> before vPB accepts SSH on port 9022. A full stack with KVO and vPB takes longer to reach CREATE_COMPLETE than the single-component timing above.
+        </div>
+
+        <p class="muted">If the stack rolls back, open the Events tab and sort oldest first: the first <code>CREATE_FAILED</code> row is the real cause, everything after it is cleanup.</p>
       </div>
     </section>
 
