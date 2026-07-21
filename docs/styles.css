@@ -25,6 +25,13 @@
   --ok: oklch(var(--ok-l) var(--ok-c) var(--ok-h));
   --ok-glow: oklch(var(--ok-l) var(--ok-c) var(--ok-h) / .35);
 
+  /* Layout width. The site used to cap content at 1180px, which left large
+     empty gutters on modern displays and made everything look clustered in the
+     middle. Wider shell, with prose blocks still capped for readability. */
+  --maxw: 1560px;
+  --maxw-prose: 74ch;
+  --header-h: 68px;
+
   --radius: 22px;
   --radius-sm: 14px;
   --radius-lg: 30px;
@@ -103,7 +110,7 @@ html[data-theme="dark"] a:hover { color: oklch(85% 0.11 62); }
 
 ::selection { background: var(--accent-glow); }
 
-.container { max-width: 1180px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 32px); }
+.container { max-width: var(--maxw); margin: 0 auto; padding: 0 clamp(20px, 3.5vw, 56px); }
 
 .skip-link {
   position: absolute; top: -100px; left: 14px; padding: 10px 16px;
@@ -160,26 +167,36 @@ html[data-theme="dark"] .internal-banner {
 }
 
 /* ============================================================
-   SITE HEADER - floating glass island
+   SITE HEADER - full-bleed corporate bar
+   Edge to edge rather than a floating pill: reads as product
+   chrome instead of a widget, and gives the nav room to breathe
+   on wide displays. Signature accent hairline sits on top.
    ============================================================ */
 .site-header {
-  position: sticky; top: 14px; z-index: 50;
-  margin: 14px auto 0; max-width: 1180px;
-  padding: 0 clamp(12px, 2vw, 20px);
+  position: sticky; top: 0; z-index: 50;
+  margin: 0; max-width: none; padding: 0;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  backdrop-filter: blur(22px) saturate(1.8);
+  border-bottom: 1px solid color-mix(in oklab, var(--ink) 10%, transparent);
+  box-shadow: 0 1px 0 oklch(100% 0 0 / .5) inset, 0 8px 24px -20px oklch(0% 0 0 / .5);
+}
+/* Keysight signature: thin accent rule across the very top edge. */
+.site-header::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent), var(--accent-bright) 55%, var(--accent));
 }
 .site-header .nav {
-  display: flex; align-items: center; gap: 18px;
-  padding: 10px 16px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 92%, white), var(--surface));
-  -webkit-backdrop-filter: blur(20px) saturate(1.7);
-  backdrop-filter: blur(20px) saturate(1.7);
-  border: 1px solid var(--hair);
-  box-shadow:
-    inset 0 1px 0 oklch(100% 0 0 / .6),
-    0 12px 28px -14px oklch(0% 0 0 / .35),
-    0 1px 2px var(--neu-dark);
+  display: flex; align-items: center; gap: clamp(16px, 2vw, 40px);
+  max-width: var(--maxw); margin: 0 auto;
+  padding: 0 clamp(20px, 3.5vw, 56px);
+  min-height: var(--header-h);
+  border-radius: 0; border: 0; background: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  box-shadow: none;
 }
+/* Nav sits hard right against the actions, brand anchors the left edge. */
+.site-header .primary-nav { margin-left: auto; }
 .site-header .brand {
   display: inline-flex; align-items: center; gap: 10px; color: var(--ink);
   text-decoration: none; padding-right: 6px;
@@ -201,10 +218,11 @@ html[data-theme="dark"] .internal-banner {
 .brand-text strong { font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
 .brand-sub { font-size: 10px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .08em; font-weight: 500; }
 
-.primary-nav { display: flex; gap: 4px; margin-left: auto; }
+.primary-nav { display: flex; gap: 2px; margin-left: auto; align-items: center; }
 .primary-nav a {
   color: var(--ink-soft); font-size: 13px; font-weight: 600;
-  padding: 7px 12px; border-radius: 999px;
+  padding: 7px 11px; border-radius: 999px;
+  white-space: nowrap;          /* keep every label on one line */
   transition: background .25s var(--spring), color .2s ease;
 }
 .primary-nav a:hover {
@@ -1634,7 +1652,7 @@ html[data-theme="dark"] .pill.ok { color: oklch(80% 0.16 150); }
     inset 0 1px 0 oklch(100% 0 0 / .7),
     0 26px 56px -28px oklch(0% 0 0 / .42);
   overflow: hidden;
-  max-width: 1180px; margin-left: auto; margin-right: auto;
+  max-width: var(--maxw); margin-left: auto; margin-right: auto;
 }
 .site-footer::before {
   content: ""; position: absolute; inset: 1px 1px auto 1px; height: 26%; border-radius: 29px 29px 40% 40%; pointer-events: none;
@@ -1692,6 +1710,16 @@ button:focus-visible, a.btn:focus-visible, .icon-btn:focus-visible {
 /* ============================================================
    RESPONSIVE
    ============================================================ */
+/* Between the nav hiding at 960px and a comfortable wide layout, tighten the
+   nav so eleven links stay on one line instead of overflowing the bar. */
+@media (max-width: 1400px) {
+  .site-header .nav { gap: 14px; }
+  .primary-nav a { padding: 7px 9px; font-size: 12.5px; }
+}
+@media (max-width: 1180px) {
+  .primary-nav a { padding: 6px 7px; font-size: 12px; }
+}
+
 @media (max-width: 960px) {
   .hero-grid { grid-template-columns: 1fr; gap: 36px; }
   .cta-row { flex-direction: column; align-items: stretch; }
@@ -1709,8 +1737,8 @@ button:focus-visible, a.btn:focus-visible, .icon-btn:focus-visible {
   .prereq-cards { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
-  .site-header { top: 8px; margin-top: 8px; padding: 0 10px; }
-  .site-header .nav { padding: 8px 12px; gap: 8px; flex-wrap: wrap; }
+  .site-header { top: 0; margin-top: 0; padding: 0; }
+  .site-header .nav { padding: 0 16px; gap: 10px; min-height: 58px; }
   .brand-mark { width: 30px; height: 30px; }
   .brand-text strong { font-size: 13px; }
   .container { padding: 0 16px; }
