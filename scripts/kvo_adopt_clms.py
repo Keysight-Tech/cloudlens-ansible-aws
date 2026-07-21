@@ -22,7 +22,7 @@ Order matters and is enforced below:
   6. Poll until the CLM status reaches CONNECTED.
 
 Exit codes: 0 ok, 2 CLMS auth/user, 3 KVO auth/eula, 4 not licensed,
-5 adopt/commit, 6 never reached CONNECTED.
+5 adopt/commit, 6 never reached CONNECTED, 7 cloud config / project key.
 """
 from __future__ import annotations
 import argparse, json, sys, time, urllib.parse
@@ -158,6 +158,81 @@ def kvo_wait_connected(base, token, name, verify, timeout=300):
         time.sleep(10)
     log("timed out waiting for CONNECTED"); return False
 
+def kvo_clm_uid(base, token, name, verify):
+    d = gql(base, token, "{ cloudLensManagersFeed { cloudLensManagers { uid name } } }", verify)
+    for r in (d.get("data", {}).get("cloudLensManagersFeed", {}) or {}).get("cloudLensManagers", []):
+        if r.get("name") == name:
+            return r["uid"]
+    return None
+
+def kvo_commit_cr(base, token, cr_uid, verify, timeout=240):
+    """Commit a specific change request by uid and poll until Committed.
+    Same async pattern as kvo_commit; factored out so the cloud-config flow
+    reuses it."""
+    c = gql(base, token,
+            f'mutation {{ commitChangeRequest(uid: {_q(cr_uid)}, ignoreWarnings: true) {{ uid state }} }}',
+            verify)
+    if "errors" in c:
+        log(f"commit call failed: {c['errors'][0]['message'][:200]}"); return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        q = gql(base, token, "{ changeRequests { uid status } }", verify)
+        mine = [r for r in (q.get("data", {}).get("changeRequests") or []) if r["uid"] == cr_uid]
+        if not mine or mine[0]["status"] == "Committed":
+            log("change request committed"); return True
+        if mine[0]["status"] in ("Failed", "Error"):
+            log(f"commit ended in {mine[0]['status']}"); return False
+        time.sleep(6)
+    log("timed out waiting for the commit"); return False
+
+def kvo_create_cloud_config(base, token, clm_uid, cc_name, verify):
+    """Create a Custom Cloud (Cloud Config) bound to the adopted CLM and return
+    the project key KVO generates for it.
+
+    This is the KVO-managed way to get a project key: rather than creating a
+    project directly on the CLMS, KVO's Cloud Config creates one through the
+    adopted manager and returns it as clmsProjectApiKey. That key is what the
+    sensors register with.
+
+    createCustomCloud REQUIRES a changeID (unlike adopt), so a change request is
+    opened first, the cloud config is created inside it, and the change request
+    is committed. The key is present in the create response immediately.
+    Returns (project_id, project_key) or (None, None).
+    """
+    # Check for an existing cloud config FIRST, before opening a change request.
+    # Opening one and then bailing on "already exists" would leave an orphaned
+    # InProgress change request behind.
+    q = gql(base, token, "{ customClouds { name clmsProjectId clmsProjectApiKey } }", verify)
+    for c in (q.get("data", {}).get("customClouds") or []):
+        if c.get("name") == cc_name:
+            log(f"cloud config {cc_name} already exists; reading its key")
+            return c.get("clmsProjectId"), c.get("clmsProjectApiKey")
+
+    cr = gql(base, token, 'mutation { createChangeRequest(name: "create-cloud-config") { uid } }', verify)
+    if "errors" in cr:
+        log(f"createChangeRequest failed: {cr['errors'][0]['message'][:180]}"); return None, None
+    crs = cr.get("data", {}).get("createChangeRequest") or []
+    if not crs:
+        log("no change request opened for cloud config"); return None, None
+    cr_uid = crs[0]["uid"]
+
+    m = (f'mutation {{ createCustomCloud(name: {_q(cc_name)}, changeID: {_q(cr_uid)}, '
+         f'settings: {{ cloudLensManagerId: {_q(clm_uid)}, description: "CloudLens Autopilot" }}) '
+         '{ uid name clmsProjectId clmsProjectApiKey } }')
+    r = gql(base, token, m, verify)
+    if "errors" in r:
+        log(f"createCustomCloud failed: {r['errors'][0]['message'][:200]}"); return None, None
+    rows = r.get("data", {}).get("createCustomCloud") or []
+    if not rows:
+        log("createCustomCloud returned no rows"); return None, None
+    cc = rows[0]
+    pid, key = cc.get("clmsProjectId"), cc.get("clmsProjectApiKey")
+    log(f"cloud config {cc_name} created; project {pid}")
+
+    if not kvo_commit_cr(base, token, cr_uid, verify):
+        log("cloud config created but its change request did not commit"); return pid, key
+    return pid, key
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clms", required=True, help="CLMS/vController IP or host")
@@ -170,6 +245,10 @@ def main():
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--accept-eula", action="store_true",
                     help="accept the KVO EULA if pending. This is a legal acceptance.")
+    ap.add_argument("--cloud-config",
+                    help="after adopting, create a KVO Cloud Config (Custom Cloud) bound to the "
+                         "CLM with this name, and print the project key it generates on stdout. "
+                         "That key is what sensors register with in a KVO-managed deployment.")
     ap.add_argument("--insecure", action="store_true", help="disable TLS verification")
     args = ap.parse_args()
     verify = not args.insecure
@@ -218,12 +297,28 @@ def main():
     # 6. wait for CONNECTED
     if not kvo_wait_connected(kvo, ktok_probe, args.name, verify): return 6
 
+    # 7. optional: create a Cloud Config and emit its project key
+    proj_id = proj_key = None
+    if args.cloud_config:
+        clm_uid = kvo_clm_uid(kvo, ktok_probe, args.name, verify)
+        if not clm_uid:
+            log("could not resolve the adopted CLM uid; skipping cloud config"); return 7
+        proj_id, proj_key = kvo_create_cloud_config(kvo, ktok_probe, clm_uid, args.cloud_config, verify)
+        if not proj_key:
+            return 7
+        # stdout carries ONLY the project key so the sensor step can capture it.
+        print(proj_key)
+
     log("")
     log("=====================================================================")
     log(f" {args.name} adopted into KVO and CONNECTED.")
     log(f"   CLMS      https://{args.clms}")
     log(f"   KVO       https://{args.kvo}")
     log(f"   KVO user  {args.kvo_user_email}")
+    if proj_key:
+        log(f"   Cloud     {args.cloud_config}")
+        log(f"   Project   {proj_id}")
+        log(f"   Key       {proj_key}   <- install sensors with this")
     log("=====================================================================")
     return 0
 
