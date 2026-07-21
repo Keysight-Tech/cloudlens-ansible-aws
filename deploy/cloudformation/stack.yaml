@@ -214,6 +214,17 @@ Parameters:
       Optional. Name tag for the vPB instance. Blank = <StackName>-vpb.
     AllowedPattern: "^$|^[A-Za-z0-9][A-Za-z0-9 ._-]{0,254}$"
     ConstraintDescription: Blank, or up to 255 characters starting with a letter or digit.
+  TestWindowsInstanceProfile:
+    Type: String
+    Default: ""
+    Description: >
+      Only used when the Windows test VM is deployed. Ansible reaches Windows
+      over AWS Systems Manager, which needs an instance profile granting
+      AmazonSSMManagedInstanceCore. This template deliberately creates no IAM
+      resources, so that non-admin users can deploy it: have an admin create
+      such a profile once (any name, reusable across every stack) and put its
+      NAME here. Leave blank and the Windows VM still deploys, but Ansible
+      cannot reach it over SSM and its sensor must be installed another way.
   DeployTestWorkloadUbuntu:
     Type: String
     Default: "no"
@@ -390,6 +401,7 @@ Conditions:
   TestUbuntu: !Equals [!Ref DeployTestWorkloadUbuntu, "yes"]
   TestRhel: !Equals [!Ref DeployTestWorkloadRhel, "yes"]
   TestWindows: !Equals [!Ref DeployTestWorkloadWindows, "yes"]
+  HaveWindowsProfile: !Not [!Equals [!Ref TestWindowsInstanceProfile, ""]]
   AnyTestWorkload: !Or [!Condition TestUbuntu, !Condition TestRhel, !Condition TestWindows]
   # Elastic IPs are per-component AND gated on the public-IP toggle.
   VcontrollerHasEip: !Condition WithPublicIp
@@ -741,6 +753,12 @@ Resources:
     Properties:
       ImageId: !Ref TestWorkloadWindowsAmi
       InstanceType: t3.medium
+      # Ansible reaches Windows over SSM, which needs this profile on the
+      # instance. Omitted entirely when neither created nor supplied.
+      IamInstanceProfile: !If
+        - HaveWindowsProfile
+        - !Ref TestWindowsInstanceProfile
+        - !Ref "AWS::NoValue"
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
       SecurityGroupIds:

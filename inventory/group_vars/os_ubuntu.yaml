@@ -1,0 +1,8 @@
+---
+# Ubuntu EC2 instances, any environment. Keyed on the os tag, so prod, dev,
+# test and anything added later all inherit these without another file.
+ansible_connection: ssh
+ansible_user: "{{ aws.ssh_user_ubuntu | default('ubuntu') }}"
+ansible_ssh_private_key_file: "{{ aws.ssh_key_path | default('~/.ssh/cloudlens-key.pem') }}"
+ansible_become: true
+ansible_become_method: sudo

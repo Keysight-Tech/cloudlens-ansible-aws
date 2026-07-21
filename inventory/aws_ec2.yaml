@@ -22,6 +22,16 @@ hostnames:
 
 # Group prefixing
 keyed_groups:
+  # Group by OS tag alone: os_ubuntu, os_rhel, os_windows.
+  # Connection settings (user, key, become, WinRM/SSM) depend only on the OS,
+  # never on the environment, so they live in group_vars for these groups. The
+  # per-environment groups below stay for targeting, but no longer need their
+  # own copy of the connection vars: previously only the *_prod_vms groups had
+  # group_vars, so a host tagged env=dev or env=test was discovered, matched a
+  # group, and then failed to connect because it fell back to the local
+  # username with no key.
+  - prefix: os
+    key: tags.os | default('untagged')
   # Group by Platform tag: linux-docker, linux-podman, windows
   - prefix: platform
     key: tags.Platform | default('untagged')
@@ -46,6 +56,12 @@ groups:
   ubuntu_dev_vms:  "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'dev'"
   redhat_dev_vms:  "tags.os | default('') == 'rhel' and tags.env | default('') == 'dev'"
   windows_dev_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'dev'"
+  # The stack's optional test workloads are tagged env=test. Without these
+  # groups they are discovered but belong to nothing the playbooks target, so a
+  # sensor run against them matches zero hosts and reports success.
+  ubuntu_test_vms:  "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'test'"
+  redhat_test_vms:  "tags.os | default('') == 'rhel' and tags.env | default('') == 'test'"
+  windows_test_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'test'"
 
 # Convenience host-level facts (used by playbooks)
 compose:

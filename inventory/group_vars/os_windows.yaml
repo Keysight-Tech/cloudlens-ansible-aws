@@ -1,5 +1,5 @@
 ---
-# Windows prod EC2 instances - two connection modes
+# Windows EC2 instances, any environment (keyed on the os tag) - two connection modes
 # Selected at run time by customer_input.yaml -> aws.windows_connection
 
 # Mode: ssm (preferred - no inbound ports, IAM-scoped)

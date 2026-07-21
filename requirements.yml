@@ -1,16 +1,26 @@
 ---
+# Upper bounds matter. These were previously open-ended ">=", so
+# `ansible-galaxy install --force` always pulled the newest release. amazon.aws
+# 11.x and community.aws 11.x require ansible-core 2.17+, and on an older core
+# the aws_ssm connection plugin does not fail cleanly: the Ansible worker dies
+# with "A worker was found in a dead state", which says nothing about versions.
+#
+# The ranges below work on ansible-core 2.15 through 2.18, which covers what
+# pip installs today and what ships in AWS CloudShell.
 collections:
   - name: amazon.aws
-    version: ">=8.0.0"
+    version: ">=8.0.0,<10.0.0"
   - name: community.aws
-    version: ">=8.0.0"
+    version: ">=8.0.0,<10.0.0"
   - name: ansible.windows
-    version: ">=2.0.0"
+    version: ">=2.0.0,<3.0.0"
   - name: community.windows
-    version: ">=2.0.0"
+    version: ">=2.0.0,<3.0.0"
   - name: community.docker
-    version: ">=3.0.0"
+    version: ">=3.0.0,<4.0.0"
   - name: containers.podman
-    version: ">=1.0.0"
+    version: ">=1.0.0,<2.0.0"
+  # community.general 12 removed the yaml stdout callback that ansible.cfg used
+  # to reference; keeping below 12 also avoids that class of removal.
   - name: community.general
-    version: ">=8.0.0"
+    version: ">=8.0.0,<11.0.0"
