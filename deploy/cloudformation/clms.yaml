@@ -8,6 +8,8 @@ Description: >
   subnet you already own). Default UI credentials are admin / Cl0udLens@dm!n
   (change on first login). The vController AMI requires an active AWS Marketplace
   subscription before launch.
+  Needs 1 free Elastic IP when AssignPublicIp is yes (AWS default quota is 5
+  per region); set it to no if you have none spare.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -299,15 +301,25 @@ Resources:
         - Key: Name
           Value: !If [CustomInstanceName, !Ref InstanceName, !Sub "${AWS::StackName}-vcontroller"]
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before the instance launches, instead
+  # of minutes in with instance hours already burned.
   ClmsEip:
     Type: AWS::EC2::EIP
     Condition: WithPublicIp
     Properties:
       Domain: vpc
-      InstanceId: !Ref ClmsInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vcontroller-eip"
+
+  ClmsEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: WithPublicIp
+    Properties:
+      AllocationId: !GetAtt ClmsEip.AllocationId
+      InstanceId: !Ref ClmsInstance
 
 Outputs:
   KeyPairUsed:

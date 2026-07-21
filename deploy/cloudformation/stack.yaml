@@ -9,6 +9,8 @@ Description: >
   vController t3.xlarge or m5.xlarge, KVO c5.2xlarge, vPB t3.xlarge. All three AMIs require
   an active AWS Marketplace subscription before launch. Default vController UI
   credentials are admin / Cl0udLens@dm!n (change on first login).
+  Needs 3 free Elastic IPs when AssignPublicIp is yes (AWS default quota is 5
+  per region); set it to no if you have none spare.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -482,15 +484,25 @@ Resources:
         - Key: Name
           Value: !If [CustomVcontrollerName, !Ref VcontrollerName, !Sub "${AWS::StackName}-vcontroller"]
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before any instance launches, instead
+  # of several minutes in with instance hours already burned.
   VcontrollerEip:
     Type: AWS::EC2::EIP
     Condition: VcontrollerHasEip
     Properties:
       Domain: vpc
-      InstanceId: !Ref VcontrollerInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vcontroller-eip"
+
+  VcontrollerEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: VcontrollerHasEip
+    Properties:
+      AllocationId: !GetAtt VcontrollerEip.AllocationId
+      InstanceId: !Ref VcontrollerInstance
 
   # ---------- KVO (optional) ----------
   KvoInstance:
@@ -507,15 +519,25 @@ Resources:
         - Key: Name
           Value: !If [CustomKvoName, !Ref KvoName, !Sub "${AWS::StackName}-kvo"]
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before any instance launches, instead
+  # of several minutes in with instance hours already burned.
   KvoEip:
     Type: AWS::EC2::EIP
     Condition: KvoHasEip
     Properties:
       Domain: vpc
-      InstanceId: !Ref KvoInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-kvo-eip"
+
+  KvoEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: KvoHasEip
+    Properties:
+      AllocationId: !GetAtt KvoEip.AllocationId
+      InstanceId: !Ref KvoInstance
 
   # ---------- vPB (optional) ----------
   VpbInstance:
@@ -546,15 +568,25 @@ Resources:
           curl -fsSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/bootstrap-vpb.sh -o /tmp/bootstrap-vpb.sh
           bash /tmp/bootstrap-vpb.sh > /var/log/cloudlens-bootstrap.log 2>&1
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before any instance launches, instead
+  # of several minutes in with instance hours already burned.
   VpbEip:
     Type: AWS::EC2::EIP
     Condition: VpbHasEip
     Properties:
       Domain: vpc
-      InstanceId: !Ref VpbInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb-eip"
+
+  VpbEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: VpbHasEip
+    Properties:
+      AllocationId: !GetAtt VpbEip.AllocationId
+      InstanceId: !Ref VpbInstance
 
 Outputs:
   SharedVpcId:

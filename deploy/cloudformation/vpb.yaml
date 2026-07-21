@@ -8,6 +8,8 @@ Description: >
   subnet (or attaches to a VPC and subnet you already own). KCOS-based vPB images
   expose OS-level SSH on port 9022, not 22. The vPB AMI requires an active AWS
   Marketplace subscription before launch.
+  Needs 1 free Elastic IP when AssignPublicIp is yes (AWS default quota is 5
+  per region); set it to no if you have none spare.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -315,15 +317,25 @@ Resources:
           curl -fsSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/bootstrap-vpb.sh -o /tmp/bootstrap-vpb.sh
           bash /tmp/bootstrap-vpb.sh > /var/log/cloudlens-bootstrap.log 2>&1
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before the instance launches, instead
+  # of minutes in with instance hours already burned.
   VpbEip:
     Type: AWS::EC2::EIP
     Condition: WithPublicIp
     Properties:
       Domain: vpc
-      InstanceId: !Ref VpbInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb-eip"
+
+  VpbEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: WithPublicIp
+    Properties:
+      AllocationId: !GetAtt VpbEip.AllocationId
+      InstanceId: !Ref VpbInstance
 
 Outputs:
   KeyPairUsed:

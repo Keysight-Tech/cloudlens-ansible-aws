@@ -7,6 +7,8 @@ Description: >
   supported size for this AMI) with an Elastic IP, a security group (SSH, vPB SSH,
   HTTPS), and a new VPC and subnet (or attaches to a VPC and subnet you already own).
   The KVO AMI requires an active AWS Marketplace subscription before launch.
+  Needs 1 free Elastic IP when AssignPublicIp is yes (AWS default quota is 5
+  per region); set it to no if you have none spare.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -293,15 +295,25 @@ Resources:
         - Key: Name
           Value: !If [CustomInstanceName, !Ref InstanceName, !Sub "${AWS::StackName}-kvo"]
 
+  # Allocated with no InstanceId so it has no dependency on the instance and
+  # CloudFormation claims it immediately. If the account is short on Elastic IP
+  # quota the stack fails within seconds, before the instance launches, instead
+  # of minutes in with instance hours already burned.
   KvoEip:
     Type: AWS::EC2::EIP
     Condition: WithPublicIp
     Properties:
       Domain: vpc
-      InstanceId: !Ref KvoInstance
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-kvo-eip"
+
+  KvoEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: WithPublicIp
+    Properties:
+      AllocationId: !GetAtt KvoEip.AllocationId
+      InstanceId: !Ref KvoInstance
 
 Outputs:
   KeyPairUsed:
