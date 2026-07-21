@@ -317,6 +317,113 @@ Conditions:
   VpbHasEip: !And [!Condition DeployVPB, !Condition WithPublicIp]
 
 Resources:
+  # ---------- Elastic IP pre-check (only when public IPs are requested) ----------
+  # CloudFormation cannot check a service quota on its own, so without this the
+  # stack simply attempts the allocations and fails with a raw EC2 error. This
+  # runs first, compares the addresses this stack needs against what the account
+  # has free, and stops with a message that names the shortfall and how to fix it.
+  #
+  # It deliberately FAILS OPEN: any error inside the check (missing IAM
+  # permission, throttling, an unexpected API response) reports success and lets
+  # the deploy proceed. A pre-check that blocks legitimate deploys because of its
+  # own bugs would be worse than no pre-check at all.
+  EipPreflightRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: read-eip-quota
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeAddresses
+                  - servicequotas:GetServiceQuota
+                Resource: "*"
+
+  EipPreflightFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt EipPreflightRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request, boto3
+
+          def respond(event, context, status, reason):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason[:1000],
+                  "PhysicalResourceId": event.get("LogicalResourceId", "EipPreflight"),
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": {},
+              }).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT",
+                                           headers={"content-type": "", "content-length": str(len(body))})
+              urllib.request.urlopen(req)
+
+          def handler(event, context):
+              # Only gate stack creation. Updates and deletes always pass.
+              if event["RequestType"] != "Create":
+                  return respond(event, context, "SUCCESS", "Not a create, skipping")
+              try:
+                  need = int(event["ResourceProperties"]["Needed"])
+                  if need <= 0:
+                      return respond(event, context, "SUCCESS", "No public IPs requested, nothing to check")
+                  ec2 = boto3.client("ec2")
+                  used = len(ec2.describe_addresses()["Addresses"])
+                  try:
+                      sq = boto3.client("service-quotas")
+                      limit = int(sq.get_service_quota(ServiceCode="ec2",
+                                                       QuotaCode="L-0263D0A3")["Quota"]["Value"])
+                  except Exception:
+                      limit = 5   # AWS default when the quota API is not readable
+                  free = limit - used
+                  if free >= need:
+                      return respond(event, context, "SUCCESS",
+                                     "Elastic IPs OK: %d/%d used, %d free, %d needed"
+                                     % (used, limit, free, need))
+                  orphans = [a["PublicIp"] for a in ec2.describe_addresses()["Addresses"]
+                             if not a.get("AssociationId")]
+                  msg = ("Not enough Elastic IPs: this stack needs %d, only %d free (%d of %d in use). "
+                         % (need, max(free, 0), used, limit))
+                  if orphans:
+                      msg += ("These addresses are allocated but attached to nothing, so releasing them "
+                              "frees the quota (they also bill hourly): %s. " % ", ".join(orphans[:5]))
+                  else:
+                      msg += "All addresses are in use. Request a quota increase for L-0263D0A3. "
+                  msg += "Alternatively set AssignPublicIp to no and reach the stack over VPN, Direct Connect, or peering."
+                  return respond(event, context, "FAILED", msg)
+              except Exception as e:
+                  # Fail open: never block a deploy because this check broke.
+                  return respond(event, context, "SUCCESS", "Pre-check skipped: %s" % e)
+
+  EipPreflight:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt EipPreflightFunction.Arn
+      # Recomputed per deploy so the check matches the components actually selected.
+      # 0 when AssignPublicIp is no, which makes the check a no-op. The resource
+      # itself stays unconditional so other resources can DependsOn it:
+      # CloudFormation rejects DependsOn against a resource that a false
+      # condition removed.
+      Needed: !If
+        - WithPublicIp
+        - !If [DeployKVO, !If [DeployVPB, 3, 2], !If [DeployVPB, 2, 1]]
+        - 0
+
   # ---------- Shared network (only when creating a new VPC) ----------
   Vpc:
     Type: AWS::EC2::VPC
@@ -473,6 +580,9 @@ Resources:
   # ---------- vController (always) ----------
   VcontrollerInstance:
     Type: AWS::EC2::Instance
+    # Also gated on the Elastic IP pre-check so a quota shortfall stops the
+    # deploy before any instance is launched and billed.
+    DependsOn: EipPreflight
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VcontrollerAmi]
       InstanceType: !Ref VcontrollerInstanceType
@@ -491,6 +601,9 @@ Resources:
   VcontrollerEip:
     Type: AWS::EC2::EIP
     Condition: VcontrollerHasEip
+    # Wait for the quota pre-check so a shortfall is reported as a readable
+    # message rather than a raw EC2 "maximum number of addresses" error.
+    DependsOn: EipPreflight
     Properties:
       Domain: vpc
       Tags:
@@ -508,6 +621,9 @@ Resources:
   KvoInstance:
     Type: AWS::EC2::Instance
     Condition: DeployKVO
+    # Also gated on the Elastic IP pre-check so a quota shortfall stops the
+    # deploy before any instance is launched and billed.
+    DependsOn: EipPreflight
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", KvoAmi]
       InstanceType: !Ref KvoInstanceType
@@ -526,6 +642,9 @@ Resources:
   KvoEip:
     Type: AWS::EC2::EIP
     Condition: KvoHasEip
+    # Wait for the quota pre-check so a shortfall is reported as a readable
+    # message rather than a raw EC2 "maximum number of addresses" error.
+    DependsOn: EipPreflight
     Properties:
       Domain: vpc
       Tags:
@@ -543,6 +662,9 @@ Resources:
   VpbInstance:
     Type: AWS::EC2::Instance
     Condition: DeployVPB
+    # Also gated on the Elastic IP pre-check so a quota shortfall stops the
+    # deploy before any instance is launched and billed.
+    DependsOn: EipPreflight
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VpbAmi]
       InstanceType: !Ref VpbInstanceType
@@ -575,6 +697,9 @@ Resources:
   VpbEip:
     Type: AWS::EC2::EIP
     Condition: VpbHasEip
+    # Wait for the quota pre-check so a shortfall is reported as a readable
+    # message rather than a raw EC2 "maximum number of addresses" error.
+    DependsOn: EipPreflight
     Properties:
       Domain: vpc
       Tags:
