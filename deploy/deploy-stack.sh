@@ -1291,23 +1291,87 @@ if [[ "$DEPLOY_VPB" == "true" ]]; then
 fi
 
 # =====================================================================
-# Phase 9: Manual project key step
+# Phase 9: Project key + working UI login (automated, manual fallback)
 # =====================================================================
-step "Phase 9: Get project key from vController"
+step "Phase 9: Project key + vController login"
 
-cat <<EOM
+# The appliance forces a password change on the first UI login, which
+# invalidates every session. So automation MUST complete that change itself to
+# a known value and then hand the operator the working login. Otherwise the
+# first human in the UI silently locks out everyone else, including this
+# script's own token. scripts/vcontroller_project_key.py does all of it:
+# login -> set known password -> create project -> return key, and prints the
+# full login (url / user / password / project / key) for the operator.
+PROJECT_KEY=""
+VC_CREDS_FILE="$HOME/.cloudlens-vcontroller-creds.json"
 
-vController is now reachable. To deploy sensors, you need a project key.
+vc_key_script() {
+  # Locate the script wherever this run is executing from.
+  for cand in "$SCRIPT_DIR/../scripts/vcontroller_project_key.py" \
+              "$REPO_DIR/scripts/vcontroller_project_key.py" \
+              "$PWD/scripts/vcontroller_project_key.py"; do
+    [[ -f "$cand" ]] && { echo "$cand"; return 0; }
+  done
+  return 1
+}
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  dryrun_say "would run vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} to mint the key and set a known admin password"
+elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
+  warn "No vController address available; skipping automated key retrieval."
+elif [[ "$ASSIGN_PUBLIC_IP" == "no" ]]; then
+  note "Private-IP deploy: run the key step from inside the VPC:"
+  note "  python3 scripts/vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} --insecure"
+else
+  KEY_SCRIPT="$(vc_key_script || true)"
+  PY_OK=true
+  if ! command -v python3 >/dev/null 2>&1; then
+    PY_OK=false
+    warn "python3 not found; cannot automate the project key."
+  elif ! python3 -c "import requests" 2>/dev/null; then
+    # The one dependency. Offer to install rather than silently degrading.
+    warn "The python 'requests' module is missing (needed to talk to the vController API)."
+    read -rp "  Install it now with pip? [Y/n]: " yn || true
+    if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
+      python3 -m pip install --quiet --user requests 2>/dev/null \
+        || python3 -m pip install --quiet --break-system-packages --user requests 2>/dev/null \
+        || true
+    fi
+    python3 -c "import requests" 2>/dev/null || PY_OK=false
+  fi
+
+  if [[ "$PY_OK" == "true" ]] && [[ -n "$KEY_SCRIPT" ]]; then
+    note "Automating: login, set a known admin password, create project, fetch key..."
+    # stdout = the key only; the login banner goes to stderr (visible + logged).
+    PROJECT_KEY=$(python3 "$KEY_SCRIPT" --host "$CLMS_PUBLIC_IP" \
+        --project "${CLOUDLENS_PROJECT_NAME:-cloudlens-autopilot}" \
+        ${CLOUDLENS_VC_PASSWORD:+--new-password "$CLOUDLENS_VC_PASSWORD"} \
+        --creds-file "$VC_CREDS_FILE" \
+        --insecure --wait 900) || PROJECT_KEY=""
+    if [[ -n "$PROJECT_KEY" ]]; then
+      ok "Project key retrieved automatically."
+      note "Your working UI login is shown above and saved to ${VC_CREDS_FILE} (mode 600)."
+      note "That login is where you see the project and every VM whose sensor registers."
+    else
+      warn "Automated key retrieval failed; falling back to the manual steps."
+    fi
+  fi
+fi
+
+if [[ -z "$PROJECT_KEY" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  cat <<EOM
+
+Manual path: to deploy sensors, you need a project key.
 
   1. Open the vController UI: https://${CLMS_PUBLIC_IP}
-  2. Sign in with the default credentials: admin / Cl0udLens@dm!n
-  3. You will be prompted to change the password on first login.
+  2. Sign in: admin / Cl0udLens@dm!n (or the password you set earlier)
+  3. You will be prompted to change the password on first login. The password
+     you set THERE becomes the real one: record it, it invalidates the default.
   4. Go to Projects -> Add Project, give it a name, then open the
      project and copy the API key.
 
-  (Or automate this with scripts/vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} --insecure)
-
 EOM
+fi
 
 # Pre-flight: count already-tagged EC2s using the chosen discovery tag.
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
