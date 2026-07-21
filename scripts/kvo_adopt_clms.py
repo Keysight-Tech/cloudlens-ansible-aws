@@ -101,29 +101,46 @@ def kvo_adopt(base, token, name, clms_ip, kvo_user, kvo_pass, verify):
         log(f"adopt failed: {msg[:200]}"); return None
     return d["data"]["createCloudLensManager"]
 
-def kvo_commit(base, token, verify):
-    """Commit any change request the adopt staged.
+def kvo_commit(base, token, verify, timeout=240):
+    """Commit the change request the adopt staged. This IS required: the adopt
+    reports CONNECTED but leaves an "uncommitted changes" change request in the
+    UI, and the config is not applied until it is committed.
 
-    Observed: via the API, createCloudLensManager returns status CONNECTED
-    immediately and no change request is left pending, so this is usually a
-    no-op. The UI raises a commit prompt, but the API path does not require it.
-    createChangeRequest returns a LIST of change requests, not a single object.
+    Shapes learned only by running it live:
+      - createChangeRequest and commitChangeRequest both return a LIST.
+      - commit is ASYNC: it returns a processing job (state
+        ExecuteUpfrontChecks) and the change request sits InProgress until it
+        flips to Committed, so it must be polled.
     """
-    d = gql(base, token, 'mutation { createChangeRequest(name: "adopt-clms") { uid status } }', verify)
+    d = gql(base, token, 'mutation { createChangeRequest(name: "adopt-clms") { uid } }', verify)
     if "errors" in d:
-        # Nothing to commit (adopt already applied) is fine, not a failure.
-        log(f"no change request to open ({d['errors'][0]['message'][:120]}); "
-            "adopt likely applied directly")
-        return True
+        log(f"createChangeRequest failed: {d['errors'][0]['message'][:180]}"); return False
     crs = d.get("data", {}).get("createChangeRequest") or []
     if not crs:
-        log("no change request staged; adopt applied directly"); return True
+        log("no change request was opened; nothing to commit"); return True
     uid = crs[0]["uid"]
-    log(f"change request {uid} opened; committing")
-    c = gql(base, token, f'mutation {{ commitChangeRequest(uid: {_q(uid)}, ignoreWarnings: true) {{ uid status }} }}', verify)
+    log(f"change request {uid} opened; committing (async)")
+
+    c = gql(base, token,
+            f'mutation {{ commitChangeRequest(uid: {_q(uid)}, ignoreWarnings: true) {{ uid state }} }}',
+            verify)
     if "errors" in c:
-        log(f"commit failed: {c['errors'][0]['message'][:200]}"); return False
-    log("change request committed"); return True
+        log(f"commit call failed: {c['errors'][0]['message'][:200]}"); return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        q = gql(base, token, "{ changeRequests { uid status } }", verify)
+        mine = [r for r in (q.get("data", {}).get("changeRequests") or []) if r["uid"] == uid]
+        if not mine:
+            log("change request cleared (committed)"); return True
+        st = mine[0]["status"]
+        if st == "Committed":
+            log("change request committed"); return True
+        if st in ("Failed", "Error"):
+            log(f"commit ended in {st}"); return False
+        log(f"  commit in progress: {st}")
+        time.sleep(6)
+    log("timed out waiting for the commit to finish"); return False
 
 def kvo_wait_connected(base, token, name, verify, timeout=300):
     q = ("{ cloudLensManagersFeed { cloudLensManagers { name ip status } } }")
