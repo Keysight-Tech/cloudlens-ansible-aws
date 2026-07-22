@@ -293,6 +293,25 @@ git commit -m "console: pin CORS to the docs origin and answer Private Network A
 
 ---
 
+## Task 3b: CORS on the SSE stream (found in review, bridge-breaking)
+
+`_sse()` writes its own `send_response(200)` and headers and never goes through
+`_send`, so `/events/<job_id>` emits no `Access-Control-Allow-Origin`. An
+`EventSource` opened from the public page is blocked by the browser. This is the
+live stream, so without it the bridge has no feature at all, and it fails in the
+same silent way as a missing PNA header.
+
+**Files:** modify `console/cloudlens_console/server.py` `_sse()`, test in `console/tests/test_console.py`.
+
+Echo the allowed origin in the SSE response headers exactly as `_send` does.
+`_handler_response` deliberately refuses `/events/` paths (it would hang on the
+job queue), so this needs a different test approach: call the header-emitting
+part directly, or assert against a real short-lived server over a socket with a
+job that completes immediately. Do not weaken the `/events/` guard in the helper.
+
+**Do not** set `Access-Control-Allow-Credentials`. Authorisation here is the
+`job_id` capability in the URL, not an ambient cookie.
+
 ## Task 4: Enforce pairing on the acting routes
 
 `/health` stays open. `/flows`, `/run` and `/stop/` require the code. Same-origin requests from the console's own UI carry no `Origin` header and are exempt, so the SE running locally sees no pairing prompt.
@@ -351,6 +370,12 @@ Add a guard method to `Handler`:
         PAIR_MAX_FAILURES consecutive misses the code is discarded and pairing
         fails closed until the console is restarted."""
         global PAIR_FAILURES, PAIR_CODE, PAIR_WARNED
+        # Absence of Origin is NOT proof of same-origin: browsers omit it on
+        # same-origin GETs, and non-browser clients (curl, local scripts) never
+        # send it. We exempt it anyway because local code execution already
+        # implies the user's shell and AWS identity, so pairing would add
+        # nothing. See the design doc: this defends against hostile web
+        # origins, not local code.
         if not self.headers.get("Origin"):
             return True
         supplied = self.headers.get("X-CloudLens-Pair") or ""
@@ -442,6 +467,12 @@ In `do_POST`, as the first statement after `path = ...`:
         if not self._paired():
             return self._send(401, {"error": "pairing required"})
 ```
+
+**`do_OPTIONS` must stay exempt from pairing.** A CORS preflight cannot carry
+`X-CloudLens-Pair` — establishing that the header *may* be sent is the entire
+purpose of the preflight. Guarding it would 401 every preflight and silently
+re-break the bridge with exactly the symptom Task 3 fixed. Do not add the guard
+to a shared dispatch path that `do_OPTIONS` also flows through.
 
 **Step 4: Run the tests and make sure they pass**
 
