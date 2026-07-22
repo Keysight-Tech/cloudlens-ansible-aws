@@ -51,6 +51,12 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
     items = list((headers or {}).items())
     if raw_body and content_length and not any(k.lower() == "content-length" for k, _ in items):
         items.append(("Content-Length", str(len(raw_body))))
+    # Every HTTP/1.1 request on the wire carries a Host, and the handler rejects
+    # one that is not ours (DNS rebinding). Tests that omit it are describing a
+    # request no browser ever sends, so default it rather than let the guard be
+    # invisible to the whole suite. Pass Host explicitly to exercise the guard.
+    if not any(k.lower() == "host" for k, _ in items):
+        items.append(("Host", "127.0.0.1:8760"))
 
     class CapturingHandler(server.Handler):
         def __init__(self):
@@ -223,6 +229,10 @@ def test_sse_emits_cors_over_a_real_socket():
         body = json.dumps({"flow": "stack", "replay": True})
         c.request("POST", "/run", body=body, headers={
             "Content-Type": "application/json", "Origin": PAGES_ORIGIN,
+            # /run is pairing-gated, and that gate is exactly what makes the
+            # job id a capability: an unpaired cross-origin caller can never
+            # learn one, which is why /events/ itself needs no header.
+            "X-CloudLens-Pair": server.PAIR_CODE,
             "Connection": "close"})   # keep-alive would strand the socket at teardown
         job_id = json.loads(c.getresponse().read().decode())["job_id"]
         c.close()
@@ -333,6 +343,157 @@ def test_pair_code_shape_and_alphabet():
         assert len(c) == 8 and set(c) <= allowed
     assert len(server.new_pair_code(10)) == 10
     assert server.new_pair_code() != server.new_pair_code(), "must not be constant"
+
+
+def _with_pair_code(code, fn):
+    """Run fn with a known pairing state, then put the module back.
+
+    The suite is one process and these tests mutate module globals, so a leaked
+    PAIR_CODE (or a PAIR_CODE left at None by the cap test) would silently
+    change the meaning of every test that runs after it.
+    """
+    from cloudlens_console import server
+    old = (server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED)
+    server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED = code, 0, False
+    try:
+        return fn()
+    finally:
+        server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED = old
+
+
+def test_run_without_pair_code_is_rejected():
+    def body():
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0"})
+        assert r.status == 401, "an unpaired public page must not start a real AWS deploy"
+        assert r.payload["error"] == "pairing required"
+    _with_pair_code("ABC23456", body)
+
+
+def test_run_with_pair_code_is_accepted():
+    def body():
+        raw = json.dumps({"flow": "stack", "inputs": {}, "replay": True})
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN,
+                                       "X-CloudLens-Pair": "ABC23456"},
+                              body=raw)
+        assert r.status == 200 and "job_id" in r.payload
+    _with_pair_code("ABC23456", body)
+
+
+def test_wrong_pair_code_is_rejected_on_every_acting_route():
+    def body():
+        for path, method in (("/flows", "GET"), ("/run", "POST"), ("/stop/deadbeef", "POST")):
+            r = _handler_response(path, method=method,
+                                  headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                           "X-CloudLens-Pair": "WRONGCOD"})
+            assert r.status == 401, "%s must be behind the pairing code" % path
+            assert r.payload["error"] == "pairing required"
+    _with_pair_code("ABC23456", body)
+
+
+def test_same_origin_needs_no_pair_code():
+    # Two shapes of "this is our own UI": a GET the browser sends with no
+    # Origin at all, and a POST that per Fetch DOES carry the loopback origin.
+    def body():
+        assert _handler_response("/flows").status == 200
+        for origin in ("http://localhost:8760", "http://127.0.0.1:8760"):
+            r = _handler_response("/run", method="POST", headers={"Origin": origin},
+                                  body=json.dumps({"flow": "stack", "replay": True}))
+            assert r.status == 200, \
+                "%s is the console's own page; pairing must not prompt the local SE" % origin
+    _with_pair_code("ABC23456", body)
+
+
+def test_health_is_never_gated():
+    def body():
+        for hdrs in ({}, {"Origin": PAGES_ORIGIN},
+                     {"Origin": PAGES_ORIGIN, "X-CloudLens-Pair": "WRONGCOD"}):
+            assert _handler_response("/health", headers=hdrs).status == 200, \
+                "the public page probes /health before the visitor has typed anything"
+    _with_pair_code("ABC23456", body)
+
+
+def test_preflight_is_ungated_and_costs_no_guesses():
+    from cloudlens_console import server
+
+    def body():
+        r = _handler_response(
+            "/run", method="OPTIONS",
+            headers={"Origin": PAGES_ORIGIN,
+                     "Access-Control-Request-Private-Network": "true"})
+        assert r.status == 204, \
+            "a preflight cannot carry X-CloudLens-Pair; gating it kills the bridge"
+        assert r.headers.get("Access-Control-Allow-Private-Network") == "true"
+        assert server.PAIR_FAILURES == 0, \
+            "preflights must not burn the guess budget, or a hostile page can DoS " \
+            "pairing without ever guessing"
+    _with_pair_code("ABC23456", body)
+
+
+def test_pairing_disables_itself_after_repeated_failures():
+    from cloudlens_console import server
+
+    def body():
+        for _ in range(server.PAIR_MAX_FAILURES):
+            _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "WRONGCOD"})
+        assert server.PAIR_CODE is None, "the cap must discard the code"
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "ABC23456"})
+        assert r.status == 401, "even the right code must fail once pairing is disabled"
+        # A legitimate local user is never caught by this: same-origin is exempt
+        # and never consults the counter.
+        assert _handler_response("/flows").status == 200
+    _with_pair_code("ABC23456", body)
+
+
+def test_pair_failures_are_cumulative_across_successes():
+    # _paired() runs on every acting request, so resetting on success would let
+    # a legitimately paired tab keep zeroing the counter while another grinds.
+    from cloudlens_console import server
+
+    def body():
+        _handler_response("/run", method="POST",
+                          headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                   "X-CloudLens-Pair": "WRONGCOD"})
+        assert server.PAIR_FAILURES == 1
+        _handler_response("/flows", headers={"Origin": PAGES_ORIGIN,
+                                             "X-CloudLens-Pair": "ABC23456"})
+        assert server.PAIR_FAILURES == 1, "a success must not clear the grind counter"
+    _with_pair_code("ABC23456", body)
+
+
+def test_non_ascii_pair_header_does_not_raise():
+    # hmac.compare_digest raises TypeError on a non-ASCII str, and the header
+    # bytes are attacker-controlled: an unhandled 500 here is a free oracle.
+    def body():
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "ABC2345é"})
+        assert r.status == 401
+    _with_pair_code("ABC23456", body)
+
+
+def test_foreign_host_header_is_refused():
+    # DNS rebinding: evil.com resolves to 127.0.0.1, the browser then calls the
+    # console same-origin and sends NO Origin on a GET, which would otherwise
+    # be read as "a local process, which already has the shell".
+    def body():
+        for path, method in (("/health", "GET"), ("/flows", "GET"), ("/run", "POST")):
+            r = _handler_response(path, method=method,
+                                  headers={"Host": "evil.com:8760", "Content-Length": "0"})
+            assert r.status == 403, "%s answered a rebound Host" % path
+        assert _handler_response("/health", headers={"Host": "evil.com"}).status == 403
+    _with_pair_code("ABC23456", body)
+
+
+def test_loopback_host_headers_are_accepted():
+    for host in ("127.0.0.1", "127.0.0.1:8760", "localhost", "localhost:8890", "[::1]:8760"):
+        assert _handler_response("/health", headers={"Host": host}).status == 200, \
+            "%r is us; refusing it would break the local UI" % host
 
 
 def test_replay_needs_no_boto3(monkeypatch=None):

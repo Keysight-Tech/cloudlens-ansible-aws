@@ -1,12 +1,19 @@
 """Loopback-only HTTP server: serves the UI, starts jobs, streams SSE.
 
-Routes (nothing else is exposed):
-  GET  /health           -> {ok, version} - liveness probe, no pairing required
+Routes (nothing else is exposed). "paired" means a cross-origin caller must
+send X-CloudLens-Pair; the console's own UI is exempt:
+  GET  /health           -> {ok, version} - liveness probe, open by design
   GET  /                 -> the premium UI (web/index.html)
-  GET  /flows            -> the four flows as JSON (the UI renders from this)
-  POST /run              -> {flow, inputs, replay?}  starts a job, returns {job_id}
-  GET  /events/<job_id>  -> Server-Sent Events for that job (supports Last-Event-ID)
-  POST /stop/<job_id>    -> cancels a running job
+  GET  /flows            -> paired. the four flows as JSON (the UI renders it)
+  POST /run              -> paired. {flow, inputs, replay?} -> {job_id}
+  GET  /events/<job_id>  -> Server-Sent Events (Last-Event-ID). NOT header-gated:
+                            EventSource cannot send headers, so the gate is that
+                            job_id is unguessable and only /run hands one out.
+  POST /stop/<job_id>    -> paired. cancels a running job
+
+Every GET and POST is refused unless Host names this machine: a hostile page can
+resolve its own name to 127.0.0.1, and the browser then treats it as same-origin
+and sends no Origin at all, which is exactly what the pairing exemption keys on.
 
 Bind defaults to 127.0.0.1. It is NOT loopback-only by construction: --host
 takes any address, and --allow-remote is the deliberate gate in front of a
@@ -15,6 +22,7 @@ under the operator's AWS identity, so that gate is load-bearing, not cosmetic.
 """
 from __future__ import annotations
 import os
+import hmac
 import json
 import uuid
 import queue
@@ -99,6 +107,32 @@ def new_pair_code(n=8):
 
 PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
 
+# Loopback has no network cost, so an unattended page could otherwise grind 40
+# bits at thousands of guesses a second. Cumulative for the life of the
+# process: 20 wrong guesses EVER, not 20 without a legitimate request
+# interleaving. A real visitor mistypes once or twice, so 20 is generous.
+PAIR_FAILURES = 0
+PAIR_MAX_FAILURES = 20
+PAIR_WARNED = False
+
+# Host values that mean "this machine's own console". Anything else is a name
+# that resolved to us, i.e. DNS rebinding.
+OUR_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_name(raw):
+    """The host part of a Host header, port and IPv6 brackets removed.
+
+    Not a plain split(':')[0]: that yields '' for '::1' and '[' for
+    '[::1]:8760', so an IPv6 console would refuse its own UI.
+    """
+    raw = (raw or "").strip()
+    if raw.startswith("["):                       # [::1] or [::1]:8760
+        return raw[1:].split("]", 1)[0]
+    if raw.count(":") == 1:                       # host:port
+        return raw.split(":", 1)[0]
+    return raw                                    # bare name, or bare IPv6
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -127,6 +161,58 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Vary", "Origin")
 
+    def _host_is_ours(self):
+        """DNS rebinding: a hostile page can point its own name at 127.0.0.1, at
+        which point the browser calls it same-origin, sends no Origin on a GET,
+        and the absent-Origin exemption stops meaning 'local process'.
+
+        Fails closed on a missing Host too. Every HTTP/1.1 request must carry
+        one, so its absence is not a client we owe anything to.
+        """
+        return _host_name(self.headers.get("Host")) in OUR_HOSTS
+
+    def _paired(self):
+        """True when the caller may act. Requests from the console's own UI are
+        exempt - they arrive either with no Origin at all (same-origin GET) or
+        with a loopback origin (same-origin POST; per Fetch, Origin is omitted
+        only on same-origin GET/HEAD). Everything else must present the code
+        this process printed at startup.
+
+        Absence of Origin is NOT proof of same-origin: non-browser clients
+        (curl, local scripts) never send it either. We exempt it anyway because
+        local code execution already implies the user's shell and AWS identity,
+        so pairing would add nothing. That premise only holds because
+        _host_is_ours() has already refused a rebound name, and because the
+        bind is loopback unless --allow-remote was passed.
+        """
+        global PAIR_FAILURES, PAIR_CODE, PAIR_WARNED
+        origin = self.headers.get("Origin")
+        if not origin or origin in SELF_ORIGINS:
+            return True
+        supplied = self.headers.get("X-CloudLens-Pair") or ""
+        # compare_digest raises TypeError on non-ASCII str, and a hostile page
+        # can put any bytes in a header. Normalise before comparing.
+        if not supplied.isascii():
+            supplied = ""
+        if PAIR_CODE and hmac.compare_digest(supplied, PAIR_CODE):
+            return True
+        # Cumulative, never reset: _paired() runs on every acting request, so
+        # zeroing on success would let a paired tab keep clearing the counter
+        # while a hostile tab grinds.
+        PAIR_FAILURES += 1
+        # Warn on the transition only, via a flag rather than == the threshold:
+        # two threads can step over an exact value and the warning would never
+        # print, and an unflagged condition stays true forever and buries the
+        # live deploy output the cap exists to keep readable.
+        if PAIR_FAILURES >= PAIR_MAX_FAILURES and not PAIR_WARNED:
+            PAIR_CODE, PAIR_WARNED = None, True
+            # flush: stdout is block-buffered whenever the console is piped or
+            # redirected, and a warning that sits in a buffer until exit is not
+            # a warning.
+            print("\n  !! %d bad pairing attempts, pairing disabled."
+                  " Restart the console to pair again.\n" % PAIR_FAILURES, flush=True)
+        return False
+
     def _send(self, code, body, ctype="application/json", extra=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body)
@@ -153,6 +239,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?")[0]
+        if not self._host_is_ours():
+            return self._send(403, {"error": "bad host"})
         if path in PUBLIC_PATHS:
             # Readable by ANY origin without a pairing code, because the public
             # page must probe before the visitor has typed anything. So it must
@@ -162,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/flows":
+            if not self._paired():
+                return self._send(401, {"error": "pairing required"})
             data = {"order": F.ORDER, "flows": {
                 fid: {k: F.FLOWS[fid][k] for k in ("id", "name", "script", "subtitle", "inputs", "nodes", "wires")}
                 for fid in F.ORDER}}
@@ -175,6 +265,13 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST ----
     def do_POST(self):
         path = self.path.split("?")[0]
+        if not self._host_is_ours():
+            return self._send(403, {"error": "bad host"})
+        # Every POST route acts, so gate before the body is even read.
+        # do_OPTIONS deliberately does NOT flow through here: a preflight
+        # cannot carry X-CloudLens-Pair, and must not spend a guess either.
+        if not self._paired():
+            return self._send(401, {"error": "pairing required"})
         if path == "/run":
             b = self._body()
             fid = b.get("flow")
