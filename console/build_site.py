@@ -38,7 +38,7 @@ var FLOWS=window.__FLOWS__.flows, ORDER=window.__FLOWS__.order, FX=window.__FIXT
 
 // embed mode (iframed into the main doc): hide chrome, report height to the parent
 if(/embed/.test(location.search)){document.body.classList.add("embed");
-  var ph=function(){try{parent.postMessage({clc:document.documentElement.scrollHeight},"*");}catch(e){}};
+  var ph=function(){try{parent.postMessage({clc:document.body.scrollHeight},"*");}catch(e){}};
   window.addEventListener("load",ph);window.addEventListener("resize",ph);setInterval(ph,900);}
 
 $("themeBtn").addEventListener("click",function(){

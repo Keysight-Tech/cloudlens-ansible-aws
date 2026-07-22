@@ -26,7 +26,7 @@
   <meta name="twitter:card" content="summary_large_image" />
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23E90029'/%3E%3Cpath d='M8 20 L16 8 L24 20 Z' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=3" />
   <link rel="stylesheet" href="glass.css" />
 </head>
 <body>
@@ -137,9 +137,12 @@
     </section>
 
     <!-- 1.25 PREREQUISITE DEPLOYS: vController + KVO + vPB MARKETPLACE -->
-    <section id="prereq-deploys" class="prereq-section">
+    <section id="prereq-deploys" class="prereq-section collapsed-sec" data-collapsed="1">
       <div class="container">
-        <h2>Don't have vController, KVO, or vPB yet?</h2>
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Don't have vController, KVO, or vPB yet?</span></summary>
+          <div class="sc-body">
+        
         <p class="lede">Deploy them from AWS Marketplace in one click before running sensor deployments.</p>
 
         <div class="region-picker" id="region-picker">
@@ -237,12 +240,17 @@ terraform init
 terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
         </details>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 1.05 DEPLOYMENT OPTIONS: brownfield, private IPs, key pairs, naming -->
-    <section id="deploy-options" class="prereq-section">
+    <section id="deploy-options" class="prereq-section collapsed-sec" data-collapsed="1">
       <div class="container">
-        <h2>Fitting it into the customer's environment</h2>
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Fitting it into the customer's environment</span></summary>
+          <div class="sc-body">
+        
         <p class="lede">Every Launch button and the CLI take the same options. Leave them alone for a clean lab build, or set them to drop CloudLens into infrastructure the customer already runs.</p>
 
         <div class="prereq-card">
@@ -282,43 +290,20 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
         </div>
 
 
-        <div class="prereq-card">
-          <h3>&#129514; Test workloads deployed with the stack</h3>
-          <p>Tick any combination of <strong>Ubuntu 22.04</strong>, <strong>RHEL 9</strong>, and <strong>Windows Server 2022</strong> and the stack brings them up alongside CloudLens, already tagged for sensor discovery. Nothing is deployed unless you ask: all three default to no.</p>
-          <p>The important part is <strong>where</strong> they land. They go into this stack's own subnet, not a separate VPC, which is what makes a real end-to-end test possible:</p>
-          <ul>
-            <li>Sensors reach vController over the <strong>private network</strong>, the same path a customer's workloads use</li>
-            <li><strong>VPC Traffic Mirroring between the test VM and the vPB works</strong>. Mirroring requires a shared or peered VPC, so a fixture in its own VPC can never exercise the data plane</li>
-            <li>They carry your discovery tag from launch, so the sensor step finds them with no extra work</li>
-          </ul>
-          <p>Set the tag to match whatever your sensor deployment filters on (defaults to <code>cloudlens=yes</code>).</p>
-          <pre><code># same thing from the CLI
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
-  --test-vms all                 # or: ubuntu,windows / rhel / none</code></pre>
-          <p class="muted">Ubuntu and Windows images resolve from public SSM parameters so they always track the current release. RHEL has no public parameter, so its AMIs are pinned per region and refreshed when Red Hat publishes a new build.</p>
-        </div>
 
-        <div class="prereq-card">
-          <h3>&#127991; Naming and instance sizes</h3>
-          <p>Instance names default to <code>&lt;StackName&gt;-vcontroller</code>, <code>-kvo</code>, and <code>-vpb</code>. Override any of them independently with <code>VcontrollerName</code>, <code>KvoName</code>, <code>VpbName</code> (or <code>--vcontroller-name</code> and friends) to match a customer naming standard. This sets the Name tag only, so renaming on a stack update does not replace the instance.</p>
-          <table class="results-table">
-            <thead><tr><th>Component</th><th>Permitted sizes</th><th>Notes</th></tr></thead>
-            <tbody>
-              <tr><td>vController</td><td><code>t3.xlarge</code>, <code>m5.xlarge</code></td><td>m5 gives dedicated rather than burstable CPU: prefer it for production</td></tr>
-              <tr><td>KVO</td><td><code>c5.2xlarge</code></td><td>only size the AMI accepts</td></tr>
-              <tr><td>vPB</td><td><code>t3.xlarge</code></td><td>only size the AMI accepts</td></tr>
-            </tbody>
-          </table>
-          <p class="muted">These are enforced by the AWS Marketplace product, not by us. Any other size is rejected at launch with <code>UnsupportedOperation</code>. Verified with dry-run launches across all twelve supported regions.</p>
-        </div>
+      </div>
+        </details>
       </div>
     </section>
 
 
     <!-- 1.06 WHAT HAPPENS DURING DEPLOYMENT -->
-    <section id="deploy-progress" class="prereq-section">
+    <section id="deploy-progress" class="prereq-section collapsed-sec" data-collapsed="1">
       <div class="container">
-        <h2>What happens after you click Create</h2>
+        <details class="sec-collapse">
+          <summary><span class="sc-t">What happens after you click Create</span></summary>
+          <div class="sc-body">
+        
         <p class="lede">CloudFormation builds in dependency order, so resources appear in waves rather than all at once. Timings below are from a real deploy of vController plus three test VMs in us-east-1. Watch it live on the <strong>Events</strong> tab, or the <strong>Timeline view</strong> for a Gantt chart.</p>
 
         <ol class="deploy-timeline">
@@ -379,6 +364,8 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 
         <p class="muted">If the stack rolls back, open the Events tab and sort oldest first: the first <code>CREATE_FAILED</code> row is the real cause, everything after it is cleanup.</p>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 1.1 FULL STACK ONE-COMMAND DEPLOY -->
@@ -416,9 +403,12 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
     </section>
 
     <!-- 1.15 TEST FIXTURE: 3 disposable workload VMs for SE demos / verification -->
-    <section id="test-fixture" class="full-stack-section">
+    <section id="test-fixture" class="full-stack-section collapsed-sec" data-collapsed="1">
       <div class="container">
-        <h2>Verify it end-to-end on disposable VMs</h2>
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Verify it end-to-end on disposable VMs</span></summary>
+          <div class="sc-body">
+        
         <p class="lede">For SE demos or first-call verification: stand up 3 throwaway workload EC2 instances (Ubuntu 22.04 + RHEL 9 + Windows Server 2022) tagged with a discovery tag, then run the stack with the matching tag flags. Proves sensors install on every supported OS in one pass.</p>
 
         <div class="full-stack-cmd-wrap">
@@ -435,12 +425,17 @@ aws cloudformation delete-stack --stack-name cloudlens-test-vms --region us-east
 
         <p class="full-stack-note">The fixture launches three instances tagged <code>cloudlens=yes</code> with an <code>os</code> tag per platform. The sensor deployment installs on all three and they register with vController. Total round trip: about 25 to 30 minutes. Override the tag pair with <code>TESTVMS_TAG_KEY</code> / <code>TESTVMS_TAG_VALUE</code> environment variables if you want to mirror a customer's existing convention.</p>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 1.2 DOCKER PATH (Tier 3 deep-link target) -->
-    <section id="docker" class="full-stack-section">
+    <section id="docker" class="full-stack-section collapsed-sec" data-collapsed="1">
       <div class="container">
-        <h2>Run from Docker</h2>
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Run from Docker</span></summary>
+          <div class="sc-body">
+        
         <p class="lede">Pinned image with Ansible, the AWS SDKs, and pywinrm. Works from your laptop, a CI runner, or any container host.</p>
 
         <div class="full-stack-cmd-wrap">
@@ -474,6 +469,8 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           </div>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- WATCH IT DEPLOY: interactive console (iframed, self-contained) -->
@@ -484,7 +481,7 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           <p class="lede">Pick a path and run it, the fabric diagram wires itself up as each step completes, with the plain-English narration and the raw output alongside. This is a live visualization of the real sequences; the actual deploy runs in your CloudShell.</p>
         </header>
         <div class="live-embed">
-          <iframe id="clc-frame" src="console.html?embed=1" title="CloudLens deployment console" loading="lazy"></iframe>
+          <iframe id="clc-frame" src="console.html?embed=1&amp;v=2" title="CloudLens deployment console" loading="lazy"></iframe>
         </div>
         <p class="lede" style="margin-top:1rem;font-size:.95rem">Prefer it full-screen? <a href="console.html">Open the full console &rarr;</a></p>
       </div>
@@ -617,10 +614,13 @@ docker build -t cloudlens-ansible-aws .</code></pre>
     </section>
 
     <!-- 3. INTERACTIVE WIZARD -->
-    <section id="wizard" class="section alt">
+    <section id="wizard" class="section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Build your customer_input.yaml</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Build your customer_input.yaml</h2>
+          
           <p>Fill in four fields. Download the file. Run quickstart. That is the whole flow.</p>
         </header>
         <div class="wizard-grid">
@@ -702,13 +702,18 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           </aside>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 4. ARCHITECTURE -->
-    <section id="architecture" class="section">
+    <section id="architecture" class="section collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Live architecture flow</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Live architecture flow</h2>
+          
           <p>A single Ansible control point authenticates to AWS, discovers EC2 instances by tag, and routes each host to the right OS lane. The CloudLens sensor on each EC2 instance mirrors traffic (mirror / VXLAN) to the vPB, which forwards to your monitoring tool. Every sensor self registers with vController on first start.</p>
         </header>
         <div class="diagram-frame">
@@ -716,13 +721,18 @@ docker build -t cloudlens-ansible-aws .</code></pre>
         </div>
         <p class="caption">Flow: CloudLens sensor on EC2 to mirror / VXLAN to vPB to monitoring tool. The dotted line shows sensor registration traffic back to vController.</p>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 5. SCALING VISUALIZER -->
-    <section id="scaling" class="section alt">
+    <section id="scaling" class="section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">How does it scale?</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>How does it scale?</h2>
+          
           <p>Drag the slider to see the estimated deployment time for your fleet size.</p>
         </header>
         <div class="scaling">
@@ -757,13 +767,18 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           </div>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 6. VERIFIED RESULTS -->
-    <section id="verified" class="section">
+    <section id="verified" class="section collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Verified against real AWS</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Verified against real AWS</h2>
+          
           <p>A full 3-component stack was launched via CloudFormation in us-east-1 and reached CREATE_COMPLETE, then the full pipeline was proven end to end: KVO licensing, vController and vPB adoption, 3-OS sensor registration, and agentless AWS mirror sessions.</p>
         </header>
         <div class="metrics-grid">
@@ -801,13 +816,18 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           </table>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: PRODUCT CONFIGURATION (one-time) -->
-    <section id="configuration" class="section alt">
+    <section id="configuration" class="section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">vController configuration (one-time)</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>vController configuration (one-time)</h2>
+          
           <p class="lede">Once CloudFormation or Terraform finishes, configure the Keysight products via their web UIs. One-time setup, about 15 minutes end to end. vController was formerly named CLMS.</p>
         </header>
 
@@ -858,13 +878,18 @@ CloudLensVPB-kvo# exit</code></pre>
           </article>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: PREPARING EXISTING CUSTOMER VMs -->
-    <section id="prep-vms" class="section">
+    <section id="prep-vms" class="section collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Preparing existing customer VMs</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Preparing existing customer VMs</h2>
+          
           <p class="lede">Skip this if you used the disposable test fixture, those instances are already configured. Deploying sensors to existing customer EC2 instances? Prep them with the included script in scan-then-fix mode.</p>
         </header>
 
@@ -924,13 +949,18 @@ Restart-Service AmazonSSMAgent</code></pre>
 
         <div class="callout-warning">After installing SSM Agent, wait 30 to 60 seconds for it to register with AWS Systems Manager. Verify with: <code>aws ssm describe-instance-information --region us-east-1</code></div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: SENSOR DEPLOYMENT -->
-    <section id="sensors" class="section alt">
+    <section id="sensors" class="section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Sensor deployment via Ansible</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Sensor deployment via Ansible</h2>
+          
           <p class="lede">Push CloudLens sensors to every tagged EC2 instance at fleet scale over SSH, SSM, or WinRM, with outbound HTTPS from each instance back to vController.</p>
         </header>
 
@@ -967,13 +997,18 @@ bash quickstart.sh
 ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
         <p>The playbook invokes the CloudLens sensor installer on every matching instance in parallel, Docker or Podman on Linux, MSI on Windows. Sensors register with vController on first start.</p>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: VERIFY / MIRRORING -->
-    <section id="mirroring" class="section">
+    <section id="mirroring" class="section collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Agentless AWS mirroring</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Agentless AWS mirroring</h2>
+          
           <p class="lede">No sensor in the guest. KVO deploys collector Service VMs and drives AWS VPC Traffic Mirroring, AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p>
         </header>
 
@@ -1005,13 +1040,18 @@ ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
         </div>
         <p class="lede" style="margin-top:1.5rem">Mix and match, mirror the Nitro hosts agentlessly and put sensors on the rest, both land under the same vController / KVO project.</p>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: TEARDOWN -->
-    <section id="teardown" class="section alt">
+    <section id="teardown" class="section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Teardown</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Teardown</h2>
+          
           <p class="lede">Clean removal of sensors and infrastructure. Always run in this order, sensors first, infrastructure second.</p>
         </header>
 
@@ -1041,13 +1081,18 @@ aws cloudformation wait stack-delete-complete \
           </article>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- EXTRA: APPENDIX -->
-    <section id="appendix" class="section">
+    <section id="appendix" class="section collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Appendix - reference</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Appendix - reference</h2>
+          
           <p class="lede">Default credentials, network topology, and Marketplace AMIs. Keep this open in a tab during deployment.</p>
         </header>
 
@@ -1106,13 +1151,18 @@ aws cloudformation wait stack-delete-complete \
           </article>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 6.5 FAQ / COMMON ISSUES -->
-    <section id="faq" class="faq-section section alt">
+    <section id="faq" class="faq-section section alt collapsed-sec" data-collapsed="1">
       <div class="container">
+        <details class="sec-collapse">
+          <summary><span class="sc-t">Common issues</span></summary>
+          <div class="sc-body">
         <header class="section-head">
-          <h2>Common issues</h2>
+          
           <p>If something does not work, check these first.</p>
         </header>
 
@@ -1206,6 +1256,8 @@ sudo vpb                                # vPB CLI</code></pre>
           </details>
         </div>
       </div>
+        </details>
+      </div>
     </section>
 
     <!-- 7. QUICK DOCS -->
@@ -1287,5 +1339,12 @@ sudo vpb                                # vPB CLI</code></pre>
   </footer>
 
   <script src="script.js" defer></script>
+<script>(function(){function openTarget(){var h=location.hash;if(!h||h.length<2)return;
+var el=document.querySelector(h);if(!el)return;var d=el.querySelector("details.sec-collapse");
+if(d&&!d.open){d.open=true;setTimeout(function(){el.scrollIntoView({block:"start"});},30);}}
+window.addEventListener("hashchange",openTarget);window.addEventListener("load",openTarget);
+document.addEventListener("click",function(e){var a=e.target.closest&&e.target.closest('a[href^="#"]');
+if(!a)return;var t=document.querySelector(a.getAttribute("href"));if(!t)return;
+var d=t.querySelector("details.sec-collapse");if(d)d.open=true;});})();</script>
 </body>
 </html>
