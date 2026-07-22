@@ -64,12 +64,16 @@ def test_fixtures_valid_and_rebuild():
         assert frames[-1]["event"]["type"] in (E.DONE, E.ERROR)
 
 
-def test_pairing_code_is_random_and_short():
+def test_pair_code_shape_and_alphabet():
     from cloudlens_console import server
-    a = server.new_pair_code()
-    b = server.new_pair_code()
-    assert a != b, "pair codes must differ per call"
-    assert len(a) == 6 and a.isalnum() and a.isupper()
+    allowed = set(server.PAIR_ALPHABET)
+    assert not (allowed & set("O0I1l")), "alphabet must stay unambiguous to type"
+    assert len(server.PAIR_ALPHABET) == len(allowed) == 32, "duplicates would silently cut entropy"
+    for _ in range(200):
+        c = server.new_pair_code()
+        assert len(c) == 8 and set(c) <= allowed
+    assert len(server.new_pair_code(10)) == 10
+    assert server.new_pair_code() != server.new_pair_code(), "must not be constant"
 
 
 def test_replay_needs_no_boto3(monkeypatch=None):

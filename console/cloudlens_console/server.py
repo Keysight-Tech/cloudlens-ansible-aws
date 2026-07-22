@@ -27,12 +27,24 @@ JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
 # Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
-_PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-PAIR_CODE = None          # set by serve(); one per process
+# ASCII only: compared with hmac.compare_digest.
+PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-def new_pair_code(n=6):
-    return "".join(secrets.choice(_PAIR_ALPHABET) for _ in range(n))
+def new_pair_code(n=8):
+    """Return a fresh pairing code.
+
+    This is the human-consent gate for cross-origin callers: a public page may
+    only drive this console once the visitor has typed the code we printed at
+    startup. The code is compared with hmac.compare_digest, so neither the
+    alphabet nor the length is free to change - PAIR_ALPHABET must stay ASCII,
+    and 8 characters over 32 symbols is the 40 bits of entropy that keeps
+    offline grinding from being cheap.
+    """
+    return "".join(secrets.choice(PAIR_ALPHABET) for _ in range(n))
+
+
+PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
 
 
 class Handler(BaseHTTPRequestHandler):
