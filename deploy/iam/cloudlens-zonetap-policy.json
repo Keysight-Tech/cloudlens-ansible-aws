@@ -19,6 +19,7 @@
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeInstances",
+        "ec2:DescribeTags",
         "ec2:DescribeTrafficMirrorSessions",
         "ec2:DescribeTrafficMirrorTargets",
         "ec2:DescribeTrafficMirrorFilters",

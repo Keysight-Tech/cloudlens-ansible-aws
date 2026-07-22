@@ -338,6 +338,12 @@ def main():
             "cloudlens-vpb-svm Marketplace image is available in the region"); return 6
     aws_cfg = {"scaleCooldown": args.scale_cooldown, "imageId": image_id}
     if args.ssh_key:             aws_cfg["sshKeyPair"] = args.ssh_key
+    # The KVO UG (AWS Cloud Configs) requires the management, ingress, and egress
+    # security groups to be DISTINCT (each in its own subnet). Passing one SG for
+    # all three leaves the vHub's interface roles ambiguous. Warn loudly.
+    if args.mgmt_sg and len({args.mgmt_sg, args.ingress_sg, args.egress_sg}) < 3:
+        log("WARNING: mgmt/ingress/egress security groups must be THREE DISTINCT SGs "
+            "(KVO UG requirement); using the same SG can break vHub bring-up.")
     if args.mgmt_sg:             aws_cfg["mgmtSecurityGroupIds"] = [args.mgmt_sg]
     if args.ingress_sg:          aws_cfg["ingressSecurityGroupIds"] = [args.ingress_sg]
     if args.egress_sg:           aws_cfg["egressSecurityGroupIds"] = [args.egress_sg]
