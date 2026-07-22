@@ -34,12 +34,16 @@
 **Step 1: Write the failing test**
 
 ```python
-def test_pairing_code_is_random_and_short():
+def test_pair_code_shape_and_alphabet():
     from cloudlens_console import server
-    a = server.new_pair_code()
-    b = server.new_pair_code()
-    assert a != b, "pair codes must differ per call"
-    assert len(a) == 6 and a.isalnum() and a.isupper()
+    allowed = set(server.PAIR_ALPHABET)
+    assert not (allowed & set("O0I1l")), "alphabet must stay unambiguous to type"
+    assert len(server.PAIR_ALPHABET) == len(allowed) == 32, "duplicates would silently cut entropy"
+    for _ in range(200):
+        c = server.new_pair_code()
+        assert len(c) == 8 and set(c) <= allowed
+    assert len(server.new_pair_code(10)) == 10
+    assert server.new_pair_code() != server.new_pair_code(), "must not be constant"
 ```
 
 **Step 2: Run it to make sure it fails**
@@ -55,13 +59,22 @@ Add to `server.py` after line 26 (`FIXTURES = ...`):
 import secrets
 
 # Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
-_PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-PAIR_CODE = None          # set by serve(); one per process
+# ASCII only: compared with hmac.compare_digest.
+PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-def new_pair_code(n=6):
-    return "".join(secrets.choice(_PAIR_ALPHABET) for _ in range(n))
+def new_pair_code(n=8):
+    """The human-consent gate for cross-origin callers. Compared with
+    hmac.compare_digest, so neither alphabet nor length is free to change."""
+    return "".join(secrets.choice(PAIR_ALPHABET) for _ in range(n))
+
+
+PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
 ```
+
+> Task 1 was implemented and then revised after code review. The shape above is
+> the reviewed one. The original spec asserted `isalnum()`/`isupper()`, which is
+> a tautology plus a 1-in-4096 flake, and used 6 characters with no guess cap.
 
 **Step 4: Run the test and make sure it passes**
 
@@ -264,7 +277,7 @@ git commit -m "console: pin CORS to the docs origin and answer Private Network A
 ```python
 def test_run_without_pair_code_is_rejected():
     from cloudlens_console import server
-    server.PAIR_CODE = "ABC234"
+    server.PAIR_CODE = "ABC23456"
     status, _, payload = _handler_response(
         "/run", method="POST",
         headers={"Origin": PAGES_ORIGIN, "Content-Length": "0"})
@@ -273,18 +286,18 @@ def test_run_without_pair_code_is_rejected():
 
 def test_run_with_pair_code_is_accepted():
     from cloudlens_console import server
-    server.PAIR_CODE = "ABC234"
+    server.PAIR_CODE = "ABC23456"
     body = json.dumps({"flow": "stack", "inputs": {}, "replay": True}).encode()
     status, _, payload = _handler_response(
         "/run", method="POST",
         headers={"Origin": PAGES_ORIGIN, "Content-Length": str(len(body)),
-                 "X-CloudLens-Pair": "ABC234"},
+                 "X-CloudLens-Pair": "ABC23456"},
         body=body)
     assert status == 200 and "job_id" in payload
 
 def test_same_origin_needs_no_pair_code():
     from cloudlens_console import server
-    server.PAIR_CODE = "ABC234"
+    server.PAIR_CODE = "ABC23456"
     status, _, _ = _handler_response("/flows")   # no Origin header at all
     assert status == 200
 ```
