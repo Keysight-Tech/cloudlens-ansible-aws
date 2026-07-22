@@ -588,6 +588,22 @@ neither `Content-Length` nor `Transfer-Encoding`, so the stream is undelimited
 on a connection the server promised to reuse. Set `self.close_connection = True`
 and send `Connection: close`.
 
+**`--allow-remote` is dead under the Host guard.** Verified live: bound to
+`0.0.0.0`, a LAN client sending `Host: 10.0.0.27:8801` gets 403. The guard only
+accepts loopback names, which is exactly right for DNS-rebinding defence but
+makes the documented escape hatch non-functional.
+
+Decision: when `--allow-remote` is passed, add the bound host to `OUR_HOSTS` in
+`serve()`. Rebinding protection stays intact for the default loopback case, and
+the operator who explicitly opted into network exposure gets the behaviour the
+flag advertises. Do not widen `OUR_HOSTS` unconditionally.
+
+Note the plan's original snippet was wrong and the implementation corrected it:
+`host.split(":")[0]` gives `""` for `::1` and `"["` for `[::1]:8760`, so the
+`"[::1]"`/`"::1"` entries were unreachable and an IPv6 console would have 403'd
+its own UI. The shipped `_host_name()` strips brackets and only strips a port
+when there is exactly one colon.
+
 **IPv6 banner URL.** `__main__.py` special-cases only `127.0.0.1`, so `--host ::1`
 builds `http://::1:8760/` and hands it to `webbrowser.open`. Needs `[::1]`.
 
