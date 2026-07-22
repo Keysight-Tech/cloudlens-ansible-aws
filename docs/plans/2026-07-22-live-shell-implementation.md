@@ -14,7 +14,12 @@
 
 ## Conventions for every task
 
-- Run tests from the repo root: `cd ~/cloudlens-ansible-aws/console && python3 -m pytest tests/test_console.py -v`
+- **The suite has no external dependencies and no pytest.** `tests/test_console.py` ends in a
+  stdlib runner that executes every `test_*` function. Run the whole suite, it takes under a second:
+  `cd console && python3 tests/test_console.py`
+- Expected baseline before any change: `6 tests passed`
+- There is no way to run a single test by name. Run them all and read the output; a new failing
+  test shows as a traceback naming that function.
 - The console under test is imported as `from cloudlens_console import server`
 - Commit after each task. Small commits, present tense, no AI attribution.
 
@@ -39,8 +44,8 @@ def test_pairing_code_is_random_and_short():
 
 **Step 2: Run it to make sure it fails**
 
-Run: `python3 -m pytest tests/test_console.py::test_pairing_code_is_random_and_short -v`
-Expected: FAIL, `AttributeError: module 'cloudlens_console.server' has no attribute 'new_pair_code'`
+Run: `cd console && python3 tests/test_console.py`
+Expected: FAIL with `AttributeError: module 'cloudlens_console.server' has no attribute 'new_pair_code'`
 
 **Step 3: Implement the minimal code**
 
@@ -60,7 +65,7 @@ def new_pair_code(n=6):
 
 **Step 4: Run the test and make sure it passes**
 
-Run: `python3 -m pytest tests/test_console.py::test_pairing_code_is_random_and_short -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: PASS
 
 **Step 5: Commit**
@@ -119,7 +124,7 @@ def test_health_leaks_nothing():
 
 **Step 2: Run it to make sure it fails**
 
-Run: `python3 -m pytest tests/test_console.py::test_health_leaks_nothing -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: FAIL, status is 404 because `/health` is not routed yet.
 
 **Step 3: Implement the minimal code**
@@ -140,7 +145,7 @@ In `do_GET`, insert immediately after `path = self.path.split("?")[0]` (line 60)
 
 **Step 4: Run the test and make sure it passes**
 
-Run: `python3 -m pytest tests/test_console.py::test_health_leaks_nothing -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: PASS
 
 **Step 5: Commit**
@@ -184,7 +189,7 @@ def test_preflight_allows_private_network():
 
 **Step 2: Run them to make sure they fail**
 
-Run: `python3 -m pytest tests/test_console.py -k "cors or preflight" -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: FAIL, no CORS headers emitted and `do_OPTIONS` does not exist.
 
 **Step 3: Implement the minimal code**
@@ -234,8 +239,8 @@ Add a new method to `Handler`, after `do_POST`:
 
 **Step 4: Run the tests and make sure they pass**
 
-Run: `python3 -m pytest tests/test_console.py -k "cors or preflight" -v`
-Expected: 3 PASS
+Run: `cd console && python3 tests/test_console.py`
+Expected: the new tests appear in the ok list and the total rises
 
 **Step 5: Commit**
 
@@ -286,7 +291,7 @@ def test_same_origin_needs_no_pair_code():
 
 **Step 2: Run them to make sure they fail**
 
-Run: `python3 -m pytest tests/test_console.py -k pair -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: the rejection test FAILs, `/run` currently answers 200 or 400 without checking.
 
 **Step 3: Implement the minimal code**
@@ -321,13 +326,13 @@ In `do_POST`, as the first statement after `path = ...`:
 
 **Step 4: Run the tests and make sure they pass**
 
-Run: `python3 -m pytest tests/test_console.py -k pair -v`
-Expected: 3 PASS
+Run: `cd console && python3 tests/test_console.py`
+Expected: the new tests appear in the ok list and the total rises
 
 **Step 5: Run the whole suite for regressions**
 
-Run: `python3 -m pytest tests/test_console.py -v`
-Expected: all PASS, including the original 6
+Run: `cd console && python3 tests/test_console.py`
+Expected: every test ok, total is 6 plus the ones added so far
 
 **Step 6: Commit**
 
@@ -358,7 +363,7 @@ def test_job_ids_are_full_entropy_and_unique():
 
 **Step 2: Run it to make sure it fails**
 
-Run: `python3 -m pytest tests/test_console.py::test_job_ids_are_full_entropy_and_unique -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: FAIL, `new_job_id` does not exist.
 
 **Step 3: Implement the minimal code**
@@ -380,7 +385,7 @@ Replace line 82 `job_id = uuid.uuid4().hex[:12]` with:
 
 **Step 4: Run the test and make sure it passes**
 
-Run: `python3 -m pytest tests/test_console.py::test_job_ids_are_full_entropy_and_unique -v`
+Run: `cd console && python3 tests/test_console.py`
 Expected: PASS
 
 **Step 5: Commit**
@@ -699,7 +704,7 @@ Three cases, matching the failure table in the design:
 **Step 2: Run them**
 
 Run: `python3 -m pytest tests/test_bridge_browser.py -v`
-Expected: 3 PASS
+Expected: the new tests appear in the ok list and the total rises
 
 **Step 3: Commit**
 
