@@ -54,6 +54,13 @@ Two controls, both cheap:
 
 The cap is what carries the weight. The length is defence in depth.
 
+**What the pairing code does not defend against.** Requests with no `Origin`
+header are exempt, so `curl` and any local process can drive the console freely.
+That is deliberate: local code execution already implies the user's shell and
+therefore their AWS identity, so pairing would add nothing. The code defends
+against *hostile web origins*, which is a narrower claim than "authentication".
+Do not read it as an auth boundary it was never meant to be.
+
 ## Architecture
 
 ```

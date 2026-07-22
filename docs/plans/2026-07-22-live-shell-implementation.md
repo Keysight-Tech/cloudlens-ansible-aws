@@ -321,16 +321,21 @@ Add a guard method to `Handler`:
         otherwise grind the code at thousands of attempts per second. After
         PAIR_MAX_FAILURES consecutive misses the code is discarded and pairing
         fails closed until the console is restarted."""
-        global PAIR_FAILURES, PAIR_CODE
+        global PAIR_FAILURES, PAIR_CODE, PAIR_WARNED
         if not self.headers.get("Origin"):
             return True
         supplied = self.headers.get("X-CloudLens-Pair") or ""
+        # compare_digest raises TypeError on non-ASCII str, and a hostile page
+        # can put any bytes in a header. Normalise before comparing.
+        if not supplied.isascii():
+            supplied = ""
         if PAIR_CODE and hmac.compare_digest(supplied, PAIR_CODE):
-            PAIR_FAILURES = 0
             return True
+        # Cumulative, never reset. Resetting on success would let a paired tab
+        # keep zeroing the counter while another tab grinds.
         PAIR_FAILURES += 1
-        if PAIR_FAILURES >= PAIR_MAX_FAILURES:
-            PAIR_CODE = None
+        if PAIR_FAILURES >= PAIR_MAX_FAILURES and not PAIR_WARNED:
+            PAIR_CODE, PAIR_WARNED = None, True
             print("\n  !! %d bad pairing attempts, pairing disabled."
                   " Restart the console to pair again.\n" % PAIR_FAILURES)
         return False
@@ -340,12 +345,26 @@ Add the module-level counter beside `PAIR_CODE`, and `import hmac` at the top:
 
 ```python
 PAIR_FAILURES = 0
-PAIR_MAX_FAILURES = 10
+PAIR_MAX_FAILURES = 20
+PAIR_WARNED = False
 ```
 
-The counter is incremented from handler threads without a lock. A race can only
-let a couple of extra attempts through before the cap trips, which does not
-change the security property, and a lock on every request is not worth it.
+Three properties this shape buys, each fixing a hole found in review:
+
+- **Cumulative, never reset.** `_paired()` runs on every acting request, so
+  zeroing on success would let a legitimately paired tab keep clearing the
+  counter while a hostile tab grinds. The property you want is "20 wrong
+  guesses ever", not "20 without a legitimate request interleaving". A real
+  visitor mistypes once or twice, so 20 is generous.
+- **Warn once, on the transition.** Without the flag the condition stays true
+  forever and a grinding attacker buries the live deploy output under warnings,
+  destroying the observability the cap exists for.
+- **Lock-free on purpose.** Losing an increment to a race is immaterial against
+  40 bits and a threshold of 20, and the `PAIR_CODE = None` store is atomic
+  under the GIL. Note this is exactly why the print uses a flag and not
+  `== PAIR_MAX_FAILURES`: two threads can step over an exact value and the
+  warning would never print at all. A flag is race-tolerant, worst case it
+  prints twice.
 
 **Test isolation matters here.** The suite is a single process and tests run in
 file order, so a test that assigns `server.PAIR_CODE` leaks into every later
@@ -478,12 +497,23 @@ git commit -m "console: make job_id a full-entropy capability for the SSE stream
 
 Replace `serve` with:
 
+`PAIR_CODE` is already seeded at import (Task 1), so `serve()` must NOT
+regenerate it. Regenerating buys nothing — `serve()` is called once and the cap
+requires a restart by design — and it creates an ordering trap: print the banner
+before `serve()` and the visitor is shown a valid-looking code the server will
+reject, with nothing to diagnose. Leave `serve()` alone:
+
 ```python
 def serve(host="127.0.0.1", port=8760):
-    global PAIR_CODE
-    PAIR_CODE = new_pair_code()
     httpd = ThreadingHTTPServer((host, port), Handler)
     return httpd
+```
+
+Also correct the comment on `PAIR_CODE` in `server.py`, which currently says
+`re-set by serve()`:
+
+```python
+PAIR_CODE = new_pair_code()   # one per process, for its whole life
 ```
 
 **Step 2: Print it in the banner**
