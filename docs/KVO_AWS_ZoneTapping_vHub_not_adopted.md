@@ -50,13 +50,13 @@ fabric, and what can prevent that step.
   - `config.config: Tried to set invalid DTLS Config: 4 validation errors ... missing`
   - `driver_mapper.bind_to_dpdk: Failed to bind PCI NIC ...:07.0 to vfio-pci (exit 1)`
   - internal `GET /vpb/status -> 401 Missing Authorization header` in a loop
-- The vHub's `:8444` gunicorn access log is **empty** — KVO never connects to push the
+- The vHub's `:8444` gunicorn access log is **empty**: KVO never connects to push the
   shim/DTLS config, and the vHub never opens a connection to the vController.
 
 ## Questions for support
 
 1. After the ASG launches the vHub, what is responsible for setting
-   `metadata.capabilities.KVO=true` and creating the `vpb-shim` configmap — the vHub
+   `metadata.capabilities.KVO=true` and creating the `vpb-shim` configmap, the vHub
    itself (from the `cloudlens:collector` tag) or a push from KVO to the vHub's `:8444`?
 2. What conditions gate KVO from adopting a vHub it launched (creating the CollectionPoint
    and pushing `vpb-shim`/DTLS)? Is there a health/announce handshake the vHub must complete
