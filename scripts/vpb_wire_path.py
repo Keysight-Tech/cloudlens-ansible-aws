@@ -10,7 +10,9 @@ Sequence (each gotcha below cost a debugging cycle, do not reorder):
   2. createC2DLink                          the Cloud-to-Device Link
   3. bindDeviceConfigPorts eth1             INGRESS -> C2DL
   4. createTool type=LOCAL                  a REMOTE/cloud tool CANNOT bind to a
-                                            device port
+                                            device port. Do NOT send vlanStripping/
+                                            encapsulation/tunnelOrigRemoteIP: KVO
+                                            rejects them on LOCAL tools
   5. bindDeviceConfigPorts eth2             EGRESS -> tool. Bind ingress and
                                             egress in SEPARATE calls: a failing
                                             egress bind rolls back the whole call
@@ -18,7 +20,10 @@ Sequence (each gotcha below cost a debugging cycle, do not reorder):
                                             with "does not have a device link
                                             associated to it". Pass the FULL
                                             awsConfiguration: a partial update
-                                            fails reading sshKeyPair
+                                            fails reading sshKeyPair, and each
+                                            availabilityZone must carry minSize
+                                            and maxSize (Int!) or the variable is
+                                            rejected outright
   7. createMonitoringPolicy                 source -> tool, CONTINUOUSLY
 
 Exit: 0 ok, 2 auth, 3 not licensed, 4 device/deviceConfig not found, 5 step failed.
@@ -183,7 +188,7 @@ def main():
         if not step(base, tok, verify, "create local tool",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_ToolInput!){ createTool(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.tool, "c": cluster,
-                     "s": {"type": "LOCAL", "reachableFrom": "DEVICE_CONFIG", "vlanStripping": False}}): return 5
+                     "s": {"type": "LOCAL", "reachableFrom": "DEVICE_CONFIG"}}): return 5
 
     # 5. egress -> tool  (separate call from the ingress bind on purpose)
     log(f"5/7 bind {a.egress_port} (egress) -> tool")
@@ -199,7 +204,8 @@ def main():
               cloudPresence { name } deviceLinks { name }
               awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
                 mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
-                availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId } } } } }""",
+                tags { key value }
+                availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
               None, verify)
     cc = next((c for c in q["data"]["cloudConfigs"] if c["name"] == a.cloud_config), None)
     if not cc:
