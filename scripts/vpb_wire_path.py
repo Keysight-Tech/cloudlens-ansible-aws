@@ -1,66 +1,253 @@
 #!/usr/bin/env python3
-"""Wire the adopted vPB's traffic path in KVO (Track 3b):
-sync ports -> C2DL -> bind ingress -> LOCAL tool -> bind egress -> cloud-config
-deviceLinks -> monitoring policy. Reuses kvo_aws_mirror's CR lifecycle helpers.
-Schema-correct for KVO 2.13.0 (all mutation vars are non-null: ID!/String!/...!).
+"""Wire the full vPB traffic path in KVO: collection -> C2DL -> vPB ingress ->
+vPB -> egress -> tool, tied together by a monitoring policy.
 
-PREREQUISITE (found 2026-07-22 on KVO 2.13.0): syncDeviceConfigPorts commits
-cleanly but deviceConfig._portGroups stays empty until the vPB's data interfaces
-(eth1 ingress, eth2 egress) are brought up as DPDK data ports ON THE vPB itself
-(vpb CLI). The 3 ENIs exist at the AWS layer, but KVO only exposes bindable ports
-once the vPB software has claimed them. Bring the data interfaces up first, then
-the sync populates _portGroups and the bind/C2DL/tool/policy steps below apply.
-The port sync + CR lifecycle here are proven; the data-plane bring-up is the gap.
+Runs after scripts/vpb_kvo_adopt.py has adopted the vPB (device Online). Every
+step is a committed change request and is idempotent, so re-running is safe.
+
+Sequence (each gotcha below cost a debugging cycle, do not reorder):
+  1. syncDeviceConfigPorts(forceSync)      pulls eth1/eth2 into the Device Config
+  2. createC2DLink                          the Cloud-to-Device Link
+  3. bindDeviceConfigPorts eth1             INGRESS -> C2DL
+  4. createTool type=LOCAL                  a REMOTE/cloud tool CANNOT bind to a
+                                            device port
+  5. bindDeviceConfigPorts eth2             EGRESS -> tool. Bind ingress and
+                                            egress in SEPARATE calls: a failing
+                                            egress bind rolls back the whole call
+  6. updateCloudConfig deviceLinks          REQUIRED or the policy commit fails
+                                            with "does not have a device link
+                                            associated to it". Pass the FULL
+                                            awsConfiguration: a partial update
+                                            fails reading sshKeyPair
+  7. createMonitoringPolicy                 source -> tool, CONTINUOUSLY
+
+Exit: 0 ok, 2 auth, 3 not licensed, 4 device/deviceConfig not found, 5 step failed.
 """
-import sys, os, time, argparse, urllib3
-sys.path.insert(0, os.path.dirname(__file__))
-urllib3.disable_warnings()
-from kvo_aws_mirror import gql, open_cr, commit_cr, clear_open_crs
-from vpb_kvo_adopt import kvo_token
+from __future__ import annotations
+import argparse, json, sys, time
+import requests
 
-def log(m): print(f"[vpb-wire] {m}", flush=True)
+def log(m): print(f"[vpb-path] {m}", file=sys.stderr, flush=True)
+
+def kvo_token(base, user, password, verify):
+    r = requests.post(f"{base}/auth/realms/keysight/protocol/openid-connect/token",
+                      data={"grant_type": "password", "client_id": "vision-orchestrator",
+                            "username": user, "password": password}, verify=verify, timeout=20)
+    if r.status_code != 200:
+        log(f"KVO auth failed (HTTP {r.status_code})"); return None
+    return r.json()["access_token"]
+
+def gql(base, token, query, variables, verify):
+    r = requests.post(f"{base}/public/graphql", headers={"Authorization": f"Bearer {token}"},
+                      json={"query": query, "variables": variables or {}}, verify=verify, timeout=60)
+    try: return r.json()
+    except ValueError: return {"errors": [{"message": r.text[:200]}]}
+
+def _open_crs(base, token, verify):
+    q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
+    return [r for r in (q.get("data", {}).get("changeRequests") or []) if r["status"] != "Committed"]
+
+def clear_open_crs(base, token, verify, timeout=90):
+    open_crs = _open_crs(base, token, verify)
+    for r in open_crs:
+        gql(base, token, "mutation($u:String!){ deleteChangeRequest(uid:$u){ uid } }", {"u": r["uid"]}, verify)
+        log(f"clearing stale change request {r['uid']} ({r['status']})")
+    if not open_crs: return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _open_crs(base, token, verify): return
+        time.sleep(4)
+
+def open_cr(base, token, name, verify):
+    clear_open_crs(base, token, verify)
+    d = gql(base, token, "mutation($n:String){ createChangeRequest(name:$n){ uid } }", {"n": name}, verify)
+    if "errors" in d:
+        log(f"createChangeRequest failed: {d['errors'][0]['message'][:180]}"); return None
+    crs = d.get("data", {}).get("createChangeRequest") or []
+    return crs[0]["uid"] if crs else None
+
+def commit_cr(base, token, cr_uid, verify, timeout=600):
+    deadline = time.time() + timeout
+    while True:
+        c = gql(base, token,
+                "mutation($u:String!){ commitChangeRequest(uid:$u, ignoreWarnings:true){ uid state } }",
+                {"u": cr_uid}, verify)
+        if "errors" not in c: break
+        msg = c["errors"][0]["message"]
+        if "another processing is still running" in msg and time.time() < deadline:
+            log("  waiting for the previous processing to finish..."); time.sleep(10); continue
+        log(f"commit failed: {msg[:220]}"); return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
+        mine = [r for r in (q.get("data", {}).get("changeRequests") or []) if r["uid"] == cr_uid]
+        if not mine or mine[0]["status"] == "Committed":
+            log("  committed"); return True
+        if mine[0]["status"] in ("Failed", "Error"):
+            log(f"  commit ended in {mine[0]['status']}"); return False
+        time.sleep(6)
+    log("timed out waiting for commit"); return False
+
+def step(base, token, verify, label, mutation, variables):
+    """One mutation inside its own committed change request."""
+    cr = open_cr(base, token, label, verify)
+    if not cr: return False
+    v = dict(variables); v["cr"] = cr
+    d = gql(base, token, mutation, v, verify)
+    if "errors" in d:
+        log(f"{label}: {d['errors'][0]['message'][:220]}")
+        gql(base, token, "mutation($u:String!){ deleteChangeRequest(uid:$u){ uid } }", {"u": cr}, verify)
+        return False
+    return commit_cr(base, token, cr, verify)
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kvo", required=True)
-    ap.add_argument("--device", default="vpb-prod")
-    ap.add_argument("--cluster", required=True)
-    ap.add_argument("--cloud", required=True, help="cloud config name to attach the C2DL to")
+    ap.add_argument("--device", required=True, help="adopted vPB device name (Online)")
+    ap.add_argument("--collection", required=True, help="cloud collection = traffic source")
+    ap.add_argument("--cloud-config", required=True, help="cloud config that owns the collection")
     ap.add_argument("--c2dl", default="vpb-c2dl")
     ap.add_argument("--tool", default="vpb-egress-tool")
-    ap.add_argument("--tool-ip", default="10.99.1.117")
-    ap.add_argument("--ingress-ip", default="10.99.11.240")
+    ap.add_argument("--policy", default="vpb-traffic-policy")
+    ap.add_argument("--ingress-port", default="eth1")
+    ap.add_argument("--egress-port", default="eth2")
+    ap.add_argument("--ingress-ip", required=True, help="vPB ingress IP for the C2DL")
     ap.add_argument("--netmask", default="255.255.255.0")
-    ap.add_argument("--gateway", default="10.99.11.1")
-    ap.add_argument("--gre-key", type=int, default=100)
-    ap.add_argument("--step", default="sync", help="sync|all")
-    args = ap.parse_args()
-    V = False
-    tok = kvo_token(f"https://{args.kvo}", "admin", "admin", V)
-    base = f"https://{args.kvo}"
+    ap.add_argument("--gateway", help="ingress subnet default gateway")
+    ap.add_argument("--gre-key", default="100")
+    ap.add_argument("--kvo-admin-user", default="admin")
+    ap.add_argument("--kvo-admin-pass", default="admin")
+    ap.add_argument("--insecure", action="store_true")
+    a = ap.parse_args()
 
-    # device config uid
-    d = gql(base, tok, '{ deviceConfigs { uid name } }', None, V)
-    dc = next((x for x in d["data"]["deviceConfigs"] if x["name"] == args.device), None)
-    if not dc: log(f"device config {args.device} not found"); sys.exit(2)
-    uid = dc["uid"]; log(f"device config {args.device} uid={uid}")
+    base = a.kvo if a.kvo.startswith("http") else f"https://{a.kvo}"
+    verify = not a.insecure
+    if a.insecure:
+        requests.packages.urllib3.disable_warnings()  # noqa
 
-    def ports():
-        q = gql(base, tok, '{ deviceConfigs { name _portGroups { mode ports { portId } } } }', None, V)
-        dcs = [x for x in q["data"]["deviceConfigs"] if x["name"] == args.device]
-        pg = dcs[0]["_portGroups"] if dcs else []
-        return [(g.get("mode"), p["portId"]) for g in pg for p in (g.get("ports") or [])]
+    tok = kvo_token(base, a.kvo_admin_user, a.kvo_admin_pass, verify)
+    if not tok: return 2
+    log(f"authed to KVO {a.kvo}")
 
-    # STEP 1: sync ports
-    clear_open_crs(base, tok, V)
-    cr = open_cr(base, tok, "vpb-sync-ports", V)
-    r = gql(base, tok, 'mutation($u:ID!,$c:String!,$s:_SyncPortsInput!){ syncDeviceConfigPorts(uid:$u,changeID:$c,settings:$s){ uid } }',
-            {"u": uid, "c": cr, "s": {"forceSync": True}}, V)
-    if "errors" in r: log("sync error: " + r["errors"][0]["message"][:200]); sys.exit(3)
-    commit_cr(base, tok, cr, V)
-    log("ports synced; committing done")
-    time.sleep(4)
-    log("PORTS: " + str(ports()))
+    d = gql(base, tok, "{ availableLicenses { name installed } }", None, verify)
+    if not any((l.get("installed") or 0) > 0 for l in d.get("data", {}).get("availableLicenses", [])):
+        log("KVO is not licensed; run scripts/kvo_license.py first"); return 3
+
+    # resolve the device config for the adopted vPB
+    d = gql(base, tok, "{ devices{name availability{value}} deviceConfigs{uid name} }", None, verify)
+    dev = next((x for x in d["data"]["devices"] if x["name"] == a.device), None)
+    dc = next((x for x in d["data"]["deviceConfigs"] if x["name"] == a.device), None)
+    if not dev or not dc:
+        log(f"device/deviceConfig '{a.device}' not found; adopt the vPB first"); return 4
+    log(f"device {a.device} availability={dev['availability']['value']} deviceConfig={dc['uid']}")
+    uid = dc["uid"]
+
+    cl = gql(base, tok, "{ clusters { uid } }", None, verify)
+    cluster = (cl.get("data", {}).get("clusters") or [{}])[0].get("uid")
+
+    def existing(coll):
+        r = gql(base, tok, "{ %s { name } }" % coll, None, verify)
+        return {x["name"] for x in (r.get("data", {}).get(coll) or [])}
+
+    # 1. sync ports
+    log("1/7 syncDeviceConfigPorts")
+    if not step(base, tok, verify, "sync vPB ports",
+                "mutation($u:ID!,$cr:String!){ syncDeviceConfigPorts(uid:$u,changeID:$cr,settings:{forceSync:true}){ uid } }",
+                {"u": uid}): return 5
+
+    # 2. C2DL
+    if a.c2dl in existing("c2DLinks"):
+        log(f"2/7 C2DL '{a.c2dl}' already exists")
+    else:
+        log("2/7 createC2DLink")
+        ipcfg = {"netmask": a.netmask, "ipAddresses": a.ingress_ip, "icmp": True}
+        if a.gateway: ipcfg["defaultGateway"] = a.gateway
+        if not step(base, tok, verify, "create C2DL",
+                    "mutation($n:String!,$cr:String!,$c:String,$s:_C2DLinkInput!){ createC2DLink(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                    {"n": a.c2dl, "c": cluster,
+                     "s": {"localIPConfig": ipcfg, "l2greEncapsulation": {"key": a.gre_key}}}): return 5
+
+    # 3. ingress -> C2DL
+    log(f"3/7 bind {a.ingress_port} (ingress) -> C2DL")
+    if not step(base, tok, verify, "bind ingress",
+                "mutation($u:ID!,$cr:String!,$s:_BindPortsInput!){ bindDeviceConfigPorts(uid:$u,changeID:$cr,settings:$s){ uid } }",
+                {"u": uid, "s": {"ports": [{"portId": a.ingress_port,
+                                            "connectedC2DLink": {"c2dLink": {"name": a.c2dl}, "ip": a.ingress_ip}}]}}):
+        return 5
+
+    # 4. LOCAL tool
+    if a.tool in existing("tools"):
+        log(f"4/7 tool '{a.tool}' already exists")
+    else:
+        log("4/7 createTool (LOCAL, reachableFrom DEVICE_CONFIG)")
+        if not step(base, tok, verify, "create local tool",
+                    "mutation($n:String!,$cr:String!,$c:String,$s:_ToolInput!){ createTool(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                    {"n": a.tool, "c": cluster,
+                     "s": {"type": "LOCAL", "reachableFrom": "DEVICE_CONFIG", "vlanStripping": False}}): return 5
+
+    # 5. egress -> tool  (separate call from the ingress bind on purpose)
+    log(f"5/7 bind {a.egress_port} (egress) -> tool")
+    if not step(base, tok, verify, "bind egress",
+                "mutation($u:ID!,$cr:String!,$s:_BindPortsInput!){ bindDeviceConfigPorts(uid:$u,changeID:$cr,settings:$s){ uid } }",
+                {"u": uid, "s": {"ports": [{"portId": a.egress_port,
+                                            "connectedTools": [{"tool": {"name": a.tool}}]}]}}):
+        return 5
+
+    # 6. associate the C2DL to the cloud config (FULL awsConfiguration round-trip)
+    log("6/7 updateCloudConfig deviceLinks")
+    q = gql(base, tok, """{ cloudConfigs { name settings {
+              cloudPresence { name } deviceLinks { name }
+              awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
+                mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
+                availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId } } } } }""",
+              None, verify)
+    cc = next((c for c in q["data"]["cloudConfigs"] if c["name"] == a.cloud_config), None)
+    if not cc:
+        log(f"cloud config '{a.cloud_config}' not found"); return 4
+    st = cc["settings"] or {}
+    links = {l["name"] for l in (st.get("deviceLinks") or [])}
+    if a.c2dl in links:
+        log(f"  '{a.c2dl}' already linked to {a.cloud_config}")
+    else:
+        aws = st.get("awsConfiguration")
+        if not aws:
+            log(f"cloud config '{a.cloud_config}' has no awsConfiguration to round-trip"); return 5
+        aws = {k: v for k, v in aws.items() if v is not None}
+        for az in aws.get("availabilityZones", []):
+            for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
+        settings = {"awsConfiguration": aws, "deviceLinks": {"name": a.c2dl}}
+        if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
+        if not step(base, tok, verify, "link C2DL to cloud config",
+                    "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                    {"n": a.cloud_config, "c": cluster, "s": settings}): return 5
+
+    # 7. monitoring policy
+    if a.policy in existing("monitoringPolicies"):
+        log(f"7/7 policy '{a.policy}' already exists")
+    else:
+        log("7/7 createMonitoringPolicy")
+        if not step(base, tok, verify, "create monitoring policy",
+                    "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                    {"n": a.policy, "c": cluster,
+                     "s": {"source": {"name": a.collection}, "tools": [{"name": a.tool}],
+                           "runMode": "CONTINUOUSLY", "type": "REGULAR"}}): return 5
+
+    v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)
+    dd = v.get("data", {})
+    openq = [c for c in (dd.get("changeRequests") or []) if c["status"] != "Committed"]
+    log("")
+    log("=" * 68)
+    log(" vPB traffic path wired")
+    log(f"   source      {a.collection}")
+    log(f"   C2DL        {a.c2dl}  -> {a.device} {a.ingress_port} ({a.ingress_ip})")
+    log(f"   tool        {a.tool} (LOCAL) <- {a.device} {a.egress_port}")
+    log(f"   policy      {a.policy}")
+    log(f"   c2DLinks    {[c['name'] for c in dd.get('c2DLinks') or []]}")
+    log(f"   tools       {[(t['name'], t['type']) for t in dd.get('tools') or []]}")
+    log(f"   policies    {[p['name'] for p in dd.get('monitoringPolicies') or []]}")
+    log(f"   open CRs    {len(openq)}")
+    log("=" * 68)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

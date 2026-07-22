@@ -1823,7 +1823,6 @@ button:focus-visible, a.btn:focus-visible, .icon-btn:focus-visible {
 
 /* ---------- collapsible sections: keep the page short and scannable ---------- */
 .collapsed-sec{padding:.45rem 0!important}
-.collapsed-sec .container{max-width:1180px}
 .sec-collapse{border:1px solid #E3E8EF;border-radius:14px;background:#fff;overflow:hidden;
   box-shadow:0 1px 2px rgba(20,22,28,.04)}
 .sec-collapse>summary{list-style:none;cursor:pointer;padding:1rem 1.3rem;display:flex;
@@ -1891,3 +1890,8 @@ html[data-theme="dark"] .sec-collapse[open]>summary{border-bottom-color:#252C3A}
 /* badges read as flat tags alongside flat buttons */
 .pill{border-radius:6px}
 .pill.ok{background:oklch(80% 0.12 150 / .16);box-shadow:none}
+
+/* ---------- edge to edge: content spreads across the viewport ---------- */
+.container{max-width:100%;margin:0;padding:0 clamp(20px,3vw,64px)}
+/* long-form prose still gets a readable measure, everything else spans */
+.sc-body>p,.sc-body>.lede,.section-head>p{max-width:var(--maxw-prose)}
