@@ -15,7 +15,7 @@ from cloudlens_console import flows as F
 HERE = os.path.dirname(__file__)
 WEB = os.path.join(HERE, "cloudlens_console", "web")
 FX = os.path.join(HERE, "fixtures")
-OUT = os.path.abspath(os.path.join(HERE, "..", "docs", "index.html"))
+OUT = os.path.abspath(os.path.join(HERE, "..", "docs", "console.html"))
 
 # 1. flow metadata (same shape the /flows endpoint returns)
 FLOWS = {"order": F.ORDER, "flows": {

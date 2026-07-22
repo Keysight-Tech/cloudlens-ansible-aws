@@ -1810,3 +1810,7 @@ button:focus-visible, a.btn:focus-visible, .icon-btn:focus-visible {
   .deploy-timeline li::before { left: 0; }
   .deploy-timeline .dt-time { text-align: left; }
 }
+
+/* compact in-card list (matured config/mirroring sections) */
+.card ul.tight{margin:.55rem 0 0;padding-left:1.15rem;list-style:disc}
+.card ul.tight li{margin:.35rem 0;line-height:1.5}
