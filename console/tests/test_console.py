@@ -17,6 +17,8 @@ from cloudlens_console import events as E, flows as F, orchestrator as O, server
 
 Resp = namedtuple("Resp", "status headers payload raw")
 
+PAGES_ORIGIN = "https://keysight-tech.github.io"
+
 
 def _make_headers(pairs):
     """Build the exact object BaseHTTPRequestHandler parses from the wire.
@@ -97,8 +99,16 @@ def test_health_leaks_nothing():
     assert re.fullmatch(r"\d+\.\d+", r.payload["version"]), \
         "version is a wire-contract number, not a build id: a SHA would " \
         "fingerprint the visitor's machine"
+    # Widened for CORS. access-control-allow-origin and vary are safe to emit
+    # on this unauthenticated endpoint: neither carries machine-specific data.
+    # ACAO only ever echoes a value the caller already sent AND that is on our
+    # own static allowlist, so it tells a prober nothing it did not already
+    # know; Vary: Origin is a cache directive, not content. Everything the
+    # assertion is actually guarding - no Python version, no build id, no
+    # hostname - is still guarded, because the set is still a closed allowlist.
     assert {k.lower() for k, _ in r.headers.items()} <= {
-        "server", "date", "content-type", "content-length", "cache-control"}
+        "server", "date", "content-type", "content-length", "cache-control",
+        "access-control-allow-origin", "vary"}
     assert r.headers.get("server").strip() == "CloudLensConsole", \
         "the Server token is sent to unauthenticated probers: keep it a constant, " \
         "never a version or build id"
@@ -111,6 +121,47 @@ def test_health_answers_with_no_headers_at_all():
     # No Origin, no pairing header: the public page probes before the visitor
     # has typed anything. Any guard that breaks this breaks discovery.
     assert _handler_response("/health", headers={}).status == 200
+
+
+def test_cors_allows_the_pages_origin():
+    r = _handler_response("/health", headers={"Origin": PAGES_ORIGIN})
+    assert r.headers.get("Access-Control-Allow-Origin") == PAGES_ORIGIN
+    assert len(r.headers.get_all("Access-Control-Allow-Origin") or []) == 1, \
+        "exactly one ACAO: a wildcard under a pinned origin is a browser-visible bug"
+    assert "Origin" in (r.headers.get("Vary") or ""), \
+        "Vary: Origin or a cache will serve one origin's response to another"
+
+
+def test_cors_rejects_a_foreign_origin():
+    r = _handler_response("/health", headers={"Origin": "https://evil.example"})
+    assert r.headers.get("Access-Control-Allow-Origin") is None
+    assert not r.headers.get_all("Access-Control-Allow-Origin")
+
+
+def test_cors_never_emits_a_wildcard():
+    for origin in (PAGES_ORIGIN, "https://evil.example", None):
+        hdrs = {"Origin": origin} if origin else {}
+        r = _handler_response("/health", headers=hdrs)
+        assert "*" not in (r.headers.get_all("Access-Control-Allow-Origin") or []), \
+            "a wildcard would let any site on the internet drive this console"
+
+
+def test_preflight_allows_private_network():
+    r = _handler_response(
+        "/run", method="OPTIONS",
+        headers={"Origin": PAGES_ORIGIN, "Access-Control-Request-Private-Network": "true"})
+    assert r.status == 204
+    assert r.headers.get("Access-Control-Allow-Private-Network") == "true", \
+        "Chrome blocks public-page-to-127.0.0.1 without this; the failure is silent"
+    assert "X-CloudLens-Pair" in (r.headers.get("Access-Control-Allow-Headers") or "")
+
+
+def test_preflight_from_a_foreign_origin_grants_nothing():
+    r = _handler_response(
+        "/run", method="OPTIONS",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Private-Network": "true"})
+    assert r.headers.get("Access-Control-Allow-Private-Network") is None
+    assert r.headers.get("Access-Control-Allow-Origin") is None
 
 
 def test_event_contract_roundtrip():

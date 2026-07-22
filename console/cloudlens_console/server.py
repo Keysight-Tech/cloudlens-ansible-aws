@@ -36,6 +36,22 @@ VERSION = "1.0"
 # accepting that any origin on the machine can read the response.
 PUBLIC_PATHS = frozenset({"/health"})
 
+# The only origins allowed to talk to this console cross-origin. The public
+# docs page is pinned by exact scheme+host; the two loopback entries are the
+# console's own UI talking to itself.
+ALLOWED_ORIGINS = frozenset({
+    "https://keysight-tech.github.io",
+    "http://127.0.0.1:8760",
+    "http://localhost:8760",
+})
+
+
+def _allowed_origin(origin):
+    """Echo the origin only if it is on the allowlist. Never a wildcard: this
+    console holds the visitor's AWS identity."""
+    return origin if origin in ALLOWED_ORIGINS else None
+
+
 # Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
 # ASCII only: compared with hmac.compare_digest.
 PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -74,6 +90,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
+        origin = _allowed_origin(self.headers.get("Origin"))
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -133,6 +153,23 @@ class Handler(BaseHTTPRequestHandler):
                 job.stop()
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
+
+    # ---- CORS preflight ----
+    def do_OPTIONS(self):
+        origin = _allowed_origin(self.headers.get("Origin"))
+        self.send_response(204)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CloudLens-Pair")
+            self.send_header("Access-Control-Max-Age", "600")
+            # Chrome Private Network Access: a public page reaching 127.0.0.1
+            # is blocked without this, and the failure is silent.
+            if self.headers.get("Access-Control-Request-Private-Network") == "true":
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ---- static file ----
     def _file(self, rel, ctype):
