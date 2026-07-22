@@ -106,7 +106,7 @@ def clear_open_crs(base, token, verify, timeout=90):
     wait for the (async) delete to finalize before returning."""
     open_crs = _open_crs(base, token, verify)
     for r in open_crs:
-        gql(base, token, "mutation($u:ID!){ deleteChangeRequest(uid:$u){ uid } }", {"u": r["uid"]}, verify)
+        gql(base, token, "mutation($u:String!){ deleteChangeRequest(uid:$u){ uid } }", {"u": r["uid"]}, verify)
         log(f"clearing stale open change request {r['uid']} ({r['status']})")
     if not open_crs:
         return

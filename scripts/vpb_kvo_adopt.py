@@ -119,7 +119,7 @@ def kvo_wait_announcement(base, token, verify, ip=None, timeout=300):
 def clear_open_crs(base, token, verify):
     for r in gql(base, token, "{ changeRequests { uid status } }", None, verify).get("data", {}).get("changeRequests") or []:
         if r["status"] != "Committed":
-            gql(base, token, "mutation($u:ID!){ deleteChangeRequest(uid:$u){ uid } }", {"u": r["uid"]}, verify)
+            gql(base, token, "mutation($u:String!){ deleteChangeRequest(uid:$u){ uid } }", {"u": r["uid"]}, verify)
 
 def kvo_open_cr(base, token, name, verify):
     clear_open_crs(base, token, verify)
