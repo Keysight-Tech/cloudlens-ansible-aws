@@ -9,6 +9,40 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from cloudlens_console import events as E, flows as F, orchestrator as O  # noqa
 
 
+def _handler_response(path, method="GET", headers=None, body=None):
+    """Drive Handler.do_* without a socket, capturing what it writes."""
+    import io
+    from cloudlens_console import server
+
+    class Cap(server.Handler):
+        def __init__(self, path, method, headers, body):
+            self.path = path
+            self.command = method
+            self.headers = headers or {}
+            self.rfile = io.BytesIO(body or b"")
+            self.wfile = io.BytesIO()
+            self.status = None
+            self.sent = {}
+        def send_response(self, code, *a): self.status = code
+        def send_header(self, k, v): self.sent[k] = v
+        def end_headers(self): pass
+        def log_message(self, *a): pass
+
+    h = Cap(path, method, headers, body)
+    getattr(h, "do_" + method)()
+    raw = h.wfile.getvalue()
+    try: payload = json.loads(raw.decode() or "{}")
+    except Exception: payload = raw
+    return h.status, h.sent, payload
+
+
+def test_health_leaks_nothing():
+    status, _, payload = _handler_response("/health")
+    assert status == 200
+    assert set(payload.keys()) == {"ok", "version"}
+    assert payload["ok"] is True
+
+
 def test_event_contract_roundtrip():
     for ev in (E.hello("1", "arn", "us-east-1"), E.log("hi"), E.state("vpc", E.LIVE, "live"),
                E.narrate("why", "good"), E.stat(created=3, elapsed=9), E.done("ok"),

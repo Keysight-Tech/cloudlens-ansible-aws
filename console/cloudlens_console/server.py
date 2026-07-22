@@ -26,6 +26,9 @@ WEB = os.path.join(os.path.dirname(__file__), "web")
 JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
+# Bumped only when the wire contract the public page depends on changes.
+VERSION = "1.0"
+
 # Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
 # ASCII only: compared with hmac.compare_digest.
 PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -79,6 +82,13 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/health":
+            # First branch on purpose: readable by ANY origin without a pairing
+            # code, because the public page must probe before the visitor has
+            # typed anything. So it must leak nothing - no account, region,
+            # flow list, hostname or path. Liveness and a version, and that is
+            # all. Keep any pairing guard added later BELOW this line.
+            return self._send(200, {"ok": True, "version": VERSION})
         if path == "/":
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/flows":
