@@ -302,12 +302,70 @@ Add a guard method to `Handler`:
     def _paired(self):
         """True when the caller may act. Same-origin (no Origin header) is
         exempt: that is the console's own UI. Cross-origin must present the
-        code this process printed at startup."""
-        import hmac
+        code this process printed at startup.
+
+        Guess-capped: loopback has no network cost, so a malicious page could
+        otherwise grind the code at thousands of attempts per second. After
+        PAIR_MAX_FAILURES consecutive misses the code is discarded and pairing
+        fails closed until the console is restarted."""
+        global PAIR_FAILURES, PAIR_CODE
         if not self.headers.get("Origin"):
             return True
         supplied = self.headers.get("X-CloudLens-Pair") or ""
-        return bool(PAIR_CODE) and hmac.compare_digest(supplied, PAIR_CODE)
+        if PAIR_CODE and hmac.compare_digest(supplied, PAIR_CODE):
+            PAIR_FAILURES = 0
+            return True
+        PAIR_FAILURES += 1
+        if PAIR_FAILURES >= PAIR_MAX_FAILURES:
+            PAIR_CODE = None
+            print("\n  !! %d bad pairing attempts, pairing disabled."
+                  " Restart the console to pair again.\n" % PAIR_FAILURES)
+        return False
+```
+
+Add the module-level counter beside `PAIR_CODE`, and `import hmac` at the top:
+
+```python
+PAIR_FAILURES = 0
+PAIR_MAX_FAILURES = 10
+```
+
+The counter is incremented from handler threads without a lock. A race can only
+let a couple of extra attempts through before the cap trips, which does not
+change the security property, and a lock on every request is not worth it.
+
+**Test isolation matters here.** The suite is a single process and tests run in
+file order, so a test that assigns `server.PAIR_CODE` leaks into every later
+test. Save and restore:
+
+```python
+def _with_pair_code(code, fn):
+    from cloudlens_console import server
+    old_code, old_fail = server.PAIR_CODE, server.PAIR_FAILURES
+    server.PAIR_CODE, server.PAIR_FAILURES = code, 0
+    try:
+        return fn()
+    finally:
+        server.PAIR_CODE, server.PAIR_FAILURES = old_code, old_fail
+```
+
+Add a test for the cap itself:
+
+```python
+def test_pairing_disables_itself_after_repeated_failures():
+    from cloudlens_console import server
+    def body():
+        for _ in range(server.PAIR_MAX_FAILURES):
+            _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "WRONGCOD"})
+        assert server.PAIR_CODE is None, "cap must discard the code"
+        status, _, _ = _handler_response(
+            "/run", method="POST",
+            headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                     "X-CloudLens-Pair": "ABC23456"})
+        assert status == 401, "even the right code must fail once pairing is disabled"
+    _with_pair_code("ABC23456", body)
 ```
 
 Guard the three routes. In `do_GET`, before the `/flows` branch:

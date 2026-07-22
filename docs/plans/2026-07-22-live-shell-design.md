@@ -25,7 +25,7 @@ tenant-isolation project rather than a docs feature.
 |---|---|---|
 | Credentials | Never in the browser | The console already inherits the visitor's shell credentials. Nothing is transmitted to Keysight. Pasting AWS keys into a web page is a habit we refuse to teach. |
 | Execution scope | Guided flows only | The page sends a flow id, never a command string. A malicious site probing localhost can at worst start a CloudLens deploy, not run code. |
-| Trust | Pairing code | Explicit human consent, with CORS origin pinning as a second layer. |
+| Trust | Pairing code, guess-capped | Explicit human consent, with CORS origin pinning as a second layer. The code is 8 characters (40 bits) and pairing disables itself after 10 consecutive failures. |
 | Transport | Page to local console over 127.0.0.1 | No hosted infrastructure. Reuses the orchestrator, flows, events contract, SSE and UI unchanged. |
 
 Rejected: an outbound relay to a hosted service. It survives networks that block
@@ -33,6 +33,26 @@ page-to-localhost and would let an SE project the page while deploying
 elsewhere, but it needs infrastructure we would then operate, and every deploy
 event would transit a third party. Reconsider only if the bridge proves blocked
 in customer browsers.
+
+## Threat: the code is grindable without a cap
+
+Code review surfaced this and it changed the design. The attacker is not offline.
+A malicious page the visitor happens to open can also POST to `127.0.0.1:8760`
+and grind `X-CloudLens-Pair`. Loopback has no network cost and the pairing check
+runs before body parsing, so a browser can sustain thousands of guesses per
+second. At 6 characters (30 bits) the mean time to compromise is days, not
+centuries, and "short-lived" only helps if sessions are short: an SE who leaves
+the console running through a demo week erodes the margin.
+
+Two controls, both cheap:
+
+- 8 characters, 40 bits. Two more characters typed once per session, 1000x margin.
+- After 10 consecutive bad codes the process discards `PAIR_CODE`, so pairing
+  fails closed until the console is restarted. This also converts a silent
+  attack into an observable one: the console prints a warning naming the
+  attempt count.
+
+The cap is what carries the weight. The length is defence in depth.
 
 ## Architecture
 
