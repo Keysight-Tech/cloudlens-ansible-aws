@@ -339,6 +339,35 @@ of a non-loopback bind, which is now behind an explicit flag and a warning.
 Task 4 must therefore gate `/run`, `/flows` and `/stop/`, and leave `/events/`
 and `do_OPTIONS` ungated.
 
+## Task 4 BLOCKER: validate the Host header (DNS rebinding)
+
+Land this WITH `_paired()`. It is the same control, and the absent-Origin
+exemption is unsound without it.
+
+Nothing validates `Host` today. A hostile site resolves its own name to
+127.0.0.1, and the browser then considers `http://evil.com:8760` same-origin
+with the console: CORS is never consulted, and on a GET the browser sends **no
+`Origin` header**. The exemption reads that as "a local process, which already
+has the user's shell and AWS identity, so pairing adds nothing". Under rebinding
+that premise is false — it is a remote page with no local access at all.
+
+Blast radius today is bounded to the exempt GETs (`/health`, `/flows`), not
+`/run`, because a POST carries `Origin: http://evil.com:8760` which is not in
+`SELF_ORIGINS`. So it is not a route to a job id. It is a route through the one
+exemption the pairing design rests on, which is worse in principle.
+
+```python
+def _host_is_ours(self):
+    """DNS rebinding: a hostile page can point its own name at 127.0.0.1, at
+    which point the browser calls it same-origin, sends no Origin on a GET, and
+    the absent-Origin exemption stops meaning 'local process'."""
+    host = (self.headers.get("Host") or "").split(":")[0]
+    return host in ("127.0.0.1", "localhost", "[::1]", "::1")
+```
+
+Reject a non-matching `Host` with 403 **before routing**, in both `do_GET` and
+`do_POST`. Test it: a request with `Host: evil.com` must 403 even for `/health`.
+
 ## Task 4: Enforce pairing on the acting routes
 
 `/health` stays open. `/flows`, `/run` and `/stop/` require the code. Same-origin requests from the console's own UI carry no `Origin` header and are exempt, so the SE running locally sees no pairing prompt.
@@ -519,6 +548,48 @@ git commit -m "console: require the pairing code on acting routes, exempt same-o
 ```
 
 ---
+
+## Task 4b: smaller items from the Task 3 review
+
+**Prune finished jobs.** `JOBS` is never pruned, so a completed job's id stays a
+live capability for the process lifetime, and re-opening `/events/<id>` replays
+the buffer from the start — including `E.hello`, which carries the account ARN
+and region. The design keeps account and region behind pairing by stripping them
+from `/health`; this puts them behind a job id that outlives the pairing code,
+including after the guess cap sets `PAIR_CODE = None`. Drop finished jobs after
+a short TTL.
+
+**Stale origins.** `_set_self_origins` clears `SELF_ORIGINS` and re-adds, but
+never removes the previous port's entries from `ALLOWED_ORIGINS`, so after
+re-serving on 8890 `http://localhost:8760` is still allowlisted. The existing
+test passes because it only asserts the new port was added. Fix and assert the
+removal:
+
+```python
+    ALLOWED_ORIGINS.difference_update(SELF_ORIGINS)   # drop the previous port
+    SELF_ORIGINS.clear()
+```
+
+**Swallow SSE disconnect noise, narrowly.** A reset in the base class's request
+loop escapes to `socketserver.handle_error`, so every closed SSE tab prints a
+traceback. This matters beyond tidiness: the anti-grind cap's only observability
+is a warning printed to this same stderr, and training the operator to ignore
+stderr disarms it. Suppress only the two types, never blanket:
+
+```python
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+```
+
+**SSE framing.** `_sse` sends `Connection: keep-alive` under HTTP/1.1 with
+neither `Content-Length` nor `Transfer-Encoding`, so the stream is undelimited
+on a connection the server promised to reuse. Set `self.close_connection = True`
+and send `Connection: close`.
+
+**IPv6 banner URL.** `__main__.py` special-cases only `127.0.0.1`, so `--host ::1`
+builds `http://::1:8760/` and hands it to `webbrowser.open`. Needs `[::1]`.
 
 ## Task 5: job_id becomes an unguessable capability
 
