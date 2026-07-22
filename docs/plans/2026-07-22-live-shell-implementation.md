@@ -180,24 +180,53 @@ Chrome requires a public page hitting a private address to preflight with `Acces
 
 **Step 1: Write the failing tests**
 
+The helper now returns `Resp(status, headers, payload, raw)` where `headers` is an
+`HTTPMessage`. Use `get_all` on `Access-Control-Allow-Origin`: `get()` returns only the
+first value, so a wildcard emitted *underneath* a pinned origin would otherwise be invisible.
+
 ```python
 PAGES_ORIGIN = "https://keysight-tech.github.io"
 
+
 def test_cors_allows_the_pages_origin():
-    _, sent, _ = _handler_response("/health", headers={"Origin": PAGES_ORIGIN})
-    assert sent.get("Access-Control-Allow-Origin") == PAGES_ORIGIN
+    r = _handler_response("/health", headers={"Origin": PAGES_ORIGIN})
+    assert r.headers.get("Access-Control-Allow-Origin") == PAGES_ORIGIN
+    assert len(r.headers.get_all("Access-Control-Allow-Origin") or []) == 1, \
+        "exactly one ACAO: a wildcard under a pinned origin is a browser-visible bug"
+    assert "Origin" in (r.headers.get("Vary") or ""), \
+        "Vary: Origin or a cache will serve one origin's response to another"
+
 
 def test_cors_rejects_a_foreign_origin():
-    _, sent, _ = _handler_response("/health", headers={"Origin": "https://evil.example"})
-    assert "Access-Control-Allow-Origin" not in sent
+    r = _handler_response("/health", headers={"Origin": "https://evil.example"})
+    assert r.headers.get("Access-Control-Allow-Origin") is None
+    assert not r.headers.get_all("Access-Control-Allow-Origin")
+
+
+def test_cors_never_emits_a_wildcard():
+    for origin in (PAGES_ORIGIN, "https://evil.example", None):
+        hdrs = {"Origin": origin} if origin else {}
+        r = _handler_response("/health", headers=hdrs)
+        assert "*" not in (r.headers.get_all("Access-Control-Allow-Origin") or []), \
+            "a wildcard would let any site on the internet drive this console"
+
 
 def test_preflight_allows_private_network():
-    status, sent, _ = _handler_response(
+    r = _handler_response(
         "/run", method="OPTIONS",
         headers={"Origin": PAGES_ORIGIN, "Access-Control-Request-Private-Network": "true"})
-    assert status == 204
-    assert sent.get("Access-Control-Allow-Private-Network") == "true"
-    assert "X-CloudLens-Pair" in sent.get("Access-Control-Allow-Headers", "")
+    assert r.status == 204
+    assert r.headers.get("Access-Control-Allow-Private-Network") == "true", \
+        "Chrome blocks public-page-to-127.0.0.1 without this; the failure is silent"
+    assert "X-CloudLens-Pair" in (r.headers.get("Access-Control-Allow-Headers") or "")
+
+
+def test_preflight_from_a_foreign_origin_grants_nothing():
+    r = _handler_response(
+        "/run", method="OPTIONS",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Private-Network": "true"})
+    assert r.headers.get("Access-Control-Allow-Private-Network") is None
+    assert r.headers.get("Access-Control-Allow-Origin") is None
 ```
 
 **Step 2: Run them to make sure they fail**
