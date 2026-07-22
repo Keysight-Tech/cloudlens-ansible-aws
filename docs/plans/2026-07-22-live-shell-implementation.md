@@ -312,6 +312,33 @@ job that completes immediately. Do not weaken the `/events/` guard in the helper
 **Do not** set `Access-Control-Allow-Credentials`. Authorisation here is the
 `job_id` capability in the URL, not an ambient cookie.
 
+## Before Task 4: do NOT header-gate `/events/`
+
+Testing proved that `/events/<job_id>` returns 200 and streams live deploy output
+to `curl` from a foreign origin. That is correct CORS behaviour — a browser
+withholds the response from the page, and a non-browser client never asks — but
+it demonstrates that the origin allowlist provides **zero** confidentiality
+against non-browser callers.
+
+The instinct is to require the pairing header on `/events/`. **Do not.**
+`EventSource` cannot send custom headers; that is the constraint the whole
+capability design exists to work around. Adding the guard would 401 every stream
+and silently kill the feature.
+
+The gate is already there and it is sound:
+
+- `job_id` is `secrets.token_hex(16)`, 128 bits, unguessable.
+- The only way to obtain one is `POST /run`, which **is** pairing-gated.
+- So an unpaired cross-origin caller cannot reach a stream, because it cannot
+  learn a job id.
+
+The residual risk is the `--allow-remote` path: a LAN caller sends no `Origin`,
+is exempt, can `POST /run` and then read the stream. That is the documented cost
+of a non-loopback bind, which is now behind an explicit flag and a warning.
+
+Task 4 must therefore gate `/run`, `/flows` and `/stop/`, and leave `/events/`
+and `do_OPTIONS` ungated.
+
 ## Task 4: Enforce pairing on the acting routes
 
 `/health` stays open. `/flows`, `/run` and `/stop/` require the code. Same-origin requests from the console's own UI carry no `Origin` header and are exempt, so the SE running locally sees no pairing prompt.
