@@ -41,6 +41,10 @@
   .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}
   .brand small{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-faint);text-transform:uppercase;display:block;margin-top:-3px}
   .top .sp{margin-left:auto}
+  .topnav{display:flex;gap:2px;margin-left:26px}
+  .topnav a{font-size:13px;color:var(--ink-soft);text-decoration:none;padding:7px 11px;border-radius:8px;font-weight:500}
+  .topnav a:hover{background:var(--line-soft);color:var(--ink)}
+  @media(max-width:860px){.topnav{display:none}}
   .demo-t{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
   .sw{width:38px;height:22px;border-radius:20px;background:var(--line);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s}
   .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.2s}
@@ -151,6 +155,29 @@
   .card:hover{border-color:var(--ink-faint);transform:translateY(-2px);box-shadow:var(--shadow)}
   .card .k{font-family:var(--mono);font-size:10.5px;color:var(--accent);letter-spacing:.08em}
   .card h3{font-size:17px;margin-top:7px}.card p{color:var(--ink-soft);font-size:14px;margin-top:7px}
+  .card ul{list-style:none;margin:12px 0 0;padding:0}
+  .card li{font-size:13px;color:var(--ink-soft);padding-left:18px;position:relative;margin:6px 0}
+  .card li::before{content:"";position:absolute;left:3px;top:8px;width:5px;height:5px;border-radius:50%;background:var(--signal)}
+  .steps{counter-reset:s;margin:24px 0 0;padding:0;list-style:none;display:grid;gap:11px}
+  .steps li{counter-increment:s;position:relative;padding:14px 18px 14px 54px;background:var(--panel);border:1px solid var(--line);border-radius:11px;font-size:14.5px}
+  .steps li::before{content:counter(s,decimal-leading-zero);position:absolute;left:16px;top:14px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent)}
+  .steps b{font-weight:650}.steps .m{color:var(--ink-soft);display:block;margin-top:2px;font-size:13.5px}
+  .steps code{font-family:var(--mono);font-size:12.5px;background:var(--line-soft);padding:1px 6px;border-radius:5px;color:var(--ink)}
+  .split{display:grid;grid-template-columns:1.1fr .9fr;gap:26px;margin-top:26px;align-items:start}
+  @media(max-width:820px){.split{grid-template-columns:1fr}}
+  table.ref{width:100%;border-collapse:collapse;margin-top:22px;font-size:14px}
+  table.ref th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--line)}
+  table.ref td{padding:11px 12px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);vertical-align:top}
+  table.ref td:first-child{color:var(--ink);font-weight:600;white-space:nowrap}
+  table.ref code{font-family:var(--mono);font-size:12.5px;background:var(--line-soft);padding:2px 6px;border-radius:5px;color:var(--ink)}
+  .codeblk{background:var(--screen);border:1px solid #000;border-radius:10px;padding:15px 17px;font-family:var(--mono);font-size:12.5px;color:var(--screen-ink);overflow-x:auto;margin-top:18px;line-height:1.75}
+  .codeblk .c{color:var(--screen-faint)}.codeblk .g{color:var(--signal)}.codeblk .r{color:var(--accent)}.codeblk .b{color:var(--sky)}
+  .reqs{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .req{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);border:1px solid var(--line);border-radius:100px;padding:5px 12px;background:var(--panel)}
+  .req b{color:var(--accent)}
+  .note-b{margin-top:18px;padding:14px 16px;border-left:3px solid var(--amber);background:var(--panel);border-radius:0 10px 10px 0;font-size:14px;color:var(--ink-soft)}
+  .note-b b{color:var(--ink)}
+  section h2 .em{color:var(--accent)}
   footer{padding:36px 0;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13px}
   footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 </style>
@@ -158,6 +185,10 @@
 <body>
 <header class="top"><div class="wrap">
   <div class="brand"><span class="dot"></span><div>CloudLens<small>Live Console</small></div></div>
+  <nav class="topnav">
+    <a href="#stack">Stack</a><a href="#sensors">Sensors</a><a href="#kvo">KVO</a>
+    <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
+  </nav>
   <div class="sp"></div>
   <div class="demo-t" title="Replay real captured events - no AWS calls">
     <span>Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true" tabindex="0"></div>
@@ -205,23 +236,154 @@
   </div>
 </div>
 
-<section>
+<section id="paths">
   <div class="wrap">
-    <div class="sec-head"><span class="eyebrow">Four flows, one console</span>
+    <div class="sec-head"><span class="eyebrow">Four paths, one console</span>
       <h2>From an empty account to live packets on a tool.</h2>
-      <p>Each flow runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer.</p></div>
+      <p>Each path runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
     <div class="cards" id="flowCards"></div>
   </div>
 </section>
 
-<section>
+<section id="stack">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <span class="eyebrow">Path 01 · Infrastructure</span>
+        <h2 style="margin-top:12px">Launch the <span class="em">full stack</span>.</h2>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">One CloudFormation deploy (or Terraform) brings up the VPC and all three appliances from the AWS Marketplace, across twelve regions. It fails fast on Elastic-IP quota so you never burn instance-hours on a doomed run.</p>
+        <div class="reqs">
+          <span class="req">CloudFormation <b>or</b> Terraform</span>
+          <span class="req">12 regions</span>
+          <span class="req">brownfield or new VPC</span>
+          <span class="req">non-admin friendly</span>
+        </div>
+        <div class="codeblk"><span class="c"># from AWS CloudShell — zero local setup</span>
+<span class="g">$</span> curl -sSL https://keysight-tech.github.io/cloudlens-ansible-aws/deploy-stack.sh <span class="r">| bash</span></div>
+      </div>
+      <ol class="steps">
+        <li><b>Network foundation</b><span class="m">VPC, gateway, and the mgmt / data / tool subnets.</span></li>
+        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first — an over-quota account fails in seconds.</span></li>
+        <li><b>vController (CLMS)</b><span class="m">The control plane every sensor registers to.</span></li>
+        <li><b>KVO</b><span class="m">The single pane that adopts the manager, the vPB, and drives mirroring.</span></li>
+        <li><b>vPB</b><span class="m">The virtual packet broker that filters and forwards to your tools.</span></li>
+      </ol>
+    </div>
+    <div class="note-b"><b>CREATE_COMPLETE is not "ready to log in."</b> The appliances need ~15 minutes to initialize before the UI accepts a login.</div>
+  </div>
+</section>
+
+<section id="sensors">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Path 02 · Direct</span>
+      <h2>Register <span class="em">sensors</span> into CloudLens Manager.</h2>
+      <p>The simplest model — no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
+    <div class="cards">
+      <div class="card"><div class="k">UBUNTU / DEBIAN</div><h3>Docker</h3><p>Insecure registry pull, then <code class="mono">docker run …/sensor --ssl_verify no</code>. Registers with HTTP&nbsp;200.</p></div>
+      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker — <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
+      <div class="card"><div class="k">WINDOWS</div><h3>Native service</h3><p>Silent install of <code class="mono">cloudlens-win-sensor.exe</code> via SSM; the service is named <b>CloudLens</b> (not CloudLensAgent).</p></div>
+    </div>
+    <div class="note-b">The project key is pulled automatically — the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
+  </div>
+</section>
+
+<section id="kvo">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <span class="eyebrow">Path 03a · Orchestration</span>
+        <h2 style="margin-top:12px">Bring the manager under <span class="em">KVO</span>.</h2>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">KVO becomes the single pane. Every UI "button" is scripted: accept the EULA, activate licenses, create the KVO user on the CLMS, adopt it, and provision the working project key through a Cloud Config.</p>
+      </div>
+      <ol class="steps">
+        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done — a legal acceptance, gated behind a flag.</span></li>
+        <li><b>Activate licenses</b><span class="m">An unlicensed KVO refuses every write. Codes activate via the licensing API.</span></li>
+        <li><b>Adopt the CLMS</b><span class="m"><code>createCloudLensManager</code>, commit the change request, wait for <b>CONNECTED</b>.</span></li>
+        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key — skip it and the key is a phantom.</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="vpb">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <span class="eyebrow">Path 03b · Packet broker</span>
+        <h2 style="margin-top:12px">Adopt the <span class="em">vPB</span> and wire the path.</h2>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b> — then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
+        <div class="codeblk"><span class="c"># the vПB `kvo` command is an interactive CONTEXT, not flat</span>
+CloudLensVPB# <span class="b">kvo</span>
+CloudLensVPB-kvo# <span class="b">ip</span> &lt;kvo-ip&gt;
+CloudLensVPB-kvo# <span class="b">port</span> 443
+CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enabled</span></div>
+      </div>
+      <ol class="steps">
+        <li><b>Announce &amp; adopt</b><span class="m">The vPB appears in Inventory → Auto Discovery; adopt with control.</span></li>
+        <li><b>Auto-licensed, Online</b><span class="m">KVO consumes a device license and builds the Device Config automatically.</span></li>
+        <li><b>Bind ports</b><span class="m">eth1 ingress → Cloud-to-Device Link, eth2 egress → tool.</span></li>
+        <li><b>Monitoring policy</b><span class="m">source → vPB → tool: KVO collects, filters, and dumps to the tool.</span></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="mirror">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless — the big one</span>
+      <h2>Mirror traffic with <span class="em">zero agents</span>.</h2>
+      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b> — AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
+    <div class="reqs">
+      <span class="req"><b>Nitro</b> sources only</span>
+      <span class="req">opt-in least-privilege IAM</span>
+      <span class="req">tag <b>cloudlens=yes</b></span>
+      <span class="req">auto-scaled collectors</span>
+    </div>
+    <div class="cards" style="margin-top:22px">
+      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped — put sensors on those.</p></div>
+      <div class="card"><div class="k">DEPLOY</div><h3>Collectors</h3><p>An auto-scaling group of collector Service VMs comes up per zone, from the Keysight Marketplace image, resolved per region.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI — visible in VPC → Traffic Mirroring.</p></div>
+    </div>
+    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest — both land under the same CLM/KVO project.</div>
+  </div>
+</section>
+
+<section id="verify">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Proof, not promises</span><h2>Verify at every hop.</h2>
-      <p>Nothing is "done" until it shows up where it matters — sensors in the manager, sessions in the AWS console, packets on the tool.</p></div>
+      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too — every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
     <div class="cards">
-      <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP 200 at agent/register; the project's sensor count climbs as they check in.</p></div>
-      <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB Online, auto-licensed, with its Device Config and bound ports.</p></div>
-      <div class="card"><div class="k">MIRROR</div><h3>Sessions in AWS</h3><p>VPC → Traffic Mirroring lists one session per Nitro source ENI pointing at the collector target.</p></div>
+      <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP&nbsp;200 at <code class="mono">agent/register</code>; the project's sensor count climbs as they check in.</p></div>
+      <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB <b>Online</b>, auto-licensed, with its Device Config and bound ingress/egress ports.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions in AWS</h3><p><code class="mono">describe-traffic-mirror-sessions</code> lists one session per Nitro source ENI pointing at the collector target.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="reference">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Reference</span><h2>The details you'll reach for.</h2></div>
+    <table class="ref">
+      <thead><tr><th>Item</th><th>Value</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase — change on first use.</td></tr>
+        <tr><td>KVO web UI</td><td><code>admin / admin</code></td><td>Accept the EULA and activate licenses before any write.</td></tr>
+        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code> — not flat commands.</td></tr>
+        <tr><td>Source selection</td><td><code>tag cloudlens=yes</code></td><td>Same tag drives the sensor and the agentless mirror paths.</td></tr>
+        <tr><td>AWS mirroring</td><td>Nitro instances only</td><td>t3 / m5 / c5 / r5 and newer are Nitro; <code>describe-instance-types … Hypervisor</code> confirms.</td></tr>
+        <tr><td>Key network ports</td><td><code>443 · 9022 · 8443</code></td><td>443 CLMS/KVO API · 9022 vPB SSH · 8443 KVO↔collector (open in the SG).</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="issues">
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Troubleshoot</span><h2>When it doesn't go clean.</h2></div>
+    <div class="cards">
+      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit — the stack's pre-check catches it in seconds.</p></div>
+      <div class="card"><h3>vPB never shows in KVO</h3><p>Run the <code class="mono">kvo</code> commands inside the context (not flat <code class="mono">kvo ip</code>), and confirm the mgmt network reaches KVO on 443. It self-announces from there.</p></div>
+      <div class="card"><h3>No mirror sessions</h3><p>Sources must be <b>Nitro</b>, KVO needs the Zone-Tapping IAM, and 8443 must be open KVO↔collector. Confirm the collector registered before expecting sessions.</p></div>
     </div>
   </div>
 </section>
