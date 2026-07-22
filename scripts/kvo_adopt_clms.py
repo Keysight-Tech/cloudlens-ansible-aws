@@ -185,52 +185,96 @@ def kvo_commit_cr(base, token, cr_uid, verify, timeout=240):
         time.sleep(6)
     log("timed out waiting for the commit"); return False
 
-def kvo_create_cloud_config(base, token, clm_uid, cc_name, verify):
-    """Create a Custom Cloud (Cloud Config) bound to the adopted CLM and return
-    the project key KVO generates for it.
-
-    This is the KVO-managed way to get a project key: rather than creating a
-    project directly on the CLMS, KVO's Cloud Config creates one through the
-    adopted manager and returns it as clmsProjectApiKey. That key is what the
-    sensors register with.
-
-    createCustomCloud REQUIRES a changeID (unlike adopt), so a change request is
-    opened first, the cloud config is created inside it, and the change request
-    is committed. The key is present in the create response immediately.
-    Returns (project_id, project_key) or (None, None).
-    """
-    # Check for an existing cloud config FIRST, before opening a change request.
-    # Opening one and then bailing on "already exists" would leave an orphaned
-    # InProgress change request behind.
-    q = gql(base, token, "{ customClouds { name clmsProjectId clmsProjectApiKey } }", verify)
-    for c in (q.get("data", {}).get("customClouds") or []):
-        if c.get("name") == cc_name:
-            log(f"cloud config {cc_name} already exists; reading its key")
-            return c.get("clmsProjectId"), c.get("clmsProjectApiKey")
-
-    cr = gql(base, token, 'mutation { createChangeRequest(name: "create-cloud-config") { uid } }', verify)
+def kvo_open_cr(base, token, name, verify):
+    """Open a change request and return its uid, or None."""
+    cr = gql(base, token, f'mutation {{ createChangeRequest(name: {_q(name)}) {{ uid }} }}', verify)
     if "errors" in cr:
-        log(f"createChangeRequest failed: {cr['errors'][0]['message'][:180]}"); return None, None
+        log(f"createChangeRequest failed: {cr['errors'][0]['message'][:180]}"); return None
     crs = cr.get("data", {}).get("createChangeRequest") or []
     if not crs:
-        log("no change request opened for cloud config"); return None, None
-    cr_uid = crs[0]["uid"]
+        log("no change request was opened"); return None
+    return crs[0]["uid"]
 
-    m = (f'mutation {{ createCustomCloud(name: {_q(cc_name)}, changeID: {_q(cr_uid)}, '
-         f'settings: {{ cloudLensManagerId: {_q(clm_uid)}, description: "CloudLens Autopilot" }}) '
-         '{ uid name clmsProjectId clmsProjectApiKey } }')
+def kvo_cluster_uid(base, token, verify):
+    """The Cloud Config lives under a cluster. A stock KVO has one named
+    'PredefinedCluster'; take the first if the name is not found."""
+    d = gql(base, token, "{ clusters { uid name } }", verify)
+    rows = d.get("data", {}).get("clusters") or []
+    for r in rows:
+        if r.get("name") == "PredefinedCluster":
+            return r["uid"]
+    return rows[0]["uid"] if rows else None
+
+def kvo_create_cloud_config(base, token, clm_uid, cc_name, verify):
+    """Create the full KVO-managed Cloud Config chain and return the project key
+    that sensors register with. Returns (project_id, project_key) or (None,None).
+
+    The KVO-managed key requires THREE objects, not one (learned live; see
+    ~/keysight-kb/digests/kvo-clms-adoption-api.md):
+
+      1. createCustomCloud  -> the cloud presence (Global Dashboard "Custom
+         Cloud"). KVO self-generates clmsProjectId/clmsProjectApiKey here, but
+         at this point the key is a PHANTOM: no project exists on the CLM yet.
+      2. createCloudConfig(cloudConfigType: CustomCloudConfig, cloudPresence:
+         {name}) -> the Visibility Fabric object. THIS commit provisions the
+         real project on the CLM (named KVO_<cc_name>) and makes the key live.
+
+    Skipping step 2 is why the key 404s at agent/register and why the Visibility
+    Fabric > Cloud Configs page shows empty while the dashboard shows the cloud.
+    Each object is created in its own change request and committed before the
+    next, so the name-reference in step 2 resolves to a live object.
+    """
+    # Step 1: Custom Cloud (cloud presence). Idempotent on name.
+    q = gql(base, token, "{ customClouds { name clmsProjectId clmsProjectApiKey } }", verify)
+    existing = next((c for c in (q.get("data", {}).get("customClouds") or [])
+                     if c.get("name") == cc_name), None)
+    if existing:
+        log(f"custom cloud {cc_name} already exists; reusing")
+        pid, key = existing.get("clmsProjectId"), existing.get("clmsProjectApiKey")
+    else:
+        cr_uid = kvo_open_cr(base, token, "create-custom-cloud", verify)
+        if not cr_uid:
+            return None, None
+        m = (f'mutation {{ createCustomCloud(name: {_q(cc_name)}, changeID: {_q(cr_uid)}, '
+             f'settings: {{ cloudLensManagerId: {_q(clm_uid)}, description: "CloudLens Autopilot" }}) '
+             '{ uid name clmsProjectId clmsProjectApiKey } }')
+        r = gql(base, token, m, verify)
+        if "errors" in r:
+            log(f"createCustomCloud failed: {r['errors'][0]['message'][:200]}"); return None, None
+        rows = r.get("data", {}).get("createCustomCloud") or []
+        if not rows:
+            log("createCustomCloud returned no rows"); return None, None
+        pid, key = rows[0].get("clmsProjectId"), rows[0].get("clmsProjectApiKey")
+        log(f"custom cloud {cc_name} created (project key staged); committing")
+        if not kvo_commit_cr(base, token, cr_uid, verify):
+            log("custom cloud created but its change request did not commit"); return None, None
+
+    # Step 2: Cloud Config (Visibility Fabric). THIS provisions the CLM project.
+    cfgs = gql(base, token, "{ cloudConfigs { name } }", verify)
+    if any(c.get("name") == cc_name for c in (cfgs.get("data", {}).get("cloudConfigs") or [])):
+        log(f"cloud config {cc_name} already exists; key is live")
+        return pid, key
+
+    cluster = kvo_cluster_uid(base, token, verify)
+    if not cluster:
+        log("no cluster found for the cloud config"); return pid, key
+
+    cr_uid = kvo_open_cr(base, token, "create-cloud-config", verify)
+    if not cr_uid:
+        return pid, key
+    # clusterID arg is String (not ID); cloudPresence is a name-reference to step 1.
+    m = (f'mutation {{ createCloudConfig(name: {_q(cc_name)}, changeID: {_q(cr_uid)}, '
+         f'clusterID: {_q(cluster)}, settings: {{ cloudConfigType: CustomCloudConfig, '
+         f'cloudPresence: {{ name: {_q(cc_name)} }} }}) {{ uid name cloudConfigType }} }}')
     r = gql(base, token, m, verify)
     if "errors" in r:
-        log(f"createCustomCloud failed: {r['errors'][0]['message'][:200]}"); return None, None
-    rows = r.get("data", {}).get("createCustomCloud") or []
-    if not rows:
-        log("createCustomCloud returned no rows"); return None, None
-    cc = rows[0]
-    pid, key = cc.get("clmsProjectId"), cc.get("clmsProjectApiKey")
-    log(f"cloud config {cc_name} created; project {pid}")
-
-    if not kvo_commit_cr(base, token, cr_uid, verify):
+        log(f"createCloudConfig failed: {r['errors'][0]['message'][:200]}")
+        log("the custom cloud exists but its key is not yet backed by a CLM project")
+        return pid, key
+    log(f"cloud config {cc_name} created; committing (provisions the CLM project)")
+    if not kvo_commit_cr(base, token, cr_uid, verify, timeout=360):
         log("cloud config created but its change request did not commit"); return pid, key
+    log(f"cloud config live; project KVO_{cc_name} provisioned on the CLM")
     return pid, key
 
 def main():

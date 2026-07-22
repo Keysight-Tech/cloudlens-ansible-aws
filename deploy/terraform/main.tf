@@ -25,9 +25,10 @@ provider "aws" {
 }
 
 locals {
-  deploy_kvo = lower(var.deploy_kvo) == "true"
-  deploy_vpb = lower(var.deploy_vpb) == "true"
-  name       = var.stack_name
+  deploy_kvo   = lower(var.deploy_kvo) == "true"
+  deploy_vpb   = lower(var.deploy_vpb) == "true"
+  zone_tapping = lower(var.deploy_kvo) == "true" && lower(var.enable_zone_tapping) == "true"
+  name         = var.stack_name
 }
 
 # ---- Networking ------------------------------------------------------
@@ -176,6 +177,37 @@ resource "aws_eip" "controller" {
   tags     = { Name = "${local.name}-vcontroller-eip" }
 }
 
+# ---- KVO Zone Tapping IAM (optional, enable_zone_tapping="true") ------
+# Lets KVO deploy collector Service VMs and create AWS VPC Traffic Mirror
+# sessions. Same least-privilege policy as the CloudFormation path, sourced from
+# the single JSON file so both stay in sync. Gated so the base suite deploys for
+# principals without IAM rights (leave enable_zone_tapping="false").
+resource "aws_iam_role" "kvo_zonetap" {
+  count = local.zone_tapping ? 1 : 0
+  name  = "${local.name}-kvo-zonetap"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "kvo_zonetap" {
+  count  = local.zone_tapping ? 1 : 0
+  name   = "CloudLensZoneTap"
+  role   = aws_iam_role.kvo_zonetap[0].id
+  policy = file("${path.module}/../iam/cloudlens-zonetap-policy.json")
+}
+
+resource "aws_iam_instance_profile" "kvo_zonetap" {
+  count = local.zone_tapping ? 1 : 0
+  name  = "${local.name}-kvo-zonetap"
+  role  = aws_iam_role.kvo_zonetap[0].name
+}
+
 # ---- KVO (optional) --------------------------------------------------
 resource "aws_instance" "kvo" {
   count                  = local.deploy_kvo ? 1 : 0
@@ -184,6 +216,7 @@ resource "aws_instance" "kvo" {
   key_name               = var.key_name
   subnet_id              = aws_subnet.mgmt.id
   vpc_security_group_ids = [aws_security_group.controller.id]
+  iam_instance_profile   = local.zone_tapping ? aws_iam_instance_profile.kvo_zonetap[0].name : null
   tags = {
     Name           = "${local.name}-kvo"
     cloudlens-role = "kvo"

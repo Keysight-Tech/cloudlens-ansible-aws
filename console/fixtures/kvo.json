@@ -1,0 +1,207 @@
+[
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "tool",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "vm",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[kvo-adopt] KVO EULA accepted \u00b7 licenses active"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "live",
+   "label": "licensed"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "EULA accepted and licenses active \u2014 every KVO write is unblocked.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "log",
+   "text": "[kvo-adopt] createCloudLensManager \u00b7 committing change request"
+  }
+ },
+ {
+  "_delay": 1.1,
+  "event": {
+   "type": "log",
+   "text": "[kvo-adopt]   clms-live status: CONNECTED"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "live",
+   "label": "CONNECTED"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "CLMS is CONNECTED; the Cloud Config provisions the working project key.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"
+  }
+ },
+ {
+  "_delay": 1.2,
+  "event": {
+   "type": "log",
+   "text": "[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "live",
+   "label": "Online"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "vPB is Online and auto-licensed \u2014 KVO built its Device Config.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "log",
+   "text": "[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "state",
+   "node": "tool",
+   "status": "live",
+   "label": "bound"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "log",
+   "text": "[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "state",
+   "node": "vm",
+   "status": "live",
+   "label": "3 hosts"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Sensors registered under KVO management.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "done",
+   "summary": "Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.",
+   "outputs": {}
+  }
+ }
+]

@@ -128,6 +128,18 @@ Parameters:
       - "yes"
       - "no"
     Description: Deploy the vPB data-plane instance alongside vController.
+  EnableZoneTapping:
+    Type: String
+    Default: "no"
+    AllowedValues:
+      - "yes"
+      - "no"
+    Description: >-
+      Attach an IAM instance profile to KVO so it can run AWS Zone Tapping
+      (deploy collector Service VMs and create AWS VPC Traffic Mirror sessions).
+      Requires KVO and CAPABILITY_NAMED_IAM at deploy time. Leave "no" if the
+      deploying principal cannot create IAM roles; the base suite still deploys,
+      and mirroring can be enabled later with scripts/kvo_enable_zonetap_iam.sh.
   KeyPairAction:
     Type: String
     Default: "Use an existing key pair"
@@ -407,6 +419,10 @@ Conditions:
   VcontrollerHasEip: !Condition WithPublicIp
   KvoHasEip: !And [!Condition DeployKVO, !Condition WithPublicIp]
   VpbHasEip: !And [!Condition DeployVPB, !Condition WithPublicIp]
+  WithZoneTapping: !And [!Condition DeployKVO, !Equals [!Ref EnableZoneTapping, "yes"]]
+  # A tapping vPB needs 3 NICs (mgmt/ingress/egress). Only the greenfield VPC has
+  # the dedicated data + tool subnets, so multi-NIC is gated on CreateVpc.
+  VpbMultiNic: !And [!Condition DeployVPB, !Condition CreateVpc]
 
 Resources:
 
@@ -608,9 +624,156 @@ Resources:
       SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
       SecurityGroupIds:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+      IamInstanceProfile: !If [WithZoneTapping, !Ref KvoZoneTapInstanceProfile, !Ref "AWS::NoValue"]
       Tags:
         - Key: Name
           Value: !If [CustomKvoName, !Ref KvoName, !Sub "${AWS::StackName}-kvo"]
+
+  # ---------- KVO Zone Tapping IAM (optional, EnableZoneTapping=yes) ----------
+  # Least-privilege policy from the KVO 3.0.1 User Guide, Ch.10 (Clusters). Lets
+  # KVO deploy collector Service VMs and create AWS VPC Traffic Mirror sessions.
+  # Every create is scoped by the cloudlens:monitored:vpcid tag KVO applies, and
+  # the Deny statements block anything untagged. Gated so the base suite still
+  # deploys for principals without IAM rights (leave EnableZoneTapping=no).
+  KvoZoneTapRole:
+    Type: AWS::IAM::Role
+    Condition: WithZoneTapping
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-kvo-zonetap"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudLensZoneTap
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeKeyPairs
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - account:ListRegions
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTrafficMirrorSessions
+                  - ec2:DescribeTrafficMirrorTargets
+                  - ec2:DescribeTrafficMirrorFilters
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeNetworkInterfaces
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeScalingActivities
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:TerminateInstances
+                  - ec2:DeleteLaunchTemplate
+                  - ec2:DeleteLaunchTemplateVersions
+                  - ec2:DeleteTrafficMirrorFilter
+                  - ec2:DeleteTrafficMirrorTarget
+                  - ec2:DeleteTrafficMirrorSession
+                  - ec2:DeleteNetworkInterface
+                  - autoscaling:DeleteTags
+                  - autoscaling:DeleteAutoScalingGroup
+                  - ec2:AttachNetworkInterface
+                  - ec2:ModifyLaunchTemplate
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:UpdateAutoScalingGroup
+                  - autoscaling:SetDesiredCapacity
+                  - autoscaling:StartInstanceRefresh
+                  - ec2:CreateLaunchTemplateVersion
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    "aws:ResourceTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTrafficMirrorFilter
+                  - ec2:CreateLaunchTemplate
+                  - autoscaling:CreateAutoScalingGroup
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+                  StringEquals:
+                    "ec2:CreateAction":
+                      - CreateTrafficMirrorFilterRule
+                      - CreateTrafficMirrorFilter
+                      - CreateTrafficMirrorSession
+                      - CreateTrafficMirrorTarget
+                      - CreateNetworkInterface
+                      - CreateLaunchTemplate
+                      - RunInstances
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTrafficMirrorFilterRule
+                  - ec2:CreateTrafficMirrorTarget
+                  - ec2:CreateTrafficMirrorSession
+                  - ec2:CreateNetworkInterface
+                  - ec2:RunInstances
+                  - ec2:ModifyNetworkInterfaceAttribute
+                Resource: "*"
+              - Effect: Deny
+                Action: ec2:CreateTrafficMirrorFilterRule
+                Resource: "arn:aws:ec2:*:*:traffic-mirror-filter-rule/*"
+                Condition:
+                  StringNotLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Deny
+                Action: ec2:CreateTrafficMirrorTarget
+                Resource: "arn:aws:ec2:*:*:traffic-mirror-target/*"
+                Condition:
+                  StringNotLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Deny
+                Action: ec2:CreateTrafficMirrorSession
+                Resource: "arn:aws:ec2:*:*:traffic-mirror-session/*"
+                Condition:
+                  StringNotLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Deny
+                Action: ec2:CreateNetworkInterface
+                Resource: "arn:aws:ec2:*:*:network-interface/*"
+                Condition:
+                  StringNotLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Deny
+                Action: ec2:RunInstances
+                Resource: "arn:aws:ec2:*:*:instance/*"
+                Condition:
+                  StringNotLike:
+                    "aws:RequestTag/cloudlens:monitored:vpcid": "*"
+              - Effect: Deny
+                Action: ec2:ModifyNetworkInterfaceAttribute
+                Resource:
+                  - "arn:aws:ec2:*:*:network-interface/*"
+                  - "arn:aws:ec2:*:*:instance/*"
+                Condition:
+                  StringNotLike:
+                    "aws:ResourceTag/cloudlens:monitored:vpcid": "*"
+
+  KvoZoneTapInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: WithZoneTapping
+    Properties:
+      Roles:
+        - !Ref KvoZoneTapRole
 
   # Allocated with no InstanceId so it has no dependency on the instance and
   # CloudFormation claims it immediately. If the account is short on Elastic IP
@@ -680,6 +843,53 @@ Resources:
     Properties:
       AllocationId: !GetAtt VpbEip.AllocationId
       InstanceId: !Ref VpbInstance
+
+  # ---------- vPB data-plane NICs (greenfield) ----------
+  # eth1 = ingress (data subnet): receives tapped/mirrored traffic.
+  # eth2 = egress  (tool subnet): forwards filtered traffic to tools.
+  # SourceDestCheck is off because a packet broker forwards traffic it does not own.
+  # This is what makes the vPB usable as a KVO-managed tap/tool target.
+  VpbIngressEni:
+    Type: AWS::EC2::NetworkInterface
+    Condition: VpbMultiNic
+    Properties:
+      SubnetId: !Ref DataSubnet
+      GroupSet:
+        - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+      SourceDestCheck: false
+      Description: vPB ingress (tapped traffic in)
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpb-ingress"
+
+  VpbEgressEni:
+    Type: AWS::EC2::NetworkInterface
+    Condition: VpbMultiNic
+    Properties:
+      SubnetId: !Ref ToolSubnet
+      GroupSet:
+        - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+      SourceDestCheck: false
+      Description: vPB egress (to tools)
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpb-egress"
+
+  VpbIngressAttachment:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Condition: VpbMultiNic
+    Properties:
+      InstanceId: !Ref VpbInstance
+      NetworkInterfaceId: !Ref VpbIngressEni
+      DeviceIndex: 1
+
+  VpbEgressAttachment:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Condition: VpbMultiNic
+    Properties:
+      InstanceId: !Ref VpbInstance
+      NetworkInterfaceId: !Ref VpbEgressEni
+      DeviceIndex: 2
 
   # ---------- Optional test workloads ----------
   # Plain VMs that exist only to prove the sensor path. They land in THIS

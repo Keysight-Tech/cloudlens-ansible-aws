@@ -1,0 +1,193 @@
+[
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "u",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "r",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "w",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "$ vcontroller_project_key.py --clms 20.84.115.190"
+  }
+ },
+ {
+  "_delay": 0.9,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[vctl] login ok \u00b7 rotating first-login password"
+  }
+ },
+ {
+  "_delay": 0.8,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "live",
+   "label": "project"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Project key retrieved \u2014 the forced first-login password change was handled automatically.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "u",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "log",
+   "text": "TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"
+  }
+ },
+ {
+  "_delay": 1.0,
+  "event": {
+   "type": "state",
+   "node": "u",
+   "status": "live",
+   "label": "200"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Ubuntu sensor registered \u2014 Register status 200.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "r",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "log",
+   "text": "TASK [redhat : podman run \u2026/sensor]"
+  }
+ },
+ {
+  "_delay": 1.0,
+  "event": {
+   "type": "state",
+   "node": "r",
+   "status": "live",
+   "label": "200"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "RHEL sensor registered.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "w",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "log",
+   "text": "TASK [windows : cloudlens-win-sensor.exe /install /quiet]"
+  }
+ },
+ {
+  "_delay": 1.1,
+  "event": {
+   "type": "state",
+   "node": "w",
+   "status": "live",
+   "label": "200"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Windows sensor registered \u2014 service CloudLens running.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "done",
+   "summary": "3 sensors registered \u00b7 sensorCount = 3.",
+   "outputs": {
+    "note": "Watch them in the vController UI under your project."
+   }
+  }
+ }
+]

@@ -30,6 +30,18 @@ variable "deploy_kvo" {
   default     = "false"
 }
 
+variable "enable_zone_tapping" {
+  description = <<-EOT
+    Attach the Zone Tapping IAM instance profile to KVO so it can run AWS VPC
+    Traffic Mirroring (deploy collector Service VMs, create mirror sessions).
+    Requires KVO and IAM-create rights at apply time. Leave "false" if the
+    applying principal cannot create IAM; enable later with
+    scripts/kvo_enable_zonetap_iam.sh.
+  EOT
+  type        = string
+  default     = "false"
+}
+
 variable "deploy_vpb" {
   description = "Deploy vPB alongside vController (true/false as string)."
   type        = string

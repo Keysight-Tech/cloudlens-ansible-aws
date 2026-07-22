@@ -1,0 +1,279 @@
+[
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "vpc",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"
+  }
+ },
+ {
+  "_delay": 0.9,
+  "event": {
+   "type": "log",
+   "text": "Waiting for changeset to be created.."
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "vpc",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "log",
+   "text": "CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"
+  }
+ },
+ {
+  "_delay": 1.1,
+  "event": {
+   "type": "state",
+   "node": "vpc",
+   "status": "live",
+   "label": "live"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::EC2::VPC  Vpc"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "narrate",
+   "text": "Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "created": 1,
+   "type": "stat"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "log",
+   "text": "CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "narrate",
+   "text": "Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.",
+   "tone": "note"
+  }
+ },
+ {
+  "_delay": 0.8,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "log",
+   "text": "CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "narrate",
+   "text": "Launching the CloudLens Manager \u2014 the control plane every sensor registers to.",
+   "tone": "info"
+  }
+ },
+ {
+  "_delay": 1.4,
+  "event": {
+   "type": "state",
+   "node": "clms",
+   "status": "live",
+   "label": "live"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "narrate",
+   "text": "vController is up. It still needs ~15 min to initialize before you can log in.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "created": 2,
+   "type": "stat"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "log",
+   "text": "CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "narrate",
+   "text": "Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.",
+   "tone": "info"
+  }
+ },
+ {
+  "_delay": 1.3,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "live",
+   "label": "live"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "created": 3,
+   "type": "stat"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "log",
+   "text": "CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "narrate",
+   "text": "Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.",
+   "tone": "info"
+  }
+ },
+ {
+  "_delay": 1.3,
+  "event": {
+   "type": "state",
+   "node": "vpb",
+   "status": "live",
+   "label": "live"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "created": 4,
+   "type": "stat"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "done",
+   "summary": "Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.",
+   "outputs": {
+    "note": "Log in at the vController URL once initialized, then run Flow 02 or 03."
+   }
+  }
+ }
+]

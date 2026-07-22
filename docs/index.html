@@ -1,1284 +1,340 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <script>
-    // The site always lands LIGHT. The dark toggle only persists for the
-    // current browsing session (sessionStorage), never across visits.
-    try {
-      localStorage.removeItem('cl-theme'); // clear any old cross-visit preference
-      var t = sessionStorage.getItem('cl-theme') || 'light';
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  </script>
-  <meta name="color-scheme" content="light dark" />
-  <title>CloudLens Autopilot for AWS | Keysight Technologies</title>
-  <meta name="description" content="Deploy the full CloudLens stack (vController + KVO + vPB) and sensors to your EC2 instances in minutes. Linux, Windows, fully automated. CloudFormation, CloudShell, or Docker." />
-  <meta name="theme-color" content="#E90029" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#232F3E" media="(prefers-color-scheme: dark)" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CloudLens Autopilot for AWS · Deployment Console</title>
+<script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('cl-theme')||'light');}catch(e){document.documentElement.setAttribute('data-theme','light');}</script>
+<style>
+  :root{
+    --paper:#FBFAF7;--panel:#FFFFFF;--ink:#15171C;--ink-soft:#565A63;--ink-faint:#8A8E97;
+    --line:#E7E2D9;--line-soft:#F0ECE4;
+    --screen:#0B0D11;--screen-2:#0F1218;--screen-line:#242C38;--screen-ink:#CFD7E2;--screen-faint:#727B8A;
+    --accent:#E4002B;--accent-ink:#FFF;--accent-soft:#FBE6EA;
+    --signal:#22C877;--good:#1FA968;--amber:#E8912B;--sky:#3B9BE8;--warn:#E8912B;--crit:#E4002B;
+    --shadow:0 1px 2px rgba(20,22,28,.04),0 12px 32px -12px rgba(20,22,28,.14);
+    --shadow-lg:0 2px 6px rgba(11,13,17,.5),0 40px 80px -30px rgba(11,13,17,.55);
+    --r:14px;--r-sm:9px;--mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;--maxw:1240px;
+  }
+  :root[data-theme="dark"]{
+    --paper:#0A0C10;--panel:#171B23;--ink:#F2F4F8;--ink-soft:#BCC2CE;--ink-faint:#8B93A3;
+    --line:#2D333F;--line-soft:#1F242D;--accent:#FF3B57;--accent-soft:#331119;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 18px 40px -16px rgba(0,0,0,.65);
+    --good:#2FD183;--signal:#2FD183;
+  }
+  *{box-sizing:border-box}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;
+    line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden;
+    background-image:radial-gradient(circle at 12% -8%,color-mix(in srgb,var(--accent) 6%,transparent),transparent 44%);}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 26px}
+  h1,h2,h3{text-wrap:balance;margin:0}.mono{font-family:var(--mono)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-faint);font-weight:600}
 
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="CloudLens Autopilot for AWS" />
-  <meta property="og:description" content="Deploy the full CloudLens stack and sensors to your EC2 instances in minutes. Linux, Windows, fully automated." />
-  <meta property="og:url" content="https://keysight-tech.github.io/cloudlens-ansible-aws/" />
-  <meta property="og:image" content="https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/docs/assets/architecture-diagram.svg" />
-  <meta name="twitter:card" content="summary_large_image" />
+  header.top{position:sticky;top:0;z-index:40;backdrop-filter:blur(14px);
+    background:color-mix(in srgb,var(--paper) 82%,transparent);border-bottom:1px solid var(--line)}
+  .top .wrap{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;letter-spacing:-.01em}
+  .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}
+  .brand small{font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-faint);text-transform:uppercase;display:block;margin-top:-3px}
+  .top .sp{margin-left:auto}
+  .demo-t{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
+  .sw{width:38px;height:22px;border-radius:20px;background:var(--line);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.2s}
+  .sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+  .sw[aria-checked="true"]::after{left:18px;background:#fff}
+  .theme-btn{border:1px solid var(--line);background:var(--panel);color:var(--ink-soft);width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:14px}
+  .theme-btn:hover{color:var(--ink)}
 
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23E90029'/%3E%3Cpath d='M8 20 L16 8 L24 20 Z' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="glass.css" />
+  .hero{padding:48px 0 22px}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;font-weight:600;
+    color:var(--ink-soft);background:var(--panel);border:1px solid var(--line);padding:5px 11px;border-radius:100px}
+  .badge .live{width:7px;height:7px;border-radius:50%;background:var(--signal);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--signal) 55%,transparent)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  h1.title{font-size:clamp(34px,5.6vw,64px);line-height:1;letter-spacing:-.035em;font-weight:800;margin:16px 0 0}
+  h1.title em{font-style:normal;color:var(--accent)}
+  .lede{font-size:clamp(15px,1.8vw,18px);color:var(--ink-soft);max-width:52ch;margin:16px 0 0}
+
+  /* instrument */
+  .instrument{background:var(--screen);border-radius:var(--r);box-shadow:var(--shadow-lg);border:1px solid #000;overflow:hidden;position:relative}
+  .instrument::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 80% at 50% -10%,rgba(255,255,255,.05),transparent 55%);z-index:3}
+  .inst-bar{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--screen-line);background:linear-gradient(var(--screen-2),var(--screen));flex-wrap:wrap}
+  .traffic{display:flex;gap:7px}.traffic i{width:11px;height:11px;border-radius:50%;display:block}
+  .traffic i:nth-child(1){background:#ff5f57}.traffic i:nth-child(2){background:#febc2e}.traffic i:nth-child(3){background:#28c840}
+  .inst-title{font-family:var(--mono);font-size:12px;color:var(--screen-faint)}.inst-title b{color:var(--screen-ink);font-weight:600}
+  .id-chip{font-family:var(--mono);font-size:10.5px;color:var(--screen-faint);border:1px solid var(--screen-line);border-radius:100px;padding:3px 9px}
+  .id-chip b{color:var(--sky)}
+  .inst-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .metric{font-family:var(--mono);font-size:11px;color:var(--screen-faint);display:flex;flex-direction:column;line-height:1.15}
+  .metric b{color:var(--screen-ink);font-size:15px;font-variant-numeric:tabular-nums}
+  .pill{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;padding:4px 10px;border-radius:100px;border:1px solid var(--screen-line);color:var(--screen-faint);display:inline-flex;align-items:center;gap:6px}
+  .pill .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .pill.run{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 40%,var(--screen-line))}.pill.run .d{animation:pulse 1.2s infinite}
+  .pill.done{color:var(--signal);border-color:color-mix(in srgb,var(--signal) 40%,var(--screen-line))}
+  .pill.err{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--screen-line))}
+  .stopbtn{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--screen-ink);background:transparent;border:1px solid var(--screen-line);border-radius:8px;padding:6px 11px;cursor:pointer}
+  .stopbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .stopbtn[hidden]{display:none}
+
+  .inst-body{display:grid;grid-template-columns:1.15fr .85fr;min-height:440px}
+  @media(max-width:860px){.inst-body{grid-template-columns:1fr}}
+  .diagram{position:relative;padding:20px;overflow:hidden;border-right:1px solid var(--screen-line)}
+  @media(max-width:860px){.diagram{border-right:0;border-bottom:1px solid var(--screen-line);min-height:320px}}
+  .diagram svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .dgrid{position:absolute;inset:0;background-image:linear-gradient(var(--screen-line) 1px,transparent 1px),linear-gradient(90deg,var(--screen-line) 1px,transparent 1px);background-size:26px 26px;opacity:.12;mask-image:radial-gradient(circle at 50% 45%,#000,transparent 78%)}
+  .dwire{stroke:var(--screen-line);stroke-width:1.6;fill:none;stroke-dasharray:5 5;opacity:.45;stroke-dashoffset:60}
+  .dwire.on{stroke:color-mix(in srgb,var(--signal) 60%,var(--screen-line));opacity:1;animation:flow 1.1s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:0}}
+  .node{position:absolute;transform:translate(-50%,-50%) scale(.8);opacity:0;transition:all .5s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;align-items:center;gap:6px;width:92px;z-index:2}
+  .node.show{opacity:.5;transform:translate(-50%,-50%) scale(.95)}
+  .node.busy,.node.live,.node.fail{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  .node .chip{width:50px;height:50px;border-radius:13px;display:grid;place-items:center;background:var(--screen-2);border:1px solid var(--screen-line);color:var(--screen-faint);transition:all .4s}
+  .node.live .chip{border-color:var(--signal);color:var(--signal);box-shadow:0 0 0 4px color-mix(in srgb,var(--signal) 14%,transparent),inset 0 0 14px color-mix(in srgb,var(--signal) 18%,transparent)}
+  .node.busy .chip{border-color:var(--amber);color:var(--amber);animation:pulse 1.4s infinite}
+  .node.fail .chip{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 14%,transparent)}
+  .node .chip svg{width:23px;height:23px}
+  .node .nlab{font-family:var(--mono);font-size:10.5px;color:var(--screen-ink);text-align:center;font-weight:600}
+  .node .nsub{font-family:var(--mono);font-size:9px;color:var(--screen-faint);margin-top:-3px}
+  .node.live .nsub{color:var(--signal)}.node.busy .nsub{color:var(--amber)}.node.fail .nsub{color:var(--accent)}
+
+  /* right column: narration over console */
+  .rightcol{display:grid;grid-template-rows:1fr auto;min-height:0}
+  .narr{padding:14px 16px;overflow-y:auto;max-height:300px;scrollbar-width:thin;scrollbar-color:var(--screen-line) transparent}
+  .narr .empty{font-family:var(--mono);font-size:12px;color:var(--screen-faint);padding:8px 0}
+  .nline{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--screen-line);opacity:0;transform:translateY(3px);animation:lnin .3s forwards}
+  @keyframes lnin{to{opacity:1;transform:none}}
+  .nline .ni{width:16px;height:16px;flex:0 0 16px;margin-top:2px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff}
+  .nline.info .ni{background:var(--sky)}.nline.good .ni{background:var(--signal)}.nline.note .ni{background:var(--screen-faint)}.nline.warn .ni{background:var(--amber)}.nline.err .ni{background:var(--accent)}
+  .nline .nt{font-size:13px;color:var(--screen-ink);line-height:1.45}
+  .nline.note .nt{color:var(--screen-faint);font-style:italic}
+  .console{padding:12px 15px;font-family:var(--mono);font-size:11.5px;line-height:1.65;color:var(--screen-ink);
+    overflow-y:auto;max-height:150px;border-top:1px solid var(--screen-line);background:rgba(0,0,0,.25);scrollbar-width:thin;scrollbar-color:var(--screen-line) transparent}
+  .console .cln{white-space:pre-wrap;word-break:break-word;color:var(--screen-faint)}
+  .console-head{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--screen-faint);padding:8px 15px 0;border-top:1px solid var(--screen-line);display:flex;justify-content:space-between}
+
+  /* fix / done cards inside narration */
+  .card-in{margin:10px 0;padding:12px 14px;border-radius:10px;border:1px solid var(--screen-line);background:var(--screen-2)}
+  .card-in.err{border-color:color-mix(in srgb,var(--accent) 45%,var(--screen-line))}
+  .card-in .h{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--screen-ink);margin-bottom:4px}
+  .card-in.err .h{color:var(--accent)}
+  .card-in .b{font-size:12.5px;color:var(--screen-faint)}
+
+  .rig{margin-top:14px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end}
+  @media(max-width:820px){.rig{grid-template-columns:1fr}}
+  .flows{display:flex;gap:8px;flex-wrap:wrap}
+  .flow{appearance:none;cursor:pointer;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:10px 13px;min-width:150px;transition:.16s}
+  .flow:hover{border-color:var(--ink-faint);transform:translateY(-1px)}
+  .flow[aria-selected="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .flow .fn{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);letter-spacing:.08em}
+  .flow .ft{font-size:13px;font-weight:650;margin-top:2px}
+  .flow[aria-selected="true"] .fn{color:var(--accent)}
+  .runbtn{appearance:none;cursor:pointer;font-family:var(--sans);font-weight:650;font-size:15px;background:var(--accent);color:var(--accent-ink);border:0;border-radius:11px;padding:13px 22px;display:inline-flex;align-items:center;gap:9px;box-shadow:0 8px 20px -8px color-mix(in srgb,var(--accent) 60%,transparent);transition:.16s}
+  .runbtn:hover{transform:translateY(-1px)}.runbtn:disabled{opacity:.55;cursor:default;transform:none}
+  .runbtn .tri{width:0;height:0;border-left:9px solid currentColor;border-top:6px solid transparent;border-bottom:6px solid transparent}
+
+  .cfg{margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+  .cfg h4{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 13px;font-weight:600;display:flex;justify-content:space-between}
+  .cfg h4 .sub{color:var(--ink-soft);text-transform:none;letter-spacing:0;font-weight:500}
+  .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px 16px}
+  .field label{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:5px;font-weight:600}
+  .field input{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+  .field input:focus{outline:2px solid var(--accent);outline-offset:1px}
+
+  section{padding:56px 0;border-top:1px solid var(--line)}
+  .sec-head{max-width:60ch}.sec-head h2{font-size:clamp(24px,3.2vw,34px);letter-spacing:-.03em;font-weight:780;line-height:1.05}
+  .sec-head p{color:var(--ink-soft);font-size:16px;margin-top:10px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:15px;margin-top:26px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px;transition:.18s}
+  .card:hover{border-color:var(--ink-faint);transform:translateY(-2px);box-shadow:var(--shadow)}
+  .card .k{font-family:var(--mono);font-size:10.5px;color:var(--accent);letter-spacing:.08em}
+  .card h3{font-size:17px;margin-top:7px}.card p{color:var(--ink-soft);font-size:14px;margin-top:7px}
+  footer{padding:36px 0;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13px}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+</style>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+<header class="top"><div class="wrap">
+  <div class="brand"><span class="dot"></span><div>CloudLens<small>Live Console</small></div></div>
+  <div class="sp"></div>
+  </div>
+  <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
+</div></header>
 
-  <div class="brand-strip">
-    <div class="brand-strip__inner">
-      <a href="https://www.keysight.com" target="_blank" rel="noopener" class="brand-strip__logo" aria-label="Keysight Technologies">
-        <img src="assets/keysight-mark.png" alt="Keysight Technologies" width="288" height="320" />
-      </a>
-      <span class="brand-strip__tag">CloudLens Autopilot</span>
-      <a href="https://aws.amazon.com/marketplace" target="_blank" rel="noopener" class="brand-strip__logo brand-strip__logo--aws" aria-label="Amazon Web Services">
-        <img src="assets/aws-mark.png" alt="Amazon Web Services" width="407" height="245" />
-      </a>
+<div class="hero"><div class="wrap">
+  <span class="badge"><span class="live"></span> <span id="modeBadge">WATCH IT DEPLOY · REAL CAPTURED RUN</span></span>
+  <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
+  <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
+</div></div>
+
+<div class="wrap">
+  <div class="instrument">
+    <div class="inst-bar">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
+      <span class="id-chip" id="idChip" hidden>acct <b>—</b></span>
+      <div class="inst-right">
+        <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
+        <div class="metric">created<b id="mCreated">0</b></div>
+        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
+        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
+      </div>
+    </div>
+    <div class="inst-body">
+      <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
+      <div class="rightcol">
+        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs — with the why behind it.</div></div>
+        <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
+        <div class="console" id="console"></div>
+      </div>
     </div>
   </div>
 
-  <header class="site-header" role="banner">
-    <div class="container nav">
-      <a href="#top" class="brand" aria-label="CloudLens Autopilot for AWS home">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1 0-8 5 5 0 0 1 9.5-1A4 4 0 0 1 17 18H7z"/><circle cx="12" cy="14" r="1.6" fill="#fff"/></svg>
-        </span>
-        <span class="brand-text">
-          <strong>CloudLens</strong>
-          <span class="brand-sub">Autopilot for AWS</span>
-        </span>
-      </a>
-      <nav class="primary-nav" aria-label="Primary">
-        <a href="#full-stack">Full Stack</a>
-        <a href="#test-fixture">Test Fixture</a>
-        <a href="#prereq-deploys">Marketplace</a>
-        <a href="#deploy-options">Options</a>
-        <a href="#deploy-progress">Progress</a>
-        <a href="#start-here">Get Started</a>
-        <a href="#why">Why</a>
-        <a href="#wizard">Wizard</a>
-        <a href="#architecture">Architecture</a>
-        <a href="#scaling">Scaling</a>
-        <a href="#faq">Common issues</a>
-        <a href="#docs">Docs</a>
-      </nav>
-      <div class="nav-actions">
-        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
-          <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-          <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        </button>
-        <a class="ghost-btn" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.77.12 3.06.74.8 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.13v3.15c0 .31.21.66.79.55C20.21 21.38 23.5 17.07 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
-          <span>GitHub</span>
-        </a>
-      </div>
+  <div class="rig">
+    <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
+    <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+  </div>
+
+  <div class="cfg">
+    <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
+    <div class="fields" id="fields"></div>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Four flows, one console</span>
+      <h2>From an empty account to live packets on a tool.</h2>
+      <p>Each flow runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer.</p></div>
+    <div class="cards" id="flowCards"></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head"><span class="eyebrow">Proof, not promises</span><h2>Verify at every hop.</h2>
+      <p>Nothing is "done" until it shows up where it matters — sensors in the manager, sessions in the AWS console, packets on the tool.</p></div>
+    <div class="cards">
+      <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP 200 at agent/register; the project's sensor count climbs as they check in.</p></div>
+      <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB Online, auto-licensed, with its Device Config and bound ports.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions in AWS</h3><p>VPC → Traffic Mirroring lists one session per Nitro source ENI pointing at the collector target.</p></div>
     </div>
-  </header>
-
-  <main id="main">
-    <!-- 1. HERO -->
-    <section id="top" class="hero">
-      <div class="hero-bg" aria-hidden="true"></div>
-      <div class="container hero-grid">
-        <div class="hero-copy">
-          <span class="eyebrow">
-            <span class="dot"></span>
-            Verified on real AWS
-          </span>
-          <h1>CloudLens Autopilot for AWS</h1>
-          <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (small deployments) or 30 to 60 minutes (thousands of instances). A full 3-component stack (vController + KVO + vPB) was launched live in AWS us-east-1 and reached CREATE_COMPLETE. Linux, Windows, fully automated.</p>
-          <div class="cta-row">
-            <a class="btn btn-primary tier" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">
-              <span class="tier-num">1</span>
-              <span class="tier-label">
-                <strong>Launch Stack</strong>
-                <small>CloudFormation, one click</small>
-              </span>
-            </a>
-            <a class="btn btn-secondary tier" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">
-              <span class="tier-num">2</span>
-              <span class="tier-label">
-                <strong>Open in CloudShell</strong>
-                <small>One curl command</small>
-              </span>
-            </a>
-            <a class="btn btn-tertiary tier" href="#docker">
-              <span class="tier-num">3</span>
-              <span class="tier-label">
-                <strong>Pull Docker Image</strong>
-                <small>Laptop or CI/CD</small>
-              </span>
-            </a>
-          </div>
-          <div class="badges" aria-label="Tested platforms">
-            <span class="badge ub">Ubuntu 20/22/24</span>
-            <span class="badge rh">RHEL 7/8/9</span>
-            <span class="badge win">Windows 2019/2022</span>
-            <span class="badge ok">3/3 verified</span>
-          </div>
-        </div>
-        <div class="hero-demo">
-          <div class="demo-frame">
-            <div class="demo-chrome">
-              <span></span><span></span><span></span>
-              <em>deploy-stack.sh</em>
-            </div>
-            <object data="assets/deploy-demo.svg" type="image/svg+xml" aria-label="Animated terminal showing CloudLens deployment"></object>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 1.25 PREREQUISITE DEPLOYS: vController + KVO + vPB MARKETPLACE -->
-    <section id="prereq-deploys" class="prereq-section">
-      <div class="container">
-        <h2>Don't have vController, KVO, or vPB yet?</h2>
-        <p class="lede">Deploy them from AWS Marketplace in one click before running sensor deployments.</p>
-
-        <div class="region-picker" id="region-picker">
-          <label for="region-select">&#127760; Deploy to region</label>
-          <select id="region-select" aria-label="AWS region for all Launch buttons">
-            <optgroup label="North America">
-              <option value="us-east-1">US East (N. Virginia) &middot; us-east-1</option>
-              <option value="us-east-2">US East (Ohio) &middot; us-east-2</option>
-              <option value="us-west-1">US West (N. California) &middot; us-west-1</option>
-              <option value="us-west-2">US West (Oregon) &middot; us-west-2</option>
-              <option value="ca-central-1">Canada (Central) &middot; ca-central-1</option>
-            </optgroup>
-            <optgroup label="Europe">
-              <option value="eu-west-1">Europe (Ireland) &middot; eu-west-1</option>
-              <option value="eu-west-2">Europe (London) &middot; eu-west-2</option>
-              <option value="eu-central-1">Europe (Frankfurt) &middot; eu-central-1</option>
-            </optgroup>
-            <optgroup label="Asia Pacific">
-              <option value="ap-southeast-1">Asia Pacific (Singapore) &middot; ap-southeast-1</option>
-              <option value="ap-southeast-2">Asia Pacific (Sydney) &middot; ap-southeast-2</option>
-              <option value="ap-northeast-1">Asia Pacific (Tokyo) &middot; ap-northeast-1</option>
-              <option value="ap-south-1">Asia Pacific (Mumbai) &middot; ap-south-1</option>
-            </optgroup>
-          </select>
-          <span class="region-hint">Every Launch button below deploys the same CloudLens version in your chosen region. <strong>Subscribe to the Marketplace AMIs in that region first.</strong></span>
-        </div>
-
-        <div class="prereq-card prereq-card-stack">
-          <h3>&#9889; Deploy the full CloudLens Stack (recommended)</h3>
-          <p>One CloudFormation stack. Provisions vController + KVO + vPB into a shared VPC with purpose-built mgmt, data, and tool subnets. About 15 minutes from click to ready.</p>
-          <ul>
-            <li>One shared VPC with mgmt / data / tool subnets</li>
-            <li>vController + KVO + vPB deployed together, each with its own Elastic IP</li>
-            <li>Instance types constrained to what each Marketplace AMI permits: vController t3.xlarge or m5.xlarge, KVO c5.2xlarge, vPB t3.xlarge</li>
-            <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/stack.yaml" target="_blank" rel="noopener">CloudFormation template</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">Terraform stack module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/deploy-stack.sh" target="_blank" rel="noopener">deploy-stack.sh</a></li>
-          </ul>
-          <a class="btn btn-primary btn-stack" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">&#9654; Launch CloudLens Stack</a>
-        </div>
-
-        <p class="prereq-or">Or deploy each product separately:</p>
-
-        <div class="prereq-cards">
-          <div class="prereq-card">
-            <h3>CloudLens vController <span class="rebrand-tag">formerly CLMS</span></h3>
-            <p>Central management for sensors. Required for any sensor deployment.</p>
-            <ul>
-              <li>Version from the Marketplace AMI (CLMS_6.12.x)</li>
-              <li>One instance, <code>t3.xlarge</code>, ready in about 15 minutes</li>
-              <li>Access: web UI over HTTPS (appliance shell uses password auth, not your key pair)</li>
-              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/clms" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/clms.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
-              <li>Web UI: <code>https://&lt;vcontroller-ip&gt;</code></li>
-              <li>UI login: <code>admin / Cl0udLens@dm!n</code> (change on first login)</li>
-            </ul>
-            <a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fclms.yaml&amp;stackName=cloudlens-vcontroller" target="_blank" rel="noopener">&#9654; Launch vController</a>
-          </div>
-          <div class="prereq-card">
-            <h3>Vision Orchestrator (KVO) <span class="new-tag">NEW</span></h3>
-            <p>Optional. Centralizes the vPB fleet and automates AWS VPC Traffic Mirroring.</p>
-            <ul>
-              <li>Version from the Marketplace AMI (KVO 2.13.x)</li>
-              <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
-              <li>SSH: <code>ssh -p 9022 admin@&lt;kvo-ip&gt;</code> (port 9022, not 22)</li>
-              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/kvo.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
-              <li>Web UI: <code>https://&lt;kvo-ip&gt;</code></li>
-              <li>UI login: <code>admin / admin</code> (change on first login)</li>
-            </ul>
-            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fkvo.yaml&amp;stackName=cloudlens-kvo" target="_blank" rel="noopener">&#9654; Launch KVO</a>
-          </div>
-          <div class="prereq-card">
-            <h3>Virtual Packet Broker (vPB)</h3>
-            <p>Optional. For inline traffic processing and VXLAN aggregation.</p>
-            <ul>
-              <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
-              <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
-              <li>SSH: <code>ssh -p 9022 admin@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
-              <li>Bootstrap runs automatically at first boot (EC2 user data): kubeconfig + <code>sudo vpb</code> ready on first SSH</li>
-              <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/vpb.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
-              <li>CLI access: <code>sudo vpb</code> (works the moment you SSH in)</li>
-            </ul>
-            <a class="btn btn-secondary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fvpb.yaml&amp;stackName=cloudlens-vpb" target="_blank" rel="noopener">&#9654; Launch vPB</a>
-          </div>
-        </div>
-
-        <aside class="marketplace-note" aria-label="Marketplace listing names">
-          <p>In the AWS console, the products appear as <strong>"Keysight CloudLens vController"</strong>, <strong>"Keysight Vision Orchestrator"</strong>, and <strong>"Keysight CloudLens Virtual Packet Broker"</strong>. The first launch of each requires accepting the AWS Marketplace subscription for that AMI. Unlike Azure, there is no CLI to accept the terms, so do it once in the console per product, then all future stacks in that account launch without prompting. vController was formerly named CLMS.</p>
-        </aside>
-
-        <p class="callout">After vController finishes initializing (about 15 minutes), open the UI, create a project, copy the project key, then return here to run the sensor deployment.</p>
-
-        <details class="terraform-note">
-          <summary>Prefer Terraform?</summary>
-          <p>vController, KVO, and vPB are all available as Terraform modules in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform" target="_blank" rel="noopener"><code>deploy/terraform</code></a>. The <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/stack" target="_blank" rel="noopener">stack module</a> composes all three; the per-component modules deploy them individually: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/clms" target="_blank" rel="noopener"><code>clms</code></a> (vController), <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener"><code>kvo</code></a>, <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/vpb" target="_blank" rel="noopener"><code>vpb</code></a>. Same Marketplace AMIs, IaC-friendly for pipelines and repeatable deployments. The CloudFormation equivalents live in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/cloudformation" target="_blank" rel="noopener"><code>deploy/cloudformation</code></a>.</p>
-          <pre><code>cd deploy/terraform/stack
-terraform init
-terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
-        </details>
-      </div>
-    </section>
-
-    <!-- 1.05 DEPLOYMENT OPTIONS: brownfield, private IPs, key pairs, naming -->
-    <section id="deploy-options" class="prereq-section">
-      <div class="container">
-        <h2>Fitting it into the customer's environment</h2>
-        <p class="lede">Every Launch button and the CLI take the same options. Leave them alone for a clean lab build, or set them to drop CloudLens into infrastructure the customer already runs.</p>
-
-        <div class="prereq-card">
-          <h3>&#127970; Deploy into an existing VPC (brownfield)</h3>
-          <p>Name a VPC and subnet and the stack creates <strong>no networking at all</strong>: no VPC, no subnets, no internet gateway, no routes. The instances land beside the workloads they monitor.</p>
-          <ul>
-            <li><code>ExistingVpcId</code> + <code>ExistingSubnetId</code> &mdash; required together</li>
-            <li><code>ExistingDataSubnetId</code> &mdash; optional, puts the vPB data plane in its own subnet</li>
-            <li><code>ExistingSecurityGroupId</code> &mdash; optional, attaches a pre-approved SG instead of creating one. <code>AdminIngressCidr</code> is then ignored.</li>
-          </ul>
-          <p class="muted">Leave <code>ExistingVpcId</code> blank and the four CIDR fields build a fresh VPC instead. That single field is the greenfield / brownfield switch.</p>
-          <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
-  --existing-vpc-id vpc-0abc123 \
-  --existing-subnet-id subnet-0def456 \
-  --existing-sg-id sg-0aaa111</code></pre>
-        </div>
-
-        <div class="prereq-card">
-          <h3>&#128274; Private subnets and no public IPs</h3>
-          <p>Many enterprises forbid Elastic IPs on workload subnets. Set <code>AssignPublicIp</code> to <code>no</code> (or pass <code>--no-public-ip</code>) and no EIPs are created. The stack outputs private IPs and you reach the UIs over VPN, Direct Connect, or VPC peering.</p>
-          <div class="callout callout-warn">
-            <strong>The subnet still needs outbound internet.</strong> A NAT gateway or VPC endpoints are required so the Marketplace AMIs can activate and the vPB first-boot bootstrap can run. With no egress the instances launch but never finish initializing, and the stack still reports success.
-          </div>
-        </div>
-
-        <div class="prereq-card">
-          <h3>&#128273; SSH key pair: use an existing one or have it created</h3>
-          <p>A brand new AWS account has no key pairs, which used to block the wizard entirely. Now you choose:</p>
-          <ul>
-            <li><strong>Create a new key pair for me</strong> (default) &mdash; the stack creates <code>&lt;StackName&gt;-key</code>, EC2 stores the private key in SSM Parameter Store, and the stack outputs the exact command to download it</li>
-            <li><strong>Use an existing key pair</strong> &mdash; type the name in <code>KeyPairName</code></li>
-          </ul>
-          <p class="muted">The CLI lists the key pairs in your region and lets you pick one or create a new one. In the console it is a text box rather than a dropdown, because CloudFormation cannot make a key pair dropdown optional: a dropdown must always resolve to an existing key, which is exactly what blocks a first deploy.</p>
-          <pre><code># Download the auto-created private key (the stack prints this command)
-aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;region&gt; \
-  --with-decryption --query Parameter.Value --output text &gt; my-key.pem &amp;&amp; chmod 400 my-key.pem</code></pre>
-        </div>
-
-
-        <div class="prereq-card">
-          <h3>&#129514; Test workloads deployed with the stack</h3>
-          <p>Tick any combination of <strong>Ubuntu 22.04</strong>, <strong>RHEL 9</strong>, and <strong>Windows Server 2022</strong> and the stack brings them up alongside CloudLens, already tagged for sensor discovery. Nothing is deployed unless you ask: all three default to no.</p>
-          <p>The important part is <strong>where</strong> they land. They go into this stack's own subnet, not a separate VPC, which is what makes a real end-to-end test possible:</p>
-          <ul>
-            <li>Sensors reach vController over the <strong>private network</strong>, the same path a customer's workloads use</li>
-            <li><strong>VPC Traffic Mirroring between the test VM and the vPB works</strong>. Mirroring requires a shared or peered VPC, so a fixture in its own VPC can never exercise the data plane</li>
-            <li>They carry your discovery tag from launch, so the sensor step finds them with no extra work</li>
-          </ul>
-          <p>Set the tag to match whatever your sensor deployment filters on (defaults to <code>cloudlens=yes</code>).</p>
-          <pre><code># same thing from the CLI
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
-  --test-vms all                 # or: ubuntu,windows / rhel / none</code></pre>
-          <p class="muted">Ubuntu and Windows images resolve from public SSM parameters so they always track the current release. RHEL has no public parameter, so its AMIs are pinned per region and refreshed when Red Hat publishes a new build.</p>
-        </div>
-
-        <div class="prereq-card">
-          <h3>&#127991; Naming and instance sizes</h3>
-          <p>Instance names default to <code>&lt;StackName&gt;-vcontroller</code>, <code>-kvo</code>, and <code>-vpb</code>. Override any of them independently with <code>VcontrollerName</code>, <code>KvoName</code>, <code>VpbName</code> (or <code>--vcontroller-name</code> and friends) to match a customer naming standard. This sets the Name tag only, so renaming on a stack update does not replace the instance.</p>
-          <table class="results-table">
-            <thead><tr><th>Component</th><th>Permitted sizes</th><th>Notes</th></tr></thead>
-            <tbody>
-              <tr><td>vController</td><td><code>t3.xlarge</code>, <code>m5.xlarge</code></td><td>m5 gives dedicated rather than burstable CPU: prefer it for production</td></tr>
-              <tr><td>KVO</td><td><code>c5.2xlarge</code></td><td>only size the AMI accepts</td></tr>
-              <tr><td>vPB</td><td><code>t3.xlarge</code></td><td>only size the AMI accepts</td></tr>
-            </tbody>
-          </table>
-          <p class="muted">These are enforced by the AWS Marketplace product, not by us. Any other size is rejected at launch with <code>UnsupportedOperation</code>. Verified with dry-run launches across all twelve supported regions.</p>
-        </div>
-      </div>
-    </section>
-
-
-    <!-- 1.06 WHAT HAPPENS DURING DEPLOYMENT -->
-    <section id="deploy-progress" class="prereq-section">
-      <div class="container">
-        <h2>What happens after you click Create</h2>
-        <p class="lede">CloudFormation builds in dependency order, so resources appear in waves rather than all at once. Timings below are from a real deploy of vController plus three test VMs in us-east-1. Watch it live on the <strong>Events</strong> tab, or the <strong>Timeline view</strong> for a Gantt chart.</p>
-
-        <ol class="deploy-timeline">
-          <li>
-            <span class="dt-time">0:00</span>
-            <div>
-              <strong>Stack accepted</strong>
-              <p>Status goes <code>CREATE_IN_PROGRESS</code>. Nothing exists yet.</p>
-            </div>
-          </li>
-          <li>
-            <span class="dt-time">0:18</span>
-            <div>
-              <strong>Network foundation</strong>
-              <p>VPC, then the internet gateway and its attachment. Skipped entirely if you supplied an existing VPC.</p>
-            </div>
-          </li>
-          <li>
-            <span class="dt-time">0:23</span>
-            <div>
-              <strong>Subnets and routing</strong>
-              <p>The mgmt, data, and tool subnets appear together, then their route table associations. Also the security groups.</p>
-            </div>
-          </li>
-          <li>
-            <span class="dt-time">0:39</span>
-            <div>
-              <strong>Elastic IP pre-check</strong>
-              <p>A short Lambda confirms the account has enough Elastic IPs for this stack. <strong>This is the gate:</strong> if it fails, the stack stops here with a message naming the shortfall and no instance is ever launched. See <a href="#faq">Common issues</a>.</p>
-            </div>
-          </li>
-          <li>
-            <span class="dt-time">0:43</span>
-            <div>
-              <strong>Instances launch</strong>
-              <p>vController, then KVO and vPB if selected, plus any test workloads. They start in parallel, so this is one wave rather than three.</p>
-            </div>
-          </li>
-          <li>
-            <span class="dt-time">0:57</span>
-            <div>
-              <strong>Elastic IPs attached</strong>
-              <p>Addresses were allocated earlier; here they are associated with the running instances.</p>
-            </div>
-          </li>
-          <li class="dt-done">
-            <span class="dt-time">1:07</span>
-            <div>
-              <strong>CREATE_COMPLETE</strong>
-              <p>Infrastructure is done. Read the <strong>Outputs</strong> tab for UI URLs, SSH commands, and the test VM addresses.</p>
-            </div>
-          </li>
-        </ol>
-
-        <div class="callout callout-warn">
-          <strong>CREATE_COMPLETE is not "ready to log in".</strong> CloudFormation finishes when the EC2 instances are running, but the CloudLens appliances are still booting. Allow roughly <strong>15 minutes</strong> before the vController UI responds, and about <strong>5 minutes</strong> before vPB accepts SSH on port 9022. A full stack with KVO and vPB takes longer to reach CREATE_COMPLETE than the single-component timing above.
-        </div>
-
-        <p class="muted">If the stack rolls back, open the Events tab and sort oldest first: the first <code>CREATE_FAILED</code> row is the real cause, everything after it is cleanup.</p>
-      </div>
-    </section>
-
-    <!-- 1.1 FULL STACK ONE-COMMAND DEPLOY -->
-    <section id="full-stack" class="full-stack-section">
-      <div class="container">
-        <h2>One command, full stack</h2>
-        <p class="lede">vController, KVO, and vPB plus sensors. End to end. From a single paste.</p>
-
-        <div class="full-stack-cmd-wrap">
-          <pre id="full-stack-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash</code></pre>
-          <button class="copy-btn" data-copy="full-stack-cmd" type="button" aria-label="Copy curl command">Copy</button>
-        </div>
-
-        <p class="full-stack-note">Prompts for region and key pair, accepts Marketplace terms, deploys vController, waits for initialization, optionally adds KVO and vPB, then chains to sensor deployment. Run from AWS CloudShell or any machine with the AWS CLI.</p>
-
-        <div class="full-stack-paths">
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#128640;</span> Bash (recommended)</h4>
-            <p>One paste, end to end. Best for: trying it the first time, or onboarding a new customer.</p>
-          </div>
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#128230;</span> Terraform Stack Module</h4>
-            <p>Single command, vController plus KVO and vPB. Best for: IaC pipelines and repeatable infra.</p>
-<pre><code>cd deploy/terraform &amp;&amp; terraform init &amp;&amp; terraform apply \
-  -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=true</code></pre>
-            <p class="hint"><a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform" target="_blank" rel="noopener">Browse the Terraform code on GitHub &rarr;</a></p>
-          </div>
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#128214;</span> Printable Runbook</h4>
-            <p>Executive-friendly PDF guide. Best for: customer CTO, procurement, training.</p>
-            <a class="btn btn-primary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/docs/CloudLens_Stack_Deployment_Runbook.pdf" target="_blank" rel="noopener">Download Runbook</a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 1.15 TEST FIXTURE: 3 disposable workload VMs for SE demos / verification -->
-    <section id="test-fixture" class="full-stack-section">
-      <div class="container">
-        <h2>Verify it end-to-end on disposable VMs</h2>
-        <p class="lede">For SE demos or first-call verification: stand up 3 throwaway workload EC2 instances (Ubuntu 22.04 + RHEL 9 + Windows Server 2022) tagged with a discovery tag, then run the stack with the matching tag flags. Proves sensors install on every supported OS in one pass.</p>
-
-        <div class="full-stack-cmd-wrap">
-          <pre><code id="test-fixture-cmd"># 1. Stand up the 3 test workload instances (default tag: cloudlens=yes)
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/deploy-test-workload-vms.sh | bash
-
-# 2. Deploy the CloudLens stack, then run sensor deployment against the tagged instances
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
-
-# 3. Cleanup when done
-aws cloudformation delete-stack --stack-name cloudlens-test-vms --region us-east-1</code></pre>
-          <button type="button" class="copy-btn" data-copy="test-fixture-cmd" aria-label="Copy command">Copy</button>
-        </div>
-
-        <p class="full-stack-note">The fixture launches three instances tagged <code>cloudlens=yes</code> with an <code>os</code> tag per platform. The sensor deployment installs on all three and they register with vController. Total round trip: about 25 to 30 minutes. Override the tag pair with <code>TESTVMS_TAG_KEY</code> / <code>TESTVMS_TAG_VALUE</code> environment variables if you want to mirror a customer's existing convention.</p>
-      </div>
-    </section>
-
-    <!-- 1.2 DOCKER PATH (Tier 3 deep-link target) -->
-    <section id="docker" class="full-stack-section">
-      <div class="container">
-        <h2>Run from Docker</h2>
-        <p class="lede">Pinned image with Ansible, the AWS SDKs, and pywinrm. Works from your laptop, a CI runner, or any container host.</p>
-
-        <div class="full-stack-cmd-wrap">
-          <pre id="docker-cmd"><code>docker run --rm -it \
-  -v $(pwd)/customer_input.yaml:/work/customer_input.yaml \
-  -v $HOME/.ssh:/root/.ssh:ro \
-  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-  -e AWS_DEFAULT_REGION \
-  ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
-          <button class="copy-btn" data-copy="docker-cmd" type="button" aria-label="Copy docker run command">Copy</button>
-        </div>
-
-        <p class="full-stack-note">AWS credentials are passed via environment variables (use <code>scripts/setup_aws_creds.sh</code> to configure a profile). Same behavior as the CloudShell quickstart, just packaged for CI/CD or repeat customer deployments.</p>
-
-        <div class="full-stack-paths">
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#128230;</span> Image registry</h4>
-            <p>Image is published to GitHub Container Registry on every push to <code>main</code>: <code>ghcr.io/keysight-tech/cloudlens-ansible-aws</code>.</p>
-            <a class="btn btn-secondary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/pkgs/container/cloudlens-ansible-aws" target="_blank" rel="noopener">View on ghcr.io</a>
-          </div>
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#128295;</span> Build locally</h4>
-            <p>Prefer to build your own image instead of pulling? The Dockerfile is in the repo root.</p>
-<pre><code>git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
-cd cloudlens-ansible-aws
-docker build -t cloudlens-ansible-aws .</code></pre>
-          </div>
-          <div class="path-card">
-            <h4><span class="path-icon" aria-hidden="true">&#129302;</span> CI/CD pattern</h4>
-            <p>Drop the same <code>docker run</code> into GitHub Actions, GitLab CI, Jenkins, or CodeBuild. Mount your <code>customer_input.yaml</code> as a build artifact.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 1.5 GET STARTED IN 5 STEPS -->
-    <section id="start-here" class="steps-section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Get started in 5 steps</h2>
-          <p class="lede">Most deployments under 50 instances complete in 5 to 10 minutes.</p>
-        </header>
-
-        <ol class="steps">
-          <li class="step-card">
-            <span class="step-num-big" aria-hidden="true">1</span>
-            <details>
-              <summary>
-                <span class="step-icon" aria-hidden="true">&#9745;</span>
-                <span class="step-title">Check prerequisites</span>
-                <span class="step-time">2 minutes</span>
-              </summary>
-              <div class="step-body">
-                <p>You need these in place before deploying:</p>
-                <ul>
-                  <li>AWS account with EC2 and CloudFormation permissions in your target region</li>
-                  <li>CloudLens vController (formerly CLMS) deployed and reachable from your target instances</li>
-                  <li>A project key from vController (Settings, Projects, API Keys)</li>
-                  <li>An EC2 key pair (for SSH targets) or SSM enabled (for Windows targets)</li>
-                </ul>
-                <p class="callout">If you do not have vController deployed yet, use the <a href="#prereq-deploys">Launch vController button above</a>.</p>
-              </div>
-            </details>
-          </li>
-
-          <li class="step-card">
-            <span class="step-num-big" aria-hidden="true">2</span>
-            <details>
-              <summary>
-                <span class="step-icon" aria-hidden="true">&#127991;</span>
-                <span class="step-title">Tag your EC2 instances</span>
-                <span class="step-time">5 minutes</span>
-              </summary>
-              <div class="step-body">
-                <p>The deployment discovers instances by tag. Apply these to every target instance:</p>
-                <table class="step-table">
-                  <thead><tr><th>Tag</th><th>Value</th></tr></thead>
-                  <tbody>
-                    <tr><td><code>cloudlens</code></td><td><code>yes</code></td></tr>
-                    <tr><td><code>os</code></td><td><code>ubuntu</code> or <code>rhel</code> or <code>windows</code></td></tr>
-                    <tr><td><code>env</code></td><td><code>prod</code> (or <code>dev</code>, <code>qa</code>)</td></tr>
-                  </tbody>
-                </table>
-                <p>Tag a single instance:</p>
-<pre><code>aws ec2 create-tags --resources i-0123456789abcdef0 \
-  --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod</code></pre>
-              </div>
-            </details>
-          </li>
-
-          <li class="step-card">
-            <span class="step-num-big" aria-hidden="true">3</span>
-            <details>
-              <summary>
-                <span class="step-icon" aria-hidden="true">&#9881;</span>
-                <span class="step-title">Build your config file</span>
-                <span class="step-time">1 minute</span>
-              </summary>
-              <div class="step-body">
-                <p>Use the wizard below to fill the fields and download <code>customer_input.yaml</code>.</p>
-                <p><a class="btn btn-primary inline-btn" href="#wizard">Jump to wizard &darr;</a></p>
-                <p class="callout">Tip: the wizard shows the YAML rendering live as you type. Each field has inline help so you know exactly what to enter.</p>
-              </div>
-            </details>
-          </li>
-
-          <li class="step-card">
-            <span class="step-num-big" aria-hidden="true">4</span>
-            <details>
-              <summary>
-                <span class="step-icon" aria-hidden="true">&#128640;</span>
-                <span class="step-title">Deploy</span>
-                <span class="step-time">5 to 60 minutes</span>
-              </summary>
-              <div class="step-body">
-                <p>Place your downloaded <code>customer_input.yaml</code> in your working directory, then pick one of the three deploy paths.</p>
-                <div class="step-paths">
-                  <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#127760;</span> Tier 1: CloudFormation</h4>
-                    <p>One click. No local tools. Best for: trying it for the first time.</p>
-                    <a class="btn btn-primary inline-btn" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fkeysight-cloudlens-templates.s3.us-east-1.amazonaws.com%2Faws%2Fstack.yaml&amp;stackName=cloudlens-stack" target="_blank" rel="noopener">Launch Stack</a>
-                  </div>
-                  <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#9729;</span> Tier 2: CloudShell</h4>
-                    <p>Already authenticated. One curl command. Best for: most customers.</p>
-<pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/quickstart.sh | bash</code></pre>
-                  </div>
-                  <div class="path-card">
-                    <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker</h4>
-                    <p>Reproducible. Pinned versions. Best for: CI or repeat deployments.</p>
-<pre><code>docker run --rm -it -v $(pwd)/customer_input.yaml:/work/customer_input.yaml ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
-                  </div>
-                </div>
-              </div>
-            </details>
-          </li>
-
-          <li class="step-card">
-            <span class="step-num-big" aria-hidden="true">5</span>
-            <details>
-              <summary>
-                <span class="step-icon" aria-hidden="true">&#9989;</span>
-                <span class="step-title">Verify in vController</span>
-                <span class="step-time">2 minutes</span>
-              </summary>
-              <div class="step-body">
-                <p>Open your vController web UI and confirm:</p>
-                <ul>
-                  <li>Each tagged instance appears as a registered sensor (under Sensors)</li>
-                  <li>Custom tags from your config match what you see in vController</li>
-                  <li>Sensors show as connected and reporting</li>
-                </ul>
-                <p class="callout">Stuck? See the troubleshooting section below or the full <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/TROUBLESHOOTING.md" target="_blank" rel="noopener">troubleshooting docs</a>.</p>
-              </div>
-            </details>
-          </li>
-        </ol>
-      </div>
-    </section>
-
-    <!-- 2. WHY THIS EXISTS -->
-    <section id="why" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Why this exists</h2>
-          <p>Customers told us deploying CloudLens at scale on AWS felt manual. We made it boring.</p>
-        </header>
-        <div class="card-grid three">
-          <article class="card lift">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg>
-            </div>
-            <h3>Automated end to end</h3>
-            <p>Discovery, bootstrap, install, register. One command, one playbook run, zero per-instance steps.</p>
-          </article>
-          <article class="card lift">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-            </div>
-            <h3>Works for any instance</h3>
-            <p>Ubuntu, RHEL, Rocky, Alma, Windows Server. Public IP, jumpbox, SSM Session Manager, or CloudShell.</p>
-          </article>
-          <article class="card lift">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            </div>
-            <h3>Scales to 5,000+ instances</h3>
-            <p>Auto tunes Ansible forks based on inventory size. Sharded execution past 2,000 instances, AWX beyond 10,000.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- 3. INTERACTIVE WIZARD -->
-    <section id="wizard" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>Build your customer_input.yaml</h2>
-          <p>Fill in four fields. Download the file. Run quickstart. That is the whole flow.</p>
-        </header>
-        <div class="wizard-grid">
-          <form class="wizard" id="wizard-form" autocomplete="off">
-            <div class="step" data-step="1">
-              <div class="step-head"><span class="step-num">1</span><h3>CloudLens vController</h3></div>
-              <label for="clms-ip">vController IP or FQDN</label>
-              <input id="clms-ip" name="clms_ip" type="text" placeholder="10.0.1.10 or vcontroller.example.com" value="10.0.1.10" required />
-              <details class="field-help">
-                <summary>Where do I find this?</summary>
-                <p>The IP or hostname of your vController deployment. You can find it in the AWS console under the vController EC2 instance details, or in the Outputs of your CloudFormation stack.</p>
-              </details>
-            </div>
-            <div class="step" data-step="2">
-              <div class="step-head"><span class="step-num">2</span><h3>Project key</h3></div>
-              <label for="project-key">vController project API key</label>
-              <div class="input-row">
-                <input id="project-key" name="project_key" type="password" placeholder="paste from vController UI" value="" required />
-                <button type="button" class="icon-btn small" id="toggle-key" aria-label="Show or hide key" title="Show or hide key">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
-                </button>
-              </div>
-              <details class="field-help">
-                <summary>Where do I find this?</summary>
-                <p>In the vController web UI: Settings, Projects, API Keys, copy the key for the project you want sensors to register under.</p>
-              </details>
-            </div>
-            <div class="step" data-step="3">
-              <div class="step-head"><span class="step-num">3</span><h3>Custom tags</h3></div>
-              <label for="tags">Tags applied to sensors</label>
-              <input id="tags" name="tags" type="text" placeholder="Env=AWS Region=us-east-1 Customer=Acme" value="Env=AWS Region=us-east-1 Customer=Acme" />
-              <details class="field-help">
-                <summary>What does this do?</summary>
-                <p>These tags are attached to each registered sensor and visible in vController. Use them to filter and group sensors (for example: Customer=Acme, Region=us-east-1). Space-separated key=value pairs.</p>
-              </details>
-            </div>
-            <div class="step" data-step="4">
-              <div class="step-head"><span class="step-num">4</span><h3>Regions</h3></div>
-              <label for="rgs">AWS regions to scan (comma-separated)</label>
-              <input id="rgs" name="regions" type="text" placeholder="us-east-1, us-west-2" value="us-east-1" />
-              <details class="field-help">
-                <summary>What goes here?</summary>
-                <p>The AWS regions the deployment scans for tagged EC2 instances. List one or more, comma-separated. Defaults to us-east-1.</p>
-              </details>
-              <div class="connection-mode">
-                <label for="mode">Windows connection mode</label>
-                <select id="mode" name="mode">
-                  <option value="ssm">ssm (SSM Session Manager, no inbound ports)</option>
-                  <option value="winrm">winrm (ports 5985/5986 must be open)</option>
-                </select>
-              </div>
-            </div>
-            <div class="wizard-actions">
-              <button type="button" class="btn btn-primary" id="download-yaml">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download customer_input.yaml
-              </button>
-              <button type="button" class="btn btn-secondary" id="copy-curl">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                Copy quickstart command
-              </button>
-            </div>
-            <p class="hint" id="copy-feedback" aria-live="polite"></p>
-            <aside class="next-steps" id="wizard-next-steps">
-              <h4>Once you have customer_input.yaml</h4>
-              <ol>
-                <li>Save the file to your working directory</li>
-                <li>Choose a deploy path above (CloudFormation, CloudShell, or Docker)</li>
-                <li>The deploy command will pick up your customer_input.yaml automatically</li>
-              </ol>
-            </aside>
-          </form>
-          <aside class="preview" aria-label="Live YAML preview">
-            <div class="preview-head">
-              <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
-              <em>customer_input.yaml</em>
-            </div>
-            <pre><code id="yaml-preview" class="lang-yaml"></code></pre>
-          </aside>
-        </div>
-      </div>
-    </section>
-
-    <!-- 4. ARCHITECTURE -->
-    <section id="architecture" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Live architecture flow</h2>
-          <p>A single Ansible control point authenticates to AWS, discovers EC2 instances by tag, and routes each host to the right OS lane. The CloudLens sensor on each EC2 instance mirrors traffic (mirror / VXLAN) to the vPB, which forwards to your monitoring tool. Every sensor self registers with vController on first start.</p>
-        </header>
-        <div class="diagram-frame">
-          <object data="assets/architecture-diagram.svg" type="image/svg+xml" aria-label="CloudLens AWS architecture diagram"></object>
-        </div>
-        <p class="caption">Flow: CloudLens sensor on EC2 to mirror / VXLAN to vPB to monitoring tool. The dotted line shows sensor registration traffic back to vController.</p>
-      </div>
-    </section>
-
-    <!-- 5. SCALING VISUALIZER -->
-    <section id="scaling" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>How does it scale?</h2>
-          <p>Drag the slider to see the estimated deployment time for your fleet size.</p>
-        </header>
-        <div class="scaling">
-          <div class="scaling-controls">
-            <label for="vm-count">Number of instances</label>
-            <input id="vm-count" type="range" min="1" max="15000" step="1" value="100" />
-            <div class="scale-readout">
-              <div class="readout">
-                <span class="readout-label">Instances</span>
-                <strong id="vm-readout">100</strong>
-              </div>
-              <div class="readout">
-                <span class="readout-label">Forks</span>
-                <strong id="forks-readout">50</strong>
-              </div>
-              <div class="readout">
-                <span class="readout-label">Sharded</span>
-                <strong id="sharded-readout">No</strong>
-              </div>
-              <div class="readout big">
-                <span class="readout-label">Estimated time</span>
-                <strong id="time-readout">15 to 30 min</strong>
-              </div>
-            </div>
-          </div>
-          <div class="scale-bars" role="list">
-            <div class="bar" role="listitem" data-band="1-50"><div class="fill"></div><span>1 to 50</span><em>5 to 10 min</em></div>
-            <div class="bar" role="listitem" data-band="50-500"><div class="fill"></div><span>50 to 500</span><em>15 to 30 min</em></div>
-            <div class="bar" role="listitem" data-band="500-2000"><div class="fill"></div><span>500 to 2,000</span><em>30 to 60 min</em></div>
-            <div class="bar" role="listitem" data-band="2000-10000"><div class="fill"></div><span>2,000 to 10,000</span><em>30 to 60 min (sharded)</em></div>
-            <div class="bar" role="listitem" data-band="10000+"><div class="fill"></div><span>10,000+</span><em>1 to 2 hr (AWX)</em></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 6. VERIFIED RESULTS -->
-    <section id="verified" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Verified against real AWS</h2>
-          <p>A full 3-component stack was launched via CloudFormation in us-east-1 and reached CREATE_COMPLETE, July 2026.</p>
-        </header>
-        <div class="metrics-grid">
-          <div class="metric">
-            <strong>3 / 3</strong>
-            <span>Stack components live</span>
-            <em>vController, KVO, vPB</em>
-          </div>
-          <div class="metric accent">
-            <strong>CREATE_<br>COMPLETE</strong>
-            <span>CloudFormation status</span>
-            <em>Region us-east-1</em>
-          </div>
-          <div class="metric">
-            <strong>3 AMIs</strong>
-            <span>Correct Marketplace AMIs</span>
-            <em>t3.xlarge / c5.2xlarge / t3.xlarge</em>
-          </div>
-          <div class="metric">
-            <strong>July 2026</strong>
-            <span>Last verified</span>
-            <em>Live CloudFormation launch</em>
-          </div>
-        </div>
-
-        <div class="results-table" role="region" aria-label="Verified scenarios">
-          <table>
-            <thead><tr><th>Component</th><th>Result</th><th>Instance type</th></tr></thead>
-            <tbody>
-              <tr><td>CloudLens vController (control plane)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>t3.xlarge</td></tr>
-              <tr><td>Vision Orchestrator (KVO)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>c5.2xlarge</td></tr>
-              <tr><td>Virtual Packet Broker (vPB)</td><td><span class="pill ok">CREATE_COMPLETE</span></td><td>t3.xlarge</td></tr>
-              <tr><td>Full stack (stack.yaml)</td><td><span class="pill ok">3/3 live in us-east-1</span></td><td>Shared VPC</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- EXTRA: PRODUCT CONFIGURATION (one-time) -->
-    <section id="configuration" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>vController configuration (one-time)</h2>
-          <p class="lede">Once CloudFormation or Terraform finishes, configure the Keysight products via their web UIs. One-time setup, about 15 minutes end to end. vController was formerly named CLMS.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <span class="num-badge">1</span>
-            <h3>Accept the KVO EULA</h3>
-            <p>KVO blocks all access, including the API, until the EULA is accepted in the browser. Open <code>https://&lt;kvo-ip&gt;</code>, read the Keysight Software EULA, click <strong>Agree</strong>, then log in with <code>admin / admin</code>.</p>
-            <div class="callout-warning">This must be done in the browser. The CLI cannot accept the EULA on your behalf.</div>
-          </article>
-
-          <article class="card">
-            <span class="num-badge">2</span>
-            <h3>Activate licenses on KVO</h3>
-            <p>Navigate to <strong>Settings, Product Licensing, Activate</strong>. Three licenses must be enabled: <code>vPB Advanced</code>, <code>CloudLens Enterprise</code>, and <code>KVO perpetual</code>. If the license server is unreachable, copy the offline activation key from your Keysight portal.</p>
-          </article>
-
-          <article class="card">
-            <span class="num-badge">3</span>
-            <h3>Adopt vController into KVO</h3>
-            <p>From KVO: <strong>Inventory, CloudLens Manager, Discover</strong>. Enter the vController private IP (the <code>10.0.1.x</code> address from the stack Outputs) and the admin credentials (<code>admin / Cl0udLens@dm!n</code>). Status must turn <strong>CONNECTED</strong> before proceeding.</p>
-          </article>
-
-          <article class="card">
-            <span class="num-badge">4</span>
-            <h3>Onboard the vPB to KVO</h3>
-            <p>SSH to the vPB on port <code>9022</code> (not 22), then run <code>sudo vpb</code> and:</p>
-            <pre data-lang="vpb-cli"><code>configure terminal
-kvo
-ip &lt;kvo-private-ip&gt;
-port 443
-enable
-monitored
-end
-write memory</code></pre>
-            <p>Back in KVO, the vPB shows up under <strong>Inventory, Devices</strong>. Adopt it with <strong>Control the adopted device</strong> enabled (default).</p>
-          </article>
-
-          <article class="card">
-            <span class="num-badge">5</span>
-            <h3>Create the AWS Cloud Config</h3>
-            <p>On KVO: <strong>Cloud Fabric, Cloud Configs, New, AWS</strong>. Paste the IAM access key and secret (from the stack Outputs), click <strong>Connect</strong>, pick the target region and VPC, set the deployment instance type to <code>c5.2xlarge</code>, choose the subnets, and commit. KVO auto-deploys collector Service VMs.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- EXTRA: PREPARING EXISTING CUSTOMER VMs -->
-    <section id="prep-vms" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Preparing existing customer VMs</h2>
-          <p class="lede">Skip this if you used the disposable test fixture, those instances are already configured. Deploying sensors to existing customer EC2 instances? Prep them with the included script in scan-then-fix mode.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <h3>IAM role</h3>
-            <p class="muted-note">Auto-fix: Yes</p>
-            <p>Each instance needs <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. The prep script creates a <code>CloudLens-SSM-Role</code> and attaches it for you. If the instance already has an IAM role, the script adds the SSM policy to it instead of replacing.</p>
-          </article>
-
-          <article class="card">
-            <h3>SSM Agent</h3>
-            <p class="muted-note">Auto-fix: Mostly</p>
-            <p>Pre-installed on Amazon Linux, Ubuntu 16.04+, Windows Server 2016+. Must be installed manually on RHEL/CentOS, commands below.</p>
-          </article>
-
-          <article class="card">
-            <h3>Tags</h3>
-            <p class="muted-note">Auto-fix: Yes</p>
-            <p>The script auto-detects each instance OS and applies <code>cloudlens=yes</code> plus the correct <code>os</code> tag (<code>ubuntu</code>, <code>rhel</code>, or <code>windows</code>).</p>
-          </article>
-        </div>
-
-        <h3 class="sub-head">Step 1 - Scan your environment first</h3>
-        <p>Run scan-only mode to see what is missing before changing anything:</p>
-        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --scan-only</code></pre>
-
-        <h3 class="sub-head">Step 2 - Auto-fix every issue</h3>
-        <p>Once you have reviewed the scan, run with <code>--auto-fix</code> to remediate every gap in one shot:</p>
-        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --auto-fix</code></pre>
-        <p>Omit <code>--auto-fix</code> for interactive mode, the script prompts before each change.</p>
-
-        <h3 class="sub-head">Step 3 - Manual SSM Agent install (when Instance Connect is not available)</h3>
-        <div class="info-grid">
-          <article class="card">
-            <h3>Ubuntu / Debian</h3>
-            <pre data-lang="bash"><code>sudo snap install amazon-ssm-agent --classic
-sudo systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
-sudo systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service</code></pre>
-          </article>
-
-          <article class="card">
-            <h3>RHEL / CentOS</h3>
-            <pre data-lang="bash"><code>sudo dnf install -y \
-  https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-sudo systemctl enable amazon-ssm-agent
-sudo systemctl start amazon-ssm-agent</code></pre>
-          </article>
-
-          <article class="card">
-            <h3>Windows (PowerShell admin)</h3>
-            <pre data-lang="powershell"><code># SSM Agent is pre-installed on Windows Server 2016+
-# If it is not responding, restart it:
-Restart-Service AmazonSSMAgent</code></pre>
-          </article>
-        </div>
-
-        <div class="callout-warning">After installing SSM Agent, wait 30 to 60 seconds for it to register with AWS Systems Manager. Verify with: <code>aws ssm describe-instance-information --region us-east-1</code></div>
-      </div>
-    </section>
-
-    <!-- EXTRA: SENSOR DEPLOYMENT -->
-    <section id="sensors" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>Sensor deployment via Ansible</h2>
-          <p class="lede">Push CloudLens sensors to every tagged EC2 instance at fleet scale over SSH, SSM, or WinRM, with outbound HTTPS from each instance back to vController.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <h3>Tag targets first</h3>
-            <p>Apply the marker tag <code>cloudlens = yes</code> and an <code>os</code> tag to every target instance. Without these the deployment skips the host.</p>
-            <table class="step-table">
-              <thead><tr><th>OS</th><th>Tag <code>os</code></th></tr></thead>
-              <tbody>
-                <tr><td>Ubuntu / Debian</td><td><code>ubuntu</code></td></tr>
-                <tr><td>RHEL / CentOS / Amazon Linux</td><td><code>rhel</code></td></tr>
-                <tr><td>Windows Server 2016+</td><td><code>windows</code></td></tr>
-              </tbody>
-            </table>
-          </article>
-
-          <article class="card">
-            <h3>IAM role on every target</h3>
-            <p>Each instance needs the managed policy <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile for the SSM connection path. The included prep step can attach this for you and verify the SSM Agent is running.</p>
-          </article>
-
-          <article class="card">
-            <h3>SSM Agent reachability</h3>
-            <p>Each instance must reach <code>ssm.&lt;region&gt;.amazonaws.com</code>, <code>ec2messages.&lt;region&gt;.amazonaws.com</code>, and <code>ssmmessages.&lt;region&gt;.amazonaws.com</code> on 443 outbound, or have a VPC endpoint to those services.</p>
-          </article>
-        </div>
-
-        <h3 class="sub-head">Run the deployment</h3>
-        <pre data-lang="bash"><code># Deploy to ALL tagged targets in the region
-bash quickstart.sh
-
-# Or run the playbook directly with your customer_input.yaml
-ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
-        <p>The playbook invokes the CloudLens sensor installer on every matching instance in parallel, Docker or Podman on Linux, MSI on Windows. Sensors register with vController on first start.</p>
-      </div>
-    </section>
-
-    <!-- EXTRA: VERIFY / MIRRORING -->
-    <section id="mirroring" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Verify in vController and mirroring</h2>
-          <p class="lede">KVO natively manages AWS VPC Traffic Mirroring. It auto-deploys collector Service VMs, creates mirror filters, targets, and sessions, and auto-scales by tapped-interface count.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <h3>1. IAM ready out of the box</h3>
-            <p>CloudFormation and Terraform provision an IAM user with the CloudLens mirroring policy, scoped with the <code>cloudlens:monitored:vpcid</code> condition tag. Includes EC2, Traffic Mirror, Auto Scaling, and Launch Template permissions.</p>
-          </article>
-
-          <article class="card">
-            <h3>2. Auto-mirror on new instances</h3>
-            <p>Optional Lambda plus EventBridge rules fire on <code>RunInstances</code>, <code>CreateTags</code>, and instance state changes. New EC2 instances in watched VPCs are tagged for mirroring, and KVO starts mirroring instantly, no polling.</p>
-          </article>
-
-          <article class="card">
-            <h3>3. Confirm sensor registration</h3>
-            <p>In vController, open <strong>Sensors</strong>. Each tagged instance should appear as connected and reporting, with your custom tags visible. This is the fastest end-to-end confirmation the pipeline is healthy.</p>
-          </article>
-
-          <article class="card">
-            <h3>4. Monitoring policies</h3>
-            <p>In KVO: <strong>Cloud Fabric, Monitoring Policies, New</strong>. Pick the source (tag-based), the tool (vPB plus downstream analytics), and KVO deploys collector Service VMs, configures the mirror sessions, and routes packets.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- EXTRA: TEARDOWN -->
-    <section id="teardown" class="section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>Teardown</h2>
-          <p class="lede">Clean removal of sensors and infrastructure. Always run in this order, sensors first, infrastructure second.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <h3>Step 1 - Remove sensors</h3>
-            <pre data-lang="bash"><code># Remove sensors from all tagged targets
-bash cleanup.yaml
-
-# Or via the playbook
-ansible-playbook cleanup.yaml -e @customer_input.yaml</code></pre>
-          </article>
-
-          <article class="card">
-            <h3>Step 2 - Destroy infrastructure</h3>
-            <p>Terraform path:</p>
-            <pre data-lang="bash"><code>cd deploy/terraform
-terraform destroy</code></pre>
-            <p>CloudFormation path:</p>
-            <pre data-lang="bash"><code>aws cloudformation delete-stack \
-  --stack-name cloudlens-stack \
-  --region us-east-1
-
-aws cloudformation wait stack-delete-complete \
-  --stack-name cloudlens-stack \
-  --region us-east-1</code></pre>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- EXTRA: APPENDIX -->
-    <section id="appendix" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Appendix - reference</h2>
-          <p class="lede">Default credentials, network topology, and Marketplace AMIs. Keep this open in a tab during deployment.</p>
-        </header>
-
-        <div class="info-grid">
-          <article class="card">
-            <h3>Default credentials</h3>
-            <table class="step-table">
-              <thead><tr><th>Product</th><th>Username</th><th>Password</th></tr></thead>
-              <tbody>
-                <tr><td>KVO</td><td><code>admin</code></td><td><code>admin</code></td></tr>
-                <tr><td>vController</td><td><code>admin</code></td><td><code>Cl0udLens@dm!n</code></td></tr>
-                <tr><td>vPB SSH (port 9022)</td><td><code>ec2-user</code></td><td>key pair</td></tr>
-              </tbody>
-            </table>
-            <p class="muted-note">Change these on first login. Default passwords are not for production.</p>
-          </article>
-
-          <article class="card">
-            <h3>Network topology</h3>
-            <table class="step-table">
-              <thead><tr><th>Subnet</th><th>CIDR</th><th>Purpose</th></tr></thead>
-              <tbody>
-                <tr><td>Management</td><td><code>10.0.1.0/24</code></td><td>SSH, HTTPS, REST API</td></tr>
-                <tr><td>Data</td><td><code>10.0.2.0/24</code></td><td>Sensor traffic (mirror / VXLAN)</td></tr>
-                <tr><td>Tool</td><td><code>10.0.3.0/24</code></td><td>Processed traffic to tools</td></tr>
-              </tbody>
-            </table>
-            <p class="muted-note">CIDRs are configurable in the CloudFormation parameters.</p>
-          </article>
-
-          <article class="card">
-            <h3>Marketplace AMIs and instance types</h3>
-            <table class="step-table">
-              <thead><tr><th>Product</th><th>Instance</th></tr></thead>
-              <tbody>
-                <tr><td>vController (CLMS_6.12.x)</td><td><code>t3.xlarge</code></td></tr>
-                <tr><td>KVO (2.13.x)</td><td><code>c5.2xlarge</code> only</td></tr>
-                <tr><td>vPB-KVO (3.13.x)</td><td><code>t3.xlarge</code></td></tr>
-              </tbody>
-            </table>
-            <p class="muted-note">KVO has an AWS Marketplace instance-type restriction and cannot be changed.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- 6.5 FAQ / COMMON ISSUES -->
-    <section id="faq" class="faq-section section alt">
-      <div class="container">
-        <header class="section-head">
-          <h2>Common issues</h2>
-          <p>If something does not work, check these first.</p>
-        </header>
-
-        <div class="faq-grid">
-          <details class="faq-item">
-            <summary>Stack rolled back: "The maximum number of addresses has been reached"</summary>
-            <div class="faq-body">
-              <p>You are out of Elastic IPs. <strong>The default quota is 5 per region</strong>, and the full stack needs 3 (one each for vController, KVO, and vPB). If the account already holds EIPs, the deploy runs for several minutes, allocates what it can, then fails on the last one and rolls the whole stack back.</p>
-              <p>The usual cause is <strong>orphaned EIPs</strong>: terminating a stack's instances from the EC2 console leaves the CloudFormation stack, and its Elastic IPs, in place. They bill hourly while attached to nothing, and they block the next deploy.</p>
-              <p>List anything unattached:</p>
-              <pre><code>aws ec2 describe-addresses --region us-east-1 \
-  --query 'Addresses[?AssociationId==`null`].[PublicIp,AllocationId,Tags[?Key==`Name`]|[0].Value]' \
-  --output table</code></pre>
-              <p>If they belong to a stack whose instances are already gone, delete the stack so it does not simply recreate them:</p>
-              <pre><code>aws cloudformation delete-stack --stack-name &lt;name&gt; --region us-east-1</code></pre>
-              <p>Otherwise release them directly:</p>
-              <pre><code>aws ec2 describe-addresses --region us-east-1 \
-  --query 'Addresses[?AssociationId==`null`].AllocationId' --output text \
-  | tr '\t' '\n' | xargs -I{} aws ec2 release-address --region us-east-1 --allocation-id {}</code></pre>
-              <p>Alternatives: <a href="https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-0263D0A3" target="_blank" rel="noopener">request a quota increase</a>, or deploy with no public IPs at all using <code>--no-public-ip</code> (see <a href="#deploy-options">Deployment options</a>) and reach the stack over VPN, Direct Connect, or peering.</p>
-              <p class="muted"><code>deploy-stack.sh</code> now checks this before deploying and tells you which addresses to free, so you get the message in seconds instead of after a rollback.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>I don't have vController (formerly CLMS) yet. Where do I start?</summary>
-            <div class="faq-body">
-              <p>Use the <a href="#prereq-deploys">Launch vController button</a> at the top of this page, or launch the full stack with the <a href="#prereq-deploys">Launch CloudLens Stack button above</a>. vController comes from AWS Marketplace, deploys in about 15 minutes, and is ready before you start tagging your instances. While you are there, also deploy <strong>KVO</strong> if you want centralized fleet orchestration across multiple vPB instances.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>vPB just deployed. Why can't I SSH yet?</summary>
-            <div class="faq-body">
-              <p><strong>The vPB image uses port 9022 for SSH, NOT the default port 22.</strong> Keysight CloudLens OS (KCOS) binds sshd only to <code>9022</code> on the public interface. Connections to <code>:22</code> time out forever even after the instance is fully booted.</p>
-              <p><strong>What to do:</strong> wait 10 to 15 minutes after deploy succeeds for KCOS to initialize, then:</p>
-              <pre data-lang="bash"><code>ssh -p 9022 admin@&lt;vpb-public-ip&gt;   # OS shell
-sudo vpb                                # vPB CLI</code></pre>
-              <p><strong>Security group rule:</strong> make sure the security group on the vPB management ENI allows inbound TCP on port 9022. The stack template opens this automatically; if you deployed via a custom path, add the rule manually.</p>
-              <p><strong>Same vController note:</strong> the web UI on port 443 is usually ready within 60 seconds, but full system initialization (registry and project creation) takes around 15 minutes.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>Inventory finds 0 instances</summary>
-            <div class="faq-body">
-              <p><strong>Cause:</strong> tags missing or misspelled.</p>
-              <p><strong>Fix:</strong> verify with <code>aws ec2 describe-tags --filters "Name=resource-id,Values=i-0123..."</code>. The cloudlens, os, and env tags must all be present.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>SSH Permission denied</summary>
-            <div class="faq-body">
-              <p><strong>Cause:</strong> your key pair is not on the target instance, or the wrong SSH user.</p>
-              <p><strong>Fix:</strong> use <code>ubuntu</code> for Ubuntu and <code>ec2-user</code> for RHEL/Amazon Linux, and confirm <code>ssh_key_path</code> in customer_input.yaml points at the right .pem. For no-key targets, use the SSM connection path instead.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>WinRM or SSM timeout on Windows instances</summary>
-            <div class="faq-body">
-              <p><strong>Cause:</strong> for the SSM path, the SSM Agent is not registered or the instance lacks the SSM IAM role; for the WinRM path, ports 5985/5986 are closed.</p>
-              <p><strong>Fix:</strong> prefer <code>windows_connection: "ssm"</code>, attach <code>AmazonSSMManagedInstanceCore</code>, and confirm the instance appears in <code>aws ssm describe-instance-information</code>.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>Sensor does not appear in vController</summary>
-            <div class="faq-body">
-              <p><strong>Cause:</strong> wrong project key, or sensor cannot reach vController on the network.</p>
-              <p><strong>Fix:</strong> double-check the project key from the vController UI. Verify the instance can reach vController on port 443.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>How long should this take?</summary>
-            <div class="faq-body">
-              <p><strong>1 to 50 instances:</strong> 5 to 10 minutes.</p>
-              <p><strong>50 to 500 instances:</strong> 15 to 30 minutes.</p>
-              <p><strong>500 to 2000 instances:</strong> 30 to 60 minutes.</p>
-              <p><strong>Thousands:</strong> sharded automatically, 30 to 60 minutes for up to 10K.</p>
-            </div>
-          </details>
-
-          <details class="faq-item">
-            <summary>What if I need help?</summary>
-            <div class="faq-body">
-              <p>Open an issue on <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues" target="_blank" rel="noopener">GitHub</a>, or contact your Keysight account team for direct engineering support.</p>
-            </div>
-          </details>
-        </div>
-      </div>
-    </section>
-
-    <!-- 7. QUICK DOCS -->
-    <section id="docs" class="section">
-      <div class="container">
-        <header class="section-head">
-          <h2>Docs and support</h2>
-          <p>Everything you need to deploy with confidence.</p>
-        </header>
-        <div class="card-grid four">
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/OPERATIONS.md" target="_blank" rel="noopener">
-            <div class="card-icon book">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-            </div>
-            <h3>Operations guide <span class="new-tag">NEW</span></h3>
-            <p>Every port, password, SSH gotcha, KVO adoption step, and security group rule. Read this before filing a support ticket.</p>
-          </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws#readme" target="_blank" rel="noopener">
-            <div class="card-icon book">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            </div>
-            <h3>Full README</h3>
-            <p>Scenarios, architecture, scaling, and troubleshooting on GitHub.</p>
-          </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/docs/CloudLens_Ansible_AWS_Customer_Runbook.pdf" target="_blank" rel="noopener">
-            <div class="card-icon pdf">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            </div>
-            <h3>PDF runbook</h3>
-            <p>Printable customer-ready guide with screenshots and checklists.</p>
-          </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/CUSTOMER_EMAIL.md" target="_blank" rel="noopener">
-            <div class="card-icon mail">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-            </div>
-            <h3>Customer email template</h3>
-            <p>Copy-paste handoff message for your account team.</p>
-          </a>
-          <a class="card link lift" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/issues" target="_blank" rel="noopener">
-            <div class="card-icon issues">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            </div>
-            <h3>GitHub Issues</h3>
-            <p>Bug reports and feature requests, handled by Keysight engineering.</p>
-          </a>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <div class="container footer-grid">
-      <div class="foot-brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1 0-8 5 5 0 0 1 9.5-1A4 4 0 0 1 17 18H7z"/><circle cx="12" cy="14" r="1.6" fill="#fff"/></svg>
-        </span>
-        <div>
-          <strong>Keysight Technologies</strong>
-          <p>CloudLens network visibility for any cloud, any workload.</p>
-        </div>
-      </div>
-      <div class="foot-links">
-        <h4>Project</h4>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws" target="_blank" rel="noopener">GitHub repository</a>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/releases" target="_blank" rel="noopener">Releases</a>
-      </div>
-      <div class="foot-links">
-        <h4>Related</h4>
-        <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/cloudformation" target="_blank" rel="noopener">CloudFormation templates</a>
-        <a href="https://www.keysight.com" target="_blank" rel="noopener">Keysight.com</a>
-      </div>
-      <div class="foot-meta">
-        <span>Version v1.0.0 (July 2026)</span>
-        <span>Verified on AWS us-east-1</span>
-        <span>&copy; 2026 Keysight Technologies</span>
-      </div>
-    </div>
-  </footer>
-
-  <script src="script.js" defer></script>
+  </div>
+</section>
+
+<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
+
+<script>window.__FLOWS__={"order":["stack","sensors","kvo","mirror"],"flows":{"stack":{"id":"stack","name":"Launch full stack","script":"deploy-stack.sh","subtitle":"VPC + vController + KVO + vPB, one CloudFormation deploy","inputs":[{"key":"stack","label":"Stack name","default":"cloudlens-live","placeholder":"cloudlens-live"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"},{"key":"kvo","label":"Deploy KVO","default":"yes","placeholder":"yes / no"},{"key":"vpb","label":"Deploy vPB","default":"yes","placeholder":"yes / no"}],"nodes":{"vpc":{"x":50,"y":20,"ic":"vpc","lab":"VPC","sub":"network"},"clms":{"x":22,"y":66,"ic":"clms","lab":"vController","sub":"CLMS"},"kvo":{"x":50,"y":80,"ic":"kvo","lab":"KVO","sub":"orchestrator"},"vpb":{"x":78,"y":66,"ic":"vpb","lab":"vPB","sub":"packet broker"}},"wires":[["vpc","clms"],["vpc","kvo"],["vpc","vpb"]]},"sensors":{"id":"sensors","name":"CLMS + sensors","script":"ansible-playbook","subtitle":"Register sensors straight into CloudLens Manager - no KVO","inputs":[{"key":"clms","label":"vController IP","default":"","placeholder":"20.84.115.190"},{"key":"key","label":"Project API key","default":"","placeholder":"af9aa122\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"}],"nodes":{"clms":{"x":50,"y":18,"ic":"clms","lab":"vController","sub":"CLMS"},"u":{"x":20,"y":72,"ic":"vm","lab":"Ubuntu","sub":"docker"},"r":{"x":50,"y":80,"ic":"vm","lab":"RHEL","sub":"podman"},"w":{"x":80,"y":72,"ic":"vm","lab":"Windows","sub":"service"}},"wires":[["u","clms"],["r","clms"],["w","clms"]]},"kvo":{"id":"kvo","name":"KVO + vPB + sensors","script":"kvo_adopt_clms.py / vpb_kvo_adopt.py","subtitle":"KVO as the single pane: adopt the manager and the packet broker","inputs":[{"key":"clms","label":"CLMS IP","default":"","placeholder":"10.99.1.25"},{"key":"kvo","label":"KVO IP","default":"","placeholder":"10.99.1.26"},{"key":"vpb","label":"vPB IP","default":"","placeholder":"10.99.1.30"},{"key":"cloud","label":"Cloud config","default":"prod-cloud","placeholder":"prod-cloud"}],"nodes":{"kvo":{"x":50,"y":16,"ic":"kvo","lab":"KVO","sub":"single pane"},"clms":{"x":20,"y":50,"ic":"clms","lab":"CLMS","sub":"adopted"},"vpb":{"x":80,"y":50,"ic":"vpb","lab":"vPB","sub":"Online"},"tool":{"x":80,"y":84,"ic":"tool","lab":"Tool","sub":"analyzer"},"vm":{"x":22,"y":84,"ic":"vm","lab":"Sensors","sub":"hosts"}},"wires":[["clms","kvo"],["vpb","kvo"],["vpb","tool"],["vm","clms"]]},"mirror":{"id":"mirror","name":"AWS mirror session","script":"kvo_aws_mirror.py","subtitle":"Agentless: KVO deploys collectors and drives VPC Traffic Mirroring","inputs":[{"key":"vpc","label":"Source VPC","default":"","placeholder":"vpc-0ebe57a\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"az","label":"Zone","default":"us-east-1a","placeholder":"us-east-1a"},{"key":"tool","label":"Tool IP","default":"","placeholder":"10.99.12.146"}],"nodes":{"src":{"x":20,"y":22,"ic":"vm","lab":"Nitro srcs","sub":"cloudlens=yes"},"mir":{"x":50,"y":22,"ic":"mirror","lab":"Mirror","sub":"per ENI"},"coll":{"x":50,"y":58,"ic":"coll","lab":"Collector","sub":"Service VM"},"kvo":{"x":82,"y":38,"ic":"kvo","lab":"KVO","sub":"orchestrates"},"tool":{"x":50,"y":88,"ic":"tool","lab":"Tool","sub":"analyzer"}},"wires":[["src","mir"],["mir","coll"],["coll","tool"],["kvo","coll"]]}}};window.__FIXTURES__={"stack":[{"_delay":0.2,"event":{"type":"state","node":"vpc","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"}},{"_delay":0.9,"event":{"type":"log","text":"Waiting for changeset to be created.."}},{"_delay":0.7,"event":{"type":"state","node":"vpc","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"}},{"_delay":1.1,"event":{"type":"state","node":"vpc","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::VPC  Vpc"}},{"_delay":0.4,"event":{"type":"narrate","text":"Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"}},{"_delay":0.6,"event":{"created":1,"type":"stat"}},{"_delay":0.7,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"}},{"_delay":0.5,"event":{"type":"narrate","text":"Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.","tone":"note"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the CloudLens Manager \u2014 the control plane every sensor registers to.","tone":"info"}},{"_delay":1.4,"event":{"type":"state","node":"clms","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.4,"event":{"type":"narrate","text":"vController is up. It still needs ~15 min to initialize before you can log in.","tone":"good"}},{"_delay":0.5,"event":{"created":2,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"kvo","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"created":3,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"vpb","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"created":4,"type":"stat"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"}},{"_delay":0.4,"event":{"type":"done","summary":"Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.","outputs":{"note":"Log in at the vController URL once initialized, then run Flow 02 or 03."}}}],"sensors":[{"_delay":0.2,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"u","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"r","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"w","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ vcontroller_project_key.py --clms 20.84.115.190"}},{"_delay":0.9,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vctl] login ok \u00b7 rotating first-login password"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"live","label":"project"}},{"_delay":0.3,"event":{"type":"narrate","text":"Project key retrieved \u2014 the forced first-login password change was handled automatically.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"}},{"_delay":0.7,"event":{"type":"state","node":"u","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"}},{"_delay":1.0,"event":{"type":"state","node":"u","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ubuntu sensor registered \u2014 Register status 200.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"r","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [redhat : podman run \u2026/sensor]"}},{"_delay":1.0,"event":{"type":"state","node":"r","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"RHEL sensor registered.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"w","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [windows : cloudlens-win-sensor.exe /install /quiet]"}},{"_delay":1.1,"event":{"type":"state","node":"w","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Windows sensor registered \u2014 service CloudLens running.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"}},{"_delay":0.4,"event":{"type":"done","summary":"3 sensors registered \u00b7 sensorCount = 3.","outputs":{"note":"Watch them in the vController UI under your project."}}}],"kvo":[{"_delay":0.2,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vm","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-adopt] KVO EULA accepted \u00b7 licenses active"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"live","label":"licensed"}},{"_delay":0.3,"event":{"type":"narrate","text":"EULA accepted and licenses active \u2014 every KVO write is unblocked.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"[kvo-adopt] createCloudLensManager \u00b7 committing change request"}},{"_delay":1.1,"event":{"type":"log","text":"[kvo-adopt]   clms-live status: CONNECTED"}},{"_delay":0.5,"event":{"type":"state","node":"clms","status":"live","label":"CONNECTED"}},{"_delay":0.3,"event":{"type":"narrate","text":"CLMS is CONNECTED; the Cloud Config provisions the working project key.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"}},{"_delay":0.6,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"}},{"_delay":1.2,"event":{"type":"log","text":"[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"}},{"_delay":0.5,"event":{"type":"state","node":"vpb","status":"live","label":"Online"}},{"_delay":0.3,"event":{"type":"narrate","text":"vPB is Online and auto-licensed \u2014 KVO built its Device Config.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"vm","status":"live","label":"3 hosts"}},{"_delay":0.3,"event":{"type":"narrate","text":"Sensors registered under KVO management.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.","outputs":{}}}],"mirror":[{"_delay":0.2,"event":{"type":"state","node":"src","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"mir","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"coll","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"}},{"_delay":0.6,"event":{"type":"state","node":"kvo","status":"live","label":"IAM ok"}},{"_delay":0.3,"event":{"type":"narrate","text":"Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"}},{"_delay":0.6,"event":{"type":"state","node":"src","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"}},{"_delay":0.9,"event":{"type":"state","node":"src","status":"live","label":"3 Nitro"}},{"_delay":0.3,"event":{"type":"narrate","text":"Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"coll","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"}},{"_delay":1.3,"event":{"type":"log","text":"[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"}},{"_delay":0.5,"event":{"type":"state","node":"coll","status":"live","label":"up"}},{"_delay":0.3,"event":{"type":"narrate","text":"Collector up; traffic-mirror target and filter created.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.4,"event":{"type":"log","text":"[kvo-mirror] tool bound \u00b7 monitoring policy committed"}},{"_delay":0.3,"event":{"type":"narrate","text":"Tool bound and the monitoring policy committed.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"mir","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"}},{"_delay":0.9,"event":{"type":"state","node":"mir","status":"live","label":"3 sessions"}},{"_delay":0.3,"event":{"type":"narrate","text":"VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.","outputs":{}}}]};</script><script>
+(function(){
+"use strict";
+var reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+var $=function(id){return document.getElementById(id);};
+var FLOWS=window.__FLOWS__.flows, ORDER=window.__FLOWS__.order, FX=window.__FIXTURES__;
+
+$("themeBtn").addEventListener("click",function(){
+  var cur=document.documentElement.getAttribute("data-theme")||"light";
+  var nxt=cur==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",nxt);
+  try{localStorage.setItem("cl-theme",nxt);}catch(e){}});
+
+var IC={
+ vpc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 3v18"/></svg>',
+ clms:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
+ kvo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3"/></svg>',
+ vpb:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 7V5M12 7V5M17 7V5M7 17v2M12 17v2M17 17v2"/></svg>',
+ vm:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M2 20h20"/></svg>',
+ tool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 6l4 4-8 8-4 1 1-4z"/><path d="M4 20h6"/></svg>',
+ mirror:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>',
+ coll:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a4 4 0 0 0-4 4H6a3 3 0 0 0 0 6h12a3 3 0 0 0 0-6h-2a4 4 0 0 0-4-4z"/><path d="M9 17l3 4 3-4"/></svg>'};
+var TONE={info:"i",good:"✓",note:"·",warn:"!",err:"✕"};
+var current=null,nodeEls={},timer=null,t0=0,conLines=0,playing=false,gen=0;
+
+var tabs=$("flows"),cards=$("flowCards");
+ORDER.forEach(function(id,i){var f=FLOWS[id];
+  var b=document.createElement("button");b.className="flow";b.setAttribute("role","tab");
+  b.setAttribute("aria-selected",i===0?"true":"false");b.dataset.flow=id;
+  b.innerHTML='<div class="fn">FLOW 0'+(i+1)+'</div><div class="ft">'+f.name+'</div>';
+  b.addEventListener("click",function(){selectFlow(id);});tabs.appendChild(b);
+  var c=document.createElement("div");c.className="card";
+  c.innerHTML='<div class="k">FLOW 0'+(i+1)+'</div><h3>'+f.name+'</h3><p>'+f.subtitle+'</p>';cards.appendChild(c);});
+
+function selectFlow(id){stop();current=id;var f=FLOWS[id];
+  document.querySelectorAll(".flow").forEach(function(b){b.setAttribute("aria-selected",b.dataset.flow===id?"true":"false");});
+  $("instName").textContent=f.script;$("cfgTitle").textContent="Inputs";$("cfgSub").textContent="· "+f.name;
+  var fl=$("fields");fl.innerHTML="";
+  f.inputs.forEach(function(fd){var d=document.createElement("div");d.className="field";
+    d.innerHTML='<label>'+fd.label+'</label><input value="'+(fd.default||"")+'" placeholder="'+(fd.placeholder||"")+'" spellcheck="false">';fl.appendChild(d);});
+  reset();layoutDiagram(f);
+  $("narr").innerHTML='<div class="empty">Press ▸ Run — the narration explains each step as it happens.</div>';
+  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
+
+function reset(){$("console").innerHTML="";conLines=0;$("conCount").textContent="";
+  setPill("idle","");$("mElapsed").textContent="0:00";$("mCreated").textContent="0";
+  $("idChip").hidden=true;$("stopBtn").hidden=true;}
+function setPill(cls,txt){var p=$("statusPill");p.className="pill"+(cls&&cls!=="idle"?" "+cls:"");$("statusTxt").textContent=txt||cls;}
+
+function layoutDiagram(f){var dg=$("diagram"),sv=$("wires");
+  dg.querySelectorAll(".node").forEach(function(n){n.remove();});sv.innerHTML="";nodeEls={};
+  var W=dg.clientWidth,H=dg.clientHeight;
+  Object.keys(f.nodes).forEach(function(id){var n=f.nodes[id],el=document.createElement("div");el.className="node";
+    el.style.left=n.x+"%";el.style.top=n.y+"%";
+    el.innerHTML='<div class="chip">'+(IC[n.ic]||"")+'</div><div class="nlab">'+n.lab+'</div><div class="nsub" data-sub>'+n.sub+'</div>';
+    dg.appendChild(el);nodeEls[id]=el;});
+  f.wires.forEach(function(w){var a=f.nodes[w[0]],b=f.nodes[w[1]];
+    var l=document.createElementNS("http://www.w3.org/2000/svg","line");
+    l.setAttribute("x1",a.x/100*W);l.setAttribute("y1",a.y/100*H);
+    l.setAttribute("x2",b.x/100*W);l.setAttribute("y2",b.y/100*H);
+    l.setAttribute("class","dwire");l.dataset.pair=w[0]+"-"+w[1];sv.appendChild(l);});
+  Object.keys(f.nodes).forEach(function(id,i){setTimeout(function(){if(nodeEls[id])nodeEls[id].classList.add("show");},reduce?0:70*i);});}
+
+function setNode(id,status,label){var el=nodeEls[id];if(!el)return;
+  el.classList.remove("show","busy","live","fail");
+  if(status==="ghost")el.classList.add("show");else el.classList.add(status);
+  if(label){var s=el.querySelector("[data-sub]");if(s)s.textContent=label;}
+  if(status==="live"){$("wires").querySelectorAll(".dwire").forEach(function(l){var p=l.dataset.pair.split("-");
+    if(p.indexOf(id)>-1){var o=p[0]===id?p[1]:p[0];if(nodeEls[o]&&nodeEls[o].classList.contains("live"))l.classList.add("on");}});
+    var n=0;Object.keys(nodeEls).forEach(function(k){if(nodeEls[k].classList.contains("live"))n++;});$("mCreated").textContent=n;}}
+
+function narrate(text,tone){var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
+  var d=document.createElement("div");d.className="nline "+(tone||"info");
+  d.innerHTML='<span class="ni">'+(TONE[tone]||"i")+'</span><div class="nt">'+esc(text)+'</div>';n.appendChild(d);n.scrollTop=n.scrollHeight;}
+function card(kind,head,body){var n=$("narr");var d=document.createElement("div");d.className="card-in "+(kind||"");
+  d.innerHTML='<div class="h">'+esc(head)+'</div><div class="b">'+esc(body)+'</div>';n.appendChild(d);n.scrollTop=n.scrollHeight;}
+function conLine(t){var c=$("console");var d=document.createElement("div");d.className="cln";d.textContent=t;
+  c.appendChild(d);c.scrollTop=c.scrollHeight;conLines++;$("conCount").textContent=conLines+" lines";while(c.childNodes.length>400)c.removeChild(c.firstChild);}
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+function startTimer(){t0=Date.now();stopTimer();timer=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);$("mElapsed").textContent=Math.floor(s/60)+":"+("0"+(s%60)).slice(-2);},1000);}
+function stopTimer(){if(timer){clearInterval(timer);timer=null;}}
+
+$("runBtn").addEventListener("click",run);
+$("stopBtn").addEventListener("click",stop);
+function stop(){gen++;playing=false;stopTimer();if($("statusTxt").textContent==="running")setPill("idle","stopped");
+  $("stopBtn").hidden=true;$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
+
+function run(){var myGen=++gen;var f=FLOWS[current];reset();layoutDiagram(f);$("narr").innerHTML="";
+  setPill("run","running");$("runBtn").disabled=true;$("runBtn").innerHTML='<span class="tri"></span> Running…';
+  $("stopBtn").hidden=false;$("idChip").hidden=false;$("idChip").innerHTML='acct <b>your-account</b> · us-east-1';
+  startTimer();playing=true;
+  var frames=FX[current],i=0;
+  (function step(){
+    if(myGen!==gen)return;
+    if(i>=frames.length){finish("done","complete");return;}
+    var fr=frames[i++];var ev=fr.event;
+    if(ev.type==="log")conLine(ev.text);
+    else if(ev.type==="state")setNode(ev.node,ev.status,ev.label);
+    else if(ev.type==="narrate")narrate(ev.text,ev.tone);
+    else if(ev.type==="stat"){if(ev.created!=null)$("mCreated").textContent=ev.created;}
+    else if(ev.type==="done"){narrate(ev.summary,"good");if(ev.outputs&&ev.outputs.note)card("","Next",ev.outputs.note);finish("done","complete");return;}
+    setTimeout(step,reduce?40:Math.min((fr._delay||0.6)*1000,2200));
+  })();}
+function finish(cls,txt){playing=false;stopTimer();setPill(cls,txt);$("stopBtn").hidden=true;
+  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run again';}
+
+window.addEventListener("resize",function(){if(!playing&&current)layoutDiagram(FLOWS[current]);});
+selectFlow(ORDER[0]);
+setTimeout(function(){if(!reduce)run();},900);
+})();
+</script>
 </body>
 </html>

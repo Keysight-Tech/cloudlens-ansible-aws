@@ -1,0 +1,208 @@
+[
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "src",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "mir",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "coll",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.15,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.2,
+  "event": {
+   "type": "state",
+   "node": "tool",
+   "status": "ghost"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "state",
+   "node": "kvo",
+   "status": "live",
+   "label": "IAM ok"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "state",
+   "node": "src",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"
+  }
+ },
+ {
+  "_delay": 0.9,
+  "event": {
+   "type": "state",
+   "node": "src",
+   "status": "live",
+   "label": "3 Nitro"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "coll",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"
+  }
+ },
+ {
+  "_delay": 1.3,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"
+  }
+ },
+ {
+  "_delay": 0.5,
+  "event": {
+   "type": "state",
+   "node": "coll",
+   "status": "live",
+   "label": "up"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Collector up; traffic-mirror target and filter created.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "state",
+   "node": "tool",
+   "status": "live",
+   "label": "bound"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] tool bound \u00b7 monitoring policy committed"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "Tool bound and the monitoring policy committed.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.7,
+  "event": {
+   "type": "state",
+   "node": "mir",
+   "status": "busy"
+  }
+ },
+ {
+  "_delay": 0.6,
+  "event": {
+   "type": "log",
+   "text": "[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"
+  }
+ },
+ {
+  "_delay": 0.9,
+  "event": {
+   "type": "state",
+   "node": "mir",
+   "status": "live",
+   "label": "3 sessions"
+  }
+ },
+ {
+  "_delay": 0.3,
+  "event": {
+   "type": "narrate",
+   "text": "VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.",
+   "tone": "good"
+  }
+ },
+ {
+  "_delay": 0.4,
+  "event": {
+   "type": "done",
+   "summary": "3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.",
+   "outputs": {}
+  }
+ }
+]
