@@ -1842,3 +1842,52 @@ html[data-theme="dark"] .sec-collapse{background:#141821;border-color:#252C3A;bo
 html[data-theme="dark"] .sec-collapse>summary{color:#E7ECF3}
 html[data-theme="dark"] .sec-collapse>summary:hover{background:#1A1F2A}
 html[data-theme="dark"] .sec-collapse[open]>summary{border-bottom-color:#252C3A}
+
+/* ============================================================
+   FLAT BUTTONS - premium, not bubbly.
+   Overrides the skeuomorphic treatment: crisp edges, solid fills,
+   hairline borders, no gloss overlays, no lift-on-hover.
+   ============================================================ */
+.btn, .btn.lg, .btn.sm, .inline-btn, .btn.tier{
+  border-radius:8px;
+  background-image:none;
+  box-shadow:none;
+  overflow:visible;
+  transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;
+}
+.btn::before,.btn-primary::before,.btn.primary::before{display:none!important}
+.btn-secondary::after,.btn.glass::after{display:none!important}
+.btn:hover{transform:none}
+.btn:active{transform:none;box-shadow:none;filter:brightness(.96)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.btn-primary,.btn.primary{
+  background:var(--accent);color:#fff;border:1px solid var(--accent);
+  text-shadow:none;box-shadow:none;
+}
+.btn-primary:hover,.btn.primary:hover{background:var(--accent-deep);border-color:var(--accent-deep)}
+
+.btn-secondary,.btn.glass{
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--hair);
+  -webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;
+}
+.btn-secondary:hover,.btn.glass:hover{background:var(--bg-2);border-color:var(--ink-soft)}
+
+.btn-tertiary,.btn.tinted{
+  background:oklch(var(--gold-l) var(--gold-c) var(--gold-h) / .14);
+  border:1px solid oklch(var(--gold-l) var(--gold-c) var(--gold-h) / .38);
+}
+.btn-tertiary:hover,.btn.tinted:hover{background:oklch(var(--gold-l) var(--gold-c) var(--gold-h) / .22)}
+
+.btn.tinted-accent{
+  background:oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .10);
+  border:1px solid oklch(var(--accent-l) var(--accent-c) var(--accent-h) / .30);
+}
+
+.tier-num{border-radius:6px;box-shadow:none}
+.btn-secondary .tier-num,.btn-tertiary .tier-num{box-shadow:none;border:1px solid var(--hair)}
+
+/* badges read as flat tags alongside flat buttons */
+.pill{border-radius:6px}
+.pill.ok{background:oklch(80% 0.12 150 / .16);box-shadow:none}
