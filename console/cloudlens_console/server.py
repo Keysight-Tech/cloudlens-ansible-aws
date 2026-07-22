@@ -1,6 +1,7 @@
 """Loopback-only HTTP server: serves the UI, starts jobs, streams SSE.
 
 Routes (nothing else is exposed):
+  GET  /health           -> {ok, version} - liveness probe, no pairing required
   GET  /                 -> the premium UI (web/index.html)
   GET  /flows            -> the four flows as JSON (the UI renders from this)
   POST /run              -> {flow, inputs, replay?}  starts a job, returns {job_id}
@@ -27,7 +28,13 @@ JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
 # Bumped only when the wire contract the public page depends on changes.
+# Stays a plain N.N: a build id or commit SHA here would fingerprint the
+# visitor's machine for any unauthenticated prober.
 VERSION = "1.0"
+
+# Reachable without a pairing code, by design. Adding to this set means
+# accepting that any origin on the machine can read the response.
+PUBLIC_PATHS = frozenset({"/health"})
 
 # Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
 # ASCII only: compared with hmac.compare_digest.
@@ -52,6 +59,8 @@ PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    server_version = "CloudLensConsole"
+    sys_version = ""          # do NOT emit "Python/3.x.y" to an unauthenticated prober
 
     def log_message(self, *a):  # keep the console quiet
         pass
@@ -82,12 +91,11 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?")[0]
-        if path == "/health":
-            # First branch on purpose: readable by ANY origin without a pairing
-            # code, because the public page must probe before the visitor has
-            # typed anything. So it must leak nothing - no account, region,
-            # flow list, hostname or path. Liveness and a version, and that is
-            # all. Keep any pairing guard added later BELOW this line.
+        if path in PUBLIC_PATHS:
+            # Readable by ANY origin without a pairing code, because the public
+            # page must probe before the visitor has typed anything. So it must
+            # leak nothing - no account, region, flow list, hostname or path.
+            # Liveness and a wire-contract version, and that is all.
             return self._send(200, {"ok": True, "version": VERSION})
         if path == "/":
             return self._file("index.html", "text/html; charset=utf-8")

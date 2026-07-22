@@ -1,46 +1,111 @@
-"""Unit tests for the live console - pure logic, no AWS, no server.
+"""Unit tests for the live console - pure logic and the HTTP handler, no AWS.
+The handler tests drive Handler.do_* in-process against a BytesIO; no socket is
+opened and no listener is bound.
 Run:  cd console && python3 -m pytest tests -q     (or: python3 tests/test_console.py)
 """
+import io
 import os
+import re
 import sys
 import json
+from collections import namedtuple
+from http.client import HTTPMessage, parse_headers
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from cloudlens_console import events as E, flows as F, orchestrator as O  # noqa
+from cloudlens_console import events as E, flows as F, orchestrator as O, server  # noqa
 
 
-def _handler_response(path, method="GET", headers=None, body=None):
-    """Drive Handler.do_* without a socket, capturing what it writes."""
-    import io
-    from cloudlens_console import server
+Resp = namedtuple("Resp", "status headers payload raw")
 
-    class Cap(server.Handler):
-        def __init__(self, path, method, headers, body):
+
+def _make_headers(pairs):
+    """Build the exact object BaseHTTPRequestHandler parses from the wire.
+
+    http.client.HTTPMessage is an email.message.Message: .get() is
+    case-insensitive and repeated names survive via .get_all(). A plain dict
+    is neither, so tests written against a dict can neither detect a casing
+    bug nor a duplicate/overwritten-header bug.
+    """
+    if isinstance(pairs, HTTPMessage):
+        return pairs
+    items = pairs.items() if isinstance(pairs, dict) else list(pairs or [])
+    blob = "".join("{}: {}\r\n".format(k, v) for k, v in items) + "\r\n"
+    return parse_headers(io.BufferedReader(io.BytesIO(blob.encode("latin-1"))))
+
+
+def _handler_response(path, method="GET", headers=None, body=None, content_length=True):
+    """Drive Handler.do_* without a socket, capturing what it writes.
+
+    Returns Resp(status, headers, payload, raw). `headers` is the response
+    headers as an HTTPMessage, including the Server/Date the base class adds -
+    those are on the wire, so tests must be able to see them.
+    Pass content_length=False to send a deliberately mismatched body.
+    """
+    if path.startswith("/events/"):
+        raise AssertionError("/events/<id> tails a live queue and never returns; "
+                             "test the SSE layer directly")
+
+    raw_body = body if isinstance(body, bytes) else (body or "").encode("utf-8")
+    items = list((headers or {}).items())
+    if raw_body and content_length and not any(k.lower() == "content-length" for k, _ in items):
+        items.append(("Content-Length", str(len(raw_body))))
+
+    class CapturingHandler(server.Handler):
+        def __init__(self):
             self.path = path
             self.command = method
-            self.headers = headers or {}
-            self.rfile = io.BytesIO(body or b"")
+            self.requestline = "{} {} HTTP/1.1".format(method, path)
+            self.request_version = "HTTP/1.1"
+            self.close_connection = True
+            self.headers = _make_headers(items)
+            self.rfile = io.BytesIO(raw_body)
             self.wfile = io.BytesIO()
             self.status = None
-            self.sent = {}
-        def send_response(self, code, *a): self.status = code
-        def send_header(self, k, v): self.sent[k] = v
-        def end_headers(self): pass
-        def log_message(self, *a): pass
+            self.sent_list = []
 
-    h = Cap(path, method, headers, body)
+        def send_response(self, code, message=None):
+            self.status = code
+            super().send_response(code, message)
+
+        def send_response_only(self, code, message=None):
+            pass
+
+        def send_header(self, k, v):
+            self.sent_list.append((k, v))
+
+        def end_headers(self):
+            pass
+
+        def log_message(self, *a):
+            pass
+
+    h = CapturingHandler()
     getattr(h, "do_" + method)()
     raw = h.wfile.getvalue()
-    try: payload = json.loads(raw.decode() or "{}")
-    except Exception: payload = raw
-    return h.status, h.sent, payload
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        payload = None
+    return Resp(h.status, _make_headers(h.sent_list), payload, raw)
 
 
 def test_health_leaks_nothing():
-    status, _, payload = _handler_response("/health")
-    assert status == 200
-    assert set(payload.keys()) == {"ok", "version"}
-    assert payload["ok"] is True
+    r = _handler_response("/health")
+    assert r.status == 200
+    assert set(r.payload.keys()) == {"ok", "version"}
+    assert r.payload["ok"] is True
+    assert re.fullmatch(r"\d+\.\d+", r.payload["version"]), \
+        "version is a wire-contract number, not a build id: a SHA would " \
+        "fingerprint the visitor's machine"
+    assert {k.lower() for k, _ in r.headers.items()} <= {
+        "server", "date", "content-type", "content-length", "cache-control"}
+    assert "python" not in r.headers.get("server", "").lower()
+
+
+def test_health_answers_with_no_headers_at_all():
+    # No Origin, no pairing header: the public page probes before the visitor
+    # has typed anything. Any guard that breaks this breaks discovery.
+    assert _handler_response("/health", headers={}).status == 200
 
 
 def test_event_contract_roundtrip():
