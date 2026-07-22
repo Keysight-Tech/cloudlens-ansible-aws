@@ -14,6 +14,7 @@ import os
 import json
 import uuid
 import queue
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -24,6 +25,14 @@ from . import orchestrator as O
 WEB = os.path.join(os.path.dirname(__file__), "web")
 JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
+
+# Unambiguous alphabet: no O/0, no I/1. The visitor types this by hand.
+_PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+PAIR_CODE = None          # set by serve(); one per process
+
+
+def new_pair_code(n=6):
+    return "".join(secrets.choice(_PAIR_ALPHABET) for _ in range(n))
 
 
 class Handler(BaseHTTPRequestHandler):

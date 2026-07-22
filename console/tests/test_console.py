@@ -64,6 +64,14 @@ def test_fixtures_valid_and_rebuild():
         assert frames[-1]["event"]["type"] in (E.DONE, E.ERROR)
 
 
+def test_pairing_code_is_random_and_short():
+    from cloudlens_console import server
+    a = server.new_pair_code()
+    b = server.new_pair_code()
+    assert a != b, "pair codes must differ per call"
+    assert len(a) == 6 and a.isalnum() and a.isupper()
+
+
 def test_replay_needs_no_boto3(monkeypatch=None):
     # _rebuild + replay path use only stdlib; importing orchestrator must not require boto3
     assert hasattr(O, "run_job") and hasattr(O, "_rebuild")
