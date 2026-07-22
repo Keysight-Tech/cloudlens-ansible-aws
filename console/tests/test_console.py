@@ -99,7 +99,12 @@ def test_health_leaks_nothing():
         "fingerprint the visitor's machine"
     assert {k.lower() for k, _ in r.headers.items()} <= {
         "server", "date", "content-type", "content-length", "cache-control"}
-    assert "python" not in r.headers.get("server", "").lower()
+    assert r.headers.get("server").strip() == "CloudLensConsole", \
+        "the Server token is sent to unauthenticated probers: keep it a constant, " \
+        "never a version or build id"
+    assert r.headers.get("cache-control") == "no-store", \
+        "the public page polls this to decide whether a console is running; a cached " \
+        "ok=true keeps reporting a live console after the process has exited"
 
 
 def test_health_answers_with_no_headers_at_all():
