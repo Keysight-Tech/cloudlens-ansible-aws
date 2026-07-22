@@ -11,29 +11,16 @@ Replay mode (a "Demo" toggle in the UI) needs neither AWS nor boto3.
 from __future__ import annotations
 import sys
 import argparse
-import ipaddress
 import threading
 import webbrowser
 
 from . import server
 
-
-def is_loopback(host):
-    """True only for addresses that cannot be reached from another machine.
-
-    An empty host means INADDR_ANY, and 0.0.0.0 / :: are wildcards: all three
-    bind every interface, so none of them is loopback. Anything that is not a
-    literal IP (a hostname or interface name) is treated as remote, because we
-    cannot know what it resolves to at bind time.
-    """
-    if not host:
-        return False
-    if host in ("localhost", "localhost.localdomain"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+# One definition, in the module that has to act on it: server.serve() uses this
+# to decide whether the "no Origin means a local process" pairing exemption
+# still holds, so a second copy here could drift away from the security
+# decision it is supposed to describe.
+is_loopback = server.is_loopback
 
 
 def main(argv=None):

@@ -48,7 +48,10 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
                              "test the SSE layer directly")
 
     raw_body = body if isinstance(body, bytes) else (body or "").encode("utf-8")
-    items = list((headers or {}).items())
+    # A list of pairs, not just a dict: a dict cannot express a repeated header,
+    # and a repeated Host is exactly the ambiguity the handler has to refuse.
+    headers = headers or {}
+    items = list(headers.items() if isinstance(headers, dict) else headers)
     if raw_body and content_length and not any(k.lower() == "content-length" for k, _ in items):
         items.append(("Content-Length", str(len(raw_body))))
     # Every HTTP/1.1 request on the wire carries a Host, and the handler rejects
@@ -112,9 +115,14 @@ def test_health_leaks_nothing():
     # know; Vary: Origin is a cache directive, not content. Everything the
     # assertion is actually guarding - no Python version, no build id, no
     # hostname - is still guarded, because the set is still a closed allowlist.
+    # Widened again for the anti-framing headers. Same reasoning as CORS: both
+    # are constants describing OUR policy, not the visitor's machine, so they
+    # tell a prober nothing. The set stays a closed allowlist, so no Python
+    # version, build id or hostname can appear without failing here.
     assert {k.lower() for k, _ in r.headers.items()} <= {
         "server", "date", "content-type", "content-length", "cache-control",
-        "access-control-allow-origin", "vary"}
+        "access-control-allow-origin", "vary",
+        "content-security-policy", "x-frame-options"}
     assert r.headers.get("server").strip() == "CloudLensConsole", \
         "the Server token is sent to unauthenticated probers: keep it a constant, " \
         "never a version or build id"
@@ -351,14 +359,20 @@ def _with_pair_code(code, fn):
     The suite is one process and these tests mutate module globals, so a leaked
     PAIR_CODE (or a PAIR_CODE left at None by the cap test) would silently
     change the meaning of every test that runs after it.
+
+    Also zeroes the per-failure delay: it is deliberately half a second in
+    production, which would make the cap test take two minutes.
     """
     from cloudlens_console import server
-    old = (server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED)
+    old = (server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED,
+           server.PAIR_FAILURE_DELAY)
     server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED = code, 0, False
+    server.PAIR_FAILURE_DELAY = 0
     try:
         return fn()
     finally:
-        server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED = old
+        (server.PAIR_CODE, server.PAIR_FAILURES, server.PAIR_WARNED,
+         server.PAIR_FAILURE_DELAY) = old
 
 
 def test_run_without_pair_code_is_rejected():
@@ -443,7 +457,9 @@ def test_pairing_disables_itself_after_repeated_failures():
         r = _handler_response("/run", method="POST",
                               headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
                                        "X-CloudLens-Pair": "ABC23456"})
-        assert r.status == 401, "even the right code must fail once pairing is disabled"
+        assert r.status == 403, \
+            "even the right code must fail once pairing is disabled, and say so"
+        assert r.payload["error"] == "pairing disabled, restart the console"
         # A legitimate local user is never caught by this: same-origin is exempt
         # and never consults the counter.
         assert _handler_response("/flows").status == 200
@@ -491,9 +507,127 @@ def test_foreign_host_header_is_refused():
 
 
 def test_loopback_host_headers_are_accepted():
-    for host in ("127.0.0.1", "127.0.0.1:8760", "localhost", "localhost:8890", "[::1]:8760"):
+    for host in ("127.0.0.1", "127.0.0.1:8760", "localhost", "localhost:8890",
+                 "[::1]:8760", "LOCALHOST:8760", "localhost."):
         assert _handler_response("/health", headers={"Host": host}).status == 200, \
             "%r is us; refusing it would break the local UI" % host
+
+
+def test_host_name_parsing():
+    # There is no other test of this parser, and every Host decision rests on it.
+    hn = server._host_name
+    assert hn("127.0.0.1:8760") == "127.0.0.1"
+    assert hn("[::1]:8760") == "::1" and hn("[::1]") == "::1"
+    assert hn("::1") == "::1", "a bare IPv6 literal has many colons, not a port"
+    assert hn("LocalHost.") == "localhost", "host names are case-insensitive (RFC 9110 4.2.3)"
+    assert hn(" localhost:8760 ") == "localhost"
+    assert hn(None) == "" and hn("") == ""
+    # Trailing garbage after the bracket is not a port, it is an attack
+    assert hn("[::1]@evil.com") not in server.OUR_HOSTS
+    assert hn("[::1].evil.com") not in server.OUR_HOSTS
+    assert hn("evil.com:8760") == "evil.com"
+    assert hn("127.0.0.1.evil.com") == "127.0.0.1.evil.com"
+
+
+def test_duplicate_host_header_is_refused():
+    # Two Host headers: .get() takes the first, a proxy or the next hop may
+    # take the second. Ambiguity here is to be refused, not resolved.
+    r = _handler_response("/health", headers=[("Host", "127.0.0.1:8760"),
+                                              ("Host", "evil.com")])
+    assert r.status == 403
+
+
+def test_preflight_also_checks_the_host():
+    # The preflight is exempt from PAIRING, which is correct, but it is not
+    # exempt from being addressed to us.
+    r = _handler_response("/run", method="OPTIONS",
+                          headers={"Host": "evil.com", "Origin": PAGES_ORIGIN})
+    assert r.status == 403
+    assert r.headers.get("Access-Control-Allow-Origin") is None
+
+
+def test_every_response_forbids_framing():
+    # A framed console is SAME-ORIGIN with the framing document, so
+    # _check_pairing() exempts its POST /run and the Host check passes: one
+    # clickjacked click becomes a real AWS deploy, routing around pairing,
+    # CORS and Host at once.
+    def body():
+        cases = [
+            ("/health", "GET", {}),                                    # public JSON
+            ("/", "GET", {}),                                          # static file path
+            ("/flows", "GET", {"Origin": PAGES_ORIGIN}),               # 401 reject path
+            ("/run", "POST", {"Origin": PAGES_ORIGIN, "Content-Length": "0"}),
+            ("/nope", "GET", {}),                                      # 404 path
+        ]
+        for path, method, hdrs in cases:
+            r = _handler_response(path, method=method, headers=hdrs)
+            assert r.headers.get("Content-Security-Policy") == "frame-ancestors 'none'", \
+                "%s can be framed" % path
+            assert r.headers.get("X-Frame-Options") == "DENY", \
+                "%s can be framed by a browser too old for CSP" % path
+        r = _handler_response("/run", method="OPTIONS", headers={"Origin": PAGES_ORIGIN})
+        assert r.headers.get("X-Frame-Options") == "DENY"
+    _with_pair_code("ABC23456", body)
+
+
+def test_disabled_pairing_is_distinguishable_from_a_wrong_code():
+    # Same 401 for both, and the page's copy for it says "that code did not
+    # match", so a visitor would retype a correct code forever with no way to
+    # learn that the console has stopped accepting any code at all.
+    from cloudlens_console import server
+
+    def body():
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "WRONGCOD"})
+        assert r.status == 401 and r.payload["error"] == "pairing required"
+        server.PAIR_CODE = None
+        r = _handler_response("/run", method="POST",
+                              headers={"Origin": PAGES_ORIGIN, "Content-Length": "0",
+                                       "X-CloudLens-Pair": "ABC23456"})
+        assert r.status == 403, "a disabled console must not look like a typo"
+        assert r.payload["error"] == "pairing disabled, restart the console"
+    _with_pair_code("ABC23456", body)
+
+
+def test_each_wrong_guess_costs_real_time():
+    # The cap is the backstop; the delay is what makes 40 bits intractable
+    # without bricking the console in the middle of a demo.
+    assert server.PAIR_FAILURE_DELAY >= 0.5, \
+        "without a delay, loopback grinding runs at thousands of guesses a second"
+    assert server.PAIR_MAX_FAILURES >= 200, \
+        "a small cap turns a handful of stray requests into a restart-the-console outage"
+
+
+def test_remote_bind_revokes_the_origin_exemption():
+    # "no Origin implies local shell implies already trusted" holds only while
+    # the bind is loopback. Off-machine callers send no Origin either.
+    saved = server.LOOPBACK_ONLY
+
+    def body():
+        try:
+            server.LOOPBACK_ONLY = False
+            assert _handler_response("/flows").status == 401, \
+                "with a remote bind, an Origin-less caller is not necessarily local"
+            r = _handler_response("/run", method="POST",
+                                  headers={"Origin": "http://127.0.0.1:8760",
+                                           "Content-Length": "0"})
+            assert r.status == 401, "a forged loopback Origin is free over the network"
+        finally:
+            server.LOOPBACK_ONLY = saved
+    _with_pair_code("ABC23456", body)
+    assert server.LOOPBACK_ONLY is True, "the default bind is loopback"
+
+
+def test_static_paths_cannot_escape_the_web_dir():
+    # startswith() lets a sibling directory named web-anything through.
+    assert server._under_web(os.path.join(server.WEB, "app.js"))
+    assert server._under_web(server.WEB)
+    assert not server._under_web(server.WEB + "-evil/secret.js"), \
+        "a web-* sibling is not inside web/"
+    assert not server._under_web(os.path.dirname(server.WEB) + "/server.py")
+    assert _handler_response("/web/../../server.py").status == 404, \
+        "the package source must not be servable"
 
 
 def test_replay_needs_no_boto3(monkeypatch=None):

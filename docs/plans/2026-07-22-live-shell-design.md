@@ -25,7 +25,7 @@ tenant-isolation project rather than a docs feature.
 |---|---|---|
 | Credentials | Never in the browser | The console already inherits the visitor's shell credentials. Nothing is transmitted to Keysight. Pasting AWS keys into a web page is a habit we refuse to teach. |
 | Execution scope | Guided flows only | The page sends a flow id, never a command string. A malicious site probing localhost can at worst start a CloudLens deploy, not run code. |
-| Trust | Pairing code, guess-capped | Explicit human consent, with CORS origin pinning as a second layer. The code is 8 characters (40 bits) and pairing disables itself after 10 consecutive failures. |
+| Trust | Pairing code, guess-capped | Explicit human consent, with CORS origin pinning as a second layer. The code is 8 characters (40 bits); every wrong guess costs half a second, and pairing disables itself after 200 cumulative failures. |
 | Transport | Page to local console over 127.0.0.1 | No hosted infrastructure. Reuses the orchestrator, flows, events contract, SSE and UI unchanged. |
 
 Rejected: an outbound relay to a hosted service. It survives networks that block
@@ -47,10 +47,20 @@ the console running through a demo week erodes the margin.
 Two controls, both cheap:
 
 - 8 characters, 40 bits. Two more characters typed once per session, 1000x margin.
-- After 10 consecutive bad codes the process discards `PAIR_CODE`, so pairing
-  fails closed until the console is restarted. This also converts a silent
-  attack into an observable one: the console prints a warning naming the
-  attempt count.
+- Every wrong code costs `PAIR_FAILURE_DELAY` (0.5s) of a handler thread. That
+  is what makes 40 bits intractable to grind over loopback, and it costs a
+  human who mistypes nothing they would notice.
+- After 200 *cumulative* bad codes - counted for the life of the process, never
+  reset by an interleaved success - the process discards `PAIR_CODE`, so
+  pairing fails closed until the console is restarted. Cumulative, because a
+  legitimately paired tab would otherwise keep zeroing the counter while a
+  hostile tab grinds. The threshold is high because a low one is itself a
+  denial of service: any page that reaches the port could spend the budget and
+  force a restart mid-demo. Once disabled the console answers 403 "pairing
+  disabled, restart the console", never the 401 used for a mismatch, so the
+  page can stop telling the visitor to check their typing.
+- This also converts a silent attack into an observable one: the console prints
+  a warning naming the attempt count.
 
 The cap is what carries the weight. The length is defence in depth.
 
@@ -65,8 +75,8 @@ cannot be narrowed by path, by design.
 So origin pinning stops the open internet, and nothing else. Anyone with push or
 Pages rights on any Keysight-Tech repository, or anyone who finds a script
 injection in any of those sites, walks straight through it. The real boundary is
-the pairing code: 40 bits a human types once, guess-capped, discarded after 20
-misses. Never let "allowlisted origin" be read as "trusted".
+the pairing code: 40 bits a human types once, rate-limited per guess and
+discarded after 200 cumulative misses. Never let "allowlisted origin" be read as "trusted".
 
 **What the pairing code does not defend against.** Requests with no `Origin`
 header are exempt, so `curl` and any local process can drive the console freely.
