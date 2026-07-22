@@ -476,6 +476,21 @@ docker build -t cloudlens-ansible-aws .</code></pre>
       </div>
     </section>
 
+    <!-- WATCH IT DEPLOY: interactive console (iframed, self-contained) -->
+    <section id="watch-live" class="section">
+      <div class="container">
+        <header class="section-head">
+          <h2>Watch it deploy</h2>
+          <p class="lede">Pick a path and run it, the fabric diagram wires itself up as each step completes, with the plain-English narration and the raw output alongside. This is a live visualization of the real sequences; the actual deploy runs in your CloudShell.</p>
+        </header>
+        <div class="live-embed">
+          <iframe id="clc-frame" src="console.html?embed=1" title="CloudLens deployment console" loading="lazy"></iframe>
+        </div>
+        <p class="lede" style="margin-top:1rem;font-size:.95rem">Prefer it full-screen? <a href="console.html">Open the full console &rarr;</a></p>
+      </div>
+    </section>
+    <script>window.addEventListener("message",function(e){if(e&&e.data&&typeof e.data.clc==="number"){var f=document.getElementById("clc-frame");if(f)f.style.height=(e.data.clc+8)+"px";}});</script>
+
     <!-- 1.5 GET STARTED IN 5 STEPS -->
     <section id="start-here" class="steps-section">
       <div class="container">

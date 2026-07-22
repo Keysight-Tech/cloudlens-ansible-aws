@@ -36,6 +36,11 @@ var reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
 var $=function(id){return document.getElementById(id);};
 var FLOWS=window.__FLOWS__.flows, ORDER=window.__FLOWS__.order, FX=window.__FIXTURES__;
 
+// embed mode (iframed into the main doc): hide chrome, report height to the parent
+if(/embed/.test(location.search)){document.body.classList.add("embed");
+  var ph=function(){try{parent.postMessage({clc:document.documentElement.scrollHeight},"*");}catch(e){}};
+  window.addEventListener("load",ph);window.addEventListener("resize",ph);setInterval(ph,900);}
+
 $("themeBtn").addEventListener("click",function(){
   var cur=document.documentElement.getAttribute("data-theme")||"light";
   var nxt=cur==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",nxt);
