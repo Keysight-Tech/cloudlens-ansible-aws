@@ -54,10 +54,31 @@ Two controls, both cheap:
 
 The cap is what carries the weight. The length is defence in depth.
 
+**CORS is defence in depth, not the boundary.** Code review corrected this and
+it is the most important correction in the design. `https://keysight-tech.github.io`
+is the origin of *every* GitHub Pages site published from *every* repository the
+Keysight-Tech account owns, and the same-origin policy has no path component.
+A page at `keysight-tech.github.io/some-unrelated-demo/` is same-origin with the
+docs site and can drive the console exactly as fully. `Access-Control-Allow-Origin`
+cannot be narrowed by path, by design.
+
+So origin pinning stops the open internet, and nothing else. Anyone with push or
+Pages rights on any Keysight-Tech repository, or anyone who finds a script
+injection in any of those sites, walks straight through it. The real boundary is
+the pairing code: 40 bits a human types once, guess-capped, discarded after 20
+misses. Never let "allowlisted origin" be read as "trusted".
+
 **What the pairing code does not defend against.** Requests with no `Origin`
 header are exempt, so `curl` and any local process can drive the console freely.
 That is deliberate: local code execution already implies the user's shell and
-therefore their AWS identity, so pairing would add nothing. The code defends
+therefore their AWS identity, so pairing would add nothing. **This reasoning
+holds only while the bind is loopback.** With `--host 0.0.0.0` any host on the
+LAN can reach the console with no `Origin` header and be waved through to a real
+deploy, so a non-loopback bind requires an explicit opt-in flag and a warning.
+
+Note also that `Origin` is absent only on same-origin GET/HEAD. Browsers always
+send it on POST, so the exemption must key on the console's own origin rather
+than on the header being missing, or the local UI's own Run button is rejected. The code defends
 against *hostile web origins*, which is a narrower claim than "authentication".
 Do not read it as an auth boundary it was never meant to be.
 
