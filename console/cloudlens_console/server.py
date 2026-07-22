@@ -8,7 +8,10 @@ Routes (nothing else is exposed):
   GET  /events/<job_id>  -> Server-Sent Events for that job (supports Last-Event-ID)
   POST /stop/<job_id>    -> cancels a running job
 
-Bind is 127.0.0.1 only - the console is never reachable off the machine.
+Bind defaults to 127.0.0.1. It is NOT loopback-only by construction: --host
+takes any address, and --allow-remote is the deliberate gate in front of a
+non-loopback bind. Off-machine callers reach a console that runs real deploys
+under the operator's AWS identity, so that gate is load-bearing, not cosmetic.
 """
 from __future__ import annotations
 import os
@@ -36,19 +39,43 @@ VERSION = "1.0"
 # accepting that any origin on the machine can read the response.
 PUBLIC_PATHS = frozenset({"/health"})
 
-# The only origins allowed to talk to this console cross-origin. The public
-# docs page is pinned by exact scheme+host; the two loopback entries are the
-# console's own UI talking to itself.
-ALLOWED_ORIGINS = frozenset({
-    "https://keysight-tech.github.io",
-    "http://127.0.0.1:8760",
-    "http://localhost:8760",
-})
+PAGES_ORIGIN = "https://keysight-tech.github.io"
+
+# CORS is defence in depth here, NOT the security boundary. This origin is
+# shared by every GitHub Pages site under the Keysight-Tech account, and the
+# same-origin policy has no path component, so any page on it can reach this
+# console. The real boundary is the pairing code: 40 bits a human types, with
+# a guess cap. Never let allowlisted-origin be read as trusted.
+#
+# Mutable, not frozen: serve() adds the loopback origins for whatever port we
+# actually bound. Seeded below for the default port so in-process tests and
+# any embedder that never calls serve() still behave.
+ALLOWED_ORIGINS = {PAGES_ORIGIN}
+
+# The console's own UI. These exist for one narrow reason: a same-origin POST
+# still carries an Origin header (per Fetch, Origin is omitted only on
+# same-origin GET/HEAD), so /run and /stop/ from our own page arrive with an
+# Origin that has to be recognised. Same-origin GETs never consult this list
+# at all - the browser does not apply CORS to them.
+SELF_ORIGINS = set()
 
 
-def _allowed_origin(origin):
-    """Echo the origin only if it is on the allowlist. Never a wildcard: this
-    console holds the visitor's AWS identity."""
+def _set_self_origins(port):
+    """Loopback origins for the console's own UI. Derive from 127.0.0.1 and
+    localhost only, never from --host: with --host 0.0.0.0 there is no
+    meaningful self-origin a browser would send."""
+    SELF_ORIGINS.clear()
+    SELF_ORIGINS.update({"http://127.0.0.1:%d" % port, "http://localhost:%d" % port})
+    ALLOWED_ORIGINS.update(SELF_ORIGINS)
+
+
+_set_self_origins(8760)
+
+
+def _origin_if_allowed(origin):
+    """Return the origin if it is on the allowlist, else None. A filter, not a
+    predicate. Never a wildcard: this console holds the visitor's AWS
+    identity, so `*` would let any site on the internet drive it."""
     return origin if origin in ALLOWED_ORIGINS else None
 
 
@@ -82,6 +109,24 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- helpers ----
+    def _cors(self):
+        """Every response path must call this. There are three (_send,
+        do_OPTIONS, _sse) and the SSE one was missed once already.
+
+        Vary: Origin is unconditional - a reject-path response that omits it
+        can be cached and replayed to an allowed origin (and 204 is
+        heuristically cacheable, so the no-store on _send is not a backstop
+        that covers do_OPTIONS).
+
+        Deliberately no Access-Control-Allow-Credentials: app.js builds
+        EventSource without withCredentials, so a bare ACAO is enough, and
+        ACAC would hand a hostile origin ambient authority.
+        """
+        origin = _origin_if_allowed(self.headers.get("Origin"))
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+
     def _send(self, code, body, ctype="application/json", extra=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body)
@@ -90,10 +135,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
-        origin = _allowed_origin(self.headers.get("Origin"))
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
+        self._cors()
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -156,19 +198,25 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- CORS preflight ----
     def do_OPTIONS(self):
-        origin = _allowed_origin(self.headers.get("Origin"))
+        origin = _origin_if_allowed(self.headers.get("Origin"))
         self.send_response(204)
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
         if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CloudLens-Pair")
+            # Last-Event-ID is set by the browser itself on EventSource
+            # reconnect, not by app.js, so it must be pre-allowed here.
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-CloudLens-Pair, Last-Event-ID")
+            # Caches the permission SHAPE (which methods/headers are legal),
+            # never authorization. The pairing code is checked per request, so
+            # revoking or rotating it takes effect immediately regardless.
             self.send_header("Access-Control-Max-Age", "600")
             # Chrome Private Network Access: a public page reaching 127.0.0.1
             # is blocked without this, and the failure is silent.
             if self.headers.get("Access-Control-Request-Private-Network") == "true":
                 self.send_header("Access-Control-Allow-Private-Network", "true")
-        self.send_header("Content-Length", "0")
+        # No Content-Length on a 204: RFC 9110 section 8.6 forbids it.
         self.end_headers()
 
     # ---- static file ----
@@ -188,6 +236,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "keep-alive")
+        self._cors()
         self.end_headers()
         last = self.headers.get("Last-Event-ID")
         try:
@@ -238,4 +287,7 @@ def _ctype(path):
 
 def serve(host="127.0.0.1", port=8760):
     httpd = ThreadingHTTPServer((host, port), Handler)
+    # The UI's own POSTs carry an Origin naming the port we actually bound,
+    # so the allowlist has to follow --port rather than assume 8760.
+    _set_self_origins(httpd.server_address[1])
     return httpd

@@ -164,6 +164,110 @@ def test_preflight_from_a_foreign_origin_grants_nothing():
     assert r.headers.get("Access-Control-Allow-Origin") is None
 
 
+def test_same_origin_post_is_not_rejected_for_its_origin():
+    # Per Fetch, Origin is omitted only on a same-origin GET/HEAD. A
+    # same-origin POST DOES send it, so app.js's /run and /stop/ arrive
+    # carrying Origin: http://localhost:8760. Any pairing exemption that keys
+    # on "no Origin header" therefore fails on the primary happy path, on the
+    # default port, for the local UI - and hides until the first Run click,
+    # because /flows is a GET.
+    for origin in ("http://localhost:8760", "http://127.0.0.1:8760"):
+        assert server._origin_if_allowed(origin) == origin, \
+            "the console's own UI must be recognised by the origin it actually sends"
+        r = _handler_response("/run", method="POST", headers={"Origin": origin},
+                              body=json.dumps({"flow": "stack", "replay": True}))
+        assert r.status == 200, "same-origin POST from our own page must not be rejected"
+        assert r.headers.get("Access-Control-Allow-Origin") == origin
+
+
+def test_self_origins_follow_the_bound_port():
+    # --port is user-settable and the docstring advertises it. If the
+    # allowlist stays pinned to 8760, the UI's own POST is blocked on any
+    # other port.
+    saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
+    try:
+        server._set_self_origins(8890)
+        assert server._origin_if_allowed("http://localhost:8890") == "http://localhost:8890"
+        assert server._origin_if_allowed("http://127.0.0.1:8890") == "http://127.0.0.1:8890"
+        assert server._origin_if_allowed(PAGES_ORIGIN) == PAGES_ORIGIN, \
+            "rebinding the port must never drop the pages origin"
+        assert server._origin_if_allowed("https://evil.example") is None
+    finally:
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
+
+
+def test_sse_emits_cors_over_a_real_socket():
+    """The SSE path builds its own headers and was missed by the first pass.
+
+    _handler_response deliberately refuses /events/ (it would block on the job
+    queue), and stubbing it out is exactly the mistake that hid a wire-level
+    bug once already - so this drives a real listener over a real socket and
+    reads what actually goes out. http.client returns once the headers are in,
+    so the never-ending body does not hang us.
+    """
+    import http.client
+    from threading import Thread
+
+    saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
+    httpd = server.serve("127.0.0.1", 0)          # port 0: never collide with a real console
+    port = httpd.server_address[1]
+    # This test walks away from a never-ending stream, which RSTs the socket
+    # and makes socketserver dump a traceback to stderr. That is the test
+    # being rude, not the server misbehaving, so swallow it HERE rather than
+    # in the handler - a real reset still surfaces in production.
+    httpd.handle_error = lambda request, addr: None
+    Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        body = json.dumps({"flow": "stack", "replay": True})
+        c.request("POST", "/run", body=body, headers={
+            "Content-Type": "application/json", "Origin": PAGES_ORIGIN,
+            "Connection": "close"})   # keep-alive would strand the socket at teardown
+        job_id = json.loads(c.getresponse().read().decode())["job_id"]
+        c.close()
+
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/events/" + job_id,
+                  headers={"Origin": PAGES_ORIGIN, "Connection": "close"})
+        r = c.getresponse()
+        assert r.status == 200
+        assert r.getheader("Content-Type") == "text/event-stream"
+        assert r.getheader("Access-Control-Allow-Origin") == PAGES_ORIGIN, \
+            "EventSource from the public page is blocked without ACAO on the stream"
+        assert "Origin" in (r.getheader("Vary") or "")
+        assert r.getheader("Access-Control-Allow-Credentials") is None, \
+            "ACAC would hand a hostile origin ambient authority; EventSource does " \
+            "not need it without withCredentials"
+        c.close()
+
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/events/" + job_id,
+                  headers={"Origin": "https://evil.example", "Connection": "close"})
+        r = c.getresponse()
+        assert r.getheader("Access-Control-Allow-Origin") is None, \
+            "a foreign origin must not be able to read the deploy stream"
+        c.close()
+    finally:
+        httpd.shutdown(); httpd.server_close()
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
+
+
+def test_non_loopback_host_needs_an_explicit_flag():
+    from cloudlens_console import __main__ as M
+    assert M.is_loopback("127.0.0.1") and M.is_loopback("localhost") and M.is_loopback("::1")
+    for bad in ("0.0.0.0", "", "::", "192.168.1.10", "example.com"):
+        assert not M.is_loopback(bad), "%r binds something reachable off-machine" % (bad,)
+    # argparse .error() exits: binding the LAN must not be a silent default
+    try:
+        M.main(["--host", "0.0.0.0", "--no-open"])
+    except SystemExit as e:
+        assert e.code != 0
+    else:
+        raise AssertionError("--host 0.0.0.0 was accepted without --allow-remote")
+
+
 def test_event_contract_roundtrip():
     for ev in (E.hello("1", "arn", "us-east-1"), E.log("hi"), E.state("vpc", E.LIVE, "live"),
                E.narrate("why", "good"), E.stat(created=3, elapsed=9), E.done("ok"),
