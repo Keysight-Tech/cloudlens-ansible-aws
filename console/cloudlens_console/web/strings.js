@@ -19,12 +19,40 @@ window.CLC_STRINGS = {
                       "to its own address on your machine. Open the console UI " +
                       "directly at http://localhost:8760.",
     pairPlaceholder:  "ABCD2345",
+    pairSubmit:       "Pair",
+    pairChecking:     "Checking…",
     connected:        "Connected to your console",
     lostConsole:      "Lost the local console. The transcript below is kept.",
     blockedPNA:       "Your browser blocked the page from reaching 127.0.0.1. " +
                       "In Chrome, enable chrome://flags/#private-network-access-respect-preflight-results, " +
                       "or open the console UI directly at http://localhost:8760.",
-    waitingOnAws:     "waiting on AWS"
+    // Distinct from lostConsole on purpose: nothing was started, so there is no
+    // transcript to keep and telling the visitor one was kept is a lie.
+    transportFailed:  "Could not reach the console on your machine. Nothing was started.",
+    copyCommand:      "Copy",
+    copiedCommand:    "Copied",
+    waitingOnAws:     "waiting on AWS",
+
+    // the run control and what it reports
+    runStart:         "Run this flow",
+    runAgain:         "Run again",
+    runBusy:          "Running…",
+    stopRun:          "Stop",
+    statusIdle:       "idle",
+    statusRunning:    "running",
+    statusComplete:   "complete",
+    statusFailed:     "failed",
+    statusStopped:    "stopped",
+
+    // the instrument's own furniture
+    inputsTitle:      "Inputs",
+    linesSuffix:      "lines",
+    acctLabel:        "acct",
+    transcriptEmpty:  "Nothing running yet. Press Run: every step is explained " +
+                      "here as it happens.",
+    cardNext:         "Next",
+    cardFailed:       "Failed",
+    cardFix:          "How to fix"
   }
 };
 
