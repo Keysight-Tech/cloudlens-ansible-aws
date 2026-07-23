@@ -147,6 +147,37 @@
   .field input{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
   .field input:focus{outline:2px solid var(--accent);outline-offset:1px}
 
+  /* the live link: the offer in replay, the code box in pairing, gone in live */
+  .link{margin-bottom:14px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+  .link[hidden]{display:none}
+  .link-txt{flex:1 1 260px;min-width:0}
+  .link-h{font-size:14px;font-weight:650}
+  .link-b{margin:2px 0 0;font-size:13px;color:var(--ink-soft)}
+  .link-cmd{display:flex;align-items:center;gap:8px}
+  .link-cmd[hidden]{display:none}
+  .link-cmd code{font-family:var(--mono);font-size:12.5px;background:var(--line-soft);
+    padding:6px 10px;border-radius:8px;color:var(--ink);white-space:nowrap}
+  .link-copy{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--ink-soft);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+  .link-copy:hover{color:var(--ink);border-color:var(--ink-faint)}
+  .link-pair{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .link-pair[hidden]{display:none}
+  .link-lab{font-size:11.5px;font-weight:600;color:var(--ink-soft)}
+  .link-in{width:11ch;font-family:var(--mono);font-size:14px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink);background:var(--paper);
+    border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .link-in:disabled{opacity:.55}
+  .link-go{font-family:var(--sans);font-size:13px;font-weight:650;background:var(--accent);
+    color:var(--accent-ink);border:0;border-radius:9px;padding:9px 16px;cursor:pointer}
+  .link-go:disabled{opacity:.55;cursor:default}
+  .link-help{flex:1 1 100%;font-size:11.5px;color:var(--ink-faint)}
+  .link-note{margin:0 0 14px;font-size:13px;color:var(--ink-soft);border-left:3px solid var(--amber);
+    background:var(--panel);border-radius:0 10px 10px 0;padding:12px 15px}
+  /* An empty live region keeps its place in the DOM - a display:none region
+     that reappears with text is announced unreliably - but takes no box. */
+  .link-note:empty{margin:0;padding:0;border:0}
+
   section{padding:56px 0;border-top:1px solid var(--line)}
   .sec-head{max-width:60ch}.sec-head h2{font-size:clamp(24px,3.2vw,34px);letter-spacing:-.03em;font-weight:780;line-height:1.05}
   .sec-head p{color:var(--ink-soft);font-size:16px;margin-top:10px}
@@ -194,17 +225,40 @@
     <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
   </nav>
   <div class="sp"></div>
+  <div class="demo-t" id="demoWrap" title="Replay real captured events - no AWS calls" hidden>
+    <span id="demoLab">Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true"
+      aria-labelledby="demoLab" tabindex="0"></div>
   </div>
   <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
 </div></header>
 
 <div class="hero"><div class="wrap">
-  <span class="badge"><span class="live"></span> <span id="modeBadge">WATCH IT DEPLOY · REAL CAPTURED RUN</span></span>
+  <span class="badge"><span class="live"></span> <span id="modeBadge"></span></span>
   <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
   <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
 </div></div>
 
 <div class="wrap">
+  <div class="link" id="link">
+    <div class="link-txt">
+      <div class="link-h" id="linkTitle"></div>
+      <p class="link-b" id="linkBody"></p>
+    </div>
+    <div class="link-cmd" id="linkCmdWrap">
+      <code id="linkCmd"></code>
+      <button class="link-copy" id="copyBtn" type="button"></button>
+    </div>
+    <form class="link-pair" id="pairForm" hidden>
+      <label class="link-lab" for="pairInput" id="pairLabel"></label>
+      <input class="link-in" id="pairInput" name="pair" type="text" maxlength="8"
+             autocomplete="off" autocorrect="off" autocapitalize="characters"
+             spellcheck="false" aria-describedby="pairHelp">
+      <button class="link-go" id="pairBtn" type="submit"></button>
+      <span class="link-help" id="pairHelp"></span>
+    </form>
+  </div>
+  <p class="link-note" id="notice" role="status" aria-live="polite"></p>
+
   <div class="instrument">
     <div class="inst-bar">
       <div class="traffic"><i></i><i></i><i></i></div>
@@ -213,14 +267,14 @@
       <div class="inst-right">
         <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
         <div class="metric">created<b id="mCreated">0</b></div>
-        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
-        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
+        <span class="pill" id="statusPill" role="status" aria-live="polite"><span class="d"></span><span id="statusTxt"></span></span>
+        <button class="stopbtn" id="stopBtn" hidden></button>
       </div>
     </div>
     <div class="inst-body">
       <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
       <div class="rightcol">
-        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs — with the why behind it.</div></div>
+        <div class="narr" id="narr"></div>
         <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
         <div class="console" id="console"></div>
       </div>
@@ -229,7 +283,7 @@
 
   <div class="rig">
     <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
-    <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+    <button class="runbtn" id="runBtn"><span class="tri"></span> <span id="runTxt"></span></button>
   </div>
 
   <div class="cfg">
@@ -391,24 +445,736 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 </section>
 
 <footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
+<script>window.__FLOWS__={"order":["stack","sensors","kvo","mirror"],"flows":{"stack":{"id":"stack","name":"Launch full stack","script":"deploy-stack.sh","subtitle":"VPC + vController + KVO + vPB, one CloudFormation deploy","inputs":[{"key":"stack","label":"Stack name","default":"cloudlens-live","placeholder":"cloudlens-live"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"},{"key":"kvo","label":"Deploy KVO","default":"yes","placeholder":"yes / no"},{"key":"vpb","label":"Deploy vPB","default":"yes","placeholder":"yes / no"}],"nodes":{"vpc":{"x":50,"y":20,"ic":"vpc","lab":"VPC","sub":"network"},"clms":{"x":22,"y":66,"ic":"clms","lab":"vController","sub":"CLMS"},"kvo":{"x":50,"y":80,"ic":"kvo","lab":"KVO","sub":"orchestrator"},"vpb":{"x":78,"y":66,"ic":"vpb","lab":"vPB","sub":"packet broker"}},"wires":[["vpc","clms"],["vpc","kvo"],["vpc","vpb"]]},"sensors":{"id":"sensors","name":"CLMS + sensors","script":"ansible-playbook","subtitle":"Register sensors straight into CloudLens Manager - no KVO","inputs":[{"key":"clms","label":"vController IP","default":"","placeholder":"20.84.115.190"},{"key":"key","label":"Project API key","default":"","placeholder":"af9aa122\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"}],"nodes":{"clms":{"x":50,"y":18,"ic":"clms","lab":"vController","sub":"CLMS"},"u":{"x":20,"y":72,"ic":"vm","lab":"Ubuntu","sub":"docker"},"r":{"x":50,"y":80,"ic":"vm","lab":"RHEL","sub":"podman"},"w":{"x":80,"y":72,"ic":"vm","lab":"Windows","sub":"service"}},"wires":[["u","clms"],["r","clms"],["w","clms"]]},"kvo":{"id":"kvo","name":"KVO + vPB + sensors","script":"kvo_adopt_clms.py / vpb_kvo_adopt.py","subtitle":"KVO as the single pane: adopt the manager and the packet broker","inputs":[{"key":"clms","label":"CLMS IP","default":"","placeholder":"10.99.1.25"},{"key":"kvo","label":"KVO IP","default":"","placeholder":"10.99.1.26"},{"key":"vpb","label":"vPB IP","default":"","placeholder":"10.99.1.30"},{"key":"cloud","label":"Cloud config","default":"prod-cloud","placeholder":"prod-cloud"}],"nodes":{"kvo":{"x":50,"y":16,"ic":"kvo","lab":"KVO","sub":"single pane"},"clms":{"x":20,"y":50,"ic":"clms","lab":"CLMS","sub":"adopted"},"vpb":{"x":80,"y":50,"ic":"vpb","lab":"vPB","sub":"Online"},"tool":{"x":80,"y":84,"ic":"tool","lab":"Tool","sub":"analyzer"},"vm":{"x":22,"y":84,"ic":"vm","lab":"Sensors","sub":"hosts"}},"wires":[["clms","kvo"],["vpb","kvo"],["vpb","tool"],["vm","clms"]]},"mirror":{"id":"mirror","name":"AWS mirror session","script":"kvo_aws_mirror.py","subtitle":"Agentless: KVO deploys collectors and drives VPC Traffic Mirroring","inputs":[{"key":"vpc","label":"Source VPC","default":"","placeholder":"vpc-0ebe57a\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"az","label":"Zone","default":"us-east-1a","placeholder":"us-east-1a"},{"key":"tool","label":"Tool IP","default":"","placeholder":"10.99.12.146"}],"nodes":{"src":{"x":20,"y":22,"ic":"vm","lab":"Nitro srcs","sub":"cloudlens=yes"},"mir":{"x":50,"y":22,"ic":"mirror","lab":"Mirror","sub":"per ENI"},"coll":{"x":50,"y":58,"ic":"coll","lab":"Collector","sub":"Service VM"},"kvo":{"x":82,"y":38,"ic":"kvo","lab":"KVO","sub":"orchestrates"},"tool":{"x":50,"y":88,"ic":"tool","lab":"Tool","sub":"analyzer"}},"wires":[["src","mir"],["mir","coll"],["coll","tool"],["kvo","coll"]]}}};window.__FIXTURES__={"stack":[{"_delay":0.2,"event":{"type":"state","node":"vpc","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"}},{"_delay":0.9,"event":{"type":"log","text":"Waiting for changeset to be created.."}},{"_delay":0.7,"event":{"type":"state","node":"vpc","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"}},{"_delay":1.1,"event":{"type":"state","node":"vpc","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::VPC  Vpc"}},{"_delay":0.4,"event":{"type":"narrate","text":"Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"}},{"_delay":0.6,"event":{"created":1,"type":"stat"}},{"_delay":0.7,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"}},{"_delay":0.5,"event":{"type":"narrate","text":"Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.","tone":"note"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the CloudLens Manager \u2014 the control plane every sensor registers to.","tone":"info"}},{"_delay":1.4,"event":{"type":"state","node":"clms","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.4,"event":{"type":"narrate","text":"vController is up. It still needs ~15 min to initialize before you can log in.","tone":"good"}},{"_delay":0.5,"event":{"created":2,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"kvo","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"created":3,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"vpb","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"created":4,"type":"stat"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"}},{"_delay":0.4,"event":{"type":"done","summary":"Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.","outputs":{"note":"Log in at the vController URL once initialized, then run Flow 02 or 03."}}}],"sensors":[{"_delay":0.2,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"u","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"r","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"w","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ vcontroller_project_key.py --clms 20.84.115.190"}},{"_delay":0.9,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vctl] login ok \u00b7 rotating first-login password"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"live","label":"project"}},{"_delay":0.3,"event":{"type":"narrate","text":"Project key retrieved \u2014 the forced first-login password change was handled automatically.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"}},{"_delay":0.7,"event":{"type":"state","node":"u","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"}},{"_delay":1.0,"event":{"type":"state","node":"u","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ubuntu sensor registered \u2014 Register status 200.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"r","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [redhat : podman run \u2026/sensor]"}},{"_delay":1.0,"event":{"type":"state","node":"r","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"RHEL sensor registered.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"w","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [windows : cloudlens-win-sensor.exe /install /quiet]"}},{"_delay":1.1,"event":{"type":"state","node":"w","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Windows sensor registered \u2014 service CloudLens running.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"}},{"_delay":0.4,"event":{"type":"done","summary":"3 sensors registered \u00b7 sensorCount = 3.","outputs":{"note":"Watch them in the vController UI under your project."}}}],"kvo":[{"_delay":0.2,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vm","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-adopt] KVO EULA accepted \u00b7 licenses active"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"live","label":"licensed"}},{"_delay":0.3,"event":{"type":"narrate","text":"EULA accepted and licenses active \u2014 every KVO write is unblocked.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"[kvo-adopt] createCloudLensManager \u00b7 committing change request"}},{"_delay":1.1,"event":{"type":"log","text":"[kvo-adopt]   clms-live status: CONNECTED"}},{"_delay":0.5,"event":{"type":"state","node":"clms","status":"live","label":"CONNECTED"}},{"_delay":0.3,"event":{"type":"narrate","text":"CLMS is CONNECTED; the Cloud Config provisions the working project key.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"}},{"_delay":0.6,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"}},{"_delay":1.2,"event":{"type":"log","text":"[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"}},{"_delay":0.5,"event":{"type":"state","node":"vpb","status":"live","label":"Online"}},{"_delay":0.3,"event":{"type":"narrate","text":"vPB is Online and auto-licensed \u2014 KVO built its Device Config.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"vm","status":"live","label":"3 hosts"}},{"_delay":0.3,"event":{"type":"narrate","text":"Sensors registered under KVO management.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.","outputs":{}}}],"mirror":[{"_delay":0.2,"event":{"type":"state","node":"src","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"mir","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"coll","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"}},{"_delay":0.6,"event":{"type":"state","node":"kvo","status":"live","label":"IAM ok"}},{"_delay":0.3,"event":{"type":"narrate","text":"Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"}},{"_delay":0.6,"event":{"type":"state","node":"src","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"}},{"_delay":0.9,"event":{"type":"state","node":"src","status":"live","label":"3 Nitro"}},{"_delay":0.3,"event":{"type":"narrate","text":"Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"coll","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"}},{"_delay":1.3,"event":{"type":"log","text":"[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"}},{"_delay":0.5,"event":{"type":"state","node":"coll","status":"live","label":"up"}},{"_delay":0.3,"event":{"type":"narrate","text":"Collector up; traffic-mirror target and filter created.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.4,"event":{"type":"log","text":"[kvo-mirror] tool bound \u00b7 monitoring policy committed"}},{"_delay":0.3,"event":{"type":"narrate","text":"Tool bound and the monitoring policy committed.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"mir","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"}},{"_delay":0.9,"event":{"type":"state","node":"mir","status":"live","label":"3 sessions"}},{"_delay":0.3,"event":{"type":"narrate","text":"VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.","outputs":{}}}]};</script><script>// Every user-facing string. Translation later replaces this object, nothing
+// else: add a sibling language key (fr, pt, de, es, hi ...) and set
+// window.CLC_LANG. No user-visible text belongs anywhere but this table.
+//
+// Plain ES5 on purpose: loaded with a bare <script> tag, no build step.
+window.CLC_STRINGS = {
+  en: {
+    liveBadge:        "LIVE",
+    replayBadge:      "REPLAY",
+    goLiveTitle:      "Run this for real",
+    goLiveBody:       "Start the console on your machine, then paste its pairing code.",
+    goLiveCommand:    "python3 -m cloudlens_console",
+    pairPrompt:       "Pairing code",
+    pairHelp:         "Eight characters, shown in the console banner.",
+    pairBad:          "That code did not match. Check the console banner.",
+    pairDisabled:     "The console stopped accepting codes after too many wrong " +
+                      "attempts. Restart it on your machine to get a new pairing code.",
+    hostRefused:      "The console refused the request as unsafe: it only answers " +
+                      "to its own address on your machine. Open the console UI " +
+                      "directly at http://localhost:8760.",
+    pairPlaceholder:  "ABCD2345",
+    pairSubmit:       "Pair",
+    pairChecking:     "Checking…",
+    connected:        "Connected to your console",
+    lostConsole:      "Lost the local console. The transcript below is kept.",
+    blockedPNA:       "Your browser blocked the page from reaching 127.0.0.1. " +
+                      "In Chrome, enable chrome://flags/#private-network-access-respect-preflight-results, " +
+                      "or open the console UI directly at http://localhost:8760.",
+    // Distinct from lostConsole on purpose: nothing was started, so there is no
+    // transcript to keep and telling the visitor one was kept is a lie.
+    transportFailed:  "Could not reach the console on your machine. Nothing was started.",
+    copyCommand:      "Copy",
+    copiedCommand:    "Copied",
+    waitingOnAws:     "waiting on AWS",
 
-<script>window.__FLOWS__={"order":["stack","sensors","kvo","mirror"],"flows":{"stack":{"id":"stack","name":"Launch full stack","script":"deploy-stack.sh","subtitle":"VPC + vController + KVO + vPB, one CloudFormation deploy","inputs":[{"key":"stack","label":"Stack name","default":"cloudlens-live","placeholder":"cloudlens-live"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"},{"key":"kvo","label":"Deploy KVO","default":"yes","placeholder":"yes / no"},{"key":"vpb","label":"Deploy vPB","default":"yes","placeholder":"yes / no"}],"nodes":{"vpc":{"x":50,"y":20,"ic":"vpc","lab":"VPC","sub":"network"},"clms":{"x":22,"y":66,"ic":"clms","lab":"vController","sub":"CLMS"},"kvo":{"x":50,"y":80,"ic":"kvo","lab":"KVO","sub":"orchestrator"},"vpb":{"x":78,"y":66,"ic":"vpb","lab":"vPB","sub":"packet broker"}},"wires":[["vpc","clms"],["vpc","kvo"],["vpc","vpb"]]},"sensors":{"id":"sensors","name":"CLMS + sensors","script":"ansible-playbook","subtitle":"Register sensors straight into CloudLens Manager - no KVO","inputs":[{"key":"clms","label":"vController IP","default":"","placeholder":"20.84.115.190"},{"key":"key","label":"Project API key","default":"","placeholder":"af9aa122\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"}],"nodes":{"clms":{"x":50,"y":18,"ic":"clms","lab":"vController","sub":"CLMS"},"u":{"x":20,"y":72,"ic":"vm","lab":"Ubuntu","sub":"docker"},"r":{"x":50,"y":80,"ic":"vm","lab":"RHEL","sub":"podman"},"w":{"x":80,"y":72,"ic":"vm","lab":"Windows","sub":"service"}},"wires":[["u","clms"],["r","clms"],["w","clms"]]},"kvo":{"id":"kvo","name":"KVO + vPB + sensors","script":"kvo_adopt_clms.py / vpb_kvo_adopt.py","subtitle":"KVO as the single pane: adopt the manager and the packet broker","inputs":[{"key":"clms","label":"CLMS IP","default":"","placeholder":"10.99.1.25"},{"key":"kvo","label":"KVO IP","default":"","placeholder":"10.99.1.26"},{"key":"vpb","label":"vPB IP","default":"","placeholder":"10.99.1.30"},{"key":"cloud","label":"Cloud config","default":"prod-cloud","placeholder":"prod-cloud"}],"nodes":{"kvo":{"x":50,"y":16,"ic":"kvo","lab":"KVO","sub":"single pane"},"clms":{"x":20,"y":50,"ic":"clms","lab":"CLMS","sub":"adopted"},"vpb":{"x":80,"y":50,"ic":"vpb","lab":"vPB","sub":"Online"},"tool":{"x":80,"y":84,"ic":"tool","lab":"Tool","sub":"analyzer"},"vm":{"x":22,"y":84,"ic":"vm","lab":"Sensors","sub":"hosts"}},"wires":[["clms","kvo"],["vpb","kvo"],["vpb","tool"],["vm","clms"]]},"mirror":{"id":"mirror","name":"AWS mirror session","script":"kvo_aws_mirror.py","subtitle":"Agentless: KVO deploys collectors and drives VPC Traffic Mirroring","inputs":[{"key":"vpc","label":"Source VPC","default":"","placeholder":"vpc-0ebe57a\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"az","label":"Zone","default":"us-east-1a","placeholder":"us-east-1a"},{"key":"tool","label":"Tool IP","default":"","placeholder":"10.99.12.146"}],"nodes":{"src":{"x":20,"y":22,"ic":"vm","lab":"Nitro srcs","sub":"cloudlens=yes"},"mir":{"x":50,"y":22,"ic":"mirror","lab":"Mirror","sub":"per ENI"},"coll":{"x":50,"y":58,"ic":"coll","lab":"Collector","sub":"Service VM"},"kvo":{"x":82,"y":38,"ic":"kvo","lab":"KVO","sub":"orchestrates"},"tool":{"x":50,"y":88,"ic":"tool","lab":"Tool","sub":"analyzer"}},"wires":[["src","mir"],["mir","coll"],["coll","tool"],["kvo","coll"]]}}};window.__FIXTURES__={"stack":[{"_delay":0.2,"event":{"type":"state","node":"vpc","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"}},{"_delay":0.9,"event":{"type":"log","text":"Waiting for changeset to be created.."}},{"_delay":0.7,"event":{"type":"state","node":"vpc","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"}},{"_delay":1.1,"event":{"type":"state","node":"vpc","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::VPC  Vpc"}},{"_delay":0.4,"event":{"type":"narrate","text":"Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"}},{"_delay":0.6,"event":{"created":1,"type":"stat"}},{"_delay":0.7,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"}},{"_delay":0.5,"event":{"type":"narrate","text":"Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.","tone":"note"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the CloudLens Manager \u2014 the control plane every sensor registers to.","tone":"info"}},{"_delay":1.4,"event":{"type":"state","node":"clms","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.4,"event":{"type":"narrate","text":"vController is up. It still needs ~15 min to initialize before you can log in.","tone":"good"}},{"_delay":0.5,"event":{"created":2,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"kvo","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"created":3,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"vpb","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"created":4,"type":"stat"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"}},{"_delay":0.4,"event":{"type":"done","summary":"Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.","outputs":{"note":"Log in at the vController URL once initialized, then run Flow 02 or 03."}}}],"sensors":[{"_delay":0.2,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"u","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"r","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"w","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ vcontroller_project_key.py --clms 20.84.115.190"}},{"_delay":0.9,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vctl] login ok \u00b7 rotating first-login password"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"live","label":"project"}},{"_delay":0.3,"event":{"type":"narrate","text":"Project key retrieved \u2014 the forced first-login password change was handled automatically.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"}},{"_delay":0.7,"event":{"type":"state","node":"u","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"}},{"_delay":1.0,"event":{"type":"state","node":"u","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ubuntu sensor registered \u2014 Register status 200.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"r","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [redhat : podman run \u2026/sensor]"}},{"_delay":1.0,"event":{"type":"state","node":"r","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"RHEL sensor registered.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"w","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [windows : cloudlens-win-sensor.exe /install /quiet]"}},{"_delay":1.1,"event":{"type":"state","node":"w","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Windows sensor registered \u2014 service CloudLens running.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"}},{"_delay":0.4,"event":{"type":"done","summary":"3 sensors registered \u00b7 sensorCount = 3.","outputs":{"note":"Watch them in the vController UI under your project."}}}],"kvo":[{"_delay":0.2,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vm","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-adopt] KVO EULA accepted \u00b7 licenses active"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"live","label":"licensed"}},{"_delay":0.3,"event":{"type":"narrate","text":"EULA accepted and licenses active \u2014 every KVO write is unblocked.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"[kvo-adopt] createCloudLensManager \u00b7 committing change request"}},{"_delay":1.1,"event":{"type":"log","text":"[kvo-adopt]   clms-live status: CONNECTED"}},{"_delay":0.5,"event":{"type":"state","node":"clms","status":"live","label":"CONNECTED"}},{"_delay":0.3,"event":{"type":"narrate","text":"CLMS is CONNECTED; the Cloud Config provisions the working project key.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"}},{"_delay":0.6,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"}},{"_delay":1.2,"event":{"type":"log","text":"[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"}},{"_delay":0.5,"event":{"type":"state","node":"vpb","status":"live","label":"Online"}},{"_delay":0.3,"event":{"type":"narrate","text":"vPB is Online and auto-licensed \u2014 KVO built its Device Config.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"vm","status":"live","label":"3 hosts"}},{"_delay":0.3,"event":{"type":"narrate","text":"Sensors registered under KVO management.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.","outputs":{}}}],"mirror":[{"_delay":0.2,"event":{"type":"state","node":"src","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"mir","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"coll","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"}},{"_delay":0.6,"event":{"type":"state","node":"kvo","status":"live","label":"IAM ok"}},{"_delay":0.3,"event":{"type":"narrate","text":"Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"}},{"_delay":0.6,"event":{"type":"state","node":"src","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"}},{"_delay":0.9,"event":{"type":"state","node":"src","status":"live","label":"3 Nitro"}},{"_delay":0.3,"event":{"type":"narrate","text":"Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"coll","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"}},{"_delay":1.3,"event":{"type":"log","text":"[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"}},{"_delay":0.5,"event":{"type":"state","node":"coll","status":"live","label":"up"}},{"_delay":0.3,"event":{"type":"narrate","text":"Collector up; traffic-mirror target and filter created.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.4,"event":{"type":"log","text":"[kvo-mirror] tool bound \u00b7 monitoring policy committed"}},{"_delay":0.3,"event":{"type":"narrate","text":"Tool bound and the monitoring policy committed.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"mir","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"}},{"_delay":0.9,"event":{"type":"state","node":"mir","status":"live","label":"3 sessions"}},{"_delay":0.3,"event":{"type":"narrate","text":"VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.","outputs":{}}}]};</script><script>
-(function(){
+    // the run control and what it reports
+    runStart:         "Run this flow",
+    runAgain:         "Run again",
+    runBusy:          "Running…",
+    stopRun:          "Stop",
+    statusIdle:       "idle",
+    statusRunning:    "running",
+    statusComplete:   "complete",
+    statusFailed:     "failed",
+    statusStopped:    "stopped",
+    // Not "failed": the deploy is still running on their machine, we simply
+    // cannot see it any more.
+    statusLost:       "disconnected",
+
+    // the instrument's own furniture
+    inputsTitle:      "Inputs",
+    linesSuffix:      "lines",
+    acctLabel:        "acct",
+    transcriptEmpty:  "Nothing running yet. Press Run: every step is explained " +
+                      "here as it happens.",
+    cardNext:         "Next",
+    cardFailed:       "Failed",
+    cardFix:          "How to fix"
+  }
+};
+
+// Never returns undefined: an unknown or untranslated key degrades to the key
+// itself, so a gap shows up as visible text rather than an empty element.
+window.CLC_T = function (key) {
+  var lang = (window.CLC_LANG || "en");
+  var tbl = window.CLC_STRINGS[lang] || window.CLC_STRINGS.en;
+  return tbl[key] || window.CLC_STRINGS.en[key] || key;
+};
+</script><script>// The bridge between the public docs page and a console running on the
+// visitor's own machine.
+//
+// The page ships as a REPLAY of captured real events and must keep working
+// that way for every visitor forever. If a console happens to be listening on
+// 127.0.0.1, the same UI can instead drive a real deploy on that machine and
+// stream its real output. Three states the visitor can be in:
+//
+//   replay  - no console found. What ships today, and the fallback from every
+//             failure path. Never an error.
+//   pairing - a console answered /health, and we need the 8 characters it
+//             printed in its terminal before it will act for us.
+//   live    - paired, streaming real Server-Sent Events off that machine.
+//
+// This file is two halves, deliberately separated:
+//
+//   the MACHINE - pure. (state, event) -> state. No fetch, no DOM, no timers,
+//                 no clock. Every rule about what the visitor sees lives here,
+//                 which is what makes it testable in node with synthetic
+//                 events (see tests/test_bridge.mjs).
+//   the TRANSPORT - the only part that touches fetch/EventSource. It turns
+//                 network outcomes into machine events and nothing else.
+//
+// No user-facing text appears here. The machine records a KEY, and the one
+// place text is produced is text(), which asks window.CLC_T for it.
+//
+// ES5 on purpose: loaded with a bare <script> tag, no build step. The wrapper
+// hands the same object to a browser (window.CLC_BRIDGE) and to node
+// (module.exports), so the test imports the exact file the page loads.
+(function (root, factory) {
+  var api = factory();
+  if (typeof module === "object" && module && module.exports) {
+    module.exports = api;
+  }
+  if (root) { root.CLC_BRIDGE = api; }
+}(typeof window !== "undefined" ? window : null, function () {
+  "use strict";
+
+  // Every state the visitor can be in. Spelled out rather than inferred, so a
+  // typo is a missing key rather than a silent new state.
+  var STATES = {
+    REPLAY: "replay",       // no live console: play the captured events
+    PAIRING: "pairing",     // a console is there, waiting on the code
+    LIVE: "live",           // paired, streaming a real deploy
+    FINISHED: "finished",   // the deploy ended, transcript kept
+    FAILED: "failed",       // the deploy ended badly, transcript kept
+    LOST: "lost",           // the console went away mid-job, transcript kept
+    DISABLED: "disabled",   // the console stopped accepting codes until restart
+    REFUSED: "refused"      // the console refused the request as unsafe
+  };
+
+  // ---- identifying OUR console -------------------------------------------
+  //
+  // /health is the only unauthenticated route, and it answers a closed body:
+  //   {"ok": true, "service": "cloudlens-console", "version": "1.0"}
+  // and nothing else, by design - it must leak no account, region, hostname or
+  // path to an unauthenticated prober.
+  //
+  // "service" is the identification, and it is a fact rather than a guess: the
+  // console states what it is, and this compares that string exactly. Without
+  // it there was nothing to match on but the SHAPE of a two-key body, and any
+  // dev server answering {ok:true, version:"1.0"} was indistinguishable from
+  // our console - a false positive that puts the visitor in front of a pairing
+  // prompt a stranger can never accept.
+  //
+  // The rest of the shape is still held exactly, because a body that carries
+  // our name and then does not look like ours is a mismatch worth refusing:
+  // the closed key set, ok strictly boolean true, and version the wire-contract
+  // number (N.N, never a SHA or a build id, for the fingerprinting reason).
+  // Note the Server header would be a cleaner marker but is not readable
+  // cross-origin, so the body is all a public page gets.
+  var SERVICE = "cloudlens-console";
+  var VERSION_RE = /^\d+\.\d+$/;
+
+  // The major version we know how to talk to. A console announcing 2.x speaks
+  // a contract this file has not been written against, so it is not ours to
+  // drive: better replay than a half-understood live deploy.
+  var WIRE_MAJOR = "1";
+
+  function isOurConsole(body) {
+    if (!body || typeof body !== "object" || Object.prototype.toString.call(body) === "[object Array]") {
+      return false;
+    }
+    var keys = [];
+    for (var k in body) {
+      if (Object.prototype.hasOwnProperty.call(body, k)) { keys.push(k); }
+    }
+    if (keys.length !== 3) { return false; }
+    if (body.service !== SERVICE) { return false; }
+    if (body.ok !== true) { return false; }
+    if (typeof body.version !== "string" || !VERSION_RE.test(body.version)) { return false; }
+    return body.version.split(".")[0] === WIRE_MAJOR;
+  }
+
+  // ---- the pairing code ---------------------------------------------------
+  //
+  // 8 characters over an alphabet with no O/0 and no I/1, because a human
+  // reads it off a terminal and types it into a browser. Checked here only to
+  // avoid spending one of a cumulative, never-reset guess budget on input that
+  // cannot possibly be the code.
+  //
+  // NOT normalised, and specifically not upper-cased. The server compares with
+  // hmac.compare_digest, which is byte for byte, so anything this function
+  // "helpfully" rewrote would be a different code on the wire.
+  var CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+
+  function looksLikeCode(s) {
+    return typeof s === "string" && CODE_RE.test(s);
+  }
+
+  // What the server answers with when it will not act for us. Three distinct
+  // situations that must never be shown as one:
+  //
+  //   401 "pairing required"  - the code did not match. Retry is the remedy,
+  //                             and the visitor stays in pairing.
+  //   403 "pairing disabled, restart the console" - the guess cap fired and
+  //                             the process discarded its code permanently.
+  //                             Retyping the RIGHT code now fails forever, so
+  //                             telling the visitor to check their typing is
+  //                             actively wrong: only a restart helps.
+  //   403 "bad host"          - the request was addressed to a name that is
+  //                             not the console's own, so it refused it as
+  //                             unsafe before pairing was even consulted.
+  //
+  // Matched on the body, never on the status: the last two are both 403.
+  var DENIALS = {
+    "pairing disabled, restart the console": { name: STATES.DISABLED, notice: "pairDisabled" },
+    "bad host": { name: STATES.REFUSED, notice: "hostRefused" }
+  };
+
+  // Anything we do not recognise, including a 500 or an empty body, falls here.
+  // The safe default is "not paired": the alternative is to treat an
+  // unexplained refusal as success and then show a live badge over a UI that
+  // is in fact still replaying.
+  var DENIAL_DEFAULT = { name: STATES.PAIRING, notice: "pairBad" };
+
+  // The states in which we hold a working pairing: live, and the three a
+  // finished deploy leaves behind. All four can start another deploy, and none
+  // of the others can - /run from replay, pairing, disabled or refused has
+  // nothing to answer it.
+  var PAIRED = {};
+  PAIRED[STATES.LIVE] = 1;
+  PAIRED[STATES.FINISHED] = 1;
+  PAIRED[STATES.FAILED] = 1;
+  PAIRED[STATES.LOST] = 1;
+
+  // The state a stream event ends the job in, or null when the job carries on.
+  //
+  // `done` is terminal. `error` is terminal only when it names no node:
+  // events.py reports a failed resource with error(node=...) while the deploy
+  // continues, so treating every error as the end would black out the rest of
+  // a live deploy over a failure the operator can watch recover.
+  function endedBy(ev) {
+    if (!ev || typeof ev.type !== "string") { return null; }
+    if (ev.type === "done") { return STATES.FINISHED; }
+    if (ev.type === "error" && ev.node === undefined) { return STATES.FAILED; }
+    return null;
+  }
+
+  // ---- the machine --------------------------------------------------------
+
+  function initial() {
+    return {
+      name: STATES.REPLAY,
+      notice: null,       // a key for window.CLC_T, never a sentence
+      transcript: [],     // every SSE event we accepted, in order
+      jobId: null,
+      version: null
+    };
+  }
+
+  // A new state object every time. Never mutate the one handed in: the caller
+  // may still be holding it, and a reducer that edits its input cannot be
+  // reasoned about from the test alone.
+  function next(state, over) {
+    var out = {
+      name: state.name,
+      notice: state.notice,
+      transcript: state.transcript,
+      jobId: state.jobId,
+      version: state.version
+    };
+    for (var k in over) {
+      if (Object.prototype.hasOwnProperty.call(over, k)) { out[k] = over[k]; }
+    }
+    return out;
+  }
+
+  function reduce(state, event) {
+    if (!state) { state = initial(); }
+    if (!event || typeof event.type !== "string") { return state; }
+
+    switch (event.type) {
+
+      // A console answered. Only ours earns a pairing prompt.
+      case "probe.ok":
+        if (!isOurConsole(event.body)) { return next(state, {}); }
+        if (state.name === STATES.PAIRING || state.name === STATES.LIVE) {
+          return next(state, { version: event.body.version });
+        }
+        return next(state, {
+          name: STATES.PAIRING, notice: null, version: event.body.version
+        });
+
+      // The probe did not answer. This is NOT evidence that no console is
+      // running: Private Network Access blocks the request before it leaves
+      // the browser and reports the same generic failure. So it degrades to
+      // replay, and only says something when the transport could attribute it.
+      case "probe.fail":
+        return next(state, {
+          name: STATES.REPLAY,
+          notice: event.reason === "blocked" ? "blockedPNA" : null,
+          jobId: null,
+          version: null
+        });
+
+      // The code was accepted: an acting route answered 200.
+      case "pair.ok":
+        if (state.name !== STATES.PAIRING) { return next(state, {}); }
+        return next(state, { name: STATES.LIVE, notice: "connected" });
+
+      // The console would not act for us. Which of the three it is decides
+      // whether the visitor has anything left to try.
+      case "pair.denied":
+        var d = DENIALS[event.error] || DENIAL_DEFAULT;
+        // A dead end is a dead end wherever it arrives. The guess cap is
+        // global and cumulative, so another tab on the same machine can
+        // disable pairing while we hold a live session, and every later
+        // acting request fails permanently: the visitor has to be told.
+        // The retry case is the opposite - outside pairing there is nothing
+        // to retype, and a wrong-code banner must not tear down a live view.
+        if (d === DENIAL_DEFAULT && state.name !== STATES.PAIRING) {
+          return next(state, {});
+        }
+        return next(state, { name: d.name, notice: d.notice });
+
+      // /run handed back an id. It is a capability, not a label: /events/<id>
+      // has no pairing check because EventSource cannot send headers, so
+      // holding the id IS the authority to read that deploy.
+      //
+      // Accepted from every state a PAIRED console leaves us in, not from LIVE
+      // alone. The first deploy ends in finished, failed or lost, and "run
+      // again" is the ordinary next thing a visitor does: while this took LIVE
+      // only, the second run's id was dropped, every frame after it was refused
+      // as arriving outside a live state, and the page reported the previous
+      // run's "complete" the instant the new one started.
+      //
+      // The notice goes with it. A banner about the last run's lost connection
+      // sitting over a run that has just started is a sentence about nothing.
+      case "job.started":
+        if (!PAIRED[state.name]) { return next(state, {}); }
+        return next(state, {
+          name: STATES.LIVE, notice: null, jobId: event.jobId, transcript: []
+        });
+
+      // One frame off the real stream. Appended to a COPY: a state object
+      // already handed to a renderer must not change under it.
+      case "sse.event":
+        if (state.name !== STATES.LIVE || !event.event) { return next(state, {}); }
+        var kept = state.transcript.slice();
+        kept.push(event.event);
+        var ended = endedBy(event.event);
+        // The notice is cleared on the way out. It still says "connected" from
+        // pairing, and a finished job carrying a banner about the connection
+        // reads as though something is still running.
+        return next(state, {
+          name: ended || state.name,
+          notice: ended ? null : state.notice,
+          transcript: kept
+        });
+
+      // The stream broke. After the job ended this is the normal close (the
+      // server sends Connection: close and stops), so it is only a loss while
+      // the job was still running. The transcript is kept either way: the
+      // deploy is still running on their machine, and throwing away what we
+      // saw of it helps nobody.
+      case "sse.error":
+        if (state.name !== STATES.LIVE) { return next(state, {}); }
+        return next(state, { name: STATES.LOST, notice: "lostConsole" });
+    }
+    return next(state, {});
+  }
+
+  // What the PAGE is doing, which is not the same as which of the eight states
+  // the machine is in. Three panels, and several states share one:
+  //
+  //   a finished, failed or lost deploy is still the LIVE view - the transcript
+  //   is what the visitor is reading, and swapping it for a pairing box would
+  //   throw away the thing they came for.
+  //   a disabled or refused console is still the PAIRING panel - that is where
+  //   the explanation belongs - but with nothing left to type, which is why the
+  //   caller must still branch on the state name for the input itself.
+  //
+  // Spelled out per state rather than derived, so a new state is a missing key
+  // (and falls to replay, the safe panel) instead of silently landing in live.
+  var PHASES = {
+    replay: "replay",
+    pairing: "pairing", disabled: "pairing", refused: "pairing",
+    live: "live", finished: "live", failed: "live", lost: "live"
+  };
+
+  function phase(state) {
+    return (state && PHASES[state.name]) || "replay";
+  }
+
+  // The ONE place a state turns into words. The machine only ever records a
+  // key, so every sentence the visitor reads comes out of the table in
+  // strings.js and can be translated by adding a sibling language to it.
+  // Returns null rather than "" for a state with nothing to say, so a caller
+  // can tell "no message" from "an empty message".
+  function text(state) {
+    if (!state || !state.notice) { return null; }
+    var t = (typeof window !== "undefined" ? window.CLC_T : null) ||
+            (typeof globalThis !== "undefined" ? globalThis.CLC_T : null);
+    return t ? t(state.notice) : state.notice;
+  }
+
+  // ---- the transport ------------------------------------------------------
+  //
+  // The only half that touches the network. It turns outcomes into machine
+  // events and decides nothing else: no state name and no string key is
+  // chosen down here.
+
+  var DEFAULT_BASE = "http://127.0.0.1:8760";
+
+  // Named events, from events.py. EventSource fires "message" only for frames
+  // with no event: line, and every frame the console sends names its type, so
+  // each one needs its own listener or the stream looks silent.
+  var EVENT_TYPES = ["hello", "log", "state", "narrate", "stat", "done", "error"];
+
+  // Frames that end the job. Kept beside EVENT_TYPES so the transport knows
+  // when to close the socket, while endedBy() stays the machine's own rule.
+  function isTerminalFrame(ev) { return endedBy(ev) !== null; }
+
+  // Whether a failed probe is worth blaming on Private Network Access.
+  //
+  // A GUESS, and it is allowed to be one: it only ever picks between saying
+  // nothing and offering advice, because both paths land in replay. Chrome
+  // gives a public page no way to tell the PNA block from a closed port - both
+  // reject with the same TypeError - so the only signal available is that we
+  // are the kind of page the block applies to: a secure, non-loopback origin
+  // reaching loopback. Never let this read as a diagnosis.
+  function looksBlocked(loc) {
+    if (!loc) { return false; }
+    if (loc.protocol !== "https:") { return false; }
+    return loc.hostname !== "localhost" && loc.hostname.indexOf("127.") !== 0;
+  }
+
+  // The pairing header. The visitor's code travels on it for every acting
+  // request; the SSE stream cannot carry it and does not need to.
+  var PAIR_HEADER = "X-CloudLens-Pair";
+
+  // ---- where the console is, and whether this page IS the console ---------
+  //
+  // The console serves this very file at /web/app.js, so a page loaded over
+  // http from a loopback host was served BY a console, and its own origin is
+  // that console - whatever --port it was given. Any other page has no way to
+  // learn the port and can only try the default.
+  var LOOPBACK_HOSTS = { "localhost": 1, "::1": 1, "[::1]": 1 };
+
+  function isLoopbackHost(h) {
+    return typeof h === "string" &&
+           (LOOPBACK_HOSTS[h] === 1 || h.indexOf("127.") === 0);
+  }
+
+  // NOT a permission, and it grants nothing. server.py exempts its own origins
+  // from pairing because local code already has the shell and the AWS identity;
+  // this only records that the exemption is the one about to apply, so the
+  // console's own page can attach instead of asking for a code that would not
+  // be compared against anything.
+  function isSelfHosted(loc) {
+    return !!(loc && loc.protocol === "http:" && isLoopbackHost(loc.hostname));
+  }
+
+  function baseFor(loc) {
+    return isSelfHosted(loc) ? loc.protocol + "//" + loc.host : DEFAULT_BASE;
+  }
+
+  function create(opts) {
+    opts = opts || {};
+    var base = opts.base || DEFAULT_BASE;
+    var fetchFn = opts.fetch || (typeof fetch !== "undefined" ? fetch : null);
+    var ES = opts.EventSource || (typeof EventSource !== "undefined" ? EventSource : null);
+    var loc = opts.location || (typeof location !== "undefined" ? location : null);
+    var state = initial();
+    var code = null;
+    var stream = null;
+
+    function dispatch(event) {
+      state = reduce(state, event);
+      if (opts.onState) { opts.onState(state, event); }
+      return state;
+    }
+
+    function headers() {
+      var h = { "Content-Type": "application/json" };
+      if (code) { h[PAIR_HEADER] = code; }
+      return h;
+    }
+
+    // The refusal body, or "" for anything unreadable. The machine falls back
+    // to "wrong code" on an unrecognised value, so an unparseable body is safe
+    // here: it can only ever be less specific, never wrongly reassuring.
+    function denial(r) {
+      return r.json().then(function (b) {
+        return (b && typeof b.error === "string") ? b.error : "";
+      }, function () { return ""; });
+    }
+
+    return {
+      state: function () { return state; },
+
+      // Is a console there? Answers into the machine, never by throwing: a
+      // rejection here is the ordinary case for the overwhelming majority of
+      // visitors, who have no console running at all.
+      probe: function () {
+        if (!fetchFn) {
+          dispatch({ type: "probe.fail", reason: "network" });
+          return Promise.resolve(state);
+        }
+        return fetchFn(base + "/health", { mode: "cors", cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) { throw new Error("health"); }
+            return r.json();
+          })
+          .then(function (body) { return dispatch({ type: "probe.ok", body: body }); },
+                function () {
+                  return dispatch({
+                    type: "probe.fail",
+                    reason: looksBlocked(loc) ? "blocked" : "network"
+                  });
+                });
+      },
+
+      // Pair with no code at all, for the console's OWN page.
+      //
+      // On that page the code box is theatre: the request carries a loopback
+      // origin, server.py exempts it, and any eight characters would be
+      // "accepted". Asking for one would teach the visitor that a code they
+      // made up works.
+      //
+      // Refuses to leave a page the exemption does not cover, because there
+      // the same request is a GUESS: the budget is cumulative and never resets,
+      // so an automatic attempt would spend one of the visitor's 200 on every
+      // page load, and buy a half-second delay for it.
+      //
+      // A refusal dispatches NOTHING. The visitor typed no code, so "that code
+      // did not match" would be a sentence about something they never did:
+      // pairing simply stays up and waits for one.
+      attach: function () {
+        if (!isSelfHosted(loc)) { return Promise.resolve(state); }
+        return fetchFn(base + "/flows", { mode: "cors", cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) { return state; }
+            return r.json().then(function (flows) {
+              return dispatch({ type: "pair.ok", flows: flows });
+            });
+          }, function () { return state; });
+      },
+
+      // Try the code the visitor typed. /flows is the cheapest paired route
+      // and has no side effect, so a wrong guess costs a rejected read rather
+      // than a half-started deploy.
+      pair: function (typed) {
+        if (!looksLikeCode(typed)) {
+          return Promise.resolve(dispatch({
+            type: "pair.denied", status: 0, error: ""
+          }));
+        }
+        code = typed;
+        return fetchFn(base + "/flows", { mode: "cors", cache: "no-store",
+                                          headers: headers() })
+          .then(function (r) {
+            if (r.ok) {
+              return r.json().then(function (flows) {
+                return dispatch({ type: "pair.ok", flows: flows });
+              });
+            }
+            code = null;
+            return denial(r).then(function (err) {
+              return dispatch({ type: "pair.denied", status: r.status, error: err });
+            });
+          }, function () {
+            code = null;
+            return dispatch({
+              type: "probe.fail", reason: looksBlocked(loc) ? "blocked" : "network"
+            });
+          });
+      },
+
+      // Start a real deploy and stream it.
+      //
+      // `replay` is the CONSOLE's own fixture replay (server.py: /run replays
+      // fixtures/<flow>.json instead of calling AWS), and has nothing to do
+      // with the page's replay state. It is the operator's guard against a
+      // demo click spending real money, so it travels explicitly on every run
+      // rather than being defaulted anywhere.
+      run: function (flow, inputs, replay) {
+        return fetchFn(base + "/run", {
+          method: "POST", mode: "cors", headers: headers(),
+          body: JSON.stringify({ flow: flow, inputs: inputs || {},
+                                 replay: !!replay })
+        }).then(function (r) {
+          if (!r.ok) {
+            return denial(r).then(function (err) {
+              return dispatch({ type: "pair.denied", status: r.status, error: err });
+            });
+          }
+          return r.json().then(function (b) {
+            dispatch({ type: "job.started", jobId: b.job_id });
+            open(b.job_id);
+            return state;
+          });
+        }, function () {
+          return dispatch({ type: "sse.error" });
+        });
+      },
+
+      stop: function () {
+        if (!state.jobId) { return Promise.resolve(state); }
+        return fetchFn(base + "/stop/" + state.jobId, {
+          method: "POST", mode: "cors", headers: headers()
+        }).then(function () { return state; }, function () { return state; });
+      },
+
+      close: close
+    };
+
+    // The job id IS the authorisation to read this stream, which is why no
+    // header is set here and none can be: EventSource cannot send one.
+    function open(jobId) {
+      close();
+      if (!ES) { dispatch({ type: "sse.error" }); return; }
+      stream = new ES(base + "/events/" + jobId);
+      EVENT_TYPES.forEach(function (name) {
+        stream.addEventListener(name, function (m) {
+          var ev;
+          try { ev = JSON.parse(m.data); } catch (e) { return; }
+          dispatch({ type: "sse.event", event: ev });
+          // Close on the last frame rather than waiting for the server's
+          // close: EventSource reconnects on its own, and a reconnect after a
+          // finished job would replay the whole buffer into the transcript.
+          if (isTerminalFrame(ev)) { close(); }
+        });
+      });
+      stream.onerror = function () {
+        // Also fired on a retryable hiccup, but the browser reconnects on its
+        // own and would deliver the same frames twice into the transcript.
+        // One reader, one connection: report the drop and let the visitor
+        // reconnect deliberately.
+        close();
+        dispatch({ type: "sse.error" });
+      };
+    }
+
+    function close() {
+      if (stream) { stream.close(); stream = null; }
+    }
+  }
+
+  return {
+    STATES: STATES,
+    text: text,
+    phase: phase,
+    create: create,
+    isOurConsole: isOurConsole,
+    looksLikeCode: looksLikeCode,
+    isSelfHosted: isSelfHosted,
+    baseFor: baseFor,
+    initial: initial,
+    reduce: reduce
+  };
+}));
+</script><script>// The page, wired to the bridge.
+//
+// The bridge decides which of three things the visitor is looking at, and
+// everything below is the rendering of that decision:
+//
+//   replay  - nothing answered on 127.0.0.1. The captured events play locally
+//             and the panel quietly offers the real thing. NEVER an error:
+//             Chrome's Private Network Access refuses a public page's request
+//             to loopback with the same generic failure a closed port gives,
+//             so "no console" and "blocked" are indistinguishable from here
+//             and neither is the visitor's fault.
+//   pairing - a console answered /health and named itself. Ask for the eight
+//             characters it printed.
+//   live    - paired. Real Server-Sent Events off a real deploy.
+//
+// No sentence the visitor reads is written in this file. The furniture goes
+// through CLC_T directly; anything the machine has to say about the connection
+// comes back from CLC_BRIDGE.text(), which is the bridge's only door to the
+// string table.
+//
+// ES5 on purpose: three bare <script> tags, no build step.
+(function () {
 "use strict";
-var reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
-var $=function(id){return document.getElementById(id);};
-var FLOWS=window.__FLOWS__.flows, ORDER=window.__FLOWS__.order, FX=window.__FIXTURES__;
+var B = window.CLC_BRIDGE, T = window.CLC_T;
+var reduce = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+var $ = function (id) { return document.getElementById(id); };
 
-// embed mode (iframed into the main doc): hide chrome, report height to the parent
-if(/embed/.test(location.search)){document.body.classList.add("embed");
-  var ph=function(){try{parent.postMessage({clc:document.body.scrollHeight},"*");}catch(e){}};
-  window.addEventListener("load",ph);window.addEventListener("resize",ph);setInterval(ph,900);}
+/* theme */
+$("themeBtn").addEventListener("click", function () {
+  var cur = document.documentElement.getAttribute("data-theme") || "light";
+  var nxt = cur === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", nxt);
+  try { localStorage.setItem("cl-theme", nxt); } catch (e) {}
+});
 
-$("themeBtn").addEventListener("click",function(){
-  var cur=document.documentElement.getAttribute("data-theme")||"light";
-  var nxt=cur==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",nxt);
-  try{localStorage.setItem("cl-theme",nxt);}catch(e){}});
+// embed mode (iframed into the main doc): hide the chrome, report our height.
+// The console's own page can never be framed - server.py sends
+// frame-ancestors 'none' - so this only ever runs on the built public page.
+if (/embed/.test(location.search)) {
+  document.body.classList.add("embed");
+  var ph = function () { try { parent.postMessage({ clc: document.body.scrollHeight }, "*"); } catch (e) {} };
+  window.addEventListener("load", ph);
+  window.addEventListener("resize", ph);
+  setInterval(ph, 900);
+}
 
+/* ---- where the events come from ----------------------------------------
+ *
+ * Flow metadata: the built public page carries it inline because there is no
+ * server to ask. A real console hands over its own on pair.ok and that one
+ * wins - it is the process that will actually run them, and its list is the
+ * one that is true right now.
+ *
+ * Fixtures are the replay. Only the built page has them; on the console's own
+ * page there is nothing to replay and nothing to replay it for. */
+var FLOWS = {}, ORDER = [];
+var FIXTURES = window.__FIXTURES__ || null;
+if (window.__FLOWS__) { FLOWS = window.__FLOWS__.flows; ORDER = window.__FLOWS__.order; }
+
+var bridge = B.create({ base: B.baseFor(location), onState: onState });
+
+/* ---- what the page is doing --------------------------------------------- */
+var phase = "replay";      // replay | pairing | live, from B.phase()
+var current = null;        // selected flow id
+var nodeEls = {};
+var timer = null, t0 = 0, conLines = 0;
+var running = false;       // a run is in flight, live or replayed
+var started = false;       // /run answered with a job id: something IS running
+var stopping = false;      // the visitor pressed Stop, so an end is not a fault
+var checking = false;      // a pairing attempt is in flight
+var drawn = 0;             // how much of the machine's transcript is on screen
+var gen = 0;               // cancels an in-flight fixture replay
+
+/* theme-independent demo guard. It is the operator's protection against a
+ * click on a paired console spending real AWS money, so it is only shown
+ * where it can actually guard something: an inert switch that claims to
+ * control something is worse than no switch. */
+var demoOn = true;
+$("demoSw").addEventListener("click", function () { setDemo(!demoOn); });
+$("demoSw").addEventListener("keydown", function (e) {
+  if (e.key === " " || e.key === "Enter") { e.preventDefault(); setDemo(!demoOn); }
+});
+function setDemo(v) {
+  demoOn = v;
+  $("demoSw").setAttribute("aria-checked", v ? "true" : "false");
+  renderPanel(bridge.state());
+}
+
+/* icons */
 var IC={
  vpc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 3v18"/></svg>',
  clms:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
@@ -417,94 +1183,384 @@ var IC={
  vm:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M2 20h20"/></svg>',
  tool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 6l4 4-8 8-4 1 1-4z"/><path d="M4 20h6"/></svg>',
  mirror:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>',
- coll:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a4 4 0 0 0-4 4H6a3 3 0 0 0 0 6h12a3 3 0 0 0 0-6h-2a4 4 0 0 0-4-4z"/><path d="M9 17l3 4 3-4"/></svg>'};
+ coll:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a4 4 0 0 0-4 4H6a3 3 0 0 0 0 6h12a3 3 0 0 0 0-6h-2a4 4 0 0 0-4-4z"/><path d="M9 17l3 4 3-4"/></svg>'
+};
 var TONE={info:"i",good:"✓",note:"·",warn:"!",err:"✕"};
-var current=null,nodeEls={},timer=null,t0=0,conLines=0,playing=false,gen=0;
 
-var tabs=$("flows"),cards=$("flowCards");
-ORDER.forEach(function(id,i){var f=FLOWS[id];
-  var b=document.createElement("button");b.className="flow";b.setAttribute("role","tab");
-  b.setAttribute("aria-selected",i===0?"true":"false");b.dataset.flow=id;
-  b.innerHTML='<div class="fn">FLOW 0'+(i+1)+'</div><div class="ft">'+f.name+'</div>';
-  b.addEventListener("click",function(){selectFlow(id);});tabs.appendChild(b);
-  var c=document.createElement("div");c.className="card";
-  c.innerHTML='<div class="k">FLOW 0'+(i+1)+'</div><h3>'+f.name+'</h3><p>'+f.subtitle+'</p>';cards.appendChild(c);});
+/* ---- the bridge's only entry point into the page ------------------------ */
+function onState(s, ev) {
+  phase = B.phase(s);
+  if (ev && ev.type === "pair.ok" && ev.flows && ev.flows.order) { adoptFlows(ev.flows); }
+  if (ev && ev.type === "job.started") { started = true; }
+  // Draw the machine's TRANSCRIPT, never the raw event that just arrived. The
+  // machine refuses frames that reach it outside a live state, and rendering
+  // the event directly drew the refused ones anyway: the page filled with a
+  // deploy the bridge had already decided it was not watching.
+  if (s.transcript.length < drawn) { drawn = 0; }   // job.started emptied it
+  while (drawn < s.transcript.length) { frame(s.transcript[drawn++]); }
+  // The machine's terminal states are the run's, so the instrument follows
+  // them rather than watching the stream for a second time.
+  if (running && (s.name === "finished" || s.name === "failed" || s.name === "lost")) {
+    finish(s.name);
+  }
+  renderPanel(s);
+}
 
-function selectFlow(id){stop();current=id;var f=FLOWS[id];
-  document.querySelectorAll(".flow").forEach(function(b){b.setAttribute("aria-selected",b.dataset.flow===id?"true":"false");});
-  $("instName").textContent=f.script;$("cfgTitle").textContent="Inputs";$("cfgSub").textContent="· "+f.name;
-  var fl=$("fields");fl.innerHTML="";
-  f.inputs.forEach(function(fd){var d=document.createElement("div");d.className="field";
-    d.innerHTML='<label>'+fd.label+'</label><input value="'+(fd.default||"")+'" placeholder="'+(fd.placeholder||"")+'" spellcheck="false">';fl.appendChild(d);});
-  reset();layoutDiagram(f);
-  $("narr").innerHTML='<div class="empty">Press ▸ Run — the narration explains each step as it happens.</div>';
-  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
+/* ---- the panel: the offer, the code box, or nothing --------------------- */
+function noticeText(s) {
+  // "Lost the local console. The transcript below is kept." is true only if
+  // something was running to keep. A /run that never reached the console
+  // started nothing, and there is no transcript under this sentence.
+  if (s.name === "lost" && !started) { return T("transportFailed"); }
+  return B.text(s);
+}
 
-function reset(){$("console").innerHTML="";conLines=0;$("conCount").textContent="";
-  setPill("idle","");$("mElapsed").textContent="0:00";$("mCreated").textContent="0";
-  $("idChip").hidden=true;$("stopBtn").hidden=true;}
-function setPill(cls,txt){var p=$("statusPill");p.className="pill"+(cls&&cls!=="idle"?" "+cls:"");$("statusTxt").textContent=txt||cls;}
+function renderPanel(s) {
+  var name = s.name, ph = B.phase(s);
+  // The badge states a FACT and is not a mode the visitor picks: real AWS only
+  // when a console is driving us AND it was not asked to replay fixtures.
+  $("modeBadge").textContent = (ph === "live" && !demoOn) ? T("liveBadge") : T("replayBadge");
+  $("demoWrap").hidden = (ph !== "live");
 
-function layoutDiagram(f){var dg=$("diagram"),sv=$("wires");
+  // The offer, and the command that makes it true. The command is also the
+  // remedy for a console that disabled pairing (restart it), and is withheld
+  // from a console that refused the request as unsafe - that one is running
+  // perfectly well and starting a second changes nothing.
+  $("link").hidden = (ph === "live");
+  $("linkTitle").textContent = T("goLiveTitle");
+  $("linkBody").textContent = T("goLiveBody");
+  $("linkCmd").textContent = T("goLiveCommand");
+  $("linkCmdWrap").hidden = (name === "refused");
+  if (!checking) { $("copyBtn").textContent = T("copyCommand"); }
+
+  // The code box appears only where typing again can work. Once the guess cap
+  // has fired the console has discarded its code for good, so retyping the
+  // RIGHT one fails forever: leaving the box up is exactly the dead end the
+  // disabled state exists to spare the visitor.
+  $("pairForm").hidden = (name !== "pairing");
+  $("pairLabel").textContent = T("pairPrompt");
+  $("pairInput").placeholder = T("pairPlaceholder");
+  $("pairHelp").textContent = T("pairHelp");
+  if (!checking) { $("pairBtn").textContent = T("pairSubmit"); }
+
+  $("notice").textContent = noticeText(s) || "";
+  $("runBtn").disabled = running || !canRun();
+}
+
+// Something can be run when a console will run it, or when there are captured
+// events to play. Neither: the control is disabled rather than lying.
+function canRun() { return ORDER.length > 0 && (phase === "live" || !!FIXTURES); }
+
+/* ---- pairing ------------------------------------------------------------ */
+$("pairForm").addEventListener("submit", function (e) {
+  e.preventDefault();     // Enter in the field submits, as it should
+  submitCode();
+});
+
+$("pairInput").addEventListener("input", function () {
+  // Upper-cased IN THE FIELD, not on the way out. The console's alphabet is
+  // upper case with no O/0 and no I/1, so lower case can never be a code, and
+  // the bridge would refuse it locally with "that code did not match" - a
+  // sentence that is wrong about a correct code typed with caps lock off.
+  // Doing it here rather than in the transport keeps what is sent identical to
+  // what the visitor can see, which is the reason bridge.js refuses to
+  // normalise anything itself.
+  var at = this.selectionStart;
+  var v = this.value.replace(/\s+/g, "").toUpperCase();
+  if (v !== this.value) {
+    this.value = v;
+    try { this.setSelectionRange(at, at); } catch (e) {}
+  }
+});
+
+function submitCode() {
+  if (checking) { return; }
+  checking = true;
+  $("pairInput").disabled = true;
+  $("pairBtn").disabled = true;
+  // The console sleeps half a second on a wrong code, so the wait is real and
+  // has to be visible or the button looks dead.
+  $("pairBtn").textContent = T("pairChecking");
+  bridge.pair($("pairInput").value).then(function (s) {
+    checking = false;
+    $("pairInput").disabled = false;
+    $("pairBtn").disabled = false;
+    $("pairBtn").textContent = T("pairSubmit");
+    if (s.name === "pairing") { $("pairInput").select(); $("pairInput").focus(); }
+    renderPanel(s);
+  });
+}
+
+$("copyBtn").addEventListener("click", function () {
+  var txt = T("goLiveCommand");
+  var ok = function () {
+    $("copyBtn").textContent = T("copiedCommand");
+    setTimeout(function () { $("copyBtn").textContent = T("copyCommand"); }, 1600);
+  };
+  var legacy = function () {
+    var ta = document.createElement("textarea");
+    ta.value = txt; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { if (document.execCommand("copy")) { ok(); } } catch (e) {}
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(ok, legacy);
+  } else { legacy(); }
+});
+
+/* ---- flows -------------------------------------------------------------- */
+function adoptFlows(d) {
+  FLOWS = d.flows; ORDER = d.order;
+  renderFlows();
+}
+
+function renderFlows() {
+  var tabs = $("flows"), cards = $("flowCards");
+  tabs.innerHTML = ""; cards.innerHTML = "";
+  ORDER.forEach(function (id, i) {
+    var f = FLOWS[id];
+    var b = document.createElement("button");
+    b.className = "flow"; b.setAttribute("role", "tab"); b.type = "button";
+    b.setAttribute("aria-selected", "false"); b.dataset.flow = id;
+    b.innerHTML = '<div class="fn">FLOW 0' + (i + 1) + '</div><div class="ft">' + esc(f.name) + '</div>';
+    b.addEventListener("click", function () { selectFlow(id); });
+    tabs.appendChild(b);
+    var c = document.createElement("div");
+    c.className = "card";
+    c.innerHTML = '<div class="k">FLOW 0' + (i + 1) + '</div><h3>' + esc(f.name) +
+                  '</h3><p>' + esc(f.subtitle) + '</p>';
+    cards.appendChild(c);
+  });
+  // Keep what the visitor had selected if the console still offers it.
+  selectFlow(ORDER.indexOf(current) > -1 ? current : ORDER[0]);
+}
+
+function selectFlow(id) {
+  if (!id) { return; }
+  gen++; running = false; stopTimer();
+  current = id;
+  var f = FLOWS[id];
+  document.querySelectorAll(".flow").forEach(function (b) {
+    b.setAttribute("aria-selected", b.dataset.flow === id ? "true" : "false");
+  });
+  $("instName").textContent = f.script;
+  $("cfgTitle").textContent = T("inputsTitle");
+  $("cfgSub").textContent = "· " + f.name;
+  var fl = $("fields"); fl.innerHTML = "";
+  f.inputs.forEach(function (fd) {
+    var d = document.createElement("div"); d.className = "field";
+    var iid = "in-" + fd.key;
+    d.innerHTML = '<label for="' + esc(iid) + '">' + esc(fd.label) + '</label>' +
+      '<input id="' + esc(iid) + '" data-k="' + esc(fd.key) + '" value="' + esc(fd.default || "") +
+      '" placeholder="' + esc(fd.placeholder || "") + '" spellcheck="false">';
+    fl.appendChild(d);
+  });
+  resetInstrument();
+  layoutDiagram(f);
+  $("runTxt").textContent = T("runStart");
+  renderPanel(bridge.state());
+}
+
+/* ---- the instrument ----------------------------------------------------- */
+function resetInstrument() {
+  $("console").innerHTML = ""; conLines = 0; $("conCount").textContent = "";
+  $("narr").innerHTML = '<div class="empty">' + esc(T("transcriptEmpty")) + '</div>';
+  setPill("idle", T("statusIdle"));
+  $("mElapsed").textContent = "0:00"; $("mCreated").textContent = "0";
+  $("idChip").hidden = true; $("stopBtn").hidden = true;
+  $("stopBtn").textContent = T("stopRun");
+}
+function setPill(cls, txt) {
+  $("statusPill").className = "pill" + (cls && cls !== "idle" ? " " + cls : "");
+  $("statusTxt").textContent = txt;
+}
+
+function layoutDiagram(f){
+  var dg=$("diagram"),sv=$("wires");
   dg.querySelectorAll(".node").forEach(function(n){n.remove();});sv.innerHTML="";nodeEls={};
   var W=dg.clientWidth,H=dg.clientHeight;
-  Object.keys(f.nodes).forEach(function(id){var n=f.nodes[id],el=document.createElement("div");el.className="node";
+  Object.keys(f.nodes).forEach(function(id){
+    var n=f.nodes[id],el=document.createElement("div");el.className="node";
     el.style.left=n.x+"%";el.style.top=n.y+"%";
-    el.innerHTML='<div class="chip">'+(IC[n.ic]||"")+'</div><div class="nlab">'+n.lab+'</div><div class="nsub" data-sub>'+n.sub+'</div>';
-    dg.appendChild(el);nodeEls[id]=el;});
-  f.wires.forEach(function(w){var a=f.nodes[w[0]],b=f.nodes[w[1]];
+    el.innerHTML='<div class="chip">'+(IC[n.ic]||"")+'</div><div class="nlab">'+esc(n.lab)+'</div><div class="nsub" data-sub>'+esc(n.sub)+'</div>';
+    dg.appendChild(el);nodeEls[id]=el;
+  });
+  f.wires.forEach(function(w){
+    var a=f.nodes[w[0]],b=f.nodes[w[1]];
     var l=document.createElementNS("http://www.w3.org/2000/svg","line");
     l.setAttribute("x1",a.x/100*W);l.setAttribute("y1",a.y/100*H);
     l.setAttribute("x2",b.x/100*W);l.setAttribute("y2",b.y/100*H);
-    l.setAttribute("class","dwire");l.dataset.pair=w[0]+"-"+w[1];sv.appendChild(l);});
-  Object.keys(f.nodes).forEach(function(id,i){setTimeout(function(){if(nodeEls[id])nodeEls[id].classList.add("show");},reduce?0:70*i);});}
+    l.setAttribute("class","dwire");l.dataset.pair=w[0]+"-"+w[1];sv.appendChild(l);
+  });
+  Object.keys(f.nodes).forEach(function(id,i){setTimeout(function(){if(nodeEls[id])nodeEls[id].classList.add("show");},reduce?0:70*i);});
+}
 
-function setNode(id,status,label){var el=nodeEls[id];if(!el)return;
+function setNode(id,status,label){
+  var el=nodeEls[id];if(!el)return;
   el.classList.remove("show","busy","live","fail");
-  if(status==="ghost")el.classList.add("show");else el.classList.add(status);
+  if(status==="ghost")el.classList.add("show");
+  else el.classList.add(status);
   if(label){var s=el.querySelector("[data-sub]");if(s)s.textContent=label;}
-  if(status==="live"){$("wires").querySelectorAll(".dwire").forEach(function(l){var p=l.dataset.pair.split("-");
-    if(p.indexOf(id)>-1){var o=p[0]===id?p[1]:p[0];if(nodeEls[o]&&nodeEls[o].classList.contains("live"))l.classList.add("on");}});
-    var n=0;Object.keys(nodeEls).forEach(function(k){if(nodeEls[k].classList.contains("live"))n++;});$("mCreated").textContent=n;}}
+  if(status==="live"){
+    $("wires").querySelectorAll(".dwire").forEach(function(l){
+      var p=l.dataset.pair.split("-");
+      if(p.indexOf(id)>-1){var o=p[0]===id?p[1]:p[0];
+        if(nodeEls[o]&&nodeEls[o].classList.contains("live"))l.classList.add("on");}
+    });
+    var n=0;Object.keys(nodeEls).forEach(function(k){if(nodeEls[k].classList.contains("live"))n++;});
+    $("mCreated").textContent=n;
+  }
+}
 
-function narrate(text,tone){var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
+/* narration + console */
+function narrate(text,tone){
+  var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
   var d=document.createElement("div");d.className="nline "+(tone||"info");
-  d.innerHTML='<span class="ni">'+(TONE[tone]||"i")+'</span><div class="nt">'+esc(text)+'</div>';n.appendChild(d);n.scrollTop=n.scrollHeight;}
-function card(kind,head,body){var n=$("narr");var d=document.createElement("div");d.className="card-in "+(kind||"");
-  d.innerHTML='<div class="h">'+esc(head)+'</div><div class="b">'+esc(body)+'</div>';n.appendChild(d);n.scrollTop=n.scrollHeight;}
-function conLine(t){var c=$("console");var d=document.createElement("div");d.className="cln";d.textContent=t;
-  c.appendChild(d);c.scrollTop=c.scrollHeight;conLines++;$("conCount").textContent=conLines+" lines";while(c.childNodes.length>400)c.removeChild(c.firstChild);}
-function esc(s){return String(s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
-function startTimer(){t0=Date.now();stopTimer();timer=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);$("mElapsed").textContent=Math.floor(s/60)+":"+("0"+(s%60)).slice(-2);},1000);}
+  d.innerHTML='<span class="ni">'+(TONE[tone]||"i")+'</span><div class="nt">'+esc(text)+'</div>';
+  n.appendChild(d);n.scrollTop=n.scrollHeight;
+}
+function card(kind,head,body){
+  var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
+  var d=document.createElement("div");d.className="card-in "+(kind||"");
+  d.innerHTML='<div class="h">'+esc(head)+'</div><div class="b">'+esc(body)+'</div>';
+  n.appendChild(d);n.scrollTop=n.scrollHeight;
+}
+function conLine(text){
+  var c=$("console");var d=document.createElement("div");d.className="cln";d.textContent=text;
+  c.appendChild(d);c.scrollTop=c.scrollHeight;conLines++;
+  $("conCount").textContent=conLines+" "+T("linesSuffix");
+  while(c.childNodes.length>400)c.removeChild(c.firstChild);
+}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c];});}
+
+/* timer */
+function startTimer(){t0=Date.now();stopTimer();timer=setInterval(function(){
+  var s=Math.floor((Date.now()-t0)/1000);$("mElapsed").textContent=Math.floor(s/60)+":"+("0"+(s%60)).slice(-2);
+},1000);}
 function stopTimer(){if(timer){clearInterval(timer);timer=null;}}
 
-$("runBtn").addEventListener("click",run);
-$("stopBtn").addEventListener("click",stop);
-function stop(){gen++;playing=false;stopTimer();if($("statusTxt").textContent==="running")setPill("idle","stopped");
-  $("stopBtn").hidden=true;$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
+/* ---- one event, from either source --------------------------------------
+ *
+ * The live stream and the captured replay carry the SAME events (events.py
+ * writes both), so they get the same renderer: a divergence here would mean
+ * the demo shows something the real deploy cannot. */
+function frame(m) {
+  if (!m || !m.type) { return; }
+  if (m.type === "hello") {
+    $("idChip").hidden = false;
+    $("idChip").innerHTML = esc(T("acctLabel")) + ' <b>' + esc(m.account) + '</b> · ' + esc(m.region);
+  } else if (m.type === "log") {
+    conLine(m.text);
+  } else if (m.type === "state") {
+    setNode(m.node, m.status, m.label);
+  } else if (m.type === "narrate") {
+    narrate(m.text, m.tone);
+  } else if (m.type === "stat") {
+    if (m.created != null) { $("mCreated").textContent = m.created; }
+    // m.note is the server's own words about a real AWS wait, not a phrase of
+    // ours to translate; waitingOnAws is the fallback when it sent none.
+    if (m.waiting) { setPill("run", m.note || T("waitingOnAws")); }
+  } else if (m.type === "done") {
+    narrate(m.summary, "good");
+    if (m.outputs && m.outputs.note) { card("", T("cardNext"), m.outputs.note); }
+  } else if (m.type === "error") {
+    if (m.node) { setNode(m.node, "fail"); narrate(m.text, "err"); }
+    else { card("err", T("cardFailed"), m.text); }
+    if (m.fix) { card("err", T("cardFix"), m.fix); }
+  }
+}
 
-function run(){var myGen=++gen;var f=FLOWS[current];reset();layoutDiagram(f);$("narr").innerHTML="";
-  setPill("run","running");$("runBtn").disabled=true;$("runBtn").innerHTML='<span class="tri"></span> Running…';
-  $("stopBtn").hidden=false;$("idChip").hidden=false;$("idChip").innerHTML='acct <b>your-account</b> · us-east-1';
-  startTimer();playing=true;
-  var frames=FX[current],i=0;
-  (function step(){
-    if(myGen!==gen)return;
-    if(i>=frames.length){finish("done","complete");return;}
-    var fr=frames[i++];var ev=fr.event;
-    if(ev.type==="log")conLine(ev.text);
-    else if(ev.type==="state")setNode(ev.node,ev.status,ev.label);
-    else if(ev.type==="narrate")narrate(ev.text,ev.tone);
-    else if(ev.type==="stat"){if(ev.created!=null)$("mCreated").textContent=ev.created;}
-    else if(ev.type==="done"){narrate(ev.summary,"good");if(ev.outputs&&ev.outputs.note)card("","Next",ev.outputs.note);finish("done","complete");return;}
-    setTimeout(step,reduce?40:Math.min((fr._delay||0.6)*1000,2200));
-  })();}
-function finish(cls,txt){playing=false;stopTimer();setPill(cls,txt);$("stopBtn").hidden=true;
-  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run again';}
+/* ---- running ------------------------------------------------------------ */
+$("runBtn").addEventListener("click", run);
+$("stopBtn").addEventListener("click", function () {
+  stopping = true;
+  if (phase === "live") { bridge.stop(); }
+  else { gen++; finish("stopped"); }
+});
 
-window.addEventListener("resize",function(){if(!playing&&current)layoutDiagram(FLOWS[current]);});
-selectFlow(ORDER[0]);
-setTimeout(function(){if(!reduce)run();},900);
+function run() {
+  if (!current || running || !canRun()) { return; }
+  var f = FLOWS[current];
+  var inputs = {};
+  document.querySelectorAll("#fields input").forEach(function (i) { inputs[i.dataset.k] = i.value; });
+  resetInstrument(); layoutDiagram(f); $("narr").innerHTML = "";
+  running = true; started = false; stopping = false;
+  setPill("run", T("statusRunning"));
+  $("runBtn").disabled = true;
+  $("runTxt").textContent = T("runBusy");
+  $("stopBtn").hidden = false;
+  startTimer();
+  if (phase === "live") { bridge.run(current, inputs, demoOn); }
+  else { playFixture(current); }
+}
+
+// The end of a run, from either source.
+//
+// Asking to stop wins over whatever the console says the ending was, in both
+// directions. A stopped deploy ends with a terminal error event, and calling
+// that "failed" blames the deploy for something the operator asked for; a
+// stopped REPLAY ends with done("Replay complete.") - orchestrator.py emits it
+// whenever the fixture ran out of terminal events, stop included - and calling
+// that "complete" claims a run finished that the operator cut short.
+var END = {
+  finished: ["done", "statusComplete"],
+  failed:   ["err", "statusFailed"],
+  lost:     ["err", "statusLost"],
+  stopped:  ["err", "statusStopped"]
+};
+function finish(kind) {
+  running = false; stopTimer();
+  var end = END[stopping ? "stopped" : kind] || END.failed;
+  setPill(end[0], T(end[1]));
+  $("stopBtn").hidden = true;
+  $("runTxt").textContent = T("runAgain");
+  $("runBtn").disabled = !canRun();
+}
+
+// The captured run, played locally. This is the whole of the replay state: no
+// server is involved and nothing is claimed to be live.
+function playFixture(id) {
+  var frames = (FIXTURES && FIXTURES[id]) || [];
+  var mine = ++gen, i = 0;
+  // No identity chip: the captured runs carry no hello frame, and the one the
+  // static page used to show ("acct your-account") was invented. An empty
+  // chip is better than a fabricated account id on a page about proof.
+  (function step() {
+    if (mine !== gen) { return; }
+    if (i >= frames.length) { finish("finished"); return; }
+    var fr = frames[i++];
+    frame(fr.event);
+    if (fr.event && fr.event.type === "done") { finish("finished"); return; }
+    setTimeout(step, reduce ? 40 : Math.min((fr._delay || 0.6) * 1000, 2200));
+  }());
+}
+
+window.addEventListener("resize", function () {
+  if (!running && current && FLOWS[current]) { layoutDiagram(FLOWS[current]); }
+});
+
+/* ---- boot ---------------------------------------------------------------
+ *
+ * Render first, probe second. The page must be complete and usable before
+ * anything is known about the machine it is running on, because for almost
+ * every visitor the answer is "no console" and that answer must cost them
+ * nothing. */
+if (ORDER.length) { renderFlows(); }
+renderPanel(bridge.state());
+bridge.probe().then(function (s) {
+  // Only the console's own page can attach without a code; the bridge refuses
+  // to spend a guess from anywhere else, so this is safe to call blind.
+  if (s.name === "pairing") { return bridge.attach(); }
+});
+
+// The built page autoplays its captured run so a visitor sees the thing work
+// without touching anything. Gated on there being a fixture to play, which is
+// what keeps it from ever launching a real deploy on a paired console.
+if (FIXTURES && !reduce) {
+  setTimeout(function () { if (phase !== "live" && !running) { run(); } }, 900);
+}
 })();
 </script>
 </body>
