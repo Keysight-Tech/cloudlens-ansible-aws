@@ -20,18 +20,14 @@ activates whatever is left rather than failing on "Invalid quantity".
 Usage:
   python3 kvo_license.py --kvo <ip> [--codes CODE[,QTY] ...] [--insecure]
 
-With no --codes it uses the three known lab codes (2 CloudLens + 1 VisionOrchestrator).
-Exit: 0 all activated / already installed, 5 nothing could be activated, 6 auth/backend.
+With no --codes and an interactive terminal the script prompts for each activation
+code, looks it up, and asks how many of each entitlement to activate. There is no
+built-in code list and no fallback: with no --codes and no TTY the script exits 2.
+Exit: 0 all activated / already installed, 2 no codes supplied non-interactively,
+5 nothing could be activated, 6 auth/backend, 130 cancelled at the prompt.
 """
 from __future__ import annotations
 import argparse, json, sys, time, urllib.request, urllib.error, ssl
-
-# The three lab activation codes (two CloudLens + one VisionOrchestrator).
-DEFAULT_CODES = [
-    "889D-0CB0-BC3D-3179",
-    "F5A5-CA75-1AED-C0AC",
-    "23a9798736-347903a1-b1ad4788-cfa78bb7-b17c98d7-90232753",
-]
 
 
 def _ctx(verify):
@@ -92,26 +88,119 @@ def poll_op(kvo, tok, first, verify, want_result=True, timeout=120):
     return {"state": state}
 
 
+def entitlements(result):
+    """Normalise a retrieve-activation-code-info result to [(product, avail, total)].
+
+    Observed KVO builds return a single object with one `product`, but the result is
+    funnelled through a list so a code that unlocks several entitlements is handled
+    without further changes.
+    """
+    if isinstance(result, list):
+        cand = result
+    elif isinstance(result, dict):
+        cand = None
+        for key in ("products", "entitlements", "licenses", "items"):
+            v = result.get(key)
+            if isinstance(v, list) and v:
+                cand = v
+                break
+        if cand is None:
+            cand = [result] if result.get("product") else []
+    else:
+        cand = []
+    out = []
+    for it in cand:
+        if not isinstance(it, dict) or not it.get("product"):
+            continue
+        out.append((it.get("product"),
+                    it.get("availableQuantity", it.get("totalQuantity", 0)),
+                    it.get("totalQuantity")))
+    return out
+
+
+def lookup_code(kvo, base, tok, code, verify):
+    """POST retrieve-activation-code-info for one code; returns (entitlements, info)."""
+    st, resp = _req("POST", f"{base}/api/v2/licensing/operations/retrieve-activation-code-info",
+                    tok, {"activationCode": code}, verify)
+    info = poll_op(kvo, tok, resp, verify)
+    result = info.get("result") if isinstance(info, dict) else None
+    return entitlements(result), info
+
+
+def ask_quantity(product, avail):
+    """Ask how many of one entitlement to activate; blank means all of availableQuantity."""
+    print(f"    -> {product:<24} available: {avail}")
+    while True:
+        raw = input(f"       How many to activate? [{avail}]: ").strip()
+        if not raw:
+            return avail
+        try:
+            q = int(raw)
+        except ValueError:
+            print(f"       not a number: {raw!r}. Enter 1 to {avail}, or blank for {avail}.")
+            continue
+        if q < 1:
+            print(f"       quantity must be 1 or more. Enter 1 to {avail}, or blank for {avail}.")
+            continue
+        if q > avail:
+            print(f"       only {avail} available. Enter 1 to {avail}, or blank for {avail}.")
+            continue
+        return q
+
+
+def prompt_plan(kvo, base, tok, verify):
+    """Interactive prompt: codes, then a quantity per entitlement the code unlocks.
+
+    Raises EOFError / KeyboardInterrupt to the caller, which exits cleanly.
+    """
+    plan = []
+    print("KVO licensing")
+    while True:
+        code = input("  Activation code (blank to finish): ").strip()
+        if not code:
+            return plan
+        ents, info = lookup_code(kvo, base, tok, code, verify)
+        if not ents:
+            state = info.get("state") if isinstance(info, dict) else info
+            print(f"    lookup failed for that code ({state}); check it and try again")
+            continue
+        picks = []
+        for product, avail, _total in ents:
+            if not avail:
+                print(f"    -> {product:<24} available: 0  (nothing left to activate)")
+                continue
+            picks.append((product, ask_quantity(product, avail)))
+        if picks:
+            plan.append({"code": code, "picks": picks})
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kvo", required=True)
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="admin")
     ap.add_argument("--codes", nargs="*", default=None,
-                    help="activation codes, each optionally CODE,QTY; default = 3 lab codes")
+                    help="activation codes, each optionally CODE,QTY; omit to be prompted (TTY only)")
     ap.add_argument("--insecure", action="store_true")
     a = ap.parse_args()
     verify = not a.insecure
     base = f"https://{a.kvo}"
 
-    raw_codes = a.codes if a.codes else DEFAULT_CODES
-    codes = []
-    for c in raw_codes:
-        if "," in c:
-            code, q = c.split(",", 1)
-            codes.append((code.strip(), int(q.strip())))
-        else:
-            codes.append((c.strip(), None))
+    plan = []
+    interactive = False
+    if a.codes:
+        for c in a.codes:
+            if "," in c:
+                code, q = c.split(",", 1)
+                plan.append({"code": code.strip(), "qty": int(q.strip())})
+            else:
+                plan.append({"code": c.strip(), "qty": None})
+    elif sys.stdin.isatty():
+        interactive = True
+    else:
+        print("[license] no activation codes supplied and stdin is not a TTY: "
+              "pass --codes CODE[,QTY] ...", file=sys.stderr)
+        return 2
 
     try:
         tok = token(a.kvo, a.user, a.password, verify)
@@ -133,24 +222,46 @@ def main():
     conn = poll_op(a.kvo, tok, resp, verify, want_result=False)
     print(f"[license] backend connectivity: {conn.get('state', resp)}")
 
+    if interactive:
+        try:
+            plan = prompt_plan(a.kvo, base, tok, verify)
+        except (EOFError, KeyboardInterrupt):
+            print("\n[license] cancelled at the prompt; nothing activated", file=sys.stderr)
+            return 130
+        if not plan:
+            print("[license] no activation codes entered; nothing to do", file=sys.stderr)
+            return 5
+        print(f"  Activating {len(plan)} code{'' if len(plan) == 1 else 's'}...")
+
     activated = 0
-    for code, qty in codes:
-        st, resp = _req("POST", f"{base}/api/v2/licensing/operations/retrieve-activation-code-info",
-                        tok, {"activationCode": code}, verify)
-        info = poll_op(a.kvo, tok, resp, verify)
-        result = info.get("result") if isinstance(info, dict) else None
-        if not isinstance(result, dict) or not result.get("product"):
-            print(f"[license] code {code[:14]}...: NOT VALID / no info ({info.get('state') if isinstance(info,dict) else info}) -> {result}")
-            continue
-        avail = result.get("availableQuantity", result.get("totalQuantity", 0))
-        product = result.get("product")
-        use = qty if qty is not None else avail
-        print(f"[license] {code[:14]}... = {product}  avail={avail} total={result.get('totalQuantity')} -> activating {use}")
-        if not use:
-            print(f"[license]   availableQuantity is 0 (likely stranded on the old host); skipping")
-            continue
+    for item in plan:
+        code = item["code"]
+        picks = item.get("picks")
+        if picks is None:
+            qty = item["qty"]
+            ents, info = lookup_code(a.kvo, base, tok, code, verify)
+            if not ents:
+                print(f"[license] code {code[:14]}...: NOT VALID / no info ({info.get('state') if isinstance(info,dict) else info}) -> {info.get('result') if isinstance(info,dict) else None}")
+                continue
+            picks = []
+            for product, avail, total in ents:
+                use = qty if qty is not None else avail
+                print(f"[license] {code[:14]}... = {product}  avail={avail} total={total} -> activating {use}")
+                if not use:
+                    print(f"[license]   availableQuantity is 0 (likely stranded on the old host); skipping")
+                    continue
+                picks.append((product, use))
+            if not picks:
+                continue
+        else:
+            for product, use in picks:
+                print(f"[license] {code[:14]}... = {product} -> activating {use}")
+        if len(picks) == 1:
+            body = [{"activationCode": code, "quantity": picks[0][1]}]
+        else:
+            body = [{"activationCode": code, "product": p, "quantity": q} for p, q in picks]
         st, resp = _req("POST", f"{base}/api/v2/licensing/operations/activate",
-                        tok, [{"activationCode": code, "quantity": use}], verify)
+                        tok, body, verify)
         act = poll_op(a.kvo, tok, resp, verify)
         state = act.get("state") if isinstance(act, dict) else act
         print(f"[license]   activate -> {state}")
