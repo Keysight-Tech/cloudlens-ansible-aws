@@ -316,6 +316,117 @@ dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
 to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # ---------------------------------------------------------------------
+# Logins, printed the moment a component can accept one.
+#
+# Phases 11-16 (licensing, adoption, sensors, vPB) take many minutes and every
+# one of them shows up in a UI, so the operator is told how to sign in BEFORE
+# the waiting starts rather than in a summary twenty five minutes later.
+#
+# Nothing below is invented. The vController password is whatever
+# scripts/vcontroller_project_key.py established (read back from the mode-600
+# creds file it writes); KVO uses the admin account every KVO script here
+# authenticates with; the vPB is reached with the EC2 key pair on port 9022 and
+# is managed by KVO with the device login scripts/vpb_kvo_adopt.py sends.
+# ---------------------------------------------------------------------
+VC_ADMIN_USER="${CLOUDLENS_VC_ADMIN_USER:-admin}"
+# The AWS Marketplace vController ships with this and forces a change on the
+# first login, which is exactly what phase 9 completes to a known value.
+VC_FACTORY_PASS='Cl0udLens@dm!n'
+PROJECT_NAME="${CLOUDLENS_PROJECT_NAME:-cloudlens-autopilot}"
+# What scripts/vpb_kvo_adopt.py hands KVO as the device login. Not a knob:
+# it is stated here so the operator can use the same login by hand.
+VPB_DEVICE_USER="admin"
+VPB_DEVICE_PASS="ixia"
+
+# The vController admin password phase 9 actually set, or empty when phase 9
+# has not run yet (then the factory default is still the live one).
+vc_password_now() {
+  local p="${CLOUDLENS_VC_PASSWORD:-}"
+  if [[ -z "$p" && -f "$VC_CREDS_FILE" ]] && command -v python3 >/dev/null 2>&1; then
+    p="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("password",""))
+except Exception: pass' "$VC_CREDS_FILE" 2>/dev/null)" || p=""
+  fi
+  printf '%s' "$p"
+}
+
+watch_header() {
+  echo
+  echo -e "${C_BOLD}  Log in now and watch the rest happen:${C_RESET}"
+}
+
+announce_vcontroller_login() {
+  local ip="${CLMS_PUBLIC_IP:-}" pw
+  [[ -n "$ip" && "$ip" != "None" ]] || return 0
+  pw="$(vc_password_now)"
+  watch_header
+  echo "    https://${ip}/cloudlens/login"
+  if [[ -n "$pw" ]]; then
+    echo "    ${VC_ADMIN_USER} / ${pw}"
+  else
+    echo "    ${VC_ADMIN_USER} / ${VC_FACTORY_PASS}   (the first login forces a change)"
+  fi
+  echo "  Sensors will appear under project '${PROJECT_NAME}' as they register."
+  echo
+}
+
+announce_kvo_login() {
+  local ip="${KVO_PUBLIC_IP:-}"
+  [[ -n "$ip" && "$ip" != "None" ]] || return 0
+  watch_header
+  echo "    https://${ip}/"
+  echo "    ${KVO_ADMIN_USER} / ${KVO_ADMIN_PASS}"
+  echo "  Licensing, the adopted vController and the Visibility Fabric appear"
+  echo "  here as the phases below build them."
+  echo "  A freshly booted KVO shows its EULA first: accept it to reach the login."
+  echo
+}
+
+announce_vpb_login() {
+  local ip="${VPB_PUBLIC_IP:-}"
+  [[ -n "$ip" && "$ip" != "None" ]] || return 0
+  watch_header
+  echo "    ssh -i ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${ip}"
+  echo "    key-pair auth (no password), then 'sudo vpb' for the CLI"
+  echo "    device login KVO manages it with: ${VPB_DEVICE_USER} / ${VPB_DEVICE_PASS}"
+  echo "  It appears in KVO as device '${VPB_DEVICE_NAME}' once phase 14 adopts it."
+  echo
+}
+
+# The one block an engineer screenshots or pastes to a customer. Printed to the
+# terminal AND into the summary file, so the two can never drift.
+login_block() {
+  local pw; pw="$(vc_password_now)"
+  echo "--- Logins (everything you need to sign in) ---"
+  echo "vController UI:     https://${CLMS_PUBLIC_IP}/cloudlens/login"
+  echo "  username:         ${VC_ADMIN_USER}"
+  if [[ -n "$pw" ]]; then
+    echo "  password:         ${pw}"
+  else
+    echo "  password:         ${VC_FACTORY_PASS}   (factory default, changes on first login)"
+  fi
+  echo "  project:          ${PROJECT_NAME}   (sensors register into it)"
+  if [[ "$DEPLOY_KVO" == "true" ]]; then
+    echo "KVO UI:             https://${KVO_PUBLIC_IP}/"
+    echo "  username:         ${KVO_ADMIN_USER}"
+    echo "  password:         ${KVO_ADMIN_PASS}"
+    echo "  cloud config:     ${CLOUD_CONFIG_NAME}"
+  fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then
+    echo "vPB SSH:            ssh -i ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${VPB_PUBLIC_IP}"
+    echo "  auth:             EC2 key pair ${KEY_NAME} (no password), then 'sudo vpb'"
+    echo "  device login:     ${VPB_DEVICE_USER} / ${VPB_DEVICE_PASS}   (what KVO manages it with)"
+    echo "  device name:      ${VPB_DEVICE_NAME}"
+  fi
+  echo "Credentials file:   ${VC_CREDS_FILE} (mode 600)"
+  echo "Sensor config:      customer_input.yaml (mode 600, holds the project key)"
+  echo
+  echo "THESE FILES CONTAIN CREDENTIALS: ${LOG_FILE} and ${SUMMARY_FILE} record"
+  echo "everything printed above, including the passwords. Both are mode 600 and"
+  echo "git-ignored. Treat them like a password file: do not paste them wholesale."
+}
+
+# ---------------------------------------------------------------------
 # Prompting that can never block.
 #
 # The /dev/tty re-attach at the top of this file is what makes `curl | bash`
@@ -1191,8 +1302,25 @@ resume_load_inputs() {
 }
 
 # ---------------------------------------------------------------------
-# Logging: tee everything to log file
+# Logging: tee everything to log file.
+#
+# EVERYTHING printed from here on lands in $LOG_FILE, and that includes the
+# working vController login. The summary file carries the same secrets. So both
+# are created exactly the way customer_input.yaml and the state file are:
+# umask 077 first, chmod 600 after, and a file left over from an older run
+# (they were created -rw-r--r--, world readable) is tightened BEFORE the first
+# new byte is appended to it.
 # ---------------------------------------------------------------------
+secure_run_file() {
+  local f="$1"
+  if [[ ! -e "$f" ]]; then
+    ( umask 077; : >> "$f" ) 2>/dev/null || return 0
+  fi
+  chmod 600 "$f" 2>/dev/null || true
+}
+secure_run_file "$LOG_FILE"
+secure_run_file "$SUMMARY_FILE"
+
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # ---------------------------------------------------------------------
@@ -2688,6 +2816,8 @@ if [[ "$DEPLOY_VPB" == "true" ]]; then
   step "Phase 8: vPB post-deploy bootstrap"
   note "vPB management SSH is reachable on port ${VPB_SSH_PORT} within ~5 minutes."
 
+  announce_vpb_login
+
   if ! run_phase bootstrap; then
     skip_note "the vPB bootstrap"
     BOOTSTRAP_VPB=false
@@ -2829,6 +2959,10 @@ EOM
 fi
 state_phase key done
 
+# The vController can take a login from here on, and everything below (KVO
+# licensing, adoption, sensors, vPB) is visible in its UI while it happens.
+announce_vcontroller_login
+
 # Pre-flight: count already-tagged EC2s using the chosen discovery tag.
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   TAGGED_COUNT=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
@@ -2935,6 +3069,11 @@ ok "Sensor mode: ${SENSOR_MODE}"
 # an unlicensed KVO also cannot adopt the vPB in phase 14.
 if [[ "$DEPLOY_KVO" == "true" ]]; then
   step "Phase 11: KVO product licensing"
+
+  # KVO is reachable by now, and its UI is where the licence, the adopted
+  # vController and the Visibility Fabric show up as the next phases build them.
+  announce_kvo_login
+
   LIC_SCRIPT="$(find_repo_script scripts/kvo_license.py || true)"
 
   # Activation codes are consumable: re-activating one that is already spent
@@ -3460,9 +3599,14 @@ AWS mirror session: ${WITH_MIRROR:-n/a}    (known open item: the collector SVM i
 
 CSUMMARY
 
+  # Every login in one place: URLs, users, passwords, the SSH line, the project
+  # name and where the credential files live.
+  login_block
+  echo
+
   cat <<EOM
 --- Next steps ---
-1. Open https://${CLMS_PUBLIC_IP} and change the default vController password
+1. Open https://${CLMS_PUBLIC_IP}/cloudlens/login and sign in with the login above
 2. Create a project in the vController UI and copy the project key
 3. To deploy sensors later:
      curl -sSL ${REPO_RAW}/quickstart.sh | bash
@@ -3486,7 +3630,7 @@ first and skipped when it is already done:
 State file (inputs only, no secrets): ${STATE_FILE:-none}
 
 --- Log ---
-Full deployment log: ${LOG_FILE}
+Full deployment log: ${LOG_FILE}   (mode 600: it contains the credentials above)
 ========================================================================
 EOM
 }
@@ -3494,15 +3638,18 @@ EOM
 # The run finished: clear the "stopped at" hint the next run would report.
 state_set LAST_FAILURE "none"
 
+# The summary carries the logins, so it is created tight and re-tightened after
+# tee: tee truncates an existing file but never changes its mode.
+secure_run_file "$SUMMARY_FILE"
 write_summary | tee "$SUMMARY_FILE" >/dev/null
+secure_run_file "$SUMMARY_FILE"
 
 banner "Stack deployment complete"
 echo
-echo "Summary saved to:    ${SUMMARY_FILE}"
-echo "Log saved to:        ${LOG_FILE}"
-echo "vController UI:      https://${CLMS_PUBLIC_IP}"
-[[ "$DEPLOY_KVO" == "true" ]] && echo "KVO UI:              https://${KVO_PUBLIC_IP}"
-[[ "$DEPLOY_VPB" == "true" ]] && echo "vPB management:      ${VPB_PUBLIC_IP} (SSH port ${VPB_SSH_PORT})"
+echo "Summary saved to:    ${SUMMARY_FILE}   (mode 600, contains credentials)"
+echo "Log saved to:        ${LOG_FILE}   (mode 600, contains credentials)"
+echo
+login_block
 echo
 ok "Done."
 SCRIPT_DONE=true
