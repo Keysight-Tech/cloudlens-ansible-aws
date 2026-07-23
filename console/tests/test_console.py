@@ -1391,6 +1391,60 @@ def test_stack_cmd_speaks_the_flags_deploy_stack_actually_accepts():
     assert "--with-kvo" not in off and "--with-vpb" not in off
 
 
+def test_no_flow_asks_for_something_it_then_throws_away():
+    """A field the visitor fills in that reaches no command is a lie.
+
+    Found by auditing the argv after the stack flow turned out to be sending
+    flags its script rejects: five inputs across three flows were collected
+    and silently dropped. The exemptions below are the ones still unwired,
+    listed so they stay visible instead of passing quietly. Shrink this dict,
+    never grow it: a new entry means a new field that does nothing.
+    """
+    UNWIRED = {
+        # The playbook reads customer_input.yaml, not -e vars, and the
+        # inventory hardcodes tag:cloudlens=yes, so neither field reaches it.
+        ("sensors", "tag"): "inventory hardcodes the discovery tag",
+        ("sensors", "region"): "inventory scans regions from the environment",
+        # Needs a second command (scripts/vpb_kvo_adopt.py --vpb), and the
+        # flow runs exactly one. A structural change, not a missing flag.
+        ("kvo", "vpb"): "requires a second script invocation",
+    }
+
+    class J(object):
+        def __init__(self, inputs):
+            self.inputs = inputs
+
+    dropped = []
+    for fid in ("sensors", "kvo", "mirror"):
+        flow = F.FLOWS[fid]
+        keys = [f["key"] for f in flow["inputs"]]
+        sentinel = dict((k, "SENTINEL_" + k) for k in keys)
+        argv = " ".join(O._script_cmd(J(sentinel), flow))
+        for k in keys:
+            if "SENTINEL_" + k in argv:
+                continue
+            if (fid, k) in UNWIRED:
+                continue
+            dropped.append("%s.%s" % (fid, k))
+
+    assert not dropped, (
+        "these inputs are collected from the visitor and never reach a "
+        "command: %s" % (", ".join(dropped),))
+
+    # And the exemptions must stay honest: if one gets wired up, delete it
+    # from UNWIRED rather than leaving a stale excuse behind.
+    stale = []
+    for (fid, k), _why in UNWIRED.items():
+        flow = F.FLOWS[fid]
+        keys = [f["key"] for f in flow["inputs"]]
+        sentinel = dict((kk, "SENTINEL_" + kk) for kk in keys)
+        if "SENTINEL_" + k in " ".join(O._script_cmd(J(sentinel), flow)):
+            stale.append("%s.%s" % (fid, k))
+    assert not stale, (
+        "these are wired up now and should be removed from UNWIRED: %s"
+        % (", ".join(stale),))
+
+
 def test_a_finished_node_never_goes_back_to_creating():
     """Seen live: the VPC read "creating" for a whole successful deploy.
 

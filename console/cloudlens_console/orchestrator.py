@@ -349,8 +349,14 @@ def _script_cmd(job, flow):
                 "--clms", i.get("clms", ""), "--kvo", i.get("kvo", ""),
                 "--cloud-config", i.get("cloud", "prod-cloud"), "--accept-eula", "--insecure"]
     if flow["id"] == "mirror":
-        return ["python3", S("kvo_aws_mirror.py"),
-                "--kvo", i.get("kvo", ""), "--vpc-id", i.get("vpc", ""),
-                "--source-tag", i.get("tag", "cloudlens=yes"),
-                "--zone", i.get("az", "us-east-1a"), "--accept-eula", "--insecure"]
+        cmd = ["python3", S("kvo_aws_mirror.py"),
+               "--kvo", i.get("kvo", ""), "--vpc-id", i.get("vpc", ""),
+               "--source-tag", i.get("tag", "cloudlens=yes"),
+               "--zone", i.get("az", "us-east-1a"), "--accept-eula", "--insecure"]
+        # The UI asks for a tool IP and used to throw the answer away, so the
+        # mirror had nowhere to forward to and the field was decoration.
+        tool = (i.get("tool") or "").strip()
+        if tool:
+            cmd += ["--tool-remote-ip", tool]
+        return cmd
     return ["echo", "no command for flow {}".format(flow["id"])]
