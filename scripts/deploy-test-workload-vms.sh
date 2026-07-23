@@ -30,6 +30,7 @@ DISCOVERY_TAG_KEY="${TESTVMS_TAG_KEY:-monitoring}"
 DISCOVERY_TAG_VALUE="${TESTVMS_TAG_VALUE:-enabled}"
 ENV_TAG="${TESTVMS_ENV:-prod}"
 KEY_NAME="${TESTVMS_KEY_NAME:-cloudlens-test-key}"
+ASSUME_YES=false
 LINUX_TYPE="${TESTVMS_LINUX_TYPE:-t3.small}"
 WIN_TYPE="${TESTVMS_WIN_TYPE:-t3.medium}"
 
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --env)        ENV_TAG="$2"; shift 2 ;;
     --vpc-id)     VPC_ID="$2"; shift 2 ;;
     --subnet-id)  SUBNET_ID="$2"; shift 2 ;;
+    -y|--yes)     ASSUME_YES=true; shift ;;
     -h|--help)
       sed -n '1,/^set -e/p' "$0" | head -n -1 | tail -n +2; exit 0 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -161,9 +163,19 @@ echo "  Env tag:         $ENV_TAG"
 echo "  Key pair:        $KEY_NAME"
 echo "  Instances:       $UBUNTU_NAME (Ubuntu 22.04), $RHEL_NAME (RHEL 9), $WIN_NAME (Win 2022)"
 echo
-read -rp "Proceed? [y/N]: " yn
-yn_lc=$(echo "$yn" | tr '[:upper:]' '[:lower:]')
-[[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] || { warn "Aborted"; exit 0; }
+# --yes, or no terminal to ask on. Without this the script read EOF from a
+# pipe or a nohup, took it for "no", and exited 0 having created nothing:
+# indistinguishable from success in a log, which is the worst way to fail.
+if [[ "$ASSUME_YES" == "true" ]]; then
+  ok "Proceeding (--yes)"
+elif [[ ! -t 0 ]]; then
+  fail "No terminal to confirm on, and --yes was not given, so nothing was created.
+  Re-run with --yes to skip this prompt when piping or scripting."
+else
+  read -rp "Proceed? [y/N]: " yn || yn=""
+  yn_lc=$(echo "$yn" | tr '[:upper:]' '[:lower:]')
+  [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] || { warn "Aborted"; exit 0; }
+fi
 
 # ---- traffic-generator user data ----
 # A small loop so the CloudLens sensor has packets to observe on the demo.
