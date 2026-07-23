@@ -1132,6 +1132,28 @@ def test_main_threads_allow_remote_into_serve():
         server.serve = old
 
 
+def test_job_ids_are_full_entropy_and_unique():
+    # /events/<job_id> is deliberately ungated, so the id IS the capability that
+    # authorises reading a deploy's live output: account id, caller ARN, region
+    # and every log line. It has to be a CSPRNG token, not a shortened uuid.
+    ids = {server.new_job_id() for _ in range(500)}
+    assert len(ids) == 500
+    assert all(len(i) == 32 for i in ids)
+    assert all(re.fullmatch(r"[0-9a-f]{32}", i) for i in ids)
+
+
+def test_run_mints_its_job_id_through_new_job_id():
+    # The property above is worth nothing if /run still builds its own id.
+    saved = server.new_job_id
+    server.new_job_id = lambda: "MINTED-BY-THE-HELPER"
+    try:
+        r = _handler_response("/run", "POST", body=json.dumps({"flow": "stack", "replay": True}))
+        assert r.payload["job_id"] == "MINTED-BY-THE-HELPER"
+    finally:
+        server.new_job_id = saved
+        server.JOBS.pop("MINTED-BY-THE-HELPER", None)
+
+
 def test_replay_needs_no_boto3(monkeypatch=None):
     # _rebuild + replay path use only stdlib; importing orchestrator must not require boto3
     assert hasattr(O, "run_job") and hasattr(O, "_rebuild")

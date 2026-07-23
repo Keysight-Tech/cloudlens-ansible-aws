@@ -32,7 +32,6 @@ import sys
 import hmac
 import json
 import time
-import uuid
 import queue
 import secrets
 import ipaddress
@@ -165,6 +164,19 @@ def new_pair_code(n=8):
 
 
 PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
+
+
+def new_job_id():
+    """A job id: a SECRET, not merely an identifier.
+
+    /events/<job_id> has no pairing check - EventSource cannot send headers -
+    so holding the id IS the authorisation to read that deploy: the account id
+    and caller ARN in the hello frame, and every log line after it. Guessing an
+    id is reading someone else's deploy, so this has to be a full-entropy
+    CSPRNG token. It was uuid4().hex[:12] once: 48 bits, and not even 48 random
+    ones, since uuid4 spends 6 of its bits on the version and variant fields.
+    """
+    return secrets.token_hex(16)
 
 # Loopback has no network cost, so an unattended page could otherwise grind 40
 # bits at thousands of guesses a second. The DELAY is the real defence: half a
@@ -498,7 +510,7 @@ class Handler(BaseHTTPRequestHandler):
             fid = b.get("flow")
             if fid not in F.FLOWS:
                 return self._send(400, {"error": "unknown flow"})
-            job_id = uuid.uuid4().hex[:12]
+            job_id = new_job_id()
             job = O.Job(job_id, fid, b.get("inputs", {}))
             JOBS[job_id] = job
             replay = None
