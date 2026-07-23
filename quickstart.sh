@@ -226,6 +226,10 @@ fi
 # hand-edits a file a script also writes, which is how the mismatch happened.
 echo ""
 echo "→ Building inventory from customer_input.yaml..."
+[ -f scripts/render_inventory.py ] \
+  || fail "scripts/render_inventory.py is missing. Run this from a checkout of the
+    repository: git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws
+    && cd cloudlens-ansible-aws && bash quickstart.sh"
 INV_SUMMARY=$(python3 scripts/render_inventory.py) \
   || fail "Could not build the inventory from customer_input.yaml. The error above says why."
 eval "$INV_SUMMARY"

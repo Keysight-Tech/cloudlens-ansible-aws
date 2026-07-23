@@ -175,7 +175,7 @@ bash quickstart.sh
 
 ### What it does
 
-1. **Discovers** running EC2 instances tagged `cloudlens=yes` via the `amazon.aws.aws_ec2` dynamic inventory plugin
+1. **Discovers** running EC2 instances matching `aws.tag_filters` in `customer_input.yaml` (default `cloudlens=yes`) via the `amazon.aws.aws_ec2` dynamic inventory plugin
 2. **Groups** them by `os` tag (ubuntu_prod_vms, redhat_prod_vms, windows_prod_vms)
 3. **Connects** via SSH (Linux), SSM Session Manager, or WinRM (Windows)
 4. **Installs** the CloudLens sensor: Docker on Ubuntu, Podman on RHEL, MSI on Windows
@@ -187,9 +187,9 @@ CloudLens Ansible discovers instances by tag. Apply these to every target:
 
 | Tag | Value | Required? |
 |---|---|---|
-| `cloudlens` | `yes` | Yes |
-| `os` | `ubuntu` / `rhel` / `windows` | Yes |
-| `env` | `prod` / `dev` / `qa` | Yes |
+| `cloudlens` | `yes` | Only if you keep the default `tag_filters` |
+| `os` | `ubuntu` / `rhel` / `windows` | Yes: it selects the sensor install method |
+| `env` | `prod` / `dev` / `qa` | Yes: `deploy.yaml` targets the `*_prod_vms` groups |
 
 Bulk-tag a region:
 
@@ -200,6 +200,35 @@ aws ec2 describe-instances --region us-east-1 \
 | xargs -n1 -I {} aws ec2 create-tags --resources {} \
     --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod
 ```
+
+### Bring your own workloads
+
+You do not have to re-tag a fleet to use this. Everything under `aws:` in
+`customer_input.yaml` drives discovery directly, and `scripts/render_inventory.py`
+turns it into the dynamic inventory the run actually uses. Pick one:
+
+```yaml
+aws:
+  # 1. Your own tags. Every entry must match, so combine as many as you like.
+  regions: [us-east-1, eu-west-1]
+  tag_filters:
+    Environment: "prod"
+    Team: "payments"
+
+  # 2. Exactly these instances. Wins over tag_filters.
+  instance_ids: [i-0123456789abcdef0, i-0fedcba9876543210]
+
+  # 3. An inventory you already have. Skips AWS discovery entirely: static
+  #    hosts, another account, or machines that are not EC2 at all. Put the
+  #    connection vars in that file, since inventory/group_vars does not
+  #    follow it.
+  inventory_file: "/path/to/hosts.ini"
+```
+
+`deploy-stack.sh --discovery-tag-key/--discovery-tag-value` writes case 1 for
+you. If discovery comes back empty, the run stops and prints which regions and
+filters it searched and how many running instances exist in those regions, so
+a wrong tag is distinguishable from wrong credentials.
 
 ### Connection modes
 
@@ -315,7 +344,7 @@ You can run **both** in the same AWS account; they do not conflict. The sibling 
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Inventory finds 0 instances | Tags missing | `aws ec2 create-tags --resources <id> --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod` |
+| Inventory finds 0 instances | Tags missing, or `aws.tag_filters` does not match what your instances carry | Read the diagnostic the run prints: it lists the regions and filters searched and the tags your running instances actually have. Then either fix `aws.tag_filters` or tag the hosts: `aws ec2 create-tags --resources <id> --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod` |
 | `ssh admin@vpb -p 22` times out | vPB SSH is on 9022 | Use port 9022 |
 | `ssh -p 9022` times out | Security group missing TCP/9022, or KCOS still booting | Add SG rule; wait 10 to 15 min after `running` |
 | SSM "0 target instances" | Missing IAM role or SSM Agent stopped | Attach `AmazonSSMManagedInstanceCore`; check `aws ssm describe-instance-information` |
