@@ -1657,6 +1657,65 @@ def test_main_threads_dev_origin_into_serve():
         server.serve = old
 
 
+def _replay_terminal(stop_after):
+    """Drive a REAL replay through run_job, pressing Stop after `stop_after`
+    log frames. Returns the terminal event it closed with, or None.
+
+    The stop comes from the job's own emit(), which is deterministic and is the
+    same thing POST /stop/<id> does: set job.stopped and let _run_replay notice
+    on its next frame. A thread and a sleep would test the same code and flake.
+
+    The fixture is written here rather than borrowed from fixtures/: this is
+    about how run_job CLOSES a replay, and a real one's frames and delays would
+    make the run slow and the assertion indirect.
+    """
+    import tempfile
+
+    class StopsItself(O.Job):
+        def emit(self, ev):
+            super().emit(ev)
+            if ev["type"] == E.LOG and \
+                    len([e for e in self.buffer if e["type"] == E.LOG]) >= stop_after:
+                self.stop()
+
+    frames = [{"_delay": 0, "event": {"type": "log", "text": "line %d" % i}}
+              for i in range(4)]
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(frames, fh)
+        path = fh.name
+    try:
+        job = StopsItself(server.new_job_id(), "stack", {})
+        O.run_job(job, replay=path)
+    finally:
+        os.unlink(path)
+    tail = [e for e in job.buffer if e["type"] in (E.DONE, E.ERROR)]
+    return tail[-1] if tail else None
+
+
+def test_a_stopped_replay_is_never_reported_as_a_success():
+    """A run the visitor cut short must not be called complete.
+
+    run_job closed every replay that reached no terminal event with
+    done("Replay complete."), and a stop is exactly that: _run_replay returns
+    the moment job.stopped is set. So a cancelled run reported success, and the
+    only thing standing between that and the visitor was the page choosing to
+    disbelieve it. Both real deploy paths already say "Stopped by operator.".
+    """
+    ev = _replay_terminal(stop_after=2)
+    assert ev is not None, "a job that ends must say how"
+    assert ev["type"] == E.ERROR, \
+        "a stopped replay closed with %r" % (ev,)
+    assert ev["text"] == "Stopped by operator.", \
+        "the same sentence the real deploy paths use, from the same authority"
+
+
+def test_a_replay_that_runs_out_is_still_complete():
+    # The other direction, or the fix above is just "never report success".
+    ev = _replay_terminal(stop_after=99)
+    assert ev is not None and ev["type"] == E.DONE
+    assert ev["summary"] == "Replay complete."
+
+
 def test_replay_needs_no_boto3(monkeypatch=None):
     # _rebuild + replay path use only stdlib; importing orchestrator must not require boto3
     assert hasattr(O, "run_job") and hasattr(O, "_rebuild")

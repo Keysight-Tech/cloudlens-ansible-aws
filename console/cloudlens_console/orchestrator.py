@@ -202,8 +202,21 @@ def run_job(job, replay=None):
             job.emit(E.hello("000000000000", "arn:aws:iam::demo:replay", region))
             job.emit(E.narrate("Replay mode - real captured events from a live deploy, no AWS calls.", "note"))
             _run_replay(job, replay)
+            # A stopped replay is NOT a completed one. _run_replay returns the
+            # moment job.stopped is set, so a run the operator cut short left
+            # no terminal event behind and used to be closed with
+            # done("Replay complete.") - success reported for a run that was
+            # cancelled. Both real deploy paths already say "Stopped by
+            # operator."; this is the same sentence, from the same authority.
+            #
+            # Both branches are guarded on saw_terminal_event, not just the
+            # second: a stop that arrives after the fixture's own done frame
+            # must not append a cancellation to a run that had already ended.
             if not job.saw_terminal_event:
-                job.emit(E.done("Replay complete."))
+                if job.stopped:
+                    job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
+                else:
+                    job.emit(E.done("Replay complete."))
             return
         account, arn, reg = preflight(region)
         job.emit(E.hello(account, arn, reg))

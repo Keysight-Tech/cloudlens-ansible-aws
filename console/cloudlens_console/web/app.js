@@ -410,12 +410,20 @@ function run() {
 
 // The end of a run, from either source.
 //
-// Asking to stop wins over whatever the console says the ending was, in both
-// directions. A stopped deploy ends with a terminal error event, and calling
-// that "failed" blames the deploy for something the operator asked for; a
-// stopped REPLAY ends with done("Replay complete.") - orchestrator.py emits it
-// whenever the fixture ran out of terminal events, stop included - and calling
-// that "complete" claims a run finished that the operator cut short.
+// The console is the authority on how a run ended, and pressing Stop does not
+// override it. orchestrator.py emits done() only for a run that really
+// finished and "Stopped by operator." on every path it did not, the fixture
+// replay included - so a stop that lands in the final instant, after the deploy
+// already succeeded, still reads "complete" rather than claiming the visitor
+// cut short a run that was over.
+//
+// What Stop does is RENAME an ending the console already called a failure: a
+// terminal error the operator asked for is not the deploy's fault, and
+// labelling it "failed" blames it for doing as it was told. Nothing else the
+// console can report is touched.
+//
+// The local fixture playback has no console to ask, so it reports "stopped"
+// itself by passing that kind straight in.
 var END = {
   finished: ["done", "statusComplete"],
   failed:   ["err", "statusFailed"],
@@ -424,7 +432,7 @@ var END = {
 };
 function finish(kind) {
   running = false; stopTimer();
-  var end = END[stopping ? "stopped" : kind] || END.failed;
+  var end = END[(stopping && kind === "failed") ? "stopped" : kind] || END.failed;
   setPill(end[0], T(end[1]));
   $("stopBtn").hidden = true;
   $("runTxt").textContent = T("runAgain");
