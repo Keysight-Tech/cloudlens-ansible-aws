@@ -66,9 +66,25 @@ fi
 echo "✓ Pre-flight checks passed"
 echo ""
 
+# --- Build the inventory discovery will use ---
+# Same renderer quickstart.sh uses: aws.regions / aws.tag_filters /
+# aws.instance_ids / aws.inventory_file from the input file decide what is
+# discovered. Without this, this script searched the checked-in defaults and
+# ignored everything the operator set.
+INV_SUMMARY=$(python3 scripts/render_inventory.py --input "$INPUT_FILE") || {
+  echo "✗ Could not build the inventory from $INPUT_FILE (see the error above)."
+  exit 1
+}
+eval "$INV_SUMMARY"
+INVENTORY="${CL_INV_PATH:-inventory/aws_ec2.yaml}"
+echo "✓ Inventory: $INVENTORY"
+echo "  filters:   ${CL_INV_FILTERS:-none}"
+echo "  regions:   ${CL_INV_REGIONS:-all enabled regions}"
+echo ""
+
 # --- Step 1: Display discovered inventory ---
 echo "─── Step 1: Discovering AWS EC2 instances ───"
-ansible-inventory -i inventory/aws_ec2.yaml --graph 2>&1 | tee inventory.txt
+ansible-inventory -i "$INVENTORY" --graph 2>&1 | tee inventory.txt
 echo ""
 read -rp "Continue with deployment? [y/N] " confirm
 if [[ "${confirm,,}" != "y" ]]; then
@@ -81,14 +97,14 @@ echo ""
 echo "─── Step 2: Bootstrapping WinRM on Windows instances ───"
 ansible-playbook playbooks/bootstrap_windows_winrm.yaml \
   -e "@$INPUT_FILE" \
-  -i inventory/aws_ec2.yaml || echo "⚠ WinRM bootstrap had errors; check ansible.log"
+  -i "$INVENTORY" || echo "⚠ WinRM bootstrap had errors; check ansible.log"
 
 # --- Step 3: Deploy sensors across all OS families ---
 echo ""
 echo "─── Step 3: Deploying CloudLens sensors ───"
 ansible-playbook deploy.yaml \
   -e "@$INPUT_FILE" \
-  -i inventory/aws_ec2.yaml
+  -i "$INVENTORY"
 
 # --- Final summary ---
 echo ""

@@ -12,11 +12,41 @@
 
 aws:
   profile: "default"
+
+  # ---------------------------------------------------------------
+  # Host discovery. These three settings decide which machines the
+  # sensor is installed on. They are rendered into the dynamic
+  # inventory at run time by scripts/render_inventory.py, so what you
+  # write here is what discovery actually searches for.
+  # ---------------------------------------------------------------
+
+  # Regions to scan. Remove or empty the list to scan every enabled region.
   regions:
     - us-east-1
+
+  # Tags a running instance must carry to be discovered. EVERY entry must
+  # match (they are ANDed), so add your own keys freely:
+  #   tag_filters:
+  #     Environment: "prod"
+  #     Team: "payments"
   tag_filters:
     cloudlens: "yes"
     env: "prod"
+
+  # Exactly these instances, ignoring tags entirely. When set, this wins
+  # over tag_filters. Leave it out for normal tag-based discovery.
+  # instance_ids:
+  #   - i-0123456789abcdef0
+  #   - i-0fedcba9876543210
+
+  # Bring your own hosts: point at an Ansible inventory you already have
+  # and AWS discovery is skipped completely. Use this for static hosts,
+  # instances in another account, or machines that are not EC2 at all.
+  # Connection vars (ansible_user, ansible_ssh_private_key_file,
+  # ansible_connection) must live in that file or in a group_vars
+  # directory beside it: inventory/group_vars does not apply to it.
+  # inventory_file: "/path/to/hosts.ini"
+
   windows_connection: "ssm"   # ssm | winrm
   linux_connection:   "ssh"   # ssh | ssm
   ssh_key_path:    "~/.aws/your-key.pem"
