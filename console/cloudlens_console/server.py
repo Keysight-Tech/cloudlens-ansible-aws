@@ -643,6 +643,54 @@ def _ctype(path):
     return "application/octet-stream"
 
 
+def _banner_url(host, port):
+    """The URL we print and hand to webbrowser.open().
+
+    127.0.0.1 is shown as localhost - nicer to read, and the same origin the UI
+    posts from. An IPv6 literal has to be bracketed: --host ::1 otherwise built
+    'http://::1:8760/', which is not a URL, and webbrowser.open() passes it to
+    the browser verbatim.
+
+    Lives here rather than in __main__ because serve() prints the banner: it is
+    the only place that knows the port actually bound, which is not the port
+    requested whenever that was 0.
+    """
+    shown = "localhost" if host == "127.0.0.1" else host
+    if ":" in shown and not shown.startswith("["):
+        shown = "[%s]" % shown
+    return "http://{}:{}/".format(shown, port)
+
+
+def print_banner(host, port):
+    """Announce the console, and print the pairing code the visitor must type.
+
+    Called from serve(), after the bind: the port is the one we actually got,
+    and the code is the one PAIR_CODE already holds. It does NOT mint a code -
+    minting here would print a value the handler never compares against, and
+    every pairing attempt would fail with the only evidence being that the two
+    strings differ, which nobody can see.
+
+    When pairing is disabled the banner says exactly that. Printing a code that
+    is not enforced is worse than printing none: the visitor types it, is
+    refused, and concludes the code was wrong.
+    """
+    print("\n  CloudLens live console  ->  %s" % _banner_url(host, port))
+    print("  %s Runs the real deploy scripts against your AWS identity." % (
+        "Loopback only." if LOOPBACK_ONLY else "REACHABLE FROM THE NETWORK."))
+    if PAIR_CODE is None:
+        print("\n  Pairing is DISABLED. Restart the console to pair a browser.\n")
+    else:
+        # Printed verbatim, on its own line, with nothing else on it. No
+        # spacing or grouping for legibility: the visitor types or pastes this
+        # string and the handler compares it byte for byte, so any prettifying
+        # here becomes a wrong code there.
+        print("\n      Pairing code:   %s\n" % PAIR_CODE)
+        print("  Type that into the page to pair THIS browser with THIS console.")
+        print("  It is not a password and it is not saved: leave this window")
+        print("  running for as long as you want the page to drive a deploy.\n")
+    print("  Ctrl-C to stop.\n", flush=True)
+
+
 class _Server(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         """A client that went away is not a server fault.
@@ -699,4 +747,7 @@ def serve(host="127.0.0.1", port=8760, allow_remote=False):
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
     _set_self_origins(httpd.server_address[1])
+    # After the bind, so the URL names the port we got rather than the one we
+    # asked for, and so nothing is announced if the bind raised.
+    print_banner(host, httpd.server_address[1])
     return httpd

@@ -109,6 +109,16 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
     return Resp(h.status, _make_headers(h.sent_list), payload, raw)
 
 
+def _no_banner():
+    """Swallow serve()'s startup banner.
+
+    Only for tests that are about something else: the banner is a product
+    surface (it carries the pairing code), so the tests that own it capture the
+    text and assert on it rather than muting it.
+    """
+    return contextlib.redirect_stdout(io.StringIO())
+
+
 @contextlib.contextmanager
 def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
     """A real listener on a scratch port, with every global serve() touches
@@ -121,7 +131,8 @@ def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
     saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
              server.LOOPBACK_ONLY, server.OUR_HOSTS, dict(server.JOBS),
              server.REMOTE_WILDCARD, server.JOB_TTL)
-    httpd = server.serve(host, 0, allow_remote=allow_remote)
+    with _no_banner():
+        httpd = server.serve(host, 0, allow_remote=allow_remote)
     if quiet:
         # Tests that walk away from a never-ending stream RST the socket. That
         # is the test being rude, not the server misbehaving.
@@ -293,7 +304,8 @@ def test_sse_emits_cors_over_a_real_socket():
     from threading import Thread
 
     saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
-    httpd = server.serve("127.0.0.1", 0)          # port 0: never collide with a real console
+    with _no_banner():
+        httpd = server.serve("127.0.0.1", 0)      # port 0: never collide with a real console
     port = httpd.server_address[1]
     # This test walks away from a never-ending stream, which RSTs the socket
     # and makes socketserver dump a traceback to stderr. That is the test
@@ -696,14 +708,16 @@ def test_serve_sets_loopback_only_from_the_bind_host():
     old = server.LOOPBACK_ONLY
     saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
     try:
-        h = server.serve("0.0.0.0", 0)
+        with _no_banner():
+            h = server.serve("0.0.0.0", 0)
         try:
             assert server.LOOPBACK_ONLY is False, \
                 "a remote bind MUST revoke the origin exemption: without this line " \
                 "the console is an unauthenticated remote deploy endpoint"
         finally:
             h.server_close()
-        h = server.serve("127.0.0.1", 0)
+        with _no_banner():
+            h = server.serve("127.0.0.1", 0)
         try:
             assert server.LOOPBACK_ONLY is True
         finally:
@@ -726,7 +740,8 @@ def test_base_class_error_pages_also_forbid_framing():
 
     saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
     saved_loopback = server.LOOPBACK_ONLY
-    httpd = server.serve("127.0.0.1", 0)
+    with _no_banner():
+        httpd = server.serve("127.0.0.1", 0)
     port = httpd.server_address[1]
     httpd.handle_error = lambda request, addr: None
     Thread(target=httpd.serve_forever, daemon=True).start()
@@ -1025,10 +1040,12 @@ def test_allow_remote_widens_the_host_guard_only_when_asked():
     # behind for the next test.
     saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
     try:
-        server.serve("127.0.0.1", 0, allow_remote=True).server_close()
+        with _no_banner():
+            server.serve("127.0.0.1", 0, allow_remote=True).server_close()
         assert server.OUR_HOSTS == server.DEFAULT_HOSTS and not server.REMOTE_WILDCARD, \
             "a loopback bind must never widen the rebinding guard, flag or no flag"
-        server.serve("0.0.0.0", 0).server_close()
+        with _no_banner():
+            server.serve("0.0.0.0", 0).server_close()
         assert server.OUR_HOSTS == server.DEFAULT_HOSTS and not server.REMOTE_WILDCARD, \
             "the widening is gated on the flag, and serve() is callable without it"
 
@@ -1038,12 +1055,14 @@ def test_allow_remote_widens_the_host_guard_only_when_asked():
         # attacker who controls the LAN can point back at this console.
         concrete = _offmachine_addr()
         if concrete:
-            server.serve(concrete, 0, allow_remote=True).server_close()
+            with _no_banner():
+                server.serve(concrete, 0, allow_remote=True).server_close()
             assert server.OUR_HOSTS == server.DEFAULT_HOSTS | {concrete}
             assert server.REMOTE_WILDCARD is False, \
                 "a concrete bind names itself; nothing is deferred to the socket"
 
-        server.serve("0.0.0.0", 0, allow_remote=True).server_close()
+        with _no_banner():
+            server.serve("0.0.0.0", 0, allow_remote=True).server_close()
         assert server.REMOTE_WILDCARD is True, \
             "a wildcard bind defers to the address the client dialled"
         assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
@@ -1130,6 +1149,60 @@ def test_main_threads_allow_remote_into_serve():
         assert seen == {"host": "0.0.0.0", "port": 8760, "allow_remote": True}
     finally:
         server.serve = old
+
+
+@contextlib.contextmanager
+def _served_quietly(host="127.0.0.1"):
+    """serve() on a scratch port, its banner captured, globals restored.
+
+    Yields (banner_text, port). The listener is closed before the body runs, so
+    a failing assertion cannot leave a thread or a socket behind.
+    """
+    saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
+             server.LOOPBACK_ONLY, server.OUR_HOSTS, server.REMOTE_WILDCARD)
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            httpd = server.serve(host, 0)
+        port = httpd.server_address[1]
+        httpd.server_close()          # never serve_forever: nothing has to be shut down
+        yield buf.getvalue(), port
+    finally:
+        allowed, selfo, loopback, hosts, wild = saved
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
+        server.LOOPBACK_ONLY = loopback
+        server.OUR_HOSTS = hosts
+        server.REMOTE_WILDCARD = wild
+
+
+def test_startup_banner_shows_the_pairing_code_the_server_checks():
+    # Without this the pairing code is generated, enforced, and never shown:
+    # the visitor has nothing to type and the whole flow is unusable.
+    before = server.PAIR_CODE
+    with _served_quietly() as (out, port):
+        # The regression guard. Minting a fresh code here - anywhere but at
+        # import - would print one the handler does not compare against, and
+        # every pairing attempt would fail with no clue why.
+        assert server.PAIR_CODE == before, \
+            "the banner must print the live code, never mint a second one"
+        assert before in out, "the code the visitor has to type is missing"
+        assert "http://localhost:%d/" % port in out, \
+            "the banner must name the port actually bound, not the one requested"
+        assert "running" in out.lower(), \
+            "the visitor must be told the console has to stay up"
+
+
+def test_startup_banner_says_so_when_pairing_is_disabled():
+    # Printing a code that is not enforced is worse than printing none: the
+    # visitor types it, is refused, and blames the code.
+    saved = server.PAIR_CODE
+    server.PAIR_CODE = None
+    try:
+        with _served_quietly() as (out, _port):
+            assert "disabled" in out.lower()
+    finally:
+        server.PAIR_CODE = saved
 
 
 def test_job_ids_are_full_entropy_and_unique():

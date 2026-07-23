@@ -23,18 +23,10 @@ from . import server
 is_loopback = server.is_loopback
 
 
-def _banner_url(host, port):
-    """The URL we print and hand to webbrowser.open().
-
-    127.0.0.1 is shown as localhost - nicer to read, and the same origin the UI
-    posts from. An IPv6 literal has to be bracketed: --host ::1 otherwise built
-    'http://::1:8760/', which is not a URL, and webbrowser.open() passes it to
-    the browser verbatim.
-    """
-    shown = "localhost" if host == "127.0.0.1" else host
-    if ":" in shown and not shown.startswith("["):
-        shown = "[%s]" % shown
-    return "http://{}:{}/".format(shown, port)
+# Both live in server.py, which is where they are acted on: serve() prints the
+# startup banner (only it knows the port actually bound) and decides the pairing
+# exemption from is_loopback. A second copy here could drift from either.
+_banner_url = server._banner_url
 
 
 def main(argv=None):
@@ -61,12 +53,10 @@ def main(argv=None):
     # allow_remote is passed through, not just validated here: the Host guard
     # admits loopback names only, so without it a LAN client gets 403 and the
     # flag is documented but dead.
+    # serve() prints the banner itself, pairing code included: it is the only
+    # caller that knows the bound port, and the code has to be the live one.
     httpd = server.serve(args.host, args.port, allow_remote=args.allow_remote)
     url = _banner_url(args.host, args.port)
-    print("\n  CloudLens live console  ->  {}".format(url))
-    print("  {} Runs the real deploy scripts against your AWS identity.".format(
-        "Loopback only." if is_loopback(args.host) else "REACHABLE FROM THE NETWORK."))
-    print("  Ctrl-C to stop.\n")
     if not args.no_open:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
