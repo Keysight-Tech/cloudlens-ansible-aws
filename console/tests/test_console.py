@@ -1358,8 +1358,10 @@ def test_cfn_poller_stops_even_when_the_subprocess_never_starts():
     seen = {}
 
     def fake_poll(job, flow, stack_name, region, stop_evt):
-        seen["evt"] = stop_evt
-        seen["thread"] = threading.current_thread()
+        # One update(), not two assignments: the waiter below breaks on "evt"
+        # and then reads seen["thread"], so two statements leave a window in
+        # which a preemption between them is a KeyError in the main thread.
+        seen.update(evt=stop_evt, thread=threading.current_thread())
         while not stop_evt.is_set():
             time.sleep(0.01)
 
