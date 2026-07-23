@@ -422,6 +422,19 @@ login_block() {
   echo "Credentials file:   ${VC_CREDS_FILE} (mode 600)"
   echo "Sensor config:      customer_input.yaml (mode 600, holds the project key)"
   echo
+  # Learned the expensive way: three activation codes worth 500 counts each
+  # came back availableQuantity=0 because the KVO they were activated on had
+  # been deleted. Activation binds the quantity to a host, and deleting the
+  # host does not give it back. Nothing warned about this anywhere.
+  if [[ "$DEPLOY_KVO" == "true" ]]; then
+    echo
+    echo "BEFORE YOU DELETE THIS STACK: KVO licences are bound to the KVO host."
+    echo "Deleting the stack destroys the KVO and STRANDS whatever quantity was"
+    echo "activated on it. The entitlement is not returned and cannot be"
+    echo "reactivated elsewhere without Keysight rehosting it. Deactivate in"
+    echo "Settings > Product Licensing first, or accept the loss knowingly."
+    echo
+  fi
   echo "THESE FILES CONTAIN CREDENTIALS: ${LOG_FILE} and ${SUMMARY_FILE} record"
   echo "everything printed above, including the passwords. Both are mode 600 and"
   echo "git-ignored. Treat them like a password file: do not paste them wholesale."
