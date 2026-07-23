@@ -35,6 +35,13 @@
 #   --with-kvo       Deploy KVO without prompting
 #   --no-vpb         Skip vPB deployment
 #   --no-sensors     Skip sensor chain at the end
+#   --sensor-mode    standalone | kvo | none (which project key sensors use)
+#   --kvo-codes      KVO activation code (CODE or CODE,QTY), repeatable
+#   --cloud-config   KVO Cloud Config name to provision
+#   --bootstrap-vpb  Run scripts/bootstrap-vpb.sh on the vPB over SSH
+#   --adopt-vpb      Adopt the vPB into KVO
+#   --wire-vpb-path  Wire the vPB traffic path + monitoring policy
+#   --with-mirror    Also attempt the AWS mirror session (default: no)
 #   --key-name NAME  EC2 key pair to attach (created if missing)
 #   --rollback       Delete the stack we created on any failure
 #   -h | --help      Show this banner and exit
@@ -167,12 +174,43 @@ CHAIN_SENSORS=""
 ARG_REGION=""
 ARG_STACK=""
 
+# Post-deploy orchestration (phases 10-16). Blank = prompt, and every prompt
+# falls back to the documented default when there is no terminal to ask on.
+SENSOR_MODE=""                # standalone | kvo | none
+KVO_CODES=()                  # --kvo-codes, repeatable, passed straight through
+CLOUD_CONFIG_NAME="${CLOUDLENS_CLOUD_CONFIG:-cloudlens-aws}"
+CLM_NAME_IN_KVO="${CLOUDLENS_CLM_NAME:-cloudlens-manager}"
+VPB_DEVICE_NAME="${CLOUDLENS_VPB_DEVICE_NAME:-cloudlens-vpb}"
+VPB_COLLECTION="${CLOUDLENS_VPB_COLLECTION:-}"
+BOOTSTRAP_VPB=""
+ADOPT_VPB=""
+WIRE_VPB_PATH=""
+WITH_MIRROR=""
+MIRROR_ACCESS_KEY="${CLOUDLENS_MIRROR_ACCESS_KEY:-}"
+MIRROR_SECRET_KEY="${CLOUDLENS_MIRROR_SECRET_KEY:-}"
+
 # State trackers (filled as we go) for trap reporting
 PHASE_NAME="init"
 CREATED_STACK=false
 CLMS_PUBLIC_IP=""
 KVO_PUBLIC_IP=""
 VPB_PUBLIC_IP=""
+
+# Facts discovered after the deploy (private addressing the appliances use to
+# talk to each other) and the two project keys the sensor step chooses between.
+CLMS_PRIVATE_IP=""
+KVO_PRIVATE_IP=""
+VPB_PRIVATE_IP=""
+VPB_INGRESS_IP=""
+STACK_VPC_ID=""
+MGMT_SUBNET_ID=""
+INGRESS_SUBNET_ID=""
+EGRESS_SUBNET_ID=""
+STACK_ZONE=""
+VC_PROJECT_KEY=""             # minted directly on the vController (Phase 9)
+KVO_PROJECT_KEY=""            # provisioned by the KVO Cloud Config (Phase 12)
+SENSOR_PROJECT_KEY=""         # whichever of the two the chosen mode uses
+KVO_CHAIN_OK=true             # licensing gates adoption; false stops the branch
 
 # ---------------------------------------------------------------------
 # Pretty output
@@ -198,6 +236,34 @@ note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
 dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
 
 to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ---------------------------------------------------------------------
+# Prompting that can never block.
+#
+# The /dev/tty re-attach at the top of this file is what makes `curl | bash`
+# interactive at all: without it stdin is the SCRIPT, not the terminal. When
+# that re-attach did not happen (headless CI, `echo "" | bash ...`, a container
+# with no controlling terminal) stdin is not a TTY and there is nobody to
+# answer, so every prompt below skips the read entirely and takes its default.
+# That is the single check: -t 0 AFTER the re-attach.
+# ---------------------------------------------------------------------
+INTERACTIVE=false
+[[ -t 0 ]] && INTERACTIVE=true
+
+# ask "prompt" "default" -> echoes the answer (default when not interactive)
+ask() {
+  local prompt="$1" def="${2:-}" ans=""
+  if [[ "$INTERACTIVE" == "true" ]]; then
+    read -rp "$prompt" ans || true
+  fi
+  printf '%s' "${ans:-$def}"
+}
+
+# ask_yn "prompt" "y|n"  -> returns 0 for yes, 1 for no
+ask_yn() {
+  local ans; ans="$(to_lower "$(ask "$1" "$2")")"
+  [[ "$ans" == "y" || "$ans" == "yes" ]]
+}
 
 # ---------------------------------------------------------------------
 # Logging: tee everything to log file
@@ -286,6 +352,45 @@ Toggles:
   --no-rollback             Force keep-partial behavior (default).
   -h, --help                Show this help
 
+Post-deploy chain (phases 10-16). Every one of these is prompted for when it
+is not given, and every prompt falls back to the default shown when there is
+no terminal to ask on, so curl | bash stays fully non-interactive:
+  --sensor-mode MODE        Which project key the sensors register with:
+                              standalone  the key minted directly on the
+                                          vController in phase 9 (default)
+                              kvo         the key the KVO Cloud Config
+                                          provisions in phase 12. Needs KVO.
+                              none        skip sensors entirely
+                            KVO mode runs licensing + adoption BEFORE sensors,
+                            because the key does not exist until then.
+  --kvo-codes CODE[,QTY]    KVO activation code, repeatable. Passed straight to
+                            scripts/kvo_license.py. Omit it on a terminal and
+                            that script prompts for code and quantity itself.
+  --cloud-config NAME       KVO Cloud Config to create (default: cloudlens-aws).
+                            Creating it is what provisions the CLM project and
+                            its sensor key.
+  --clm-name NAME           Name of the adopted vController inside KVO
+                            (default: cloudlens-manager)
+  --bootstrap-vpb           Run scripts/bootstrap-vpb.sh on the vPB over SSH
+  --no-bootstrap-vpb        Only print the bootstrap instructions
+  --adopt-vpb               Adopt the vPB into KVO (needs vPB + KVO)
+  --no-adopt-vpb            Skip vPB adoption
+  --wire-vpb-path           Wire the vPB traffic path + monitoring policy.
+                            NOTE: this cannot complete on a fresh vPB. The
+                            device config has no ports until eth1/eth2 are
+                            brought up as DPDK data ports on the vPB itself,
+                            and that bring-up is not automated.
+  --no-wire-vpb-path        Skip the traffic path step
+  --with-mirror             Also attempt the AWS mirror session (default: no).
+                            NOTE: this does not currently produce mirror
+                            sessions. KVO creates the target and filter and
+                            launches the collector SVM but never adopts it, so
+                            zero sessions are created. Open Keysight item.
+  --no-mirror               Skip the AWS mirror session (default)
+  --mirror-access-key KEY   AWS access key KVO uses for mirroring. Required:
+  --mirror-secret-key KEY   an instance role is not enough, createAwsPresence
+                            fails with "accessKeyId cannot be empty".
+
 Multi-region: CloudFormation ships AMIs for us-east-1, us-east-2, us-west-1,
   us-west-2, ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
   ap-southeast-2, ap-northeast-1, ap-south-1. Just pass --region; the script
@@ -301,7 +406,10 @@ Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_KVO_AMI / _TYPE,
   CLOUDLENS_VPB_AMI / _TYPE,
   CLOUDLENS_VPB_INGRESS_NICS, CLOUDLENS_VPB_EGRESS_NICS,
-  CLOUDLENS_DISCOVERY_TAG_KEY, CLOUDLENS_DISCOVERY_TAG_VALUE
+  CLOUDLENS_DISCOVERY_TAG_KEY, CLOUDLENS_DISCOVERY_TAG_VALUE,
+  CLOUDLENS_CLOUD_CONFIG, CLOUDLENS_CLM_NAME, CLOUDLENS_VPB_DEVICE_NAME,
+  CLOUDLENS_VPB_COLLECTION,
+  CLOUDLENS_MIRROR_ACCESS_KEY, CLOUDLENS_MIRROR_SECRET_KEY
 
 Example (full prod-style invocation):
   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
@@ -322,10 +430,21 @@ What it does (phases):
   5. Infra engine selection (CloudFormation or Terraform)
   6. Deploy the stack (vController + optional KVO + optional vPB)
   7. Wait for vController to initialize (~15 minutes)
-  8. Read stack outputs (Elastic IPs)
-  9. Manual project key step (from vController UI)
- 10. Sensor chain (optional, runs quickstart.sh)
- 11. Final summary written to cloudlens-deploy-summary.txt
+  8. vPB post-deploy bootstrap over SSH (--bootstrap-vpb)
+  9. vController project key + working UI login
+ 10. Sensor mode: standalone, KVO-managed, or none (--sensor-mode)
+ 11. KVO product licensing (KVO mode only, --kvo-codes)
+ 12. Adopt the vController into KVO + create the Cloud Config, which
+     provisions the project key KVO-managed sensors use (--cloud-config)
+ 13. Sensor chain (optional, runs quickstart.sh with the key phase 10 chose)
+ 14. Adopt the vPB into KVO (--adopt-vpb)
+ 15. vPB traffic path + monitoring policy (--wire-vpb-path)
+ 16. AWS mirror session (--with-mirror, off by default)
+ 17. Final summary written to cloudlens-deploy-summary.txt
+
+Phases 11 and 12 deliberately run BEFORE the sensors: in KVO-managed mode the
+project key does not exist until the Cloud Config provisions it, and a sensor
+installed with the phase 9 key registers to the wrong project.
 HLP
 }
 
@@ -343,6 +462,23 @@ while [[ $# -gt 0 ]]; do
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
     --no-sensors) CHAIN_SENSORS=false; shift ;;
+
+    --sensor-mode) SENSOR_MODE="$(to_lower "$2")"; shift 2 ;;
+    --kvo-codes) KVO_CODES+=("$2"); shift 2 ;;
+    --cloud-config) CLOUD_CONFIG_NAME="$2"; shift 2 ;;
+    --clm-name) CLM_NAME_IN_KVO="$2"; shift 2 ;;
+    --vpb-device-name) VPB_DEVICE_NAME="$2"; shift 2 ;;
+    --vpb-collection) VPB_COLLECTION="$2"; shift 2 ;;
+    --bootstrap-vpb) BOOTSTRAP_VPB=true; shift ;;
+    --no-bootstrap-vpb) BOOTSTRAP_VPB=false; shift ;;
+    --adopt-vpb) ADOPT_VPB=true; shift ;;
+    --no-adopt-vpb) ADOPT_VPB=false; shift ;;
+    --wire-vpb-path) WIRE_VPB_PATH=true; shift ;;
+    --no-wire-vpb-path) WIRE_VPB_PATH=false; shift ;;
+    --with-mirror) WITH_MIRROR=true; shift ;;
+    --no-mirror) WITH_MIRROR=false; shift ;;
+    --mirror-access-key) MIRROR_ACCESS_KEY="$2"; shift 2 ;;
+    --mirror-secret-key) MIRROR_SECRET_KEY="$2"; shift 2 ;;
 
     --rollback) ROLLBACK_ON_FAIL=true; shift ;;
     --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
@@ -385,6 +521,16 @@ done
 if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
   fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
 fi
+
+case "$SENSOR_MODE" in
+  ""|standalone|kvo|none) ;;
+  *) fail "--sensor-mode must be 'standalone', 'kvo', or 'none' (got '$SENSOR_MODE')." ;;
+esac
+# --sensor-mode none is just another spelling of --no-sensors, and naming a real
+# mode means sensors are wanted, so neither one has to be asked about twice.
+[[ "$SENSOR_MODE" == "none" ]] && CHAIN_SENSORS=false
+[[ "$SENSOR_MODE" == "standalone" || "$SENSOR_MODE" == "kvo" ]] \
+  && [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true
 
 # Validate NIC count bounds
 for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
@@ -720,7 +866,7 @@ echo "AWS region (e.g. us-east-1, us-west-2, eu-west-1):"
 if [[ -n "$ARG_REGION" ]]; then
   REGION="$ARG_REGION"; ok "Region: ${REGION} (from --region)"
 else
-  read -rp "AWS region [${DEFAULT_REGION}]: " input_region; echo || true
+  input_region="$(ask "AWS region [${DEFAULT_REGION}]: " "$DEFAULT_REGION")"; echo
   REGION="${input_region:-$DEFAULT_REGION}"; ok "Region: ${REGION}"
 fi
 AWS_REGION_ARG=(--region "$REGION")
@@ -774,13 +920,13 @@ if [[ -n "$ARG_STACK" ]]; then
   ok "Stack name: ${STACK_NAME} (from --stack-name)"
 else
   while true; do
-    read -rp "Stack name [${DEFAULT_STACK_NAME}]: " input_stack; echo || true
+    input_stack="$(ask "Stack name [${DEFAULT_STACK_NAME}]: " "$DEFAULT_STACK_NAME")"; echo
     STACK_NAME="${input_stack:-$DEFAULT_STACK_NAME}"
     if valid_stack_name "$STACK_NAME"; then break; fi
     suggestion="$(sanitize_stack_name "$STACK_NAME")"
     warn "Invalid name '${STACK_NAME}': CloudFormation names must start with a letter and use only letters, digits, and hyphens (no spaces)."
-    read -rp "Use '${suggestion}' instead? [Y/n]: " use_sugg; echo || true
-    if [[ "${use_sugg,,}" != "n" ]]; then STACK_NAME="$suggestion"; break; fi
+    use_sugg="$(ask "Use '${suggestion}' instead? [Y/n]: " y)"; echo
+    if [[ "$(to_lower "$use_sugg")" != "n" ]]; then STACK_NAME="$suggestion"; break; fi
   done
   ok "Stack name: ${STACK_NAME}"
 fi
@@ -1225,6 +1371,102 @@ ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
 [[ "$DEPLOY_KVO" == "true" ]] && ok "KVO at ${KVO_PUBLIC_IP:-unknown}"
 [[ "$DEPLOY_VPB" == "true" ]] && ok "vPB at ${VPB_PUBLIC_IP:-unknown} (SSH on port ${VPB_SSH_PORT})"
 
+# ---------------------------------------------------------------------
+# Post-deploy helpers, shared by phases 8 and 10-16.
+#
+# The appliances talk to each other over PRIVATE addressing (KVO licenses the
+# vPB on its private IP, collectors register to the vController privately), and
+# the traffic-path / mirror steps need the data-plane ENIs. CloudFormation
+# publishes some of that as outputs; Terraform does not, so both paths fall
+# back to reading the instance by its Name tag.
+# ---------------------------------------------------------------------
+KEY_PEM="$HOME/.ssh/${KEY_NAME}.pem"
+
+# Locate a repo script wherever this run is executing from (checkout, clone,
+# or cwd). Echoes the path, returns 1 when it is nowhere to be found.
+find_repo_script() {
+  local rel="$1" cand
+  for cand in "$SCRIPT_DIR/../${rel}" "$REPO_DIR/${rel}" "$PWD/${rel}"; do
+    [[ -f "$cand" ]] && { echo "$cand"; return 0; }
+  done
+  return 1
+}
+
+# ec2_fact <name-tag> <jmespath under Reservations[0].Instances[0]>
+ec2_fact() {
+  local name="$1" q="$2" v
+  v=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
+        --filters "Name=tag:Name,Values=${name}" "Name=instance-state-name,Values=running" \
+        --query "Reservations[0].Instances[0].${q}" --output text 2>/dev/null) || v=""
+  [[ "$v" == "None" ]] && v=""
+  printf '%s' "$v"
+}
+
+discover_stack_facts() {
+  local vc_tag="${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
+  local kvo_tag="${KVO_NAME:-${STACK_NAME}-kvo}"
+  local vpb_tag="${VPB_NAME:-${STACK_NAME}-vpb}"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    CLMS_PRIVATE_IP="10.0.0.10"; KVO_PRIVATE_IP="10.0.0.11"
+    VPB_PRIVATE_IP="10.0.0.12";  VPB_INGRESS_IP="10.0.1.12"
+    STACK_VPC_ID="vpc-dryrun";   STACK_ZONE="${REGION}a"
+    MGMT_SUBNET_ID="subnet-mgmt"; INGRESS_SUBNET_ID="subnet-ingress"
+    EGRESS_SUBNET_ID="subnet-egress"
+    dryrun_say "would read private IPs, VPC and subnets from the deployed stack"
+    return 0
+  fi
+
+  if [[ "$IAC" == "terraform" ]]; then
+    STACK_VPC_ID="$(tf_output vpc_id)"
+  else
+    STACK_VPC_ID="$(cfn_output SharedVpcId)"
+    CLMS_PRIVATE_IP="$(cfn_output VcontrollerPrivateIp)"
+    [[ "$DEPLOY_KVO" == "true" ]] && KVO_PRIVATE_IP="$(cfn_output KvoPrivateIp)"
+    [[ "$DEPLOY_VPB" == "true" ]] && VPB_PRIVATE_IP="$(cfn_output VpbPrivateIp)"
+  fi
+  [[ -z "$CLMS_PRIVATE_IP" || "$CLMS_PRIVATE_IP" == "None" ]] && CLMS_PRIVATE_IP="$(ec2_fact "$vc_tag" PrivateIpAddress)"
+  MGMT_SUBNET_ID="$(ec2_fact "$vc_tag" SubnetId)"
+  STACK_ZONE="$(ec2_fact "$vc_tag" 'Placement.AvailabilityZone')"
+
+  if [[ "$DEPLOY_KVO" == "true" ]]; then
+    [[ -z "$KVO_PRIVATE_IP" || "$KVO_PRIVATE_IP" == "None" ]] && KVO_PRIVATE_IP="$(ec2_fact "$kvo_tag" PrivateIpAddress)"
+  fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then
+    [[ -z "$VPB_PRIVATE_IP" || "$VPB_PRIVATE_IP" == "None" ]] && VPB_PRIVATE_IP="$(ec2_fact "$vpb_tag" PrivateIpAddress)"
+    # Data-plane ENIs: device index 1 is the first ingress NIC, the first egress
+    # NIC follows the ingress ones (see the attachment ordering in the template).
+    local egress_idx=$(( 1 + VPB_INGRESS_NICS ))
+    VPB_INGRESS_IP="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`1\`].PrivateIpAddress | [0]")"
+    INGRESS_SUBNET_ID="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`1\`].SubnetId | [0]")"
+    EGRESS_SUBNET_ID="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`${egress_idx}\`].SubnetId | [0]")"
+  fi
+  # Collectors can share the management subnet when there is no vPB data plane.
+  [[ -z "$INGRESS_SUBNET_ID" ]] && INGRESS_SUBNET_ID="$MGMT_SUBNET_ID"
+  [[ -z "$EGRESS_SUBNET_ID" ]]  && EGRESS_SUBNET_ID="$MGMT_SUBNET_ID"
+  return 0
+}
+
+# python3 + requests are what every scripts/*.py needs. Probe once, quietly.
+# Always call this as an `if` condition: it reports readiness by exit status.
+PY_CHAIN_OK=""
+python_chain_ready() {
+  if [[ -z "$PY_CHAIN_OK" ]]; then
+    PY_CHAIN_OK=true
+    if ! command -v python3 >/dev/null 2>&1; then
+      PY_CHAIN_OK=false
+    elif ! python3 -c "import requests" 2>/dev/null; then
+      python3 -m pip install --quiet --user requests 2>/dev/null \
+        || python3 -m pip install --quiet --break-system-packages --user requests 2>/dev/null \
+        || true
+      python3 -c "import requests" 2>/dev/null || PY_CHAIN_OK=false
+    fi
+  fi
+  [[ "$PY_CHAIN_OK" == "true" ]]
+}
+
+discover_stack_facts
+
 # =====================================================================
 # Phase 7: Wait for vController init
 # =====================================================================
@@ -1287,14 +1529,72 @@ else
 fi
 
 # =====================================================================
-# Phase 8: vPB bootstrap hint (KVO adoption + traffic config)
+# Phase 8: vPB post-deploy bootstrap (KCOS wait + vpb CLI wrapper)
 # =====================================================================
+# scripts/bootstrap-vpb.sh runs ON the vPB. It waits for KCOS, sets KUBECONFIG
+# system-wide and installs the `sudo vpb` wrapper. Nothing else on the vPB works
+# before it has run, including the KVO adoption in phase 14, so run it here over
+# SSH when we hold the key pair PEM and fall back to printing the two commands
+# when we do not.
+# =====================================================================
+vpb_bootstrap_manual_note() {
+  note "Run the vPB one-time bootstrap yourself (KCOS wait + vpb CLI wrapper):"
+  note "  ssh -i ${KEY_PEM} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}"
+  note "  curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash"
+}
+
 if [[ "$DEPLOY_VPB" == "true" ]]; then
   step "Phase 8: vPB post-deploy bootstrap"
   note "vPB management SSH is reachable on port ${VPB_SSH_PORT} within ~5 minutes."
-  note "Finish the vPB one-time bootstrap (KCOS wait + vpb CLI wrapper) with:"
-  note "  ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}"
-  note "  curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash"
+
+  if [[ -z "$BOOTSTRAP_VPB" ]]; then
+    if ask_yn "Run the vPB bootstrap over SSH now? [Y/n]: " y; then
+      BOOTSTRAP_VPB=true
+    else
+      BOOTSTRAP_VPB=false
+    fi
+  fi
+  ok "Bootstrap vPB: ${BOOTSTRAP_VPB}"
+
+  VPB_SSH_OPTS=(-n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+                -o LogLevel=ERROR -o ConnectTimeout=10)
+
+  if [[ "$BOOTSTRAP_VPB" != "true" ]]; then
+    vpb_bootstrap_manual_note
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "ssh -i ${KEY_PEM} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP} 'curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash'"
+  elif [[ ! -f "$KEY_PEM" ]]; then
+    warn "Private key ${KEY_PEM} not found, so the bootstrap cannot run from here."
+    vpb_bootstrap_manual_note
+    BOOTSTRAP_VPB=false
+  elif [[ -z "$VPB_PUBLIC_IP" || "$VPB_PUBLIC_IP" == "None" ]]; then
+    warn "No vPB address available; skipping the bootstrap."
+    BOOTSTRAP_VPB=false
+  else
+    note "Waiting for vPB SSH on ${VPB_PUBLIC_IP}:${VPB_SSH_PORT} (up to 10 minutes)..."
+    vpb_ssh_up=false
+    ssh_deadline=$(( $(date +%s) + 10*60 ))
+    while (( $(date +%s) < ssh_deadline )); do
+      if ssh "${VPB_SSH_OPTS[@]}" -i "$KEY_PEM" -p "$VPB_SSH_PORT" \
+           "${ADMIN_USERNAME}@${VPB_PUBLIC_IP}" true 2>/dev/null; then
+        vpb_ssh_up=true; break
+      fi
+      sleep 15
+    done
+    if [[ "$vpb_ssh_up" != "true" ]]; then
+      warn "vPB SSH did not answer within 10 minutes; skipping the bootstrap."
+      vpb_bootstrap_manual_note
+      BOOTSTRAP_VPB=false
+    elif ssh "${VPB_SSH_OPTS[@]}" -i "$KEY_PEM" -p "$VPB_SSH_PORT" \
+           "${ADMIN_USERNAME}@${VPB_PUBLIC_IP}" \
+           "curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash"; then
+      ok "vPB bootstrap completed."
+    else
+      warn "vPB bootstrap exited non-zero. The vPB is up; finish it by hand:"
+      vpb_bootstrap_manual_note
+      BOOTSTRAP_VPB=false
+    fi
+  fi
 fi
 
 # =====================================================================
@@ -1309,18 +1609,9 @@ step "Phase 9: Project key + vController login"
 # script's own token. scripts/vcontroller_project_key.py does all of it:
 # login -> set known password -> create project -> return key, and prints the
 # full login (url / user / password / project / key) for the operator.
-PROJECT_KEY=""
 VC_CREDS_FILE="$HOME/.cloudlens-vcontroller-creds.json"
 
-vc_key_script() {
-  # Locate the script wherever this run is executing from.
-  for cand in "$SCRIPT_DIR/../scripts/vcontroller_project_key.py" \
-              "$REPO_DIR/scripts/vcontroller_project_key.py" \
-              "$PWD/scripts/vcontroller_project_key.py"; do
-    [[ -f "$cand" ]] && { echo "$cand"; return 0; }
-  done
-  return 1
-}
+vc_key_script() { find_repo_script "scripts/vcontroller_project_key.py"; }
 
 if [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would run vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} to mint the key and set a known admin password"
@@ -1350,12 +1641,12 @@ else
   if [[ "$PY_OK" == "true" ]] && [[ -n "$KEY_SCRIPT" ]]; then
     note "Automating: login, set a known admin password, create project, fetch key..."
     # stdout = the key only; the login banner goes to stderr (visible + logged).
-    PROJECT_KEY=$(python3 "$KEY_SCRIPT" --host "$CLMS_PUBLIC_IP" \
+    VC_PROJECT_KEY=$(python3 "$KEY_SCRIPT" --host "$CLMS_PUBLIC_IP" \
         --project "${CLOUDLENS_PROJECT_NAME:-cloudlens-autopilot}" \
         ${CLOUDLENS_VC_PASSWORD:+--new-password "$CLOUDLENS_VC_PASSWORD"} \
         --creds-file "$VC_CREDS_FILE" \
-        --insecure --wait 900) || PROJECT_KEY=""
-    if [[ -n "$PROJECT_KEY" ]]; then
+        --insecure --wait 900) || VC_PROJECT_KEY=""
+    if [[ -n "$VC_PROJECT_KEY" ]]; then
       ok "Project key retrieved automatically."
       note "Your working UI login is shown above and saved to ${VC_CREDS_FILE} (mode 600)."
       note "That login is where you see the project and every VM whose sensor registers."
@@ -1365,7 +1656,7 @@ else
   fi
 fi
 
-if [[ -z "$PROJECT_KEY" ]] && [[ "$DRY_RUN" != "true" ]]; then
+if [[ -z "$VC_PROJECT_KEY" ]] && [[ "$DRY_RUN" != "true" ]]; then
   cat <<EOM
 
 Manual path: to deploy sensors, you need a project key.
@@ -1398,7 +1689,6 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   echo
 fi
 
-PROJECT_KEY=""
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   # Pre-flight BEFORE asking for a secret. Two things make the sensor chain a
   # no-op, and both are cheaper to catch here than after the paste:
@@ -1432,23 +1722,193 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   fi
 fi
 
-if [[ "$CHAIN_SENSORS" == "true" ]]; then
-  echo
-  echo "The project key is a secret. It is written to customer_input.yaml"
-  echo "(git-ignored, permissions 600) so Ansible can read it."
-  # -s: do not echo the secret to the terminal or the log.
-  read -rsp "Paste project key (or press Enter to skip sensor deployment): " PROJECT_KEY || true
-  echo
-  if [[ -z "$PROJECT_KEY" ]]; then
-    warn "No project key supplied. Skipping sensor chain."
-    CHAIN_SENSORS=false
+# =====================================================================
+# Phase 10: Sensor mode (which project key the sensors register with)
+# =====================================================================
+# This is the fork in the road, and it decides the ORDER of everything below:
+#   standalone  sensors use the key phase 9 minted straight on the vController
+#   kvo         sensors use the key the KVO Cloud Config provisions, so KVO
+#               licensing + adoption + cloud config must run FIRST. A sensor
+#               installed with the phase 9 key in this mode registers to the
+#               wrong project.
+step "Phase 10: Sensor mode"
+
+if [[ "$CHAIN_SENSORS" != "true" && "$CHAIN_SENSORS" != "write_yaml_only" ]]; then
+  SENSOR_MODE="none"
+  note "Sensors are switched off for this run."
+elif [[ -z "$SENSOR_MODE" ]]; then
+  if [[ "$DEPLOY_KVO" != "true" ]]; then
+    # No KVO in this stack, so there is no second option to offer.
+    SENSOR_MODE="standalone"
+    note "No KVO in this stack, so standalone is the only sensor mode available."
   else
-    ok "Project key received (${#PROJECT_KEY} characters)."
+    echo
+    echo "  Which management plane owns the sensors?"
+    echo "    1) standalone   register straight to the vController project"
+    echo "    2) KVO-managed  register to the project KVO provisions, so KVO is"
+    echo "                    the single pane of glass. Runs KVO licensing and"
+    echo "                    adoption BEFORE the sensors."
+    echo
+    case "$(ask "  Choose 1-2 [1]: " 1)" in
+      2) SENSOR_MODE="kvo" ;;
+      *) SENSOR_MODE="standalone" ;;
+    esac
+  fi
+fi
+
+# --sensor-mode kvo without a KVO cannot work: say so instead of failing later.
+if [[ "$SENSOR_MODE" == "kvo" && "$DEPLOY_KVO" != "true" ]]; then
+  warn "--sensor-mode kvo needs a KVO, and this stack was deployed without one."
+  note "Falling back to standalone (the vController project key)."
+  SENSOR_MODE="standalone"
+fi
+ok "Sensor mode: ${SENSOR_MODE}"
+
+# =====================================================================
+# Phase 11: KVO product licensing
+# =====================================================================
+# An unlicensed KVO refuses every write, so this gates adoption. scripts/
+# kvo_license.py owns the prompting: with no --codes and a terminal it asks for
+# the code and the per-entitlement quantity itself, so it is run with its stdin
+# inherited and nothing is re-implemented here. With no codes and no terminal it
+# exits 2, which is a clean, honest stop.
+#
+# This runs for any stack that has a KVO, not only in KVO-managed sensor mode:
+# an unlicensed KVO also cannot adopt the vPB in phase 14.
+if [[ "$DEPLOY_KVO" == "true" ]]; then
+  step "Phase 11: KVO product licensing"
+  LIC_SCRIPT="$(find_repo_script scripts/kvo_license.py || true)"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure ${KVO_CODES[@]+--codes ${KVO_CODES[*]}}"
+    [[ ${#KVO_CODES[@]} -eq 0 ]] && dryrun_say "no --kvo-codes given: on a terminal kvo_license.py would prompt for code + quantity"
+  elif [[ -z "$LIC_SCRIPT" ]]; then
+    warn "scripts/kvo_license.py not found; cannot license KVO."
+    KVO_CHAIN_OK=false
+  elif ! python_chain_ready; then
+    warn "python3 is not usable here; cannot license KVO."
+    KVO_CHAIN_OK=false
+  elif [[ -z "$KVO_PUBLIC_IP" || "$KVO_PUBLIC_IP" == "None" ]]; then
+    warn "No KVO address available; cannot license KVO."
+    KVO_CHAIN_OK=false
+  elif [[ ${#KVO_CODES[@]} -eq 0 && "$INTERACTIVE" != "true" ]]; then
+    warn "No --kvo-codes given and no terminal to prompt on, so KVO stays unlicensed."
+    KVO_CHAIN_OK=false
+  else
+    note "Activating KVO licenses (kvo_license.py prompts for anything it needs)..."
+    if python3 "$LIC_SCRIPT" --kvo "$KVO_PUBLIC_IP" --insecure \
+         ${KVO_CODES[@]+--codes "${KVO_CODES[@]}"}; then
+      ok "KVO licensing completed."
+    else
+      warn "KVO licensing did not complete."
+      KVO_CHAIN_OK=false
+    fi
+  fi
+
+  if [[ "$KVO_CHAIN_OK" != "true" ]]; then
+    warn "Licensing gates every KVO write, so the KVO branch stops here."
+    note "Nothing is adopted and no KVO project key exists."
+    [[ "$SENSOR_MODE" == "kvo" ]] && \
+      note "KVO-managed sensors therefore have no project key to register with."
+    note "Fix licensing and re-run with:"
+    note "  bash deploy/deploy-stack.sh --sensor-mode ${SENSOR_MODE} --kvo-codes CODE[,QTY]"
   fi
 fi
 
 # =====================================================================
-# Phase 10: Sensor chain (optional)
+# Phase 12: Adopt the vController into KVO + create the Cloud Config
+# =====================================================================
+# The Cloud Config step is the one that matters: it provisions the real CLM
+# project and returns the sensor key on stdout (the script's own log goes to
+# stderr). Skipping it leaves a phantom key and an empty Cloud Configs page.
+if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
+  step "Phase 12: Adopt the vController into KVO + Cloud Config"
+  ADOPT_SCRIPT="$(find_repo_script scripts/kvo_adopt_clms.py || true)"
+
+  # The vController password is whatever phase 9 set. Read it back rather than
+  # assuming the factory default, which phase 9 deliberately invalidates.
+  VC_ADMIN_PASS="${CLOUDLENS_VC_PASSWORD:-}"
+  if [[ -z "$VC_ADMIN_PASS" && -f "$VC_CREDS_FILE" ]]; then
+    VC_ADMIN_PASS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("password",""))' \
+                      "$VC_CREDS_FILE" 2>/dev/null || echo "")
+  fi
+  VC_ADMIN_PASS="${VC_ADMIN_PASS:-Cl0udLens@dm!n}"
+
+  echo
+  echo "  Adopting ${CLM_NAME_IN_KVO} (${CLMS_PUBLIC_IP}) into KVO and creating"
+  echo "  Cloud Config '${CLOUD_CONFIG_NAME}'. This accepts the KVO EULA on your"
+  echo "  behalf, which is a legal acceptance."
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/kvo_adopt_clms.py --clms ${CLMS_PUBLIC_IP} --clms-admin-pass <hidden> --kvo ${KVO_PUBLIC_IP} --name ${CLM_NAME_IN_KVO} --cloud-config ${CLOUD_CONFIG_NAME} --accept-eula --insecure"
+    if [[ "$SENSOR_MODE" == "kvo" ]]; then
+      dryrun_say "would capture the provisioned project key from its stdout and use it for the sensors"
+    else
+      dryrun_say "would capture the provisioned project key from its stdout (unused in ${SENSOR_MODE} mode)"
+    fi
+  elif ! ask_yn "  Adopt now? [Y/n]: " y; then
+    warn "Adoption skipped."
+    [[ "$SENSOR_MODE" == "kvo" ]] && \
+      note "KVO-managed sensors have no project key without it."
+    KVO_CHAIN_OK=false
+  elif [[ -z "$ADOPT_SCRIPT" ]]; then
+    warn "scripts/kvo_adopt_clms.py not found; skipping adoption."
+    KVO_CHAIN_OK=false
+  elif ! python_chain_ready; then
+    warn "python3 is not usable here; skipping adoption."
+    KVO_CHAIN_OK=false
+  else
+    # stdout is the project key ONLY. Capture it; never echo it.
+    KVO_PROJECT_KEY=$(python3 "$ADOPT_SCRIPT" \
+        --clms "$CLMS_PUBLIC_IP" --clms-admin-pass "$VC_ADMIN_PASS" \
+        --kvo "$KVO_PUBLIC_IP" --name "$CLM_NAME_IN_KVO" \
+        --cloud-config "$CLOUD_CONFIG_NAME" --accept-eula --insecure) || KVO_PROJECT_KEY=""
+    if [[ -n "$KVO_PROJECT_KEY" ]]; then
+      ok "vController adopted into KVO; Cloud Config '${CLOUD_CONFIG_NAME}' provisioned its project key."
+    else
+      warn "Adoption or Cloud Config creation did not return a project key."
+      KVO_CHAIN_OK=false
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------
+# Which key do the sensors actually use? Phase 10 already decided; this only
+# resolves it, and falls back to a paste when the chosen source produced none.
+# ---------------------------------------------------------------------
+if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
+  if [[ "$SENSOR_MODE" == "kvo" ]]; then
+    SENSOR_PROJECT_KEY="$KVO_PROJECT_KEY"
+    KEY_SOURCE="the KVO Cloud Config '${CLOUD_CONFIG_NAME}'"
+  else
+    SENSOR_PROJECT_KEY="$VC_PROJECT_KEY"
+    KEY_SOURCE="the vController project"
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "sensors would register with the key from ${KEY_SOURCE}"
+  elif [[ -n "$SENSOR_PROJECT_KEY" ]]; then
+    ok "Sensors will register with the key from ${KEY_SOURCE} (${#SENSOR_PROJECT_KEY} characters)."
+  else
+    echo
+    echo "No key came from ${KEY_SOURCE}."
+    echo "The project key is a secret. It is written to customer_input.yaml"
+    echo "(git-ignored, permissions 600) so Ansible can read it."
+    if [[ "$INTERACTIVE" == "true" ]]; then
+      # -s: do not echo the secret to the terminal or the log.
+      read -rsp "Paste project key (or press Enter to skip sensor deployment): " SENSOR_PROJECT_KEY || true
+      echo
+    fi
+    if [[ -z "$SENSOR_PROJECT_KEY" ]]; then
+      warn "No project key supplied. Skipping sensor chain."
+      CHAIN_SENSORS=false
+    else
+      ok "Project key received (${#SENSOR_PROJECT_KEY} characters)."
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 13: Sensor chain (optional)
 # =====================================================================
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; then
   warn "Sensor chain disabled: Ansible cannot run on Windows shells."
@@ -1458,13 +1918,12 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; the
 fi
 
 if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
-  step "Phase 10: Chain into sensor deployment"
+  step "Phase 13: Chain into sensor deployment"
 
   if [[ "$DRY_RUN" == "true" ]]; then
     dryrun_say "would generate customer_input.yaml and run bash quickstart.sh"
   else
     # Linux SSH auth: prefer the key pair PEM we know about.
-    KEY_PEM="$HOME/.ssh/${KEY_NAME}.pem"
     if [[ -f "$KEY_PEM" ]]; then
       SSH_KEY_LINE="ssh_key_path:    \"${KEY_PEM}\""
     else
@@ -1497,7 +1956,7 @@ aws:
 
 cloudlens:
   manager_ip_or_fqdn: "${CLMS_PUBLIC_IP}"
-  project_key:        "${PROJECT_KEY}"
+  project_key:        "${SENSOR_PROJECT_KEY}"
   custom_tags:        "DeployedBy=stack Region=${REGION}"
   registry_type:      "insecure"
   linux_runtime:      "auto"
@@ -1506,7 +1965,7 @@ vpc_ids:    []
 subnet_ids: []
 YAML
     chmod 600 customer_input.yaml 2>/dev/null || true
-    ok "Wrote customer_input.yaml (mode 600, contains the project key)"
+    ok "Wrote customer_input.yaml (mode 600, contains the ${SENSOR_MODE} project key)"
 
     # Locate quickstart.sh (current dir, repo dir, or clone).
     QS_DIR=""
@@ -1535,13 +1994,185 @@ YAML
     fi
   fi
 else
-  step "Phase 10: Sensor chain (skipped)"
+  step "Phase 13: Sensor chain (skipped)"
 fi
 
 # =====================================================================
-# Phase 11: Final summary
+# Phase 14: Adopt the vPB into KVO
 # =====================================================================
-step "Phase 11: Final summary"
+# scripts/vpb_kvo_adopt.py accepts the vPB EULA, turns KVO on over SSH (the vPB
+# points at the KVO PRIVATE ip for licensing and management) and adopts the
+# device with autoBind, so KVO creates the Device Config and licenses it.
+if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
+  step "Phase 14: Adopt the vPB into KVO"
+
+  if [[ -z "$ADOPT_VPB" ]]; then
+    if ask_yn "Adopt the vPB into KVO now (accepts the vPB EULA)? [Y/n]: " y; then
+      ADOPT_VPB=true
+    else
+      ADOPT_VPB=false
+    fi
+  fi
+  ok "Adopt vPB: ${ADOPT_VPB}"
+
+  VPB_ADOPT_SCRIPT="$(find_repo_script scripts/vpb_kvo_adopt.py || true)"
+  if [[ "$ADOPT_VPB" != "true" ]]; then
+    note "Skipped. Run it later with scripts/vpb_kvo_adopt.py."
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/vpb_kvo_adopt.py --vpb ${VPB_PUBLIC_IP} --vpb-port ${VPB_SSH_PORT} --vpb-user ${ADMIN_USERNAME} --key ${KEY_PEM} --kvo ${KVO_PUBLIC_IP} --kvo-internal-ip ${KVO_PRIVATE_IP} --vpb-mgmt-ip ${VPB_PRIVATE_IP} --device-name ${VPB_DEVICE_NAME} --wait-cli --accept-eula --insecure"
+  elif [[ "$KVO_CHAIN_OK" != "true" ]]; then
+    warn "KVO is not licensed/adopted, so the vPB adoption would fail. Skipping."
+    ADOPT_VPB=false
+  elif [[ -z "$VPB_ADOPT_SCRIPT" ]] || ! python_chain_ready; then
+    warn "scripts/vpb_kvo_adopt.py or python3 is unavailable; skipping vPB adoption."
+    ADOPT_VPB=false
+  elif [[ ! -f "$KEY_PEM" ]]; then
+    warn "Private key ${KEY_PEM} not found; the vPB adoption needs it for SSH. Skipping."
+    ADOPT_VPB=false
+  elif [[ -z "$KVO_PRIVATE_IP" ]]; then
+    warn "Could not resolve the KVO private IP, which the vPB needs for licensing. Skipping."
+    ADOPT_VPB=false
+  else
+    if python3 "$VPB_ADOPT_SCRIPT" \
+         --vpb "$VPB_PUBLIC_IP" --vpb-port "$VPB_SSH_PORT" --vpb-user "$ADMIN_USERNAME" \
+         --key "$KEY_PEM" --kvo "$KVO_PUBLIC_IP" --kvo-internal-ip "$KVO_PRIVATE_IP" \
+         ${VPB_PRIVATE_IP:+--vpb-mgmt-ip "$VPB_PRIVATE_IP"} \
+         --device-name "$VPB_DEVICE_NAME" --wait-cli --accept-eula --insecure; then
+      ok "vPB adopted into KVO as '${VPB_DEVICE_NAME}'."
+    else
+      warn "vPB adoption did not complete; the rest of the run continues."
+      ADOPT_VPB=false
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 15: vPB traffic path + monitoring policy
+# =====================================================================
+# HONEST WARNING, do not soften it: this cannot complete on a fresh vPB.
+# deviceConfig._portGroups stays EMPTY until eth1/eth2 are brought up as DPDK
+# data ports ON the vPB, and that bring-up is not automated anywhere in this
+# repo. With no ports there is nothing for the bind stage to bind, so the step
+# is offered and then reported truthfully rather than claimed as a success.
+if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" && "$ADOPT_VPB" == "true" ]]; then
+  step "Phase 15: vPB traffic path + monitoring policy"
+
+  echo
+  echo "  Heads up before you choose: this step needs the vPB data interfaces"
+  echo "  (eth1/eth2) up as DPDK data ports on the vPB itself. That bring-up is"
+  echo "  not automated, so on a fresh vPB the device config has no ports and the"
+  echo "  port-bind stage has nothing to bind."
+  if [[ -z "$WIRE_VPB_PATH" ]]; then
+    if ask_yn "  Try the traffic path anyway? [y/N]: " n; then
+      WIRE_VPB_PATH=true
+    else
+      WIRE_VPB_PATH=false
+    fi
+  fi
+  ok "Wire vPB path: ${WIRE_VPB_PATH}"
+
+  WIRE_SCRIPT="$(find_repo_script scripts/vpb_wire_path.py || true)"
+  WIRE_COLLECTION="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"
+  if [[ "$WIRE_VPB_PATH" != "true" ]]; then
+    note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
+    dryrun_say "would report the port bind honestly: no ports found is NOT a success"
+  elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
+    warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
+  elif [[ -z "$VPB_INGRESS_IP" ]]; then
+    warn "No vPB ingress ENI found (--vpb-ingress-nics 0?), so there is no ingress IP for the C2DL. Skipping."
+  else
+    if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
+         --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
+         --ingress-ip "$VPB_INGRESS_IP" --insecure; then
+      ok "vPB traffic path and monitoring policy committed."
+    else
+      warn "The vPB traffic path did NOT complete. This is expected on a fresh vPB:"
+      note "the device config has no ports until eth1/eth2 are up as DPDK data ports"
+      note "on the vPB, so the port binds have nothing to bind to. Bring the data"
+      note "interfaces up on the vPB, then re-run:"
+      note "  python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} \\"
+      note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 16: AWS mirror session (agentless VPC Traffic Mirroring)
+# =====================================================================
+# Default NO, and the prompt says why BEFORE the customer opts in: KVO creates
+# the mirror target and filter and launches the collector SVM, but never adopts
+# the collector, so zero mirror sessions are created. That is an open Keysight
+# product item, not something this script can work around.
+if [[ "$DEPLOY_KVO" == "true" ]]; then
+  step "Phase 16: AWS mirror session (optional)"
+
+  echo
+  echo "  Before you choose: this step does not currently produce mirror sessions."
+  echo "  KVO creates the traffic mirror target and filter and launches the"
+  echo "  collector Service VM, but never adopts that collector, so zero sessions"
+  echo "  are created. This is an open item with Keysight."
+  if [[ -z "$WITH_MIRROR" ]]; then
+    if ask_yn "  Set up the AWS mirror fabric anyway? [y/N]: " n; then
+      WITH_MIRROR=true
+    else
+      WITH_MIRROR=false
+    fi
+  fi
+  ok "AWS mirror session: ${WITH_MIRROR}"
+
+  MIRROR_SCRIPT="$(find_repo_script scripts/kvo_aws_mirror.py || true)"
+  if [[ "$WITH_MIRROR" != "true" ]]; then
+    note "Skipped. Run scripts/kvo_aws_mirror.py later if you want the fabric anyway."
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/kvo_aws_mirror.py --kvo ${KVO_PUBLIC_IP} --clm-name ${CLM_NAME_IN_KVO} --region ${REGION} --vpc-id ${STACK_VPC_ID} --source-tag ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} --ssh-key ${KEY_NAME} --cloudlens-ip ${CLMS_PRIVATE_IP} --zone ${STACK_ZONE} --mgmt-subnet ${MGMT_SUBNET_ID} --ingress-subnet ${INGRESS_SUBNET_ID} --egress-subnet ${EGRESS_SUBNET_ID} --tool-remote-ip ${VPB_INGRESS_IP} --tool-encap L2GRE --aws-access-key <hidden> --aws-secret-key <hidden> --accept-eula --insecure"
+  elif [[ "$KVO_CHAIN_OK" != "true" ]]; then
+    warn "KVO is not licensed/adopted, so the mirror fabric would fail. Skipping."
+  elif [[ -z "$MIRROR_SCRIPT" ]] || ! python_chain_ready; then
+    warn "scripts/kvo_aws_mirror.py or python3 is unavailable; skipping the mirror step."
+  else
+    # KVO's own instance role is NOT enough here: createAwsPresence fails with
+    # "accessKeyId cannot be empty", so real keys have to be handed over.
+    if [[ -z "$MIRROR_ACCESS_KEY" && "$INTERACTIVE" == "true" ]]; then
+      echo "  KVO needs an AWS access key of its own for this (an instance role is"
+      echo "  not enough: createAwsPresence fails with 'accessKeyId cannot be empty')."
+      MIRROR_ACCESS_KEY="$(ask "  AWS access key id: " "")"
+    fi
+    if [[ -z "$MIRROR_SECRET_KEY" && "$INTERACTIVE" == "true" && -n "$MIRROR_ACCESS_KEY" ]]; then
+      # -s: the secret must not reach the terminal or the log.
+      read -rsp "  AWS secret access key: " MIRROR_SECRET_KEY || true
+      echo
+    fi
+
+    if [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
+      warn "No AWS access key / secret key supplied; skipping the mirror step."
+      note "Supply them with --mirror-access-key / --mirror-secret-key."
+    elif python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
+           --region "$REGION" --vpc-id "$STACK_VPC_ID" \
+           --source-tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+           --ssh-key "$KEY_NAME" --cloudlens-ip "$CLMS_PRIVATE_IP" \
+           ${STACK_ZONE:+--zone "$STACK_ZONE"} \
+           ${MGMT_SUBNET_ID:+--mgmt-subnet "$MGMT_SUBNET_ID"} \
+           ${INGRESS_SUBNET_ID:+--ingress-subnet "$INGRESS_SUBNET_ID"} \
+           ${EGRESS_SUBNET_ID:+--egress-subnet "$EGRESS_SUBNET_ID"} \
+           ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
+           --tool-encap L2GRE \
+           --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
+           --accept-eula --insecure; then
+      ok "AWS mirror fabric committed in KVO."
+      warn "Expect ZERO traffic mirror sessions: the collector SVM is never adopted."
+      note "Check for yourself: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
+    else
+      warn "The AWS mirror step did not complete; the rest of the run continues."
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 17: Final summary
+# =====================================================================
+step "Phase 17: Final summary"
 
 write_summary() {
   cat <<SUMMARY
@@ -1587,6 +2218,17 @@ Note:               SSH is reachable ~5 minutes after deploy
 
 VSUMMARY
   fi
+
+  cat <<CSUMMARY
+--- Post-deploy chain ---
+Sensor mode:        ${SENSOR_MODE:-none}   (project key source: ${KEY_SOURCE:-none})
+KVO cloud config:   ${CLOUD_CONFIG_NAME}   (created: $([[ -n "$KVO_PROJECT_KEY" ]] && echo yes || echo no))
+vPB bootstrap:      ${BOOTSTRAP_VPB:-n/a}
+vPB adopted in KVO: ${ADOPT_VPB:-n/a}      (device name: ${VPB_DEVICE_NAME})
+vPB traffic path:   ${WIRE_VPB_PATH:-n/a}  (needs eth1/eth2 up as DPDK data ports on the vPB)
+AWS mirror session: ${WITH_MIRROR:-n/a}    (known open item: the collector SVM is never adopted, so no sessions)
+
+CSUMMARY
 
   cat <<EOM
 --- Next steps ---
