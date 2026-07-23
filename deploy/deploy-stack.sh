@@ -1579,8 +1579,8 @@ while [[ $# -gt 0 ]]; do
     --rollback) ROLLBACK_ON_FAIL=true; shift ;;
     --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
 
-    --discovery-tag-key) DISCOVERY_TAG_KEY="$2"; shift 2 ;;
-    --discovery-tag-value) DISCOVERY_TAG_VALUE="$2"; shift 2 ;;
+    --discovery-tag-key) DISCOVERY_TAG_KEY="$2"; DISCOVERY_TAG_EXPLICIT=true; shift 2 ;;
+    --discovery-tag-value) DISCOVERY_TAG_VALUE="$2"; DISCOVERY_TAG_EXPLICIT=true; shift 2 ;;
 
     --resume) RESUME_MODE="resume"; shift ;;
     --fresh) RESUME_MODE="fresh"; shift ;;
@@ -2471,7 +2471,17 @@ check_eip_headroom() {
   read -rp "    Continue anyway? [y/N]: " yn || true
   [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
 }
-check_eip_headroom
+# Only when we are actually going to create the stack. A resume against an
+# existing CREATE_COMPLETE stack allocates no new Elastic IPs: its three are
+# already attached and counted in "in use". Checking headroom anyway made a
+# perfectly good resume abort on a quota it was never going to draw from,
+# which is the exact thing resume exists to avoid. Seen live: a re-run of a
+# finished stack refused to reach the sensor phase.
+if [[ "$SKIP_STACK" == "true" ]]; then
+  note "Skipping the Elastic IP quota check: ${REASON_STACK:-the stack already exists}, so no new addresses are needed."
+else
+  check_eip_headroom
+fi
 
 # =====================================================================
 # Phase 5: Infra engine selection
@@ -2989,6 +2999,15 @@ discovery_scope() {
   DISCOVERY_DESC="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
   DISCOVERY_FILTER_ARGS=("Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}")
 
+  # A flag the operator typed on this command line beats a file left behind by
+  # an earlier run. Preserving operator edits to customer_input.yaml must not
+  # mean silently ignoring --discovery-tag-key/value, which is the same
+  # "the flag does nothing" failure this file was changed to fix.
+  if [[ "${DISCOVERY_TAG_EXPLICIT:-false}" == "true" ]]; then
+    DISCOVERY_MODE="tags"
+    return 0
+  fi
+
   [[ -f customer_input.yaml ]] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
 
@@ -3422,6 +3441,8 @@ YAML
 merge_customer_input() {
   command -v python3 >/dev/null 2>&1 || return 3
   CL_ADDR="$CLMS_PUBLIC_IP" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
+  CL_TAG_K="$DISCOVERY_TAG_KEY" CL_TAG_V="$DISCOVERY_TAG_VALUE" \
+  CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" \
     python3 - customer_input.yaml <<'PY'
 import os, sys
 try:
@@ -3453,6 +3474,20 @@ if key:
 cl.setdefault("registry_type", "insecure")
 cl.setdefault("linux_runtime", "auto")
 doc["cloudlens"] = cl
+
+# --discovery-tag-key/value typed on THIS command line replaces the tag
+# filters, even though the file is otherwise the operator's to keep. Leaving
+# a stale file to win made the flags do nothing at all, silently: a run asking
+# for monitoring=enabled searched for cloudlens=yes and found no hosts.
+if os.environ.get("CL_TAG_EXPLICIT") == "true":
+    tk = os.environ.get("CL_TAG_K", "")
+    tv = os.environ.get("CL_TAG_V", "")
+    if tk:
+        aws_blk = doc.get("aws")
+        if not isinstance(aws_blk, dict):
+            aws_blk = {}
+        aws_blk["tag_filters"] = {tk: tv}
+        doc["aws"] = aws_blk
 
 tmp = path + ".tmp"
 old_umask = os.umask(0o077)
@@ -3530,7 +3565,11 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
       case "$merge_rc" in
         0)
           chmod 600 customer_input.yaml 2>/dev/null || true
-          ok "Kept your existing discovery settings in customer_input.yaml."
+          if [[ "${DISCOVERY_TAG_EXPLICIT:-false}" == "true" ]]; then
+            ok "Updated customer_input.yaml: discovery set to ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} from the command line, everything else kept."
+          else
+            ok "Kept your existing discovery settings in customer_input.yaml."
+          fi
           note "Only the vController address and the ${SENSOR_MODE} project key were updated."
           ;;
         3)
