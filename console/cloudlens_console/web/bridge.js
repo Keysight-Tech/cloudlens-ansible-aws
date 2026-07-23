@@ -259,6 +259,28 @@
     return next(state, {});
   }
 
+  // What the PAGE is doing, which is not the same as which of the eight states
+  // the machine is in. Three panels, and several states share one:
+  //
+  //   a finished, failed or lost deploy is still the LIVE view - the transcript
+  //   is what the visitor is reading, and swapping it for a pairing box would
+  //   throw away the thing they came for.
+  //   a disabled or refused console is still the PAIRING panel - that is where
+  //   the explanation belongs - but with nothing left to type, which is why the
+  //   caller must still branch on the state name for the input itself.
+  //
+  // Spelled out per state rather than derived, so a new state is a missing key
+  // (and falls to replay, the safe panel) instead of silently landing in live.
+  var PHASES = {
+    replay: "replay",
+    pairing: "pairing", disabled: "pairing", refused: "pairing",
+    live: "live", finished: "live", failed: "live", lost: "live"
+  };
+
+  function phase(state) {
+    return (state && PHASES[state.name]) || "replay";
+  }
+
   // The ONE place a state turns into words. The machine only ever records a
   // key, so every sentence the visitor reads comes out of the table in
   // strings.js and can be translated by adding a sibling language to it.
@@ -305,6 +327,32 @@
   // The pairing header. The visitor's code travels on it for every acting
   // request; the SSE stream cannot carry it and does not need to.
   var PAIR_HEADER = "X-CloudLens-Pair";
+
+  // ---- where the console is, and whether this page IS the console ---------
+  //
+  // The console serves this very file at /web/app.js, so a page loaded over
+  // http from a loopback host was served BY a console, and its own origin is
+  // that console - whatever --port it was given. Any other page has no way to
+  // learn the port and can only try the default.
+  var LOOPBACK_HOSTS = { "localhost": 1, "::1": 1, "[::1]": 1 };
+
+  function isLoopbackHost(h) {
+    return typeof h === "string" &&
+           (LOOPBACK_HOSTS[h] === 1 || h.indexOf("127.") === 0);
+  }
+
+  // NOT a permission, and it grants nothing. server.py exempts its own origins
+  // from pairing because local code already has the shell and the AWS identity;
+  // this only records that the exemption is the one about to apply, so the
+  // console's own page can attach instead of asking for a code that would not
+  // be compared against anything.
+  function isSelfHosted(loc) {
+    return !!(loc && loc.protocol === "http:" && isLoopbackHost(loc.hostname));
+  }
+
+  function baseFor(loc) {
+    return isSelfHosted(loc) ? loc.protocol + "//" + loc.host : DEFAULT_BASE;
+  }
 
   function create(opts) {
     opts = opts || {};
@@ -362,6 +410,32 @@
                 });
       },
 
+      // Pair with no code at all, for the console's OWN page.
+      //
+      // On that page the code box is theatre: the request carries a loopback
+      // origin, server.py exempts it, and any eight characters would be
+      // "accepted". Asking for one would teach the visitor that a code they
+      // made up works.
+      //
+      // Refuses to leave a page the exemption does not cover, because there
+      // the same request is a GUESS: the budget is cumulative and never resets,
+      // so an automatic attempt would spend one of the visitor's 200 on every
+      // page load, and buy a half-second delay for it.
+      //
+      // A refusal dispatches NOTHING. The visitor typed no code, so "that code
+      // did not match" would be a sentence about something they never did:
+      // pairing simply stays up and waits for one.
+      attach: function () {
+        if (!isSelfHosted(loc)) { return Promise.resolve(state); }
+        return fetchFn(base + "/flows", { mode: "cors", cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) { return state; }
+            return r.json().then(function (flows) {
+              return dispatch({ type: "pair.ok", flows: flows });
+            });
+          }, function () { return state; });
+      },
+
       // Try the code the visitor typed. /flows is the cheapest paired route
       // and has no side effect, so a wrong guess costs a rejected read rather
       // than a half-started deploy.
@@ -393,10 +467,17 @@
       },
 
       // Start a real deploy and stream it.
-      run: function (flow, inputs) {
+      //
+      // `replay` is the CONSOLE's own fixture replay (server.py: /run replays
+      // fixtures/<flow>.json instead of calling AWS), and has nothing to do
+      // with the page's replay state. It is the operator's guard against a
+      // demo click spending real money, so it travels explicitly on every run
+      // rather than being defaulted anywhere.
+      run: function (flow, inputs, replay) {
         return fetchFn(base + "/run", {
           method: "POST", mode: "cors", headers: headers(),
-          body: JSON.stringify({ flow: flow, inputs: inputs || {} })
+          body: JSON.stringify({ flow: flow, inputs: inputs || {},
+                                 replay: !!replay })
         }).then(function (r) {
           if (!r.ok) {
             return denial(r).then(function (err) {
@@ -458,9 +539,12 @@
   return {
     STATES: STATES,
     text: text,
+    phase: phase,
     create: create,
     isOurConsole: isOurConsole,
     looksLikeCode: looksLikeCode,
+    isSelfHosted: isSelfHosted,
+    baseFor: baseFor,
     initial: initial,
     reduce: reduce
   };

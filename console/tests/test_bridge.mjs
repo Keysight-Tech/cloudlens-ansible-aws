@@ -319,6 +319,58 @@ test("a dead-end refusal reaches the visitor even after we were live", () => {
   assert.equal(still.name, "live");
 });
 
+// ---- the phase a state puts the page in ----------------------------------
+//
+// Eight states, three panels. Every pair below is spelled out: reading the
+// table out of the implementation and asserting it against itself would pass
+// for any mapping at all, including one that showed a pairing box over a
+// finished deploy.
+
+test("each state names the panel the page shows, and nothing lands in live by accident", () => {
+  const expected = [
+    ["replay", "replay"],
+    ["pairing", "pairing"],
+    // A dead end still belongs on the pairing panel: that is where the reason
+    // and the remedy are. The input itself is the caller's branch, not this.
+    ["disabled", "pairing"],
+    ["refused", "pairing"],
+    ["live", "live"],
+    // The transcript is what the visitor is reading once a deploy ends.
+    // Swapping it for a pairing box would throw away the thing they came for.
+    ["finished", "live"],
+    ["failed", "live"],
+    ["lost", "live"]
+  ];
+  for (const [name, want] of expected) {
+    assert.equal(B.phase({ name: name }), want, name + " belongs on the " + want + " panel");
+  }
+  assert.equal(B.phase({ name: "something-new" }), "replay",
+    "an unknown state falls to the panel that is never wrong");
+  assert.equal(B.phase(null), "replay");
+});
+
+// ---- which console, and whether this page is one --------------------------
+
+test("a page served over http from loopback was served BY a console", () => {
+  assert.equal(B.isSelfHosted({ protocol: "http:", hostname: "127.0.0.1", host: "127.0.0.1:8760" }), true);
+  assert.equal(B.isSelfHosted({ protocol: "http:", hostname: "localhost", host: "localhost:8890" }), true);
+  assert.equal(B.isSelfHosted({ protocol: "http:", hostname: "[::1]", host: "[::1]:8760" }), true);
+  assert.equal(B.isSelfHosted({ protocol: "https:", hostname: "keysight-tech.github.io", host: "keysight-tech.github.io" }), false);
+  assert.equal(B.isSelfHosted({ protocol: "https:", hostname: "127.0.0.1", host: "127.0.0.1" }), false);
+  assert.equal(B.isSelfHosted({ protocol: "http:", hostname: "example.com", host: "example.com" }), false);
+  assert.equal(B.isSelfHosted(null), false);
+});
+
+test("the console's own page talks to the port it was actually served on", () => {
+  // --port 8890 is a supported bind, and a page that assumed 8760 would probe
+  // a port nothing is listening on and report replay over a live console.
+  assert.equal(B.baseFor({ protocol: "http:", hostname: "localhost", host: "localhost:8890" }),
+               "http://localhost:8890");
+  assert.equal(B.baseFor({ protocol: "https:", hostname: "keysight-tech.github.io", host: "keysight-tech.github.io" }),
+               "http://127.0.0.1:8760", "a public page can only try the default");
+  assert.equal(B.baseFor(null), "http://127.0.0.1:8760");
+});
+
 // ---- the transport -------------------------------------------------------
 //
 // Thin by design, but it is the half that can wire the machine up wrongly, so
@@ -407,6 +459,75 @@ test("input that cannot be the code never reaches the server", async () => {
   assert.equal(f.calls.length, 1, "only the probe was sent");
   assert.equal(b.state().name, "pairing");
   assert.equal(b.state().notice, "pairBad");
+});
+
+// ---- attaching without a code, on the console's own page ------------------
+
+const SELF = { protocol: "http:", hostname: "127.0.0.1", host: "127.0.0.1:8760" };
+const PAGES = { protocol: "https:", hostname: "keysight-tech.github.io",
+                host: "keysight-tech.github.io" };
+
+test("the console's own page attaches with no code and no pair header", async () => {
+  const f = fakeFetch({
+    "/health": { status: 200, body: HEALTH },
+    "/flows": { status: 200, body: { order: [], flows: {} } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource, location: SELF });
+  await b.probe();
+  await b.attach();
+  assert.equal(f.calls[1].url, "http://127.0.0.1:8760/flows");
+  assert.equal(f.calls[1].init.headers, undefined,
+    "there is no code to send: server.py exempts its own origin");
+  assert.equal(b.state().name, "live");
+});
+
+test("an attach the console refuses says nothing about a code the visitor never typed", async () => {
+  const f = fakeFetch({
+    "/health": { status: 200, body: HEALTH },
+    "/flows": { status: 401, body: { error: "pairing required" } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource, location: SELF });
+  await b.probe();
+  await b.attach();
+  assert.equal(b.state().name, "pairing", "the code box stays up and waits");
+  assert.equal(b.state().notice, null, "'that code did not match' would be about nothing");
+});
+
+test("a public page never attaches: that request would be a guess", async () => {
+  // The guess budget is cumulative and never resets, so an automatic attempt
+  // from a page the pairing exemption does not cover would spend one of the
+  // visitor's 200 on every single page load.
+  const f = fakeFetch({
+    "/health": { status: 200, body: HEALTH },
+    "/flows": { status: 200, body: { order: [], flows: {} } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource, location: PAGES });
+  await b.probe();
+  await b.attach();
+  assert.equal(f.calls.length, 1, "only the probe was sent");
+  assert.equal(b.state().name, "pairing");
+});
+
+test("the console's fixture replay is asked for explicitly on every run", async () => {
+  // server.py replays fixtures/<flow>.json instead of calling AWS when this is
+  // truthy. It is the operator's guard against a demo click spending real
+  // money, so a run that omitted it would silently be the expensive one.
+  const routes = {
+    "/health": { status: 200, body: HEALTH },
+    "/flows": { status: 200, body: { order: [], flows: {} } },
+    "/run": { status: 200, body: { job_id: "0123456789abcdef0123456789abcdef", replay: false } }
+  };
+  for (const [asked, wanted] of [[true, true], [false, false], [undefined, false]]) {
+    const f = fakeFetch(routes);
+    const b = B.create({ fetch: f, EventSource: FakeEventSource });
+    await b.probe();
+    await b.pair("ABCD2345");
+    await b.run("stack", { region: "us-east-1" }, asked);
+    const body = JSON.parse(f.calls[2].init.body);
+    assert.equal(body.replay, wanted);
+    assert.equal(body.flow, "stack");
+    assert.deepEqual(body.inputs, { region: "us-east-1" });
+  }
 });
 
 test("run streams /events/<job_id> with no header on it at all", async () => {
