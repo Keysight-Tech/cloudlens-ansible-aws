@@ -220,6 +220,44 @@ Start-Process powershell -ArgumentList "-File C:\cloudlens-traffic.ps1" -WindowS
 UD
 )
 
+# ---- SSM instance profile ----
+# Windows is deployed over AWS SSM by default (see inventory/group_vars/
+# os_windows.yaml). SSM only reaches an instance that carries a role with
+# AmazonSSMManagedInstanceCore, and this script attached none: the Windows VM
+# came up unmanaged, so the sensor playbook could never connect to it. Proven
+# live: describe-instance-information returned nothing for the Windows box
+# while Ubuntu and RHEL installed fine over SSH.
+step "SSM instance profile (so Windows is reachable)"
+SSM_ROLE="CloudLensTestVMSSMRole"
+SSM_PROFILE_ARG=()
+setup_ssm_profile() {
+  if ! "${AWS[@]}" iam get-role --role-name "$SSM_ROLE" >/dev/null 2>&1; then
+    "${AWS[@]}" iam create-role --role-name "$SSM_ROLE" \
+      --description "SSM access for CloudLens test workload VMs" \
+      --assume-role-policy-document \
+      '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+      >/dev/null 2>&1 || return 1
+  fi
+  "${AWS[@]}" iam attach-role-policy --role-name "$SSM_ROLE" \
+    --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null 2>&1 || return 1
+  if ! "${AWS[@]}" iam get-instance-profile --instance-profile-name "$SSM_ROLE" >/dev/null 2>&1; then
+    "${AWS[@]}" iam create-instance-profile --instance-profile-name "$SSM_ROLE" >/dev/null 2>&1 || return 1
+    "${AWS[@]}" iam add-role-to-instance-profile --instance-profile-name "$SSM_ROLE" \
+      --role-name "$SSM_ROLE" >/dev/null 2>&1 || return 1
+    sleep 10  # IAM is eventually consistent: a brand new profile is not instantly usable by RunInstances
+  fi
+  return 0
+}
+if setup_ssm_profile; then
+  SSM_PROFILE_ARG=(--iam-instance-profile "Name=${SSM_ROLE}")
+  ok "Instance profile ${SSM_ROLE} ready (AmazonSSMManagedInstanceCore)"
+else
+  warn "Could not create the SSM instance profile (needs iam:CreateRole and iam:PassRole)."
+  warn "The Linux VMs are unaffected. Windows will come up unmanaged, and the sensor"
+  warn "playbook will not be able to reach it over SSM. Attach a role with"
+  warn "AmazonSSMManagedInstanceCore yourself, or use WinRM instead."
+fi
+
 # ---- create the 3 instances ----
 step "Provisioning 3 instances"
 
@@ -229,6 +267,7 @@ run_instance() {
     --image-id "$ami" --instance-type "$itype" --key-name "$KEY_NAME" \
     --subnet-id "$SUBNET_ID" --security-group-ids "$SG_ID" \
     --associate-public-ip-address \
+    "${SSM_PROFILE_ARG[@]}" \
     --user-data "$userdata" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=${DISCOVERY_TAG_KEY},Value=${DISCOVERY_TAG_VALUE}},{Key=os,Value=${os}},{Key=env,Value=${ENV_TAG}},{Key=workload,Value=test}]" \
     --query 'Instances[0].InstanceId' --output text
