@@ -69,6 +69,7 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
             self.request_version = "HTTP/1.1"
             self.close_connection = True
             self.headers = _make_headers(items)
+            self._headers_buffer = []     # the base end_headers() writes here
             self.rfile = io.BytesIO(raw_body)
             self.wfile = io.BytesIO()
             self.status = None
@@ -85,6 +86,12 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
             self.sent_list.append((k, v))
 
         def end_headers(self):
+            # Do NOT stub this out: Handler.end_headers() is where the
+            # anti-framing headers are emitted, precisely so no response path
+            # can skip them. Run the real one and swallow only the socket write.
+            super().end_headers()
+
+        def flush_headers(self):
             pass
 
         def log_message(self, *a):
@@ -617,6 +624,84 @@ def test_remote_bind_revokes_the_origin_exemption():
             server.LOOPBACK_ONLY = saved
     _with_pair_code("ABC23456", body)
     assert server.LOOPBACK_ONLY is True, "the default bind is loopback"
+
+
+def test_serve_sets_loopback_only_from_the_bind_host():
+    # The one line in serve() that ties the pairing exemption to the bind. Every
+    # other test sets the flag by hand, so without this the line could vanish in
+    # a refactor and nothing would notice.
+    from cloudlens_console import server
+    old = server.LOOPBACK_ONLY
+    try:
+        h = server.serve("0.0.0.0", 0)
+        try:
+            assert server.LOOPBACK_ONLY is False, \
+                "a remote bind MUST revoke the origin exemption: without this line " \
+                "the console is an unauthenticated remote deploy endpoint"
+        finally:
+            h.server_close()
+        h = server.serve("127.0.0.1", 0)
+        try:
+            assert server.LOOPBACK_ONLY is True
+        finally:
+            h.server_close()
+    finally:
+        server.LOOPBACK_ONLY = old
+
+
+def test_base_class_error_pages_also_forbid_framing():
+    """send_error() never reaches _cors(), so the framing headers cannot live
+    there and still be true of every response.
+
+    An unknown method and a malformed request line are both answered by the
+    base class, before any do_* method runs, so this needs a real socket.
+    """
+    import http.client
+    from threading import Thread
+
+    saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
+    saved_loopback = server.LOOPBACK_ONLY
+    httpd = server.serve("127.0.0.1", 0)
+    port = httpd.server_address[1]
+    httpd.handle_error = lambda request, addr: None
+    Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("PUT", "/run", headers={"Connection": "close"})   # 501, from the base class
+        r = c.getresponse()
+        assert r.status == 501
+        assert r.getheader("X-Frame-Options") == "DENY", \
+            "the base class's own error page is a response too"
+        assert r.getheader("Content-Security-Policy") == "frame-ancestors 'none'"
+        r.read(); c.close()
+
+        # A request whose REQUEST LINE will not parse is answered as HTTP/0.9:
+        # a bare body, no status line and no headers, so there is nothing to
+        # attach a framing header to. That is not a gap: no browser can be made
+        # to emit a malformed request line - fetch, iframe, img and navigation
+        # all send a well-formed HTTP/1.1 line - so the response can never
+        # become a framed document, and it carries no controls and no data
+        # either. Asserted rather than ignored so that if CPython ever starts
+        # answering these with real headers, this test says so.
+        import socket
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(b"GARBAGE\r\n\r\n")
+        chunks = []
+        while True:                      # read to EOF
+            b = s.recv(4096)
+            if not b:
+                break
+            chunks.append(b)
+        head = b"".join(chunks).decode("latin-1")
+        s.close()
+        assert head.startswith("<!DOCTYPE HTML>"), \
+            "a parseable request line means headers, and headers must carry XFO"
+        assert "\r\n" not in head.split("\n")[0], "an HTTP/0.9 reply has no status line"
+    finally:
+        httpd.shutdown(); httpd.server_close()
+        server.LOOPBACK_ONLY = saved_loopback
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
 
 
 def test_static_paths_cannot_escape_the_web_dir():

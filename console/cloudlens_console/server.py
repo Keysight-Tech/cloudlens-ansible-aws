@@ -38,7 +38,10 @@ from . import events as E
 from . import flows as F
 from . import orchestrator as O
 
-WEB = os.path.join(os.path.dirname(__file__), "web")
+# Absolute: _under_web() compares this with commonpath, which raises on a mix of
+# relative and absolute paths. Under an embedder or a zipapp where __file__ is
+# relative that raise is caught and every UI file 404s, with no diagnostic.
+WEB = os.path.abspath(os.path.join(os.path.dirname(__file__), "web"))
 JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 
@@ -120,7 +123,22 @@ PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
 #
 # The threshold is high on purpose. A small cap is itself a denial of service:
 # any page that can reach the port can spend the whole budget and force the
-# visitor to restart the console in the middle of a demo.
+# visitor to restart the console in the middle of a demo. Note the browser is
+# the attacker here, and it holds ~6 connections per origin, so the delay caps
+# a hostile page at ~12 guesses a second: 2^40 takes some 2,900 years, and only
+# ~6 handler threads are ever parked in the sleep.
+#
+# The brick is MITIGATED, not removed: at 6 parallel connections a hostile page
+# still reaches 200 failures in about 17 seconds, and the outcome is a restart
+# mid-demo. The delay alone already makes grinding hopeless, so if this ever
+# bites in practice, an escalating delay capped at a few seconds does both
+# remaining jobs without ever killing pairing permanently.
+#
+# The budget is deliberately GLOBAL. Counting per origin looks fairer - it would
+# stop a hostile page from spending the honest visitor's budget - but Origin is
+# chosen by the attacker, so a per-origin counter is a per-origin bypass: vary
+# the header and the cap never fires. One global budget is the only version that
+# actually bounds anything.
 PAIR_FAILURES = 0
 PAIR_MAX_FAILURES = 200
 PAIR_FAILURE_DELAY = 0.5      # seconds; occupies a handler thread, which is the point
@@ -210,15 +228,26 @@ class Handler(BaseHTTPRequestHandler):
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Vary", "Origin")
-        # A framed console is same-origin with the framing document, so the
-        # pairing exemption applies to it and the Host check passes - the
-        # browser still sends Host: 127.0.0.1:8760. app.js runs a flow on one
-        # click with defaults pre-filled, so a clickjack overlay would turn a
-        # stray click into a real AWS deploy, around pairing, origin pinning
-        # and the Host check at once. CSP for current browsers, XFO for the
-        # rest; both, because this is the only thing standing in the way.
+
+    def end_headers(self):
+        """The anti-framing headers live here, not in _cors().
+
+        A framed console is same-origin with the framing document, so the
+        pairing exemption applies to it and the Host check passes - the browser
+        still sends Host: 127.0.0.1:8760. app.js runs a flow on one click with
+        defaults pre-filled, so a clickjack overlay turns a stray click into a
+        real AWS deploy, around pairing, origin pinning and the Host check at
+        once. CSP for current browsers, XFO for the rest.
+
+        In end_headers because EVERY response funnels through it, including the
+        base class's send_error() pages (501 on an unknown method, 400 on a
+        malformed request line), which never reach _cors() at all. Putting it
+        here makes "no response can be framed" true by construction rather than
+        by remembering.
+        """
         self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.send_header("X-Frame-Options", "DENY")
+        super().end_headers()
 
     def _host_is_ours(self):
         """DNS rebinding: a hostile page can point its own name at 127.0.0.1, at
@@ -335,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/flows":
             deny = self._check_pairing()
-            if deny:
+            if deny is not None:
                 return self._send(*deny)
             data = {"order": F.ORDER, "flows": {
                 fid: {k: F.FLOWS[fid][k] for k in ("id", "name", "script", "subtitle", "inputs", "nodes", "wires")}
@@ -356,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
         # do_OPTIONS deliberately does NOT flow through here: a preflight
         # cannot carry X-CloudLens-Pair, and must not spend a guess either.
         deny = self._check_pairing()
-        if deny:
+        if deny is not None:
             return self._send(*deny)
         if path == "/run":
             b = self._body()
@@ -487,11 +516,13 @@ def _ctype(path):
 
 def serve(host="127.0.0.1", port=8760):
     global LOOPBACK_ONLY
-    httpd = ThreadingHTTPServer((host, port), Handler)
-    # Recorded, not merely warned about: _check_pairing() exempts callers that
-    # send no Origin because local code already has the shell, and that is only
-    # true while nothing off-machine can reach us.
+    # Set BEFORE the constructor binds, so there is no window in which the
+    # socket is listening while the flag still says loopback. Recorded rather
+    # than merely warned about: _check_pairing() exempts callers that send no
+    # Origin because local code already has the shell and the AWS identity, and
+    # that is true only while nothing off-machine can reach us.
     LOOPBACK_ONLY = is_loopback(host)
+    httpd = ThreadingHTTPServer((host, port), Handler)
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
     _set_self_origins(httpd.server_address[1])
