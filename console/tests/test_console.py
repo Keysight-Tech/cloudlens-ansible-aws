@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import time
 import contextlib
 from collections import namedtuple
 from http.client import HTTPMessage, parse_headers
@@ -118,7 +119,8 @@ def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
     """
     from threading import Thread
     saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
-             server.LOOPBACK_ONLY, server.OUR_HOSTS, dict(server.JOBS))
+             server.LOOPBACK_ONLY, server.OUR_HOSTS, dict(server.JOBS),
+             server.REMOTE_WILDCARD, server.JOB_TTL)
     httpd = server.serve(host, 0, allow_remote=allow_remote)
     if quiet:
         # Tests that walk away from a never-ending stream RST the socket. That
@@ -129,11 +131,13 @@ def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
         yield httpd, httpd.server_address[1]
     finally:
         httpd.shutdown(); httpd.server_close()
-        allowed, selfo, loopback, hosts, jobs = saved
+        allowed, selfo, loopback, hosts, jobs, wild, ttl = saved
         server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
         server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
         server.LOOPBACK_ONLY = loopback
         server.OUR_HOSTS = hosts
+        server.REMOTE_WILDCARD = wild
+        server.JOB_TTL = ttl
         server.JOBS.clear(); server.JOBS.update(jobs)
 
 
@@ -792,8 +796,8 @@ def test_finished_jobs_are_pruned_after_a_ttl():
                               O.Job("stale", "stack", {}))
         for j in (live, fresh, stale):
             server.JOBS[j.id] = j
-        fresh.emit(E.done("ok"))
-        stale.emit(E.done("ok"))
+        for j in (fresh, stale):
+            j.emit(E.done("ok")); j.finish()
         assert stale.done_at is not None, "finishing a job must record when"
         assert live.done_at is None
         stale.done_at -= server.JOB_TTL + 1
@@ -807,6 +811,94 @@ def test_finished_jobs_are_pruned_after_a_ttl():
         server.JOBS.clear(); server.JOBS.update(saved)
 
 
+def test_a_per_node_error_does_not_end_the_job():
+    """_poll_cfn emits E.error per failed resource and KEEPS POLLING.
+
+    While emit() inferred the lifecycle from the event type, a stack that lost
+    one resource in its first minute counted as finished, so the TTL started
+    running under a deploy that had twenty minutes left. What is lost is not
+    just the reconnect: /stop reads the same dict, so after the prune it
+    answers ok:true having cancelled nothing, and the operator is told their
+    live AWS deploy was stopped when it was not.
+    """
+    saved = dict(server.JOBS)
+    try:
+        server.JOBS.clear()
+        job = O.Job("rolling", "stack", {})
+        server.JOBS[job.id] = job
+        job.emit(E.error("CREATE_FAILED: subnet already exists", node="vpc",
+                         fix="Check the stack events."))
+        assert job.done is False and job.done_at is None, \
+            "one failed resource is not the end of the stack"
+        assert job.saw_terminal_event is True, "the event still went out"
+        server._prune_jobs(now=time.time() + 10 * server.JOB_TTL)
+        assert "rolling" in server.JOBS, \
+            "no amount of elapsed time may prune a job that is still running"
+
+        job.finish()
+        assert job.done_at is not None
+        server._prune_jobs(now=job.done_at + server.JOB_TTL + 1)
+        assert "rolling" not in server.JOBS, "once genuinely over, the TTL applies"
+    finally:
+        server.JOBS.clear(); server.JOBS.update(saved)
+
+
+def test_run_job_always_finishes_the_job():
+    """The TTL and the SSE tail both key on done_at, so a job that no path
+    finishes is a stream that never closes and an id that never expires."""
+    saved = dict(F.FLOWS)
+    try:
+        job = O.Job("crash01", "stack", {})
+        # Force the unexpected-exception path: not the handled ValueError, and
+        # not a clean return.
+        F.FLOWS["stack"] = {"boom": True}
+        O.run_job(job)
+        assert job.done is True and job.done_at is not None, \
+            "an unexpected failure must still end the job"
+        assert job.saw_terminal_event, "and must tell the page why"
+    finally:
+        F.FLOWS.clear(); F.FLOWS.update(saved)
+
+
+def test_stop_on_a_live_job_stops_it_and_an_unknown_id_404s():
+    """/stop is the only handle on a real AWS deploy in flight.
+
+    Answering ok:true for an id we no longer hold reports a cancellation that
+    did not happen, which is worse than the error - the operator walks away
+    from a running deploy believing it stopped.
+    """
+    import http.client
+    with _running_server() as (httpd, port):
+        # TTL 0: anything the sweep considers finished goes on the next touch.
+        # A running job must survive it regardless.
+        server.JOB_TTL = 0
+        live = O.Job("livejob0001", "stack", {})
+        live.emit(E.error("CREATE_FAILED: one subnet", node="vpc"))
+        over = O.Job("overjob0001", "stack", {})
+        over.emit(E.done("ok")); over.finish()
+        server.JOBS.update({"livejob0001": live, "overjob0001": over})
+
+        def post(path):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("POST", path, headers={"Content-Length": "0", "Connection": "close"})
+            r = c.getresponse()
+            out = (r.status, json.loads(r.read().decode() or "{}"))
+            c.close()
+            return out
+
+        # The sweep runs before dispatch, so an expired id is already gone by
+        # the time /stop looks for it, and answers as the unknown id it now is.
+        assert post("/stop/overjob0001") == (404, {"error": "no such job"}), \
+            "a cancel that cancelled nothing must not report success"
+        assert "overjob0001" not in server.JOBS
+        assert post("/stop/neverexisted") == (404, {"error": "no such job"})
+
+        assert "livejob0001" in server.JOBS, \
+            "the sweep must not take the deploy the operator may still cancel"
+        assert post("/stop/livejob0001") == (200, {"ok": True})
+        assert live.stopped is True, "and it must actually have stopped it"
+
+
 def test_expired_job_events_404_over_a_real_socket():
     """The prune has to be visible on the wire, not just in the dict.
 
@@ -818,7 +910,7 @@ def test_expired_job_events_404_over_a_real_socket():
     with _running_server() as (httpd, port):
         for jid in ("expired1", "recent01"):
             job = O.Job(jid, "stack", {})
-            job.emit(E.done("ok"))
+            job.emit(E.done("ok")); job.finish()
             server.JOBS[jid] = job
         server.JOBS["expired1"].done_at -= server.JOB_TTL + 1
 
@@ -847,7 +939,7 @@ def test_sse_stream_is_delimited_over_a_real_socket():
     import http.client
     with _running_server() as (httpd, port):
         job = O.Job("framing1", "stack", {})
-        job.emit(E.done("ok"))
+        job.emit(E.done("ok")); job.finish()
         server.JOBS["framing1"] = job
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         c.request("GET", "/events/framing1")     # deliberately NOT Connection: close
@@ -908,29 +1000,57 @@ def test_banner_url_brackets_an_ipv6_literal():
     assert M._banner_url("192.168.1.10", 8801) == "http://192.168.1.10:8801/"
 
 
-def test_allow_remote_widens_the_host_guard_only_when_asked():
-    assert server._remote_host_names("192.168.1.10") == {"192.168.1.10"}
-    assert server._remote_host_names("[fe80::1]") == {"fe80::1"}
-    # A wildcard bind names nothing, so the guard falls back to the names this
-    # machine actually answers to. Without that, --host 0.0.0.0 --allow-remote
-    # 403s every LAN client, which is the whole bug.
-    assert server._remote_host_names("0.0.0.0"), "a wildcard bind must still name this machine"
-    assert server.DEFAULT_HOSTS.isdisjoint({"192.168.1.10"}), "the default guard is loopback only"
+def test_ip_literals_compare_as_addresses_not_as_text():
+    # A client may write an address any way the spec allows, and Host is text.
+    assert server._same_ip("2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001")
+    assert server._same_ip("::1", "0:0:0:0:0:0:0:1")
+    assert server._same_ip("10.0.0.27", "10.0.0.27")
+    assert not server._same_ip("10.0.0.27", "10.0.0.28")
+    # The half that keeps rebinding out: a NAME never equals an address, so
+    # nothing resolvable can ride in on this comparison.
+    assert not server._same_ip("evil.example", "10.0.0.27")
+    assert not server._same_ip("localhost", "127.0.0.1")
+    # Not "are these equal", but "are these the same ADDRESS". Two identical
+    # names are still not addresses. Callers happen never to pass a pair like
+    # this today, and leaving the contract resting on that is how a helper
+    # later becomes a name-equality check nobody meant to add.
+    assert not server._same_ip("evil.example", "evil.example")
 
+
+def test_allow_remote_widens_the_host_guard_only_when_asked():
     saved_hosts, saved_loopback = server.OUR_HOSTS, server.LOOPBACK_ONLY
+    saved_wild = server.REMOTE_WILDCARD
     # serve() on port 0 re-points the self-origins at a scratch port, and now
     # that the old port is properly retired that is no longer harmless to leave
     # behind for the next test.
     saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
     try:
         server.serve("127.0.0.1", 0, allow_remote=True).server_close()
-        assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS and not server.REMOTE_WILDCARD, \
             "a loopback bind must never widen the rebinding guard, flag or no flag"
         server.serve("0.0.0.0", 0).server_close()
-        assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS and not server.REMOTE_WILDCARD, \
             "the widening is gated on the flag, and serve() is callable without it"
+
+        # A concrete --host is the address the operator published, so it and
+        # nothing else is added. No hostname, no resolver, no probe: those are
+        # DHCP-influenceable, and a name that lands in the guard is a name an
+        # attacker who controls the LAN can point back at this console.
+        concrete = _offmachine_addr()
+        if concrete:
+            server.serve(concrete, 0, allow_remote=True).server_close()
+            assert server.OUR_HOSTS == server.DEFAULT_HOSTS | {concrete}
+            assert server.REMOTE_WILDCARD is False, \
+                "a concrete bind names itself; nothing is deferred to the socket"
+
+        server.serve("0.0.0.0", 0, allow_remote=True).server_close()
+        assert server.REMOTE_WILDCARD is True, \
+            "a wildcard bind defers to the address the client dialled"
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
+            "and adds no guessed names to the guard while doing it"
     finally:
         server.OUR_HOSTS, server.LOOPBACK_ONLY = saved_hosts, saved_loopback
+        server.REMOTE_WILDCARD = saved_wild
         server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
         server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
 
@@ -949,7 +1069,12 @@ def test_remote_bind_accepts_its_own_host_and_still_demands_pairing():
     # answers to a name it made up itself is how this passed while the real LAN
     # client still got 403.
     dial = _offmachine_addr()
-    assert dial, "no non-loopback address on this machine to test a remote bind with"
+    if not dial:
+        # Skip, never fail: this one needs a routable interface, and a suite
+        # whose colour depends on the host's routing teaches people to ignore
+        # red. Loud enough to notice it did not run.
+        print("SKIP (no non-loopback address on this host)", end=" ")
+        return
 
     with _running_server("0.0.0.0", allow_remote=True) as (httpd, port):
         hosthdr = "[%s]:%d" % (dial, port) if ":" in dial else "%s:%d" % (dial, port)

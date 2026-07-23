@@ -600,11 +600,20 @@ flag advertises. Do not widen `OUR_HOSTS` unconditionally.
 
 Note also that "add the bound host to `OUR_HOSTS`" is not sufficient on its own,
 found by testing against a real bind rather than the helper: `--host 0.0.0.0`
-names nothing, and on a machine whose short hostname does not resolve the
-resolver adds nothing either, so the LAN client dialling 10.0.0.27 still got
-403. The shipped `_remote_host_names()` also asks the routing table (a UDP
-`connect()` to TEST-NET-1, which sends no packet) for the address an
-off-machine caller would actually reach us on.
+names nothing, so the LAN client dialling 10.0.0.27 still got 403. Two
+implementations were tried. Enumerating this machine's names (hostname, FQDN,
+resolver, default route) is both incomplete and over-trusting: the default route
+is not the client's route on a multi-homed box or under a full-tunnel VPN, and
+`gethostname()`/`getfqdn()` are DHCP-supplied, so a hostile LAN chooses a name
+that lands in the guard and controls the DNS for it.
+
+The shipped version does not guess. A concrete `--host` names itself; a wildcard
+bind sets `REMOTE_WILDCARD` and `_host_is_ours()` compares the Host against
+`self.connection.getsockname()[0]` - the address this client actually connected
+to, which the kernel knows exactly for any number of interfaces. No resolver, no
+probe, no IPv6 socket to fail on a kernel booted `ipv6.disable=1`. Rebinding
+protection is unaffected because the comparison is `_same_ip()`, which only ever
+matches IP literals, and a rebound host is a name.
 
 Note the plan's original snippet was wrong and the implementation corrected it:
 `host.split(":")[0]` gives `""` for `::1` and `"["` for `[::1]:8760`, so the

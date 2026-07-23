@@ -31,10 +31,19 @@ class Job:
         self.inputs = inputs
         self.q = queue.Queue()
         self.buffer = []          # for SSE Last-Event-ID replay
+        # done/done_at are the JOB's lifecycle, and only finish() sets them.
+        # An E.ERROR event is NOT the end of a job: _poll_cfn emits one per
+        # failed resource and keeps polling, so a stack that loses a resource
+        # in the first minute can still be running twenty minutes later. When
+        # emit() inferred the lifecycle from the event type, that job counted
+        # as finished, became prunable, and /stop/<id> then answered ok:true
+        # while the deploy carried on - the operator loses the cancel and is
+        # told it worked. done_at is None for as long as the job may still act.
         self.done = False
-        # When the job finished, for the server's TTL sweep. None while it
-        # runs: a deploy in progress is never a candidate for pruning.
         self.done_at = None
+        # Bookkeeping, not lifecycle: whether any terminal-shaped event has
+        # gone out, so a flow does not append a second summary after one.
+        self.saw_terminal_event = False
         self.stopped = False
         self._proc = None
         self._t0 = time.time()
@@ -43,10 +52,18 @@ class Job:
         self.buffer.append(ev)
         self.q.put(ev)
         if ev["type"] in (E.DONE, E.ERROR):
-            self.done = True
-            # Re-stamped on every terminal event, not just the first: a flow
-            # can emit a per-node error and keep running, and the TTL has to
-            # run from the last word rather than from that first error.
+            self.saw_terminal_event = True
+
+    def finish(self):
+        """The job will not act again: no more events, no process to cancel.
+
+        The single place done/done_at are set. Called from run_job's finally,
+        which covers the ordinary returns, the handled ValueError, the
+        catch-all, and an unexpected BaseException alike - a job that escaped
+        all four would otherwise stay un-prunable for the life of the process.
+        """
+        self.done = True
+        if self.done_at is None:
             self.done_at = time.time()
 
     def elapsed(self):
@@ -185,7 +202,7 @@ def run_job(job, replay=None):
             job.emit(E.hello("000000000000", "arn:aws:iam::demo:replay", region))
             job.emit(E.narrate("Replay mode - real captured events from a live deploy, no AWS calls.", "note"))
             _run_replay(job, replay)
-            if not job.done:
+            if not job.saw_terminal_event:
                 job.emit(E.done("Replay complete."))
             return
         account, arn, reg = preflight(region)
@@ -200,6 +217,12 @@ def run_job(job, replay=None):
         job.emit(E.error(str(exc), fix="Fix the item above, then reload the page."))
     except Exception as exc:  # noqa
         job.emit(E.error("Unexpected: {}".format(exc)))
+    finally:
+        # Every exit from run_job is the end of the job, and only these are:
+        # the flow helpers below emit their own closing event and return here.
+        # In a finally so a raise cannot leave a job that nothing will ever
+        # finish, which the SSE tail and the server's TTL sweep both key on.
+        job.finish()
 
 
 def _run_cfn_flow(job, flow, region):

@@ -11,7 +11,9 @@ send X-CloudLens-Pair; the console's own UI is exempt:
                             job_id is unguessable and only /run hands one out.
                             Finished jobs are dropped after JOB_TTL, so that
                             capability does not outlive the pairing code.
-  POST /stop/<job_id>    -> paired. cancels a running job
+  POST /stop/<job_id>    -> paired. cancels a running job; 404 for an id we do
+                            not hold, so "cancelled" is never reported for a
+                            deploy that is still running
 
 Every request, preflight included, is refused unless Host names this machine: a
 hostile page can resolve its own name to 127.0.0.1, and the browser then treats
@@ -32,7 +34,6 @@ import json
 import time
 import uuid
 import queue
-import socket
 import secrets
 import ipaddress
 import threading
@@ -65,17 +66,25 @@ JOB_TTL = 300
 def _prune_jobs(now=None):
     """Drop finished jobs whose TTL has passed.
 
+    Keyed on done_at, which Job.finish() sets and nothing else does. A job that
+    is still running has done_at None however many per-node errors it has
+    reported, so it can never be pruned - pruning a live job would also revoke
+    the operator's ability to /stop the deploy it is running.
+
     Lazy: called from the routes rather than by a timer thread, because a
     console that is not being driven has nothing to leak to. Removing a job
     from JOBS cannot disturb a reader that is mid-stream - _sse() resolves the
     id once and then holds the object - so this only ever revokes the ability
-    to OPEN a new stream.
+    to OPEN a new stream. The buffer is emptied explicitly for the same reason
+    it is swept at all: it holds the E.hello frame with the account id and the
+    caller ARN, and dropping the dict entry alone would leave that readable
+    through any reference still held elsewhere.
     """
     now = time.time() if now is None else now
     for jid, job in list(JOBS.items()):
-        at = getattr(job, "done_at", None)
-        if at is not None and now - at > JOB_TTL:
+        if job.done_at is not None and now - job.done_at > JOB_TTL:
             JOBS.pop(jid, None)
+            job.buffer.clear()
 
 
 # Bumped only when the wire contract the public page depends on changes.
@@ -116,10 +125,15 @@ def _set_self_origins(port):
     # to a browser origin, so leaving http://localhost:8760 on it after moving
     # to 8890 hands that grant to whatever answers on 8760 next - on a shared
     # machine, another user's process.
-    ALLOWED_ORIGINS.difference_update(SELF_ORIGINS)
+    #
+    # Add before removing, and remove only what is not in the new set: a
+    # handler thread reading the allowlist between the two steps must never
+    # see a moment in which the console's own origin is missing.
+    fresh = {"http://127.0.0.1:%d" % port, "http://localhost:%d" % port}
+    ALLOWED_ORIGINS.update(fresh)
+    ALLOWED_ORIGINS.difference_update(SELF_ORIGINS - fresh)
     SELF_ORIGINS.clear()
-    SELF_ORIGINS.update({"http://127.0.0.1:%d" % port, "http://localhost:%d" % port})
-    ALLOWED_ORIGINS.update(SELF_ORIGINS)
+    SELF_ORIGINS.update(fresh)
 
 
 _set_self_origins(8760)
@@ -204,6 +218,12 @@ OUR_HOSTS = DEFAULT_HOSTS
 # a client would have dialled.
 WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
+# Set by serve() only for an --allow-remote bind that is BOTH non-loopback and
+# a wildcard. Then, and only then, _host_is_ours() accepts a Host that names
+# the address the client actually connected to. Never true for the default
+# bind, so the rebinding guard is untouched unless the operator asked for it.
+REMOTE_WILDCARD = False
+
 
 def is_loopback(host):
     """True only for addresses that cannot be reached from another machine.
@@ -245,60 +265,18 @@ def _host_name(raw):
     return raw
 
 
-def _remote_host_names(host):
-    """Host header values a deliberately remote bind should answer to.
+def _same_ip(a, b):
+    """True when both parse as IP literals naming the same address.
 
-    A concrete --host is the address the operator told clients to dial, so it
-    is its own answer. A wildcard bind names nothing, and that is the case that
-    actually ships: `--host 0.0.0.0 --allow-remote` used to 403 every LAN
-    client, because the guard only knows loopback names while the client dials
-    10.0.0.27. For that case the closest honest answer is the set of addresses
-    this machine already answers to, so we ask the resolver.
-
-    Best effort by design: anything the resolver cannot tell us simply is not
-    added, and the caller gets the same 403 as before rather than a wider guard
-    than intended. Nothing here runs for a loopback bind.
+    Text equality is not address equality: 2001:db8::1 and 2001:0db8:0:0:0:0:0:1
+    are the same host, and a client is free to send either in a Host header.
+    Returns False for anything that is not an IP literal, which is what keeps a
+    rebound NAME from ever matching an address.
     """
-    host = _host_name(host)
-    if host not in WILDCARD_HOSTS:
-        return {host}
-    names = set()
     try:
-        hostname = socket.gethostname()
-    except OSError:
-        hostname = ""
-    if hostname:
-        names.add(hostname.lower())
-        try:
-            names.add(socket.getfqdn(hostname).lower())
-        except OSError:
-            pass
-        try:
-            for info in socket.getaddrinfo(hostname, None):
-                names.add(str(info[4][0]))
-        except (OSError, UnicodeError):
-            pass
-    # The hostname is NOT enough, verified live: on a machine whose short
-    # hostname does not resolve, the resolver returns nothing and the LAN
-    # client dialling 10.0.0.27 still gets 403 - the exact failure this is
-    # here to fix. Ask the routing table which address a client off-machine
-    # would actually reach us on. A UDP connect() only selects a route; it
-    # sends nothing, so this works with no network and reaches no one. The
-    # probe addresses are the reserved documentation ranges.
-    for family, probe in ((socket.AF_INET, "192.0.2.1"),
-                          (socket.AF_INET6, "2001:db8::1")):
-        s = socket.socket(family, socket.SOCK_DGRAM)
-        try:
-            s.connect((probe, 9))
-            names.add(str(s.getsockname()[0]))
-        except OSError:
-            pass                    # no route in that family: nothing to add
-        finally:
-            s.close()
-    # Strip IPv6 scope ids (a Host header cannot carry '%en0'), and drop the
-    # unspecified addresses a routeless machine hands back - they name nothing.
-    names = {n.split("%")[0].lower() for n in names if n}
-    return names - WILDCARD_HOSTS
+        return ipaddress.ip_address(a) == ipaddress.ip_address(b)
+    except ValueError:
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -365,7 +343,27 @@ class Handler(BaseHTTPRequestHandler):
         seen = self.headers.get_all("Host") or []
         if len(seen) != 1:
             return False
-        return _host_name(seen[0]) in OUR_HOSTS
+        name = _host_name(seen[0])
+        if name in OUR_HOSTS or any(_same_ip(name, h) for h in OUR_HOSTS):
+            return True
+        # A wildcard --allow-remote bind answers on every interface, so there
+        # is no set of names to enumerate: any list we guessed at would be
+        # wrong on a multi-homed box or a VPN (the default route is not the
+        # client's route), and building it from gethostname()/getfqdn() would
+        # widen a security control using DHCP-supplied input. The address the
+        # client ACTUALLY connected to needs none of that - the kernel knows
+        # it exactly, for however many interfaces exist.
+        #
+        # This does not weaken the rebinding guard: a rebound name is a NAME,
+        # _same_ip only ever matches IP literals, and a browser sends the name
+        # it navigated to. It only admits a client that dialled us by address.
+        if REMOTE_WILDCARD:
+            try:
+                dialled = self.connection.getsockname()[0]
+            except (OSError, AttributeError):
+                return False
+            return _same_ip(name, str(dialled).split("%")[0])
+        return False
 
     def _check_pairing(self):
         """None when the caller may act, else the (status, body) to send.
@@ -491,14 +489,15 @@ class Handler(BaseHTTPRequestHandler):
         deny = self._check_pairing()
         if deny is not None:
             return self._send(*deny)
+        # Before dispatch, so BOTH routes that resolve a job id see the same
+        # set: /run must not let ids pile up, and /stop must not accept an id
+        # whose TTL has passed and answer as though it cancelled something.
+        _prune_jobs()
         if path == "/run":
             b = self._body()
             fid = b.get("flow")
             if fid not in F.FLOWS:
                 return self._send(400, {"error": "unknown flow"})
-            # Sweep as we add, so a long-lived console does not accumulate a
-            # pile of ids that each still replay an account ARN.
-            _prune_jobs()
             job_id = uuid.uuid4().hex[:12]
             job = O.Job(job_id, fid, b.get("inputs", {}))
             JOBS[job_id] = job
@@ -510,8 +509,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"job_id": job_id, "replay": bool(replay)})
         if path.startswith("/stop/"):
             job = JOBS.get(path.rsplit("/", 1)[-1])
-            if job:
-                job.stop()
+            if not job:
+                # Distinct from a successful cancel on purpose. Answering
+                # ok:true for an id we do not have tells the operator their
+                # deploy was cancelled when nothing was cancelled at all.
+                return self._send(404, {"error": "no such job"})
+            job.stop()
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
 
@@ -593,10 +596,10 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(E.to_sse(ev).encode("utf-8"))
                         self.wfile.flush()
                         sent = ev["id"]
-                    if ev["type"] in (E.DONE, E.ERROR) and job.done:
-                        # allow late per-node errors to flush, then close
-                        pass
                 except queue.Empty:
+                    # job.done is now the job's lifecycle rather than "an error
+                    # event went past", so a quiet stretch after a per-node
+                    # error no longer tears down the stream of a live deploy.
                     if job.done:
                         break
                     self.wfile.write(b": keepalive\n\n")  # SSE comment
@@ -638,16 +641,23 @@ class _Server(ThreadingHTTPServer):
         warning printed to this same stderr, and an operator trained to scroll
         past tracebacks will scroll past that too.
 
-        Narrow on purpose - exactly the two disconnect types. A blanket
-        suppression here would silently swallow real handler bugs in a process
-        that holds the visitor's AWS identity.
+        Narrow on purpose - the ways a peer can vanish, and nothing else.
+        ConnectionError covers reset, broken pipe and the aborted variant
+        Windows raises instead; TimeoutError is the idle SSE reader whose
+        socket ages out. A blanket suppression here would silently swallow
+        real handler bugs in a process that holds the visitor's AWS identity.
         """
-        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+        if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
             super().handle_error(request, client_address)
 
 
 def serve(host="127.0.0.1", port=8760, allow_remote=False):
-    global LOOPBACK_ONLY, OUR_HOSTS
+    # NOT re-entrant: LOOPBACK_ONLY, OUR_HOSTS, REMOTE_WILDCARD and the origin
+    # allowlist are module state, so two servers in one process would share one
+    # security posture and the last serve() would win. Only __main__ calls
+    # this, once. Recorded rather than fixed: moving the state onto the
+    # instance is a change in its own right.
+    global LOOPBACK_ONLY, OUR_HOSTS, REMOTE_WILDCARD
     # Set BEFORE the constructor binds, so there is no window in which the
     # socket is listening while the flag still says loopback. Recorded rather
     # than merely warned about: _check_pairing() exempts callers that send no
@@ -657,15 +667,22 @@ def serve(host="127.0.0.1", port=8760, allow_remote=False):
     # The rebinding guard admits only loopback names, which is right for the
     # default bind and made --allow-remote non-functional: the LAN client dials
     # this machine's real address and got 403. Widened ONLY on the explicit
-    # flag, and only to names for the bind we were actually asked for.
+    # flag, and only for the bind we were actually asked for - a concrete
+    # --host is the address the operator published, and a wildcard defers to
+    # whatever address the client turns out to have dialled (see
+    # _host_is_ours), because a wildcard bind has no single address to name.
     #
     # This does NOT touch LOOPBACK_ONLY. Admitting the operator's own address
     # is the point of the flag; restoring the "no Origin means a local process"
     # exemption would turn the same bind into an unauthenticated remote deploy
     # endpoint, so a remote caller still has to present the pairing code.
-    OUR_HOSTS = DEFAULT_HOSTS
+    OUR_HOSTS, REMOTE_WILDCARD = DEFAULT_HOSTS, False
     if allow_remote and not LOOPBACK_ONLY:
-        OUR_HOSTS = frozenset(DEFAULT_HOSTS | _remote_host_names(host))
+        name = _host_name(host)
+        if name in WILDCARD_HOSTS:
+            REMOTE_WILDCARD = True
+        else:
+            OUR_HOSTS = frozenset(DEFAULT_HOSTS | {name})
     httpd = _Server((host, port), Handler)
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
