@@ -85,6 +85,48 @@
     return body.version.split(".")[0] === WIRE_MAJOR;
   }
 
+  // ---- the pairing code ---------------------------------------------------
+  //
+  // 8 characters over an alphabet with no O/0 and no I/1, because a human
+  // reads it off a terminal and types it into a browser. Checked here only to
+  // avoid spending one of a cumulative, never-reset guess budget on input that
+  // cannot possibly be the code.
+  //
+  // NOT normalised, and specifically not upper-cased. The server compares with
+  // hmac.compare_digest, which is byte for byte, so anything this function
+  // "helpfully" rewrote would be a different code on the wire.
+  var CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+
+  function looksLikeCode(s) {
+    return typeof s === "string" && CODE_RE.test(s);
+  }
+
+  // What the server answers with when it will not act for us. Three distinct
+  // situations that must never be shown as one:
+  //
+  //   401 "pairing required"  - the code did not match. Retry is the remedy,
+  //                             and the visitor stays in pairing.
+  //   403 "pairing disabled, restart the console" - the guess cap fired and
+  //                             the process discarded its code permanently.
+  //                             Retyping the RIGHT code now fails forever, so
+  //                             telling the visitor to check their typing is
+  //                             actively wrong: only a restart helps.
+  //   403 "bad host"          - the request was addressed to a name that is
+  //                             not the console's own, so it refused it as
+  //                             unsafe before pairing was even consulted.
+  //
+  // Matched on the body, never on the status: the last two are both 403.
+  var DENIALS = {
+    "pairing disabled, restart the console": { name: STATES.DISABLED, notice: "pairDisabled" },
+    "bad host": { name: STATES.REFUSED, notice: "hostRefused" }
+  };
+
+  // Anything we do not recognise, including a 500 or an empty body, falls here.
+  // The safe default is "not paired": the alternative is to treat an
+  // unexplained refusal as success and then show a live badge over a UI that
+  // is in fact still replaying.
+  var DENIAL_DEFAULT = { name: STATES.PAIRING, notice: "pairBad" };
+
   // ---- the machine --------------------------------------------------------
 
   function initial() {
@@ -146,6 +188,13 @@
       case "pair.ok":
         if (state.name !== STATES.PAIRING) { return next(state, {}); }
         return next(state, { name: STATES.LIVE, notice: "connected" });
+
+      // The console would not act for us. Which of the three it is decides
+      // whether the visitor has anything left to try.
+      case "pair.denied":
+        if (state.name !== STATES.PAIRING) { return next(state, {}); }
+        var d = DENIALS[event.error] || DENIAL_DEFAULT;
+        return next(state, { name: d.name, notice: d.notice });
     }
     return next(state, {});
   }
@@ -153,6 +202,7 @@
   return {
     STATES: STATES,
     isOurConsole: isOurConsole,
+    looksLikeCode: looksLikeCode,
     initial: initial,
     reduce: reduce
   };

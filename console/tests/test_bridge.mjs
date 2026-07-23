@@ -75,3 +75,81 @@ test("a probe failing after we were already paired drops back to replay", () => 
   const s = B.reduce(paired, { type: "probe.fail", reason: "network" });
   assert.equal(s.name, "replay");
 });
+
+// ---- pairing outcomes ----------------------------------------------------
+//
+// The three refusals below are three different situations for the visitor and
+// must never look alike: one is "you mistyped, try again", one is a dead end
+// that needs a restart on their machine, and one says the request itself was
+// refused as unsafe. Statuses and bodies are the server's, verified against
+// server.py: a mismatch is 401 "pairing required" (NOT 403), the cap is 403
+// "pairing disabled, restart the console", and a rebound Host is 403
+// "bad host".
+
+test("the code the console printed is accepted: pairing -> live", () => {
+  const s = B.reduce(B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+                     { type: "pair.ok" });
+  assert.equal(s.name, "live");
+  assert.equal(s.notice, "connected");
+});
+
+test("a wrong code stays in pairing and offers the retry string", () => {
+  const paired = B.reduce(B.initial(), { type: "probe.ok", body: HEALTH });
+  const s = B.reduce(paired, {
+    type: "pair.denied", status: 401, error: "pairing required"
+  });
+  assert.equal(s.name, "pairing", "the visitor can just type it again");
+  assert.equal(s.notice, "pairBad");
+});
+
+test("pairing disabled is a dead end, distinct from a wrong code", () => {
+  const paired = B.reduce(B.initial(), { type: "probe.ok", body: HEALTH });
+  const s = B.reduce(paired, {
+    type: "pair.denied", status: 403, error: "pairing disabled, restart the console"
+  });
+  assert.equal(s.name, "disabled");
+  assert.notEqual(s.name, "pairing");
+  assert.equal(s.notice, "pairDisabled",
+    "retyping a correct code will fail forever: say restart the console");
+});
+
+test("a bad host is its own state and shows hostRefused", () => {
+  const paired = B.reduce(B.initial(), { type: "probe.ok", body: HEALTH });
+  const s = B.reduce(paired, { type: "pair.denied", status: 403, error: "bad host" });
+  assert.equal(s.name, "refused");
+  assert.equal(s.notice, "hostRefused");
+});
+
+test("the dead-end refusals are keyed on the body, not on the status", () => {
+  // Both are 403. Keying on the status alone would collapse two situations
+  // with different remedies into one message.
+  const paired = B.reduce(B.initial(), { type: "probe.ok", body: HEALTH });
+  const disabled = B.reduce(paired, {
+    type: "pair.denied", status: 403, error: "pairing disabled, restart the console"
+  });
+  const badHost = B.reduce(paired, {
+    type: "pair.denied", status: 403, error: "bad host" });
+  assert.equal(disabled.name, "disabled");
+  assert.equal(badHost.name, "refused");
+});
+
+test("an unrecognised refusal is treated as a wrong code, not as success", () => {
+  const paired = B.reduce(B.initial(), { type: "probe.ok", body: HEALTH });
+  const s = B.reduce(paired, { type: "pair.denied", status: 500, error: "" });
+  assert.equal(s.name, "pairing");
+  assert.equal(s.notice, "pairBad");
+});
+
+test("the code is checked without being case-folded", () => {
+  // hmac.compare_digest is byte for byte, and the alphabet is upper case with
+  // no O/0 or I/1. Upper-casing what the visitor typed would turn a paste of
+  // the right code into a wrong one for any console that ever widens it, and
+  // silently spend a guess against a cap that never resets.
+  assert.equal(B.looksLikeCode("ABCD2345"), true);
+  assert.equal(B.looksLikeCode("abcd2345"), false, "lower case is not the code");
+  assert.equal(B.looksLikeCode("ABCD234"), false, "seven characters");
+  assert.equal(B.looksLikeCode("ABCD23456"), false, "nine characters");
+  assert.equal(B.looksLikeCode("ABCD0I1O"), false, "0, I, 1 and O are not in the alphabet");
+  assert.equal(B.looksLikeCode(""), false);
+  assert.equal(B.looksLikeCode(null), false);
+});
