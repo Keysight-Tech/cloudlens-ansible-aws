@@ -45,6 +45,8 @@ while [[ $# -gt 0 ]]; do
     --tag-key)    DISCOVERY_TAG_KEY="$2"; shift 2 ;;
     --tag-value)  DISCOVERY_TAG_VALUE="$2"; shift 2 ;;
     --env)        ENV_TAG="$2"; shift 2 ;;
+    --vpc-id)     VPC_ID="$2"; shift 2 ;;
+    --subnet-id)  SUBNET_ID="$2"; shift 2 ;;
     -h|--help)
       sed -n '1,/^set -e/p' "$0" | head -n -1 | tail -n +2; exit 0 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -97,13 +99,39 @@ else
   ok "Key pair '$KEY_NAME' exists"
 fi
 
-# ---- default VPC + a subnet ----
-step "Network (default VPC)"
-VPC_ID=$("${AWS[@]}" ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
-  --query 'Vpcs[0].VpcId' --output text)
-[[ "$VPC_ID" == "None" || -z "$VPC_ID" ]] && fail "No default VPC in $REGION. Create one or set a subnet manually."
-SUBNET_ID=$("${AWS[@]}" ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
-  --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)
+# ---- VPC + a subnet ----
+# The default VPC is only a default, not a requirement. Plenty of accounts have
+# none (many organisations delete it on purpose), and this used to fail there
+# telling the operator to "set a subnet manually" with no flag to do it.
+if [[ -n "${VPC_ID:-}" || -n "${SUBNET_ID:-}" ]]; then
+  step "Network (from arguments)"
+  if [[ -z "${SUBNET_ID:-}" ]]; then
+    SUBNET_ID=$("${AWS[@]}" ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
+      --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)
+    [[ "$SUBNET_ID" == "None" || -z "$SUBNET_ID" ]] && fail "No subnet found in ${VPC_ID}."
+  fi
+  # A subnet knows its own VPC, so --subnet-id alone is enough.
+  SUBNET_VPC=$("${AWS[@]}" ec2 describe-subnets --subnet-ids "$SUBNET_ID" \
+    --query 'Subnets[0].VpcId' --output text 2>/dev/null || echo "None")
+  [[ "$SUBNET_VPC" == "None" || -z "$SUBNET_VPC" ]] && fail "Subnet ${SUBNET_ID} not found in ${REGION}."
+  if [[ -n "${VPC_ID:-}" && "$VPC_ID" != "$SUBNET_VPC" ]]; then
+    fail "Subnet ${SUBNET_ID} belongs to ${SUBNET_VPC}, not the --vpc-id you gave (${VPC_ID})."
+  fi
+  VPC_ID="$SUBNET_VPC"
+else
+  step "Network (default VPC)"
+  VPC_ID=$("${AWS[@]}" ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
+    --query 'Vpcs[0].VpcId' --output text)
+  if [[ "$VPC_ID" == "None" || -z "$VPC_ID" ]]; then
+    fail "No default VPC in ${REGION}. Point this at a network you already have:
+    --subnet-id subnet-0123456789abcdef0     (the VPC is derived from it)
+    --vpc-id vpc-0123456789abcdef0           (picks the first subnet in it)
+  List them with:
+    aws ec2 describe-subnets --region ${REGION} --query 'Subnets[].[SubnetId,VpcId,AvailabilityZone]' --output table"
+  fi
+  SUBNET_ID=$("${AWS[@]}" ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)
+fi
 ok "VPC $VPC_ID / subnet $SUBNET_ID"
 
 # ---- security group (SSH, WinRM, RDP) ----
