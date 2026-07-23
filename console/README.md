@@ -56,3 +56,33 @@ console/
 ```bash
 python3 fixtures/_build.py
 ```
+
+## Tests
+
+```bash
+python3 tests/test_console.py        # the server and the orchestrator, no AWS
+node --test tests/test_bridge.mjs    # the bridge state machine, no browser
+node tests/smoke_browser.mjs         # the eight things a person can do, in a real browser
+```
+
+The smoke tests need playwright on the machine (`npm i -g playwright && npx
+playwright install chromium`); nothing is installed into the repo. They start a
+real console, a static server for `docs/console.html`, and drive both. `HEADED=1`
+to watch.
+
+## `--dev-origin`, and when to use it
+
+```bash
+python3 -m cloudlens_console --dev-origin http://dev.localhost:5173
+```
+
+Adds **one** browser origin to the CORS allowlist so the public page can be
+developed against a local console. It is off unless passed, it is announced in
+the startup banner by name, and it is **not** exempt from pairing: that origin
+still has to send the code, which is the only way the pairing screen exists in a
+browser at all. On the console's own origin pairing is exempt, so a wrong code
+there is accepted anyway.
+
+Use a name that is not a loopback spelling (`dev.localhost` rather than
+`localhost`): the page treats any http page on a loopback host as having been
+served by a console, and dials its own origin instead of port 8760.
