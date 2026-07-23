@@ -1281,6 +1281,45 @@ def test_main_threads_allow_remote_into_serve():
         server.serve = old
 
 
+def test_main_opens_the_port_that_was_bound_not_the_one_requested():
+    """--port 0 means "any free port", so the requested port is never the URL.
+
+    The banner already prints the bound port, because serve() knows it. The
+    browser was handed a URL built from args.port, so --port 0 printed a
+    working address and opened http://localhost:0/ beside it.
+    """
+    from cloudlens_console import __main__ as M
+
+    class FakeHTTPD:
+        server_address = ("127.0.0.1", 49321)
+        def serve_forever(self):
+            raise KeyboardInterrupt
+        def shutdown(self):
+            pass
+
+    class ImmediateTimer:
+        """Runs the callback on start(), so the test does not sleep 0.6s."""
+        def __init__(self, delay, fn):
+            self.fn = fn
+        def start(self):
+            self.fn()
+
+    class FakeThreading:
+        Timer = ImmediateTimer
+
+    opened = []
+    saved = (server.serve, M.threading, M.webbrowser.open)
+    server.serve = lambda host, port, allow_remote=False: FakeHTTPD()
+    M.threading = FakeThreading
+    M.webbrowser.open = opened.append
+    try:
+        M.main(["--port", "0"])
+        assert opened == ["http://localhost:49321/"], \
+            "the browser was sent to %r, not the port actually bound" % (opened,)
+    finally:
+        server.serve, M.threading, M.webbrowser.open = saved
+
+
 @contextlib.contextmanager
 def _served_quietly(host="127.0.0.1"):
     """serve() on a scratch port, its banner captured, globals restored.

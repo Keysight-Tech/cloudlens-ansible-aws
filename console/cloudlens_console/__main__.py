@@ -56,8 +56,11 @@ def main(argv=None):
     # serve() prints the banner itself, pairing code included: it is the only
     # caller that knows the bound port, and the code has to be the live one.
     httpd = server.serve(args.host, args.port, allow_remote=args.allow_remote)
-    url = _banner_url(args.host, args.port)
     if not args.no_open:
+        # From the BOUND port, never args.port: --port 0 means "any free port",
+        # so the requested value is 0 and the browser would open
+        # http://localhost:0/ next to a banner naming the real one.
+        url = _banner_url(args.host, httpd.server_address[1])
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
