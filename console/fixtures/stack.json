@@ -80,7 +80,7 @@
   "_delay": 0.4,
   "event": {
    "type": "narrate",
-   "text": "Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.",
+   "text": "Network foundation is up: the VPC and gateway exist before anything lands in it.",
    "tone": "good"
   }
  },
@@ -109,7 +109,7 @@
   "_delay": 0.5,
   "event": {
    "type": "narrate",
-   "text": "Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.",
+   "text": "Elastic IPs are reserved first, so an over-quota account fails in seconds, not six minutes in with instance-hours burned.",
    "tone": "note"
   }
  },
@@ -132,7 +132,7 @@
   "_delay": 0.5,
   "event": {
    "type": "narrate",
-   "text": "Launching the CloudLens Manager \u2014 the control plane every sensor registers to.",
+   "text": "Launching the CloudLens Manager: the control plane every sensor registers to.",
    "tone": "info"
   }
  },
@@ -186,7 +186,7 @@
   "_delay": 0.5,
   "event": {
    "type": "narrate",
-   "text": "Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.",
+   "text": "Launching KVO: the single pane that adopts the manager, the vPB, and drives AWS mirroring.",
    "tone": "info"
   }
  },
@@ -232,7 +232,7 @@
   "_delay": 0.5,
   "event": {
    "type": "narrate",
-   "text": "Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.",
+   "text": "Launching the virtual packet broker: filters and forwards tapped traffic to your tools.",
    "tone": "info"
   }
  },
@@ -270,7 +270,7 @@
   "_delay": 0.4,
   "event": {
    "type": "done",
-   "summary": "Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.",
+   "summary": "Stack CREATE_COMPLETE: 3 appliances up. They need ~15 min to initialize.",
    "outputs": {
     "note": "Log in at the vController URL once initialized, then run Flow 02 or 03."
    }

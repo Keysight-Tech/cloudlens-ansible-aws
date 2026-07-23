@@ -134,7 +134,7 @@ Wait 60 seconds, then re-run the SSM command.
 **Fix:**
 1. KVO > **Cloud Fabric > Cloud Configs** - verify the AWS Cloud Config status is "COMMITTED"
 2. Tag source instances with whatever the Cloud Collection workload selector specifies (typically `cloudlens-mirror=true`)
-3. Auto-Mirror Lambda should pick them up within 1–2 seconds via EventBridge
+3. Auto-Mirror Lambda should pick them up within 1-2 seconds via EventBridge
 
 ### "Mirror filter exceeded" error
 

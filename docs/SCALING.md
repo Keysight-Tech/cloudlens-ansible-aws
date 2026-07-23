@@ -8,12 +8,12 @@ CloudLens Ansible scales linearly across thousands of EC2 instances using AWS An
 
 | Fleet size | SSM parallelism | Sharded execution | Deployment time |
 |---|---|---|---|
-| 1–50 instances | 50 concurrent | No | 5–10 min |
-| 51–200 | 100 concurrent | No | 10–20 min |
-| 201–800 | 200 concurrent | No | 15–30 min |
-| 801–2,000 | 400 concurrent | **Yes** (chunked) | 30–60 min |
-| 2,001–5,000 | 800 concurrent | Yes | 1–2 hours |
-| 5,001–10,000 | 1,500 concurrent | Yes | 2–4 hours |
+| 1-50 instances | 50 concurrent | No | 5-10 min |
+| 51-200 | 100 concurrent | No | 10-20 min |
+| 201-800 | 200 concurrent | No | 15-30 min |
+| 801-2,000 | 400 concurrent | **Yes** (chunked) | 30-60 min |
+| 2,001-5,000 | 800 concurrent | Yes | 1-2 hours |
+| 5,001-10,000 | 1,500 concurrent | Yes | 2-4 hours |
 | 10,000+ | 2,500+ concurrent | Yes | 4+ hours |
 
 Ansible (SSH/SSM/WinRM)'s `--max-concurrency` and `--max-errors` flags let you tune the concurrency profile per customer. The site's interactive slider models the same bands.
@@ -23,9 +23,9 @@ Ansible (SSH/SSM/WinRM)'s `--max-concurrency` and `--max-errors` flags let you t
 | Customer scale | KVO instance | CLMS instance | vPB instance | Collector SVMs |
 |---|---|---|---|---|
 | Demo / POC | `c5.2xlarge` | `t3.xlarge` | `t3.xlarge` | 1 auto |
-| ≤ 1,000 sensors | `c5.2xlarge` | `t3.xlarge` | `t3.xlarge` | 2–4 auto |
-| ≤ 5,000 sensors | `c5.2xlarge` | `t3.xlarge` | `c5.4xlarge` | 4–8 auto |
-| ≤ 10,000 sensors | `c5.4xlarge`* | `m5.2xlarge` | `c5.4xlarge` | 8–16 auto |
+| ≤ 1,000 sensors | `c5.2xlarge` | `t3.xlarge` | `t3.xlarge` | 2-4 auto |
+| ≤ 5,000 sensors | `c5.2xlarge` | `t3.xlarge` | `c5.4xlarge` | 4-8 auto |
+| ≤ 10,000 sensors | `c5.4xlarge`* | `m5.2xlarge` | `c5.4xlarge` | 8-16 auto |
 | 10,000+ sensors | Federated KVOs | Multi-CLMS | Multi-vPB | Cross-region |
 
 \* KVO Marketplace AMI is locked to `c5.2xlarge` - going larger requires a custom Keysight build.
@@ -54,7 +54,7 @@ KVO auto-distributes mirror sessions across collector SVMs as you scale source i
 - **Projected 1,700 sites** with E1S/E50 edge appliances
 - Distributed across India + adjacent regions
 - AutoPilot orchestrates per-site CFT stacks via AWS Service Catalog (roadmap)
-- Estimated full rollout: 2–3 quarters
+- Estimated full rollout: 2-3 quarters
 
 ### Nokia
 - 4G LTE private network - CMU containerized workloads

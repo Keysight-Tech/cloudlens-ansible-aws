@@ -62,7 +62,7 @@ Copy-paste templates for SEs sending CloudLens Ansible intros, kickoff invites, 
 >
 > 1. SE-led CloudFormation or Terraform deployment (~10 min including waits)
 > 2. KVO/CLMS/vPB EULA acceptance and license activation (~15 min)
-> 3. Sensor rollout via Ansible (SSH/SSM/WinRM) (5–60 min depending on fleet size - see https://keysight-tech.github.io/cloudlens-ansible-aws/#scaling)
+> 3. Sensor rollout via Ansible (SSH/SSM/WinRM) (5-60 min depending on fleet size - see https://keysight-tech.github.io/cloudlens-ansible-aws/#scaling)
 > 4. Verification + handoff to your team
 >
 > Shall we schedule the kickoff call? I have these slots available:

@@ -1,4 +1,4 @@
-# CloudLens Production Deployment — the 3 automation tracks
+# CloudLens Production Deployment: the 3 automation tracks
 
 Three fully-automated deployment tracks, each building on the previous. Pick the
 one that matches the customer's visibility model. Every manual "button" from the
@@ -10,7 +10,7 @@ UI (EULA, licensing, adoption, cloud config, mirror path) is scripted here.
 | **2. CLMS + KVO + KVO-managed sensors** | KVO-orchestrated agent | Yes | KVO is the single pane; sensors register to a KVO-provisioned project. |
 | **3. CLMS + KVO + AWS mirror sessions** | Agentless (VPC Traffic Mirroring) | **No** | **The big one for customers.** No in-guest agent; AWS mirrors Nitro sources to KVO collectors. |
 
-Common first step for all three — deploy the stack (same-VPC CLMS[+KVO][+vPB]+workloads):
+Common first step for all three: deploy the stack (same-VPC CLMS[+KVO][+vPB]+workloads):
 
 ```bash
 # CloudFormation
@@ -22,10 +22,10 @@ CLMS needs ~15 min to initialize after the instance is up.
 
 ---
 
-## Track 1 — CLMS standalone with sensors
+## Track 1: CLMS standalone with sensors
 
 1. **Deploy** the stack (KVO optional/off).
-2. **Project key** — handles the forced first-login password change automatically:
+2. **Project key**: handles the forced first-login password change automatically:
    ```bash
    python3 scripts/vcontroller_project_key.py --clms <clms-ip> --project <name> --creds-file creds.txt
    # prints the working login (URL/user/password/project/api_key)
@@ -41,16 +41,16 @@ CLMS needs ~15 min to initialize after the instance is up.
 
 ---
 
-## Track 2 — CLMS with KVO adopted + KVO-managed sensor deploy
+## Track 2: CLMS with KVO adopted + KVO-managed sensor deploy
 
 Everything in Track 1's sensor step, but the project is created *through KVO* so
 KVO is the single management plane. All KVO buttons scripted in
 `scripts/kvo_adopt_clms.py`.
 
 **KVO one-time setup (buttons):**
-1. **Accept EULA** — KVO 302s every path until this is done (legal acceptance, gated behind a flag):
+1. **Accept EULA**: KVO 302s every path until this is done (legal acceptance, gated behind a flag):
    `POST /eula/v1/eula/<id> {"accepted":true}`  (script: `--accept-eula`)
-2. **Activate licenses** — a KVO with no license refuses *every* write. Per activation code:
+2. **Activate licenses**: a KVO with no license refuses *every* write. Per activation code:
    ```
    POST /api/v2/licensing/operations/retrieve-activation-code-info {"activationCode":"<code>"}
    POST /api/v2/licensing/operations/activate  {activationCode, quantity}
@@ -65,10 +65,10 @@ python3 scripts/kvo_adopt_clms.py \
   --name clms-prod --cloud-config prod-cloud --accept-eula --insecure
 ```
 This runs, in order (each in a committed KVO change request):
-1. **CLMS: create KVO user** — `POST /admin/kvo_users` (one non-admin user per CLM).
-2. **KVO: adopt CLMS** — `createCloudLensManager(name, {ip,user,password})`, **commit the change request**, wait for status **CONNECTED**.
-3. **KVO: Custom Cloud** — `createCustomCloud` (cloud presence; shows in Global Dashboard).
-4. **KVO: Cloud Config** — `createCloudConfig(CustomCloudConfig)` — **this provisions the real CLM project** `KVO_<name>` and returns the working sensor key. (Skipping this = phantom key + empty Cloud Configs page.)
+1. **CLMS: create KVO user**: `POST /admin/kvo_users` (one non-admin user per CLM).
+2. **KVO: adopt CLMS**: `createCloudLensManager(name, {ip,user,password})`, **commit the change request**, wait for status **CONNECTED**.
+3. **KVO: Custom Cloud**: `createCustomCloud` (cloud presence; shows in Global Dashboard).
+4. **KVO: Cloud Config**: `createCloudConfig(CustomCloudConfig)`. **This provisions the real CLM project** `KVO_<name>` and returns the working sensor key. (Skipping this = phantom key + empty Cloud Configs page.)
 
 Then **install sensors** with the printed key exactly as Track 1 step 3.
 
@@ -76,17 +76,17 @@ Then **install sensors** with the printed key exactly as Track 1 step 3.
 
 ---
 
-## Track 3 — CLMS + KVO with AWS mirror sessions (agentless)  ★ the customer big one
+## Track 3: CLMS + KVO with AWS mirror sessions (agentless)  ★ the customer big one
 
 No agent in the guest. KVO deploys collector Service VMs and drives **AWS VPC
 Traffic Mirroring**: AWS copies traffic from every selected Nitro source ENI to
 the collectors, which forward it (L2GRE/VXLAN) to a destination tool.
 
 **Hard requirements (each one silently blocks mirroring if missed):**
-- **Nitro source instances** — AWS only mirrors Nitro (t3/m5/c5/… ; check `describe-instance-types … Hypervisor`). Non-Nitro → use Track 1/2 sensors.
-- **KVO AWS IAM** — greenfield `EnableZoneTapping=yes` (CFN) / `enable_zone_tapping="true"` (TF), or brownfield `scripts/kvo_enable_zonetap_iam.sh`. Least-privilege policy: `deploy/iam/cloudlens-zonetap-policy.json`.
-- **8443 security group** — KVO must reach the collector on 8443.
-- **A destination tool** — an analyzer/NPB VM (or vPB) reachable from the collector egress, receiving L2GRE/VXLAN.
+- **Nitro source instances**: AWS only mirrors Nitro (t3/m5/c5/… ; check `describe-instance-types … Hypervisor`). Non-Nitro → use Track 1/2 sensors.
+- **KVO AWS IAM**: greenfield `EnableZoneTapping=yes` (CFN) / `enable_zone_tapping="true"` (TF), or brownfield `scripts/kvo_enable_zonetap_iam.sh`. Least-privilege policy: `deploy/iam/cloudlens-zonetap-policy.json`.
+- **8443 security group**: KVO must reach the collector on 8443.
+- **A destination tool**: an analyzer/NPB VM (or vPB) reachable from the collector egress, receiving L2GRE/VXLAN.
 
 **Steps:**
 1. Do Track 2's KVO setup (EULA, licenses, adopt CLMS → CONNECTED).
@@ -115,7 +115,7 @@ the collectors, which forward it (L2GRE/VXLAN) to a destination tool.
    plus KVO: Visibility Fabric > Cloud Configs / Tools / Monitoring Policies.
 
 **KNOWN OPEN ITEM (Keysight):** in the reference test env the collector SVM
-never bootstrapped — its launch-template user-data was empty and KVO made no
+never bootstrapped: its launch-template user-data was empty and KVO made no
 8443 push, so it never registered and no sessions were created, **even with the
 whole fabric (tool + policy) correctly committed.** The automation and config are
 complete; the collector-provisioning handshake is the missing link. Question for
@@ -125,7 +125,7 @@ Keysight: how does the AWS collector SVM receive its CLMS IP + project key
 
 ---
 
-## Coming next — Track 3b: vPB adopted into KVO as the tool
+## Coming next, Track 3b: vPB adopted into KVO as the tool
 
 Automate adopting the **vPB** into KVO as a managed device and wiring the full
 traffic path (ingress → filter → egress → tool) so KVO collects, filters, and

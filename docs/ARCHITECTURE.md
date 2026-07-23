@@ -10,7 +10,7 @@ AutoPilot deploys CloudLens on AWS in three distinct phases:
 |---|---|---|---|
 | **Phase 1** | CloudFormation **or** Terraform | Deploys VPC, KVO, CLMS, vPB, IAM, security groups, SSM Documents (~35 AWS resources) | 5 min |
 | **Phase 2** | Manual (web UI) | Accept EULAs, activate licenses, adopt CLMS into KVO, onboard vPB, create Cloud Config | 15 min |
-| **Phase 3** | AWS Ansible (SSH/SSM/WinRM) | Push CloudLens sensors to every tagged EC2 instance (Docker, Podman, or Windows) | 5–60 min depending on fleet size |
+| **Phase 3** | AWS Ansible (SSH/SSM/WinRM) | Push CloudLens sensors to every tagged EC2 instance (Docker, Podman, or Windows) | 5-60 min depending on fleet size |
 
 ## Products deployed
 
@@ -109,7 +109,7 @@ Choose based on your team's existing tooling - both produce **identical infrastr
 | | Gigamon GigaVUE-FM ATS | CloudLens Ansible |
 |---|---|---|
 | Mechanism | Poll AWS APIs on interval | EventBridge fires on `RunInstances` |
-| Detection latency | Polling interval (1–5 min) | < 1 second |
+| Detection latency | Polling interval (1-5 min) | < 1 second |
 | New VM coverage | Bounded by poll cycle | Instant |
 | Cost | Continuous API calls | Pay-per-event |
 

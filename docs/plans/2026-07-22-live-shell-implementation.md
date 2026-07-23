@@ -315,8 +315,8 @@ job that completes immediately. Do not weaken the `/events/` guard in the helper
 ## Before Task 4: do NOT header-gate `/events/`
 
 Testing proved that `/events/<job_id>` returns 200 and streams live deploy output
-to `curl` from a foreign origin. That is correct CORS behaviour — a browser
-withholds the response from the page, and a non-browser client never asks — but
+to `curl` from a foreign origin. That is correct CORS behaviour: a browser
+withholds the response from the page, and a non-browser client never asks. But
 it demonstrates that the origin allowlist provides **zero** confidentiality
 against non-browser callers.
 
@@ -349,7 +349,7 @@ Nothing validates `Host` today. A hostile site resolves its own name to
 with the console: CORS is never consulted, and on a GET the browser sends **no
 `Origin` header**. The exemption reads that as "a local process, which already
 has the user's shell and AWS identity, so pairing adds nothing". Under rebinding
-that premise is false — it is a remote page with no local access at all.
+that premise is false: it is a remote page with no local access at all.
 
 Blast radius today is bounded to the exempt GETs (`/health`, `/flows`), not
 `/run`, because a POST carries `Origin: http://evil.com:8760` which is not in
@@ -525,7 +525,7 @@ In `do_POST`, as the first statement after `path = ...`:
 ```
 
 **`do_OPTIONS` must stay exempt from pairing.** A CORS preflight cannot carry
-`X-CloudLens-Pair` — establishing that the header *may* be sent is the entire
+`X-CloudLens-Pair`: establishing that the header *may* be sent is the entire
 purpose of the preflight. Guarding it would 401 every preflight and silently
 re-break the bridge with exactly the symptom Task 3 fixed. Do not add the guard
 to a shared dispatch path that `do_OPTIONS` also flows through.
@@ -553,7 +553,7 @@ git commit -m "console: require the pairing code on acting routes, exempt same-o
 
 **Prune finished jobs.** `JOBS` is never pruned, so a completed job's id stays a
 live capability for the process lifetime, and re-opening `/events/<id>` replays
-the buffer from the start — including `E.hello`, which carries the account ARN
+the buffer from the start, including `E.hello`, which carries the account ARN
 and region. The design keeps account and region behind pairing by stripping them
 from `/health`; this puts them behind a job id that outlives the pairing code,
 including after the guess cap sets `PAIR_CODE = None`. Drop finished jobs after
@@ -689,8 +689,8 @@ git commit -m "console: make job_id a full-entropy capability for the SSE stream
 Replace `serve` with:
 
 `PAIR_CODE` is already seeded at import (Task 1), so `serve()` must NOT
-regenerate it. Regenerating buys nothing — `serve()` is called once and the cap
-requires a restart by design — and it creates an ordering trap: print the banner
+regenerate it. Regenerating buys nothing (`serve()` is called once and the cap
+requires a restart by design), and it creates an ordering trap: print the banner
 before `serve()` and the visitor is shown a valid-looking code the server will
 reject, with nothing to diagnose. Leave `serve()` alone:
 

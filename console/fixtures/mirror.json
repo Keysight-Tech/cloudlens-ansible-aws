@@ -43,7 +43,7 @@
   "_delay": 0.6,
   "event": {
    "type": "log",
-   "text": "[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"
+   "text": "[kvo-mirror] Zone-Tapping IAM attached: least privilege"
   }
  },
  {
@@ -59,7 +59,7 @@
   "_delay": 0.3,
   "event": {
    "type": "narrate",
-   "text": "Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.",
+   "text": "Least-privilege Zone-Tapping IAM is attached: KVO can call AWS on your behalf.",
    "tone": "good"
   }
  },
@@ -82,7 +82,7 @@
   "_delay": 0.6,
   "event": {
    "type": "log",
-   "text": "[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"
+   "text": "[kvo-mirror] DescribeInstances: matching Nitro sources"
   }
  },
  {
@@ -98,7 +98,7 @@
   "_delay": 0.3,
   "event": {
    "type": "narrate",
-   "text": "Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.",
+   "text": "Nitro sources matched by tag. Only Nitro instances can be mirrored; put sensors on the rest.",
    "tone": "good"
   }
  },
@@ -114,7 +114,7 @@
   "_delay": 0.6,
   "event": {
    "type": "log",
-   "text": "[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"
+   "text": "[kvo-mirror] RunInstances: collector Service VM \u00b7 launch template + ASG"
   }
  },
  {
@@ -193,7 +193,7 @@
   "_delay": 0.3,
   "event": {
    "type": "narrate",
-   "text": "VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.",
+   "text": "VPC Traffic Mirror sessions created, one per source ENI. Packets are flowing to the tool.",
    "tone": "good"
   }
  },
@@ -201,7 +201,7 @@
   "_delay": 0.4,
   "event": {
    "type": "done",
-   "summary": "3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.",
+   "summary": "3 mirror sessions live. Verify in VPC \u2192 Traffic Mirroring.",
    "outputs": {}
   }
  }

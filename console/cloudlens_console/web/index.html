@@ -263,7 +263,7 @@
     <div class="inst-bar">
       <div class="traffic"><i></i><i></i><i></i></div>
       <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
-      <span class="id-chip" id="idChip" hidden>acct <b>—</b></span>
+      <span class="id-chip" id="idChip" hidden>acct <b>…</b></span>
       <div class="inst-right">
         <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
         <div class="metric">created<b id="mCreated">0</b></div>
@@ -296,7 +296,7 @@
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Four paths, one console</span>
       <h2>From an empty account to live packets on a tool.</h2>
-      <p>Each path runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
+      <p>Each path runs the exact automation an SE runs from the CLI, wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
     <div class="cards" id="flowCards"></div>
   </div>
 </section>
@@ -314,12 +314,12 @@
           <span class="req">brownfield or new VPC</span>
           <span class="req">non-admin friendly</span>
         </div>
-        <div class="codeblk"><span class="c"># from AWS CloudShell — zero local setup</span>
+        <div class="codeblk"><span class="c"># from AWS CloudShell: zero local setup</span>
 <span class="g">$</span> curl -sSL https://keysight-tech.github.io/cloudlens-ansible-aws/deploy-stack.sh <span class="r">| bash</span></div>
       </div>
       <ol class="steps">
         <li><b>Network foundation</b><span class="m">VPC, gateway, and the mgmt / data / tool subnets.</span></li>
-        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first — an over-quota account fails in seconds.</span></li>
+        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first: an over-quota account fails in seconds.</span></li>
         <li><b>vController (CLMS)</b><span class="m">The control plane every sensor registers to.</span></li>
         <li><b>KVO</b><span class="m">The single pane that adopts the manager, the vPB, and drives mirroring.</span></li>
         <li><b>vPB</b><span class="m">The virtual packet broker that filters and forwards to your tools.</span></li>
@@ -333,13 +333,13 @@
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Path 02 · Direct</span>
       <h2>Register <span class="em">sensors</span> into CloudLens Manager.</h2>
-      <p>The simplest model — no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
+      <p>The simplest model, with no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
     <div class="cards">
       <div class="card"><div class="k">UBUNTU / DEBIAN</div><h3>Docker</h3><p>Insecure registry pull, then <code class="mono">docker run …/sensor --ssl_verify no</code>. Registers with HTTP&nbsp;200.</p></div>
-      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker — <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
+      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker: <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
       <div class="card"><div class="k">WINDOWS</div><h3>Native service</h3><p>Silent install of <code class="mono">cloudlens-win-sensor.exe</code> via SSM; the service is named <b>CloudLens</b> (not CloudLensAgent).</p></div>
     </div>
-    <div class="note-b">The project key is pulled automatically — the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
+    <div class="note-b">The project key is pulled automatically. The forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
   </div>
 </section>
 
@@ -352,10 +352,10 @@
         <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">KVO becomes the single pane. Every UI "button" is scripted: accept the EULA, activate licenses, create the KVO user on the CLMS, adopt it, and provision the working project key through a Cloud Config.</p>
       </div>
       <ol class="steps">
-        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done — a legal acceptance, gated behind a flag.</span></li>
+        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done: a legal acceptance, gated behind a flag.</span></li>
         <li><b>Activate licenses</b><span class="m">An unlicensed KVO refuses every write. Codes activate via the licensing API.</span></li>
         <li><b>Adopt the CLMS</b><span class="m"><code>createCloudLensManager</code>, commit the change request, wait for <b>CONNECTED</b>.</span></li>
-        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key — skip it and the key is a phantom.</span></li>
+        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key: skip it and the key is a phantom.</span></li>
       </ol>
     </div>
   </div>
@@ -367,7 +367,7 @@
       <div>
         <span class="eyebrow">Path 03b · Packet broker</span>
         <h2 style="margin-top:12px">Adopt the <span class="em">vPB</span> and wire the path.</h2>
-        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b> — then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b>. Then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
         <div class="codeblk"><span class="c"># the vПB `kvo` command is an interactive CONTEXT, not flat</span>
 CloudLensVPB# <span class="b">kvo</span>
 CloudLensVPB-kvo# <span class="b">ip</span> &lt;kvo-ip&gt;
@@ -386,9 +386,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <section id="mirror">
   <div class="wrap">
-    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless — the big one</span>
+    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless: the big one</span>
       <h2>Mirror traffic with <span class="em">zero agents</span>.</h2>
-      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b> — AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
+      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b>: AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
     <div class="reqs">
       <span class="req"><b>Nitro</b> sources only</span>
       <span class="req">opt-in least-privilege IAM</span>
@@ -396,18 +396,18 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
       <span class="req">auto-scaled collectors</span>
     </div>
     <div class="cards" style="margin-top:22px">
-      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped — put sensors on those.</p></div>
+      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped, so put sensors on those.</p></div>
       <div class="card"><div class="k">DEPLOY</div><h3>Collectors</h3><p>An auto-scaling group of collector Service VMs comes up per zone, from the Keysight Marketplace image, resolved per region.</p></div>
-      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI — visible in VPC → Traffic Mirroring.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI, visible in VPC → Traffic Mirroring.</p></div>
     </div>
-    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest — both land under the same CLM/KVO project.</div>
+    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest. Both land under the same CLM/KVO project.</div>
   </div>
 </section>
 
 <section id="verify">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Proof, not promises</span><h2>Verify at every hop.</h2>
-      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too — every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
+      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too: every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
     <div class="cards">
       <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP&nbsp;200 at <code class="mono">agent/register</code>; the project's sensor count climbs as they check in.</p></div>
       <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB <b>Online</b>, auto-licensed, with its Device Config and bound ingress/egress ports.</p></div>
@@ -422,9 +422,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
     <table class="ref">
       <thead><tr><th>Item</th><th>Value</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase — change on first use.</td></tr>
+        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase: change on first use.</td></tr>
         <tr><td>KVO web UI</td><td><code>admin / admin</code></td><td>Accept the EULA and activate licenses before any write.</td></tr>
-        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code> — not flat commands.</td></tr>
+        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code>, not flat commands.</td></tr>
         <tr><td>Source selection</td><td><code>tag cloudlens=yes</code></td><td>Same tag drives the sensor and the agentless mirror paths.</td></tr>
         <tr><td>AWS mirroring</td><td>Nitro instances only</td><td>t3 / m5 / c5 / r5 and newer are Nitro; <code>describe-instance-types … Hypervisor</code> confirms.</td></tr>
         <tr><td>Key network ports</td><td><code>443 · 9022 · 8443</code></td><td>443 CLMS/KVO API · 9022 vPB SSH · 8443 KVO↔collector (open in the SG).</td></tr>
@@ -437,14 +437,14 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Troubleshoot</span><h2>When it doesn't go clean.</h2></div>
     <div class="cards">
-      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit — the stack's pre-check catches it in seconds.</p></div>
+      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit. The stack's pre-check catches it in seconds.</p></div>
       <div class="card"><h3>vPB never shows in KVO</h3><p>Run the <code class="mono">kvo</code> commands inside the context (not flat <code class="mono">kvo ip</code>), and confirm the mgmt network reaches KVO on 443. It self-announces from there.</p></div>
       <div class="card"><h3>No mirror sessions</h3><p>Sources must be <b>Nitro</b>, KVO needs the Zone-Tapping IAM, and 8443 must be open KVO↔collector. Confirm the collector registered before expecting sessions.</p></div>
     </div>
   </div>
 </section>
 
-<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
+<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity: credentials never leave the machine.</span></div></footer>
 
 <script src="/web/strings.js"></script>
 <script src="/web/bridge.js"></script>

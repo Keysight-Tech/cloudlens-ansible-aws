@@ -70,7 +70,7 @@ After Phase 1 completes, configure the products via their web UIs:
 4. **Onboard vPB to KVO** - SSH to vPB on port 9022, run `configure terminal / kvo / ip <kvo-ip> / port 443 / enable / monitored / end / write memory`. Then adopt in KVO with "Control the adopted device" enabled.
 5. **Create AWS Cloud Config** - KVO > Cloud Fabric > Cloud Configs > New > AWS. Paste IAM keys, pick region + VPC + subnets, commit.
 
-## Phase 3 - Sensor Deployment (~5–60 min depending on fleet size)
+## Phase 3 - Sensor Deployment (~5-60 min depending on fleet size)
 
 ```bash
 ./scripts/deploy-sensors.sh \

@@ -1,7 +1,7 @@
 # CloudLens Live Deployment Console
 
 A local, loopback-only web app that runs the repo's **real** deploy automation and
-streams live progress to a premium UI. Pick a flow, fill in your details, run it —
+streams live progress to a premium UI. Pick a flow, fill in your details, run it:
 the network diagram wires itself up from real AWS state, the narration explains
 each step as it happens, and the console shows the raw output underneath.
 
@@ -25,14 +25,14 @@ python3 -m cloudlens_console            # starts on http://localhost:8760, opens
   (`~/.aws` / env vars / CloudShell role). Credentials never leave the machine;
   the server binds to `127.0.0.1` only.
 - **Demo mode** (toggle in the header, on by default) replays real captured event
-  streams — no AWS, no boto3 needed. Great for walkthroughs and screenshots.
+  streams, with no AWS and no boto3 needed. Great for walkthroughs and screenshots.
 
 Requirements: Python 3.9+ and (for live mode) `boto3` and valid AWS credentials.
 
 ## How it stays honest
 
 Every tick the UI shows maps to a **real** AWS state transition or a **real** line
-of script output. When it's waiting, it says *waiting on AWS* — it never invents
+of script output. When it's waiting, it says *waiting on AWS*. It never invents
 progress. Failures are first-class: the failing node turns red and the real
 `ResourceStatusReason` / fix is shown.
 
