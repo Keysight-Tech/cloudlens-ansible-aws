@@ -1015,6 +1015,90 @@ def test_banner_url_brackets_an_ipv6_literal():
     assert M._banner_url("192.168.1.10", 8801) == "http://192.168.1.10:8801/"
 
 
+def test_ipv6_host_actually_binds_and_answers():
+    """--host ::1 used to be a raw gaierror.
+
+    ThreadingHTTPServer is AF_INET, so an IPv6 literal died in the constructor
+    before anything bound: the bracketing in _banner_url was unreachable and
+    the flag was a stack trace instead of a console.
+    """
+    import socket
+    import http.client
+    # Decide "this host has no IPv6" HERE, with our own socket. Wrapping the
+    # serve() call in except OSError instead would swallow the very failure
+    # this test exists to catch: gaierror is an OSError, so the bug would read
+    # as a skip and the test could never fail.
+    probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        probe.bind(("::1", 0))
+    except OSError:
+        print("SKIP (no IPv6 loopback on this host)", end=" ")
+        return
+    finally:
+        probe.close()
+
+    saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS), server.LOOPBACK_ONLY)
+    with _no_banner():
+        httpd = server.serve("::1", 0)
+    port = httpd.server_address[1]
+    try:
+        assert httpd.socket.family == socket.AF_INET6
+        from threading import Thread
+        httpd.handle_error = lambda request, addr: None
+        Thread(target=httpd.serve_forever, daemon=True).start()
+        c = http.client.HTTPConnection("::1", port, timeout=5)
+        c.request("GET", "/health")
+        r = c.getresponse()
+        assert (r.status, json.loads(r.read().decode())["ok"]) == (200, True)
+        c.close()
+    finally:
+        httpd.shutdown(); httpd.server_close()
+        allowed, selfo, loopback = saved
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
+        server.LOOPBACK_ONLY = loopback
+
+
+def test_ipv4_mapped_addresses_compare_as_the_ipv4_they_are():
+    # The trap that comes with binding AF_INET6: on a dual-stack `--host ::`
+    # an IPv4 client's accepted socket reports ::ffff:10.0.0.27 while its Host
+    # header says 10.0.0.27. Compared as written those are unequal, so every
+    # IPv4 LAN client would 403 on a bind that exists to admit them.
+    assert server._same_ip("::ffff:10.0.0.27", "10.0.0.27")
+    assert server._same_ip("10.0.0.27", "::ffff:10.0.0.27")
+    assert server._same_ip("::ffff:127.0.0.1", "127.0.0.1")
+    # Unwrapping must not make unrelated addresses equal.
+    assert not server._same_ip("::ffff:10.0.0.27", "10.0.0.28")
+    assert not server._same_ip("::ffff:10.0.0.27", "::1")
+    # And a name is still never an address, mapped or not.
+    assert not server._same_ip("evil.example", "::ffff:10.0.0.27")
+
+
+def test_a_mapped_client_address_passes_the_wildcard_host_guard():
+    # The guard reads the address the client dialled off the socket. On a
+    # dual-stack bind the kernel hands back the mapped form, so this is the
+    # path an ordinary IPv4 LAN client takes on `--host :: --allow-remote`.
+    saved_wild, saved_hosts = server.REMOTE_WILDCARD, server.OUR_HOSTS
+    server.REMOTE_WILDCARD = True
+
+    class FakeConn:
+        def getsockname(self):
+            return ("::ffff:10.0.0.27", 8760, 0, 0)
+
+    class Probe(server.Handler):
+        def __init__(self, host):
+            self.headers = _make_headers([("Host", host)])
+            self.connection = FakeConn()
+
+    try:
+        assert Probe("10.0.0.27:8760")._host_is_ours(), \
+            "an IPv4 client on a dual-stack bind must not be refused as a stranger"
+        assert not Probe("evil.example:8760")._host_is_ours()
+        assert not Probe("10.0.0.28:8760")._host_is_ours()
+    finally:
+        server.REMOTE_WILDCARD, server.OUR_HOSTS = saved_wild, saved_hosts
+
+
 def test_ip_literals_compare_as_addresses_not_as_text():
     # A client may write an address any way the spec allows, and Host is text.
     assert server._same_ip("2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001")

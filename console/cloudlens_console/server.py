@@ -34,6 +34,7 @@ import json
 import time
 import queue
 import secrets
+import socket
 import ipaddress
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -277,6 +278,19 @@ def _host_name(raw):
     return raw
 
 
+def _unmap(addr):
+    """An IPv4-mapped IPv6 address as the IPv4 address it is, else unchanged.
+
+    On a dual-stack bind (--host ::) an IPv4 client's accepted socket reports
+    ::ffff:10.0.0.27 while the same client's Host header says 10.0.0.27.
+    ip_address compares those two UNEQUAL, so without this every IPv4 caller on
+    the LAN would be refused by the rebinding guard on the very bind that
+    exists to admit them.
+    """
+    # getattr: only IPv6Address carries ipv4_mapped, and this is handed both.
+    return getattr(addr, "ipv4_mapped", None) or addr
+
+
 def _same_ip(a, b):
     """True when both parse as IP literals naming the same address.
 
@@ -286,7 +300,7 @@ def _same_ip(a, b):
     rebound NAME from ever matching an address.
     """
     try:
-        return ipaddress.ip_address(a) == ipaddress.ip_address(b)
+        return _unmap(ipaddress.ip_address(a)) == _unmap(ipaddress.ip_address(b))
     except ValueError:
         return False
 
@@ -711,6 +725,32 @@ class _Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
+class _Server6(_Server):
+    """The same server on AF_INET6.
+
+    ThreadingHTTPServer is AF_INET, so --host ::1 died in the constructor with
+    a bare gaierror before anything bound. A subclass rather than a flag on
+    _Server: socketserver reads address_family while it builds the socket, so
+    it has to be a class attribute set before construction.
+    """
+    address_family = socket.AF_INET6
+
+
+def _server_class(host):
+    """_Server6 for an IPv6 literal, _Server otherwise.
+
+    Keyed on the literal only. A hostname is left on AF_INET deliberately:
+    resolving it here to pick a family would make the bind depend on whatever
+    the resolver says at startup, and '' / 0.0.0.0 are IPv4 wildcards that must
+    stay that way. '::' is an IPv6 wildcard and is dual-stack on the platforms
+    this runs on, which is what makes _unmap() load-bearing.
+    """
+    try:
+        return _Server6 if ipaddress.ip_address(_host_name(host)).version == 6 else _Server
+    except ValueError:
+        return _Server
+
+
 def serve(host="127.0.0.1", port=8760, allow_remote=False):
     # NOT re-entrant: LOOPBACK_ONLY, OUR_HOSTS, REMOTE_WILDCARD and the origin
     # allowlist are module state, so two servers in one process would share one
@@ -743,7 +783,7 @@ def serve(host="127.0.0.1", port=8760, allow_remote=False):
             REMOTE_WILDCARD = True
         else:
             OUR_HOSTS = frozenset(DEFAULT_HOSTS | {name})
-    httpd = _Server((host, port), Handler)
+    httpd = _server_class(host)((host, port), Handler)
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
     _set_self_origins(httpd.server_address[1])
