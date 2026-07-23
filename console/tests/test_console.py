@@ -1408,6 +1408,25 @@ def test_startup_banner_shows_the_pairing_code_the_server_checks():
             "the visitor must be told the console has to stay up"
 
 
+def test_startup_banner_tells_the_truth_about_a_network_bind():
+    """The banner's safety claim has to follow the bind, both ways.
+
+    Only the loopback branch was covered. Invert the conditional and the
+    console prints "Loopback only." while bound to 0.0.0.0: a false safety
+    claim on the one bind where the warning is the whole point, and every
+    test still green. So assert both directions from a real serve().
+    """
+    with _served_quietly("127.0.0.1") as (out, _port):
+        assert "Loopback only." in out
+        assert "REACHABLE FROM THE NETWORK." not in out
+    # A real wildcard bind, on a scratch port, closed before the body runs.
+    with _served_quietly("0.0.0.0") as (out, _port):
+        assert "REACHABLE FROM THE NETWORK." in out, \
+            "a non-loopback bind must say so: %r" % out
+        assert "Loopback only." not in out, \
+            "the banner claimed loopback while bound to 0.0.0.0"
+
+
 def test_startup_banner_says_so_when_pairing_is_disabled():
     # Printing a code that is not enforced is worse than printing none: the
     # visitor types it, is refused, and blames the code.
