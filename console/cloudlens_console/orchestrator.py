@@ -232,12 +232,24 @@ def _run_cfn_flow(job, flow, region):
     stop_evt = threading.Event()
     poller = threading.Thread(target=_poll_cfn, args=(job, flow, stack, region, stop_evt), daemon=True)
     poller.start()
-    cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),
-           "--stack", stack, "--region", region,
-           "--kvo", job.inputs.get("kvo", "yes"), "--vpb", job.inputs.get("vpb", "yes")]
-    rc = _stream_subprocess(job, cmd, REPO_ROOT, on_line=lambda l: None)
-    time.sleep(POLL_SECS + 1)  # let the poller catch the final CREATE_COMPLETE
-    stop_evt.set()
+    # Everything from here on is inside the finally: the poller is a thread we
+    # started, so stopping it is our obligation on EVERY exit, not only the one
+    # where the subprocess ran to completion. Popen raises whenever
+    # deploy-stack.sh or bash is missing, and that used to unwind straight past
+    # stop_evt.set() into run_job's catch-all: the job was reported, finished
+    # and pruned, while _poll_cfn went on calling describe_stack_events every
+    # POLL_SECS for the life of the process - a leaked thread making paid AWS
+    # calls, refilling job.buffer with nobody to read it and nothing left in
+    # JOBS to prune it a second time. job.stopped never rescues it either: the
+    # operator's /stop is gone with the job entry.
+    try:
+        cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),
+               "--stack", stack, "--region", region,
+               "--kvo", job.inputs.get("kvo", "yes"), "--vpb", job.inputs.get("vpb", "yes")]
+        rc = _stream_subprocess(job, cmd, REPO_ROOT, on_line=lambda l: None)
+        time.sleep(POLL_SECS + 1)  # let the poller catch the final CREATE_COMPLETE
+    finally:
+        stop_evt.set()
     if job.stopped:
         job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
     elif rc == 0:

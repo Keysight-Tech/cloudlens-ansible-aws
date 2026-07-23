@@ -1176,6 +1176,50 @@ def _served_quietly(host="127.0.0.1"):
         server.REMOTE_WILDCARD = wild
 
 
+def test_cfn_poller_stops_even_when_the_subprocess_never_starts():
+    """The poller is stopped in a finally, or it outlives the job forever.
+
+    If Popen raises (no deploy/deploy-stack.sh, no bash) the exception unwinds
+    past stop_evt.set() to run_job's catch-all, the job is finished and then
+    pruned, and _poll_cfn keeps calling describe_stack_events every few seconds
+    for the life of the process: a leaked thread making paid AWS calls, with
+    job.buffer regrowing behind it and nobody left to read or prune it.
+    """
+    import threading
+    seen = {}
+
+    def fake_poll(job, flow, stack_name, region, stop_evt):
+        seen["evt"] = stop_evt
+        seen["thread"] = threading.current_thread()
+        while not stop_evt.is_set():
+            time.sleep(0.01)
+
+    def wont_launch(*a, **k):
+        raise FileNotFoundError("bash: no such file")
+
+    saved = (O._poll_cfn, O._stream_subprocess)
+    O._poll_cfn, O._stream_subprocess = fake_poll, wont_launch
+    try:
+        job = O.Job(server.new_job_id(), "stack", {})
+        raised = None
+        try:
+            O._run_cfn_flow(job, F.FLOWS["stack"], "us-east-1")
+        except FileNotFoundError as exc:
+            raised = exc
+        assert raised is not None, \
+            "the launch failure still has to reach run_job, which reports it"
+        for _ in range(200):                  # the thread is started, so give it a beat
+            if "evt" in seen:
+                break
+            time.sleep(0.01)
+        assert seen["evt"].is_set(), "stop_evt must be set on every exit, not just the happy one"
+        seen["thread"].join(2)
+        assert not seen["thread"].is_alive(), "the poller thread outlived the job"
+    finally:
+        O._poll_cfn, O._stream_subprocess = saved
+        seen.get("evt") and seen["evt"].set()
+
+
 def test_startup_banner_shows_the_pairing_code_the_server_checks():
     # Without this the pairing code is generated, enforced, and never shown:
     # the visitor has nothing to type and the whole flow is unusable.
