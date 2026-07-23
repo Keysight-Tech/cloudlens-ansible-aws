@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import contextlib
 from collections import namedtuple
 from http.client import HTTPMessage, parse_headers
 
@@ -105,6 +106,55 @@ def _handler_response(path, method="GET", headers=None, body=None, content_lengt
     except Exception:
         payload = None
     return Resp(h.status, _make_headers(h.sent_list), payload, raw)
+
+
+@contextlib.contextmanager
+def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
+    """A real listener on a scratch port, with every global serve() touches
+    restored on the way out.
+
+    Port 0 so a scratch server never collides with a real console. quiet=False
+    leaves handle_error alone, for the one test that is about what it prints.
+    """
+    from threading import Thread
+    saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
+             server.LOOPBACK_ONLY, server.OUR_HOSTS, dict(server.JOBS))
+    httpd = server.serve(host, 0, allow_remote=allow_remote)
+    if quiet:
+        # Tests that walk away from a never-ending stream RST the socket. That
+        # is the test being rude, not the server misbehaving.
+        httpd.handle_error = lambda request, addr: None
+    Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield httpd, httpd.server_address[1]
+    finally:
+        httpd.shutdown(); httpd.server_close()
+        allowed, selfo, loopback, hosts, jobs = saved
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
+        server.LOOPBACK_ONLY = loopback
+        server.OUR_HOSTS = hosts
+        server.JOBS.clear(); server.JOBS.update(jobs)
+
+
+def _offmachine_addr():
+    """The address a caller on the LAN would dial to reach this machine, or ''.
+
+    A UDP connect() picks a route and sends nothing, so this touches no network
+    and reaches no one; 192.0.2.1 is TEST-NET-1. Deliberately not read out of
+    the server's own OUR_HOSTS: the point is to dial the machine the way a real
+    client does and see whether the guard lets it in.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))
+        addr = s.getsockname()[0]
+        return "" if addr in ("", "0.0.0.0") else addr
+    except OSError:
+        return ""
+    finally:
+        s.close()
 
 
 def test_health_leaks_nothing():
@@ -213,6 +263,14 @@ def test_self_origins_follow_the_bound_port():
         assert server._origin_if_allowed(PAGES_ORIGIN) == PAGES_ORIGIN, \
             "rebinding the port must never drop the pages origin"
         assert server._origin_if_allowed("https://evil.example") is None
+        # SELF_ORIGINS is cleared and refilled, but ALLOWED_ORIGINS is only
+        # ever added to, so the previous port stayed allowlisted forever. The
+        # allowlist is a standing grant to a browser origin: leaving 8760 on it
+        # after moving to 8890 means whatever now answers on 8760 - another
+        # user's process on a shared box - can read this console's responses.
+        assert server._origin_if_allowed("http://localhost:8760") is None, \
+            "re-serving on a new port must retire the old port's origins"
+        assert server._origin_if_allowed("http://127.0.0.1:8760") is None
     finally:
         server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
         server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
@@ -632,6 +690,7 @@ def test_serve_sets_loopback_only_from_the_bind_host():
     # a refactor and nothing would notice.
     from cloudlens_console import server
     old = server.LOOPBACK_ONLY
+    saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
     try:
         h = server.serve("0.0.0.0", 0)
         try:
@@ -647,6 +706,8 @@ def test_serve_sets_loopback_only_from_the_bind_host():
             h.server_close()
     finally:
         server.LOOPBACK_ONLY = old
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
 
 
 def test_base_class_error_pages_also_forbid_framing():
@@ -713,6 +774,237 @@ def test_static_paths_cannot_escape_the_web_dir():
     assert not server._under_web(os.path.dirname(server.WEB) + "/server.py")
     assert _handler_response("/web/../../server.py").status == 404, \
         "the package source must not be servable"
+
+
+def test_finished_jobs_are_pruned_after_a_ttl():
+    """A job id is a capability, and an un-pruned JOBS makes it a permanent one.
+
+    /events/<id> replays the buffer from the start, and frame one is E.hello
+    with the account id, the caller ARN and the region. /health strips exactly
+    those to keep them behind pairing - so an id that outlives the pairing code
+    (the guess cap sets PAIR_CODE = None for the life of the process) hands
+    them back to anyone still holding it.
+    """
+    saved = dict(server.JOBS)
+    try:
+        server.JOBS.clear()
+        live, fresh, stale = (O.Job("live0", "stack", {}), O.Job("fresh", "stack", {}),
+                              O.Job("stale", "stack", {}))
+        for j in (live, fresh, stale):
+            server.JOBS[j.id] = j
+        fresh.emit(E.done("ok"))
+        stale.emit(E.done("ok"))
+        assert stale.done_at is not None, "finishing a job must record when"
+        assert live.done_at is None
+        stale.done_at -= server.JOB_TTL + 1
+        server._prune_jobs()
+        assert "stale" not in server.JOBS, "a finished job past its TTL must not be reachable"
+        assert "fresh" in server.JOBS, \
+            "the TTL is not zero: a page reload has to be able to reconnect to a finished job"
+        assert "live0" in server.JOBS, \
+            "a running deploy must never be pruned, however long the stack takes"
+    finally:
+        server.JOBS.clear(); server.JOBS.update(saved)
+
+
+def test_expired_job_events_404_over_a_real_socket():
+    """The prune has to be visible on the wire, not just in the dict.
+
+    _handler_response refuses /events/ (it tails a live queue), so this drives
+    a real listener. The jobs are planted directly rather than run: what is
+    under test is the lifetime of the id, not the deploy.
+    """
+    import http.client
+    with _running_server() as (httpd, port):
+        for jid in ("expired1", "recent01"):
+            job = O.Job(jid, "stack", {})
+            job.emit(E.done("ok"))
+            server.JOBS[jid] = job
+        server.JOBS["expired1"].done_at -= server.JOB_TTL + 1
+
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/events/expired1", headers={"Connection": "close"})
+        r = c.getresponse()
+        assert r.status == 404, "an expired job id must be as good as unknown"
+        assert json.loads(r.read().decode())["error"] == "no such job"
+        c.close()
+
+        # ... and the sweep must not take the job the visitor is still watching
+        # with it. http.client returns as soon as the headers are in, so the
+        # never-ending stream does not hang the test.
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/events/recent01", headers={"Connection": "close"})
+        assert c.getresponse().status == 200
+        c.close()
+
+
+def test_sse_stream_is_delimited_over_a_real_socket():
+    """An SSE body has no Content-Length and no chunking, so the only thing
+    that says where it ends is the connection closing. Promising keep-alive on
+    an HTTP/1.1 connection and then streaming an undelimited body leaves the
+    client unable to tell the end of the stream from the start of the next
+    response."""
+    import http.client
+    with _running_server() as (httpd, port):
+        job = O.Job("framing1", "stack", {})
+        job.emit(E.done("ok"))
+        server.JOBS["framing1"] = job
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", "/events/framing1")     # deliberately NOT Connection: close
+        r = c.getresponse()
+        assert r.status == 200
+        assert r.getheader("Content-Type") == "text/event-stream"
+        assert (r.getheader("Connection") or "").lower() == "close", \
+            "an undelimited body on a connection we promised to reuse"
+        assert r.getheader("Content-Length") is None and r.getheader("Transfer-Encoding") is None
+        assert r.will_close, "http.client must know the body ends at EOF"
+        c.close()
+
+
+def test_disconnect_noise_is_swallowed_but_real_errors_are_not():
+    """Every closed SSE tab used to print a traceback from socketserver.
+
+    That matters past tidiness: the pairing cap's only observability is a
+    warning on this same stderr, and an operator trained to ignore stderr has
+    no way to notice that pairing disabled itself.
+    """
+    import socket
+    import struct
+    import time as _time
+    err = io.StringIO()
+    with _running_server(quiet=False) as (httpd, port):
+        real_stderr, sys.stderr = sys.stderr, err
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            s.recv(4096)
+            # RST, not FIN: an orderly close is a quiet EOF, while a tab that
+            # goes away mid-stream resets, and that is the one that printed.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()
+            _time.sleep(0.5)
+            assert err.getvalue() == "", \
+                "a client disconnect is not a server fault: %r" % err.getvalue()
+            # Narrowly, though. A blanket handle_error hides real handler bugs,
+            # and this server holds the visitor's AWS identity.
+            try:
+                raise ValueError("a real handler bug")
+            except ValueError:
+                httpd.handle_error(None, ("127.0.0.1", 0))
+            assert "ValueError" in err.getvalue(), \
+                "only BrokenPipe/ConnectionReset may be swallowed"
+        finally:
+            sys.stderr = real_stderr
+
+
+def test_banner_url_brackets_an_ipv6_literal():
+    # webbrowser.open() gets this string verbatim: 'http://::1:8760/' is not a
+    # URL, and the failure is a browser that opens nothing or searches for it.
+    from cloudlens_console import __main__ as M
+    assert M._banner_url("127.0.0.1", 8760) == "http://localhost:8760/"
+    assert M._banner_url("::1", 8760) == "http://[::1]:8760/"
+    assert M._banner_url("fe80::1", 9) == "http://[fe80::1]:9/"
+    assert M._banner_url("[::1]", 8760) == "http://[::1]:8760/", "already bracketed"
+    assert M._banner_url("192.168.1.10", 8801) == "http://192.168.1.10:8801/"
+
+
+def test_allow_remote_widens_the_host_guard_only_when_asked():
+    assert server._remote_host_names("192.168.1.10") == {"192.168.1.10"}
+    assert server._remote_host_names("[fe80::1]") == {"fe80::1"}
+    # A wildcard bind names nothing, so the guard falls back to the names this
+    # machine actually answers to. Without that, --host 0.0.0.0 --allow-remote
+    # 403s every LAN client, which is the whole bug.
+    assert server._remote_host_names("0.0.0.0"), "a wildcard bind must still name this machine"
+    assert server.DEFAULT_HOSTS.isdisjoint({"192.168.1.10"}), "the default guard is loopback only"
+
+    saved_hosts, saved_loopback = server.OUR_HOSTS, server.LOOPBACK_ONLY
+    # serve() on port 0 re-points the self-origins at a scratch port, and now
+    # that the old port is properly retired that is no longer harmless to leave
+    # behind for the next test.
+    saved_allowed, saved_self = set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS)
+    try:
+        server.serve("127.0.0.1", 0, allow_remote=True).server_close()
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
+            "a loopback bind must never widen the rebinding guard, flag or no flag"
+        server.serve("0.0.0.0", 0).server_close()
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS, \
+            "the widening is gated on the flag, and serve() is callable without it"
+    finally:
+        server.OUR_HOSTS, server.LOOPBACK_ONLY = saved_hosts, saved_loopback
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(saved_allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(saved_self)
+
+
+def test_remote_bind_accepts_its_own_host_and_still_demands_pairing():
+    """--allow-remote has to be functional AND still gated.
+
+    Accepting the bind's own Host is the point of the flag. Keeping
+    LOOPBACK_ONLY False for the same bind is what stops it becoming an
+    unauthenticated remote deploy endpoint: an off-machine caller sends no
+    Origin, exactly like a local process, so that exemption cannot survive.
+    """
+    import http.client
+    # The address a caller off this machine would actually dial - discovered
+    # here rather than read out of OUR_HOSTS, because asserting that the server
+    # answers to a name it made up itself is how this passed while the real LAN
+    # client still got 403.
+    dial = _offmachine_addr()
+    assert dial, "no non-loopback address on this machine to test a remote bind with"
+
+    with _running_server("0.0.0.0", allow_remote=True) as (httpd, port):
+        hosthdr = "[%s]:%d" % (dial, port) if ":" in dial else "%s:%d" % (dial, port)
+
+        assert server.LOOPBACK_ONLY is False, \
+            "widening the Host guard must not quietly restore the Origin exemption"
+
+        def ask(pair=None, host=hosthdr):
+            c = http.client.HTTPConnection(dial, port, timeout=5)
+            c.putrequest("GET", "/flows", skip_host=True, skip_accept_encoding=True)
+            c.putheader("Host", host)
+            if pair:
+                c.putheader("X-CloudLens-Pair", pair)
+            c.putheader("Connection", "close")
+            c.endheaders()
+            r = c.getresponse()
+            out = (r.status, json.loads(r.read().decode() or "{}"))
+            c.close()
+            return out
+
+        status, body = ask()
+        assert status != 403, "the bind must answer to the address clients dial: %r" % (body,)
+        assert (status, body.get("error")) == (401, "pairing required"), \
+            "no Origin over the network is not proof of a local process"
+        assert ask(server.PAIR_CODE)[0] == 200, \
+            "a paired remote caller is exactly what the flag promises"
+        assert ask(server.PAIR_CODE, "evil.example:%d" % port)[0] == 403, \
+            "widening for our own address must not admit a rebound name"
+
+
+def test_main_threads_allow_remote_into_serve():
+    # Without this wiring the flag parses, prints its scary warning, and does
+    # nothing: the Host guard still 403s every caller it was meant to admit.
+    from cloudlens_console import __main__ as M
+    seen = {}
+
+    class FakeHTTPD:
+        def serve_forever(self):
+            raise KeyboardInterrupt
+        def shutdown(self):
+            pass
+
+    def fake_serve(host, port, allow_remote=False):
+        seen.update(host=host, port=port, allow_remote=allow_remote)
+        return FakeHTTPD()
+
+    old = server.serve
+    server.serve = fake_serve
+    try:
+        M.main(["--host", "127.0.0.1", "--no-open"])
+        assert seen["allow_remote"] is False
+        M.main(["--host", "0.0.0.0", "--allow-remote", "--no-open"])
+        assert seen == {"host": "0.0.0.0", "port": 8760, "allow_remote": True}
+    finally:
+        server.serve = old
 
 
 def test_replay_needs_no_boto3(monkeypatch=None):

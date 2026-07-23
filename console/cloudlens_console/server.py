@@ -9,6 +9,8 @@ send X-CloudLens-Pair; the console's own UI is exempt:
   GET  /events/<job_id>  -> Server-Sent Events (Last-Event-ID). NOT header-gated:
                             EventSource cannot send headers, so the gate is that
                             job_id is unguessable and only /run hands one out.
+                            Finished jobs are dropped after JOB_TTL, so that
+                            capability does not outlive the pairing code.
   POST /stop/<job_id>    -> paired. cancels a running job
 
 Every request, preflight included, is refused unless Host names this machine: a
@@ -24,11 +26,13 @@ under the operator's AWS identity, so that gate is load-bearing, not cosmetic.
 """
 from __future__ import annotations
 import os
+import sys
 import hmac
 import json
 import time
 import uuid
 import queue
+import socket
 import secrets
 import ipaddress
 import threading
@@ -44,6 +48,35 @@ from . import orchestrator as O
 WEB = os.path.abspath(os.path.join(os.path.dirname(__file__), "web"))
 JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
+
+# How long a FINISHED job stays reachable. The id is a capability: /events/<id>
+# replays the buffer from the start, and frame one is E.hello with the account
+# id, the caller ARN and the region. /health strips exactly those to keep them
+# behind pairing, so a job that lives for the life of the process puts them
+# behind an id instead - one that outlives the pairing code, since the guess
+# cap sets PAIR_CODE = None permanently.
+#
+# Long enough that a reload, a laptop lid or a wifi hop still reconnects to a
+# deploy that just finished; short enough that a stale tab is not a standing
+# grant. A RUNNING job is never pruned, however long the stack takes.
+JOB_TTL = 300
+
+
+def _prune_jobs(now=None):
+    """Drop finished jobs whose TTL has passed.
+
+    Lazy: called from the routes rather than by a timer thread, because a
+    console that is not being driven has nothing to leak to. Removing a job
+    from JOBS cannot disturb a reader that is mid-stream - _sse() resolves the
+    id once and then holds the object - so this only ever revokes the ability
+    to OPEN a new stream.
+    """
+    now = time.time() if now is None else now
+    for jid, job in list(JOBS.items()):
+        at = getattr(job, "done_at", None)
+        if at is not None and now - at > JOB_TTL:
+            JOBS.pop(jid, None)
+
 
 # Bumped only when the wire contract the public page depends on changes.
 # Stays a plain N.N: a build id or commit SHA here would fingerprint the
@@ -79,6 +112,11 @@ def _set_self_origins(port):
     """Loopback origins for the console's own UI. Derive from 127.0.0.1 and
     localhost only, never from --host: with --host 0.0.0.0 there is no
     meaningful self-origin a browser would send."""
+    # Retire the previous port's entries. ALLOWED_ORIGINS is a standing grant
+    # to a browser origin, so leaving http://localhost:8760 on it after moving
+    # to 8890 hands that grant to whatever answers on 8760 next - on a shared
+    # machine, another user's process.
+    ALLOWED_ORIGINS.difference_update(SELF_ORIGINS)
     SELF_ORIGINS.clear()
     SELF_ORIGINS.update({"http://127.0.0.1:%d" % port, "http://localhost:%d" % port})
     ALLOWED_ORIGINS.update(SELF_ORIGINS)
@@ -154,7 +192,17 @@ LOOPBACK_ONLY = True
 
 # Host values that mean "this machine's own console". Anything else is a name
 # that resolved to us, i.e. DNS rebinding.
-OUR_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+#
+# OUR_HOSTS is what the guard consults and serve() may widen for an explicit
+# --allow-remote bind; DEFAULT_HOSTS is the loopback-only floor it is rebuilt
+# from on every serve(), so a remote bind followed by a loopback one does not
+# leave the guard permanently open.
+DEFAULT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+OUR_HOSTS = DEFAULT_HOSTS
+
+# Binds that name no single host: every interface, so there is no one address
+# a client would have dialled.
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
 
 def is_loopback(host):
@@ -195,6 +243,62 @@ def _host_name(raw):
     if raw.endswith(".") and not raw.endswith(".."):
         raw = raw[:-1]                            # 'localhost.' is the same host
     return raw
+
+
+def _remote_host_names(host):
+    """Host header values a deliberately remote bind should answer to.
+
+    A concrete --host is the address the operator told clients to dial, so it
+    is its own answer. A wildcard bind names nothing, and that is the case that
+    actually ships: `--host 0.0.0.0 --allow-remote` used to 403 every LAN
+    client, because the guard only knows loopback names while the client dials
+    10.0.0.27. For that case the closest honest answer is the set of addresses
+    this machine already answers to, so we ask the resolver.
+
+    Best effort by design: anything the resolver cannot tell us simply is not
+    added, and the caller gets the same 403 as before rather than a wider guard
+    than intended. Nothing here runs for a loopback bind.
+    """
+    host = _host_name(host)
+    if host not in WILDCARD_HOSTS:
+        return {host}
+    names = set()
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+    if hostname:
+        names.add(hostname.lower())
+        try:
+            names.add(socket.getfqdn(hostname).lower())
+        except OSError:
+            pass
+        try:
+            for info in socket.getaddrinfo(hostname, None):
+                names.add(str(info[4][0]))
+        except (OSError, UnicodeError):
+            pass
+    # The hostname is NOT enough, verified live: on a machine whose short
+    # hostname does not resolve, the resolver returns nothing and the LAN
+    # client dialling 10.0.0.27 still gets 403 - the exact failure this is
+    # here to fix. Ask the routing table which address a client off-machine
+    # would actually reach us on. A UDP connect() only selects a route; it
+    # sends nothing, so this works with no network and reaches no one. The
+    # probe addresses are the reserved documentation ranges.
+    for family, probe in ((socket.AF_INET, "192.0.2.1"),
+                          (socket.AF_INET6, "2001:db8::1")):
+        s = socket.socket(family, socket.SOCK_DGRAM)
+        try:
+            s.connect((probe, 9))
+            names.add(str(s.getsockname()[0]))
+        except OSError:
+            pass                    # no route in that family: nothing to add
+        finally:
+            s.close()
+    # Strip IPv6 scope ids (a Host header cannot carry '%en0'), and drop the
+    # unspecified addresses a routeless machine hands back - they name nothing.
+    names = {n.split("%")[0].lower() for n in names if n}
+    return names - WILDCARD_HOSTS
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -392,6 +496,9 @@ class Handler(BaseHTTPRequestHandler):
             fid = b.get("flow")
             if fid not in F.FLOWS:
                 return self._send(400, {"error": "unknown flow"})
+            # Sweep as we add, so a long-lived console does not accumulate a
+            # pile of ids that each still replay an account ARN.
+            _prune_jobs()
             job_id = uuid.uuid4().hex[:12]
             job = O.Job(job_id, fid, b.get("inputs", {}))
             JOBS[job_id] = job
@@ -445,13 +552,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- SSE ----
     def _sse(self, job_id):
+        _prune_jobs()
         job = JOBS.get(job_id)
         if not job:
             return self._send(404, {"error": "no such job"})
+        # An event stream carries neither Content-Length nor chunking, so the
+        # close IS the delimiter. Promising keep-alive on HTTP/1.1 and then
+        # streaming an undelimited body leaves the client unable to tell the
+        # end of this response from the start of the next. close_connection
+        # first: the header is the promise, this is what keeps it.
+        self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
         self._cors()
         self.end_headers()
         last = self.headers.get("Last-Event-ID")
@@ -514,15 +628,45 @@ def _ctype(path):
     return "application/octet-stream"
 
 
-def serve(host="127.0.0.1", port=8760):
-    global LOOPBACK_ONLY
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        """A client that went away is not a server fault.
+
+        Every closed SSE tab resets the connection, the reset escapes the base
+        class's request loop, and socketserver prints a traceback per tab. That
+        matters past tidiness: the pairing cap's only observability is a
+        warning printed to this same stderr, and an operator trained to scroll
+        past tracebacks will scroll past that too.
+
+        Narrow on purpose - exactly the two disconnect types. A blanket
+        suppression here would silently swallow real handler bugs in a process
+        that holds the visitor's AWS identity.
+        """
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+
+
+def serve(host="127.0.0.1", port=8760, allow_remote=False):
+    global LOOPBACK_ONLY, OUR_HOSTS
     # Set BEFORE the constructor binds, so there is no window in which the
     # socket is listening while the flag still says loopback. Recorded rather
     # than merely warned about: _check_pairing() exempts callers that send no
     # Origin because local code already has the shell and the AWS identity, and
     # that is true only while nothing off-machine can reach us.
     LOOPBACK_ONLY = is_loopback(host)
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    # The rebinding guard admits only loopback names, which is right for the
+    # default bind and made --allow-remote non-functional: the LAN client dials
+    # this machine's real address and got 403. Widened ONLY on the explicit
+    # flag, and only to names for the bind we were actually asked for.
+    #
+    # This does NOT touch LOOPBACK_ONLY. Admitting the operator's own address
+    # is the point of the flag; restoring the "no Origin means a local process"
+    # exemption would turn the same bind into an unauthenticated remote deploy
+    # endpoint, so a remote caller still has to present the pairing code.
+    OUR_HOSTS = DEFAULT_HOSTS
+    if allow_remote and not LOOPBACK_ONLY:
+        OUR_HOSTS = frozenset(DEFAULT_HOSTS | _remote_host_names(host))
+    httpd = _Server((host, port), Handler)
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
     _set_self_origins(httpd.server_address[1])

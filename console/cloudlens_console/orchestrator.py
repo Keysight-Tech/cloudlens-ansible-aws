@@ -32,6 +32,9 @@ class Job:
         self.q = queue.Queue()
         self.buffer = []          # for SSE Last-Event-ID replay
         self.done = False
+        # When the job finished, for the server's TTL sweep. None while it
+        # runs: a deploy in progress is never a candidate for pruning.
+        self.done_at = None
         self.stopped = False
         self._proc = None
         self._t0 = time.time()
@@ -41,6 +44,10 @@ class Job:
         self.q.put(ev)
         if ev["type"] in (E.DONE, E.ERROR):
             self.done = True
+            # Re-stamped on every terminal event, not just the first: a flow
+            # can emit a per-node error and keep running, and the TTL has to
+            # run from the last word rather than from that first error.
+            self.done_at = time.time()
 
     def elapsed(self):
         return int(time.time() - self._t0)

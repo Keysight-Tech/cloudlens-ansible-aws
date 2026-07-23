@@ -23,6 +23,20 @@ from . import server
 is_loopback = server.is_loopback
 
 
+def _banner_url(host, port):
+    """The URL we print and hand to webbrowser.open().
+
+    127.0.0.1 is shown as localhost - nicer to read, and the same origin the UI
+    posts from. An IPv6 literal has to be bracketed: --host ::1 otherwise built
+    'http://::1:8760/', which is not a URL, and webbrowser.open() passes it to
+    the browser verbatim.
+    """
+    shown = "localhost" if host == "127.0.0.1" else host
+    if ":" in shown and not shown.startswith("["):
+        shown = "[%s]" % shown
+    return "http://{}:{}/".format(shown, port)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="cloudlens_console", description=__doc__)
     ap.add_argument("--host", default="127.0.0.1", help="bind host (loopback only by default)")
@@ -44,8 +58,11 @@ def main(argv=None):
         print("  !!  under your credentials. The pairing code is the only thing")
         print("  !!  standing in their way. Stop this as soon as you are done.\n")
 
-    httpd = server.serve(args.host, args.port)
-    url = "http://{}:{}/".format("localhost" if args.host == "127.0.0.1" else args.host, args.port)
+    # allow_remote is passed through, not just validated here: the Host guard
+    # admits loopback names only, so without it a LAN client gets 403 and the
+    # flag is documented but dead.
+    httpd = server.serve(args.host, args.port, allow_remote=args.allow_remote)
+    url = _banner_url(args.host, args.port)
     print("\n  CloudLens live console  ->  {}".format(url))
     print("  {} Runs the real deploy scripts against your AWS identity.".format(
         "Loopback only." if is_loopback(args.host) else "REACHABLE FROM THE NETWORK."))

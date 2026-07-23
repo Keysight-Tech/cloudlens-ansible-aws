@@ -598,6 +598,14 @@ Decision: when `--allow-remote` is passed, add the bound host to `OUR_HOSTS` in
 the operator who explicitly opted into network exposure gets the behaviour the
 flag advertises. Do not widen `OUR_HOSTS` unconditionally.
 
+Note also that "add the bound host to `OUR_HOSTS`" is not sufficient on its own,
+found by testing against a real bind rather than the helper: `--host 0.0.0.0`
+names nothing, and on a machine whose short hostname does not resolve the
+resolver adds nothing either, so the LAN client dialling 10.0.0.27 still got
+403. The shipped `_remote_host_names()` also asks the routing table (a UDP
+`connect()` to TEST-NET-1, which sends no packet) for the address an
+off-machine caller would actually reach us on.
+
 Note the plan's original snippet was wrong and the implementation corrected it:
 `host.split(":")[0]` gives `""` for `::1` and `"["` for `[::1]:8760`, so the
 `"[::1]"`/`"::1"` entries were unreachable and an IPv6 console would have 403'd
