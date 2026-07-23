@@ -153,3 +153,130 @@ test("the code is checked without being case-folded", () => {
   assert.equal(B.looksLikeCode(""), false);
   assert.equal(B.looksLikeCode(null), false);
 });
+
+// ---- the live stream -----------------------------------------------------
+//
+// Event shapes are the server's, from events.py: hello, log, state, narrate,
+// stat, done, error. done is terminal; error is terminal only when it names no
+// node, since a per-node error is reported mid-deploy and the job continues.
+
+function live() {
+  return B.reduce(B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+                  { type: "pair.ok" });
+}
+
+test("a job id is the capability, and the machine holds it", () => {
+  const s = B.reduce(live(), {
+    type: "job.started", jobId: "0123456789abcdef0123456789abcdef"
+  });
+  assert.equal(s.name, "live");
+  assert.equal(s.jobId, "0123456789abcdef0123456789abcdef");
+});
+
+test("stream events accumulate in order", () => {
+  let s = live();
+  s = B.reduce(s, { type: "sse.event", event: { id: 1, type: "log", text: "one" } });
+  s = B.reduce(s, { type: "sse.event", event: { id: 2, type: "log", text: "two" } });
+  assert.equal(s.name, "live");
+  assert.equal(s.transcript.length, 2);
+  assert.equal(s.transcript[0].text, "one");
+  assert.equal(s.transcript[1].text, "two");
+});
+
+test("a per-node error does not end the job", () => {
+  // events.py sends error(node=...) for one failed resource while the deploy
+  // carries on. Ending the stream here would black out the rest of a live
+  // deploy over a failure the operator can watch recover.
+  let s = B.reduce(live(), {
+    type: "sse.event", event: { id: 1, type: "error", text: "subnet failed", node: "vpc" }
+  });
+  assert.equal(s.name, "live");
+  assert.equal(s.transcript.length, 1);
+});
+
+test("the terminal done event finishes the job and keeps the transcript", () => {
+  let s = live();
+  s = B.reduce(s, { type: "sse.event", event: { id: 1, type: "log", text: "creating" } });
+  s = B.reduce(s, { type: "sse.event", event: { id: 2, type: "done", summary: "stack up" } });
+  assert.equal(s.name, "finished");
+  assert.equal(s.transcript.length, 2, "the transcript is what the visitor reads afterwards");
+  assert.equal(s.transcript[1].type, "done");
+});
+
+test("a terminal error finishes the job as failed, transcript kept", () => {
+  let s = live();
+  s = B.reduce(s, { type: "sse.event", event: { id: 1, type: "log", text: "creating" } });
+  s = B.reduce(s, { type: "sse.event", event: { id: 2, type: "error", text: "rolled back" } });
+  assert.equal(s.name, "failed");
+  assert.equal(s.transcript.length, 2);
+});
+
+test("the console going away mid-job is lostConsole, transcript kept", () => {
+  let s = live();
+  s = B.reduce(s, { type: "sse.event", event: { id: 1, type: "log", text: "creating" } });
+  s = B.reduce(s, { type: "sse.error" });
+  assert.equal(s.name, "lost");
+  assert.equal(s.notice, "lostConsole");
+  assert.equal(s.transcript.length, 1,
+    "the deploy is still running on their machine: never discard what we saw");
+  assert.equal(s.transcript[0].text, "creating");
+});
+
+test("the stream closing after the job ended is not a loss", () => {
+  // The server sets Connection: close and ends the response when the job is
+  // done, so a drop right after the terminal event is the normal path.
+  let s = B.reduce(live(), { type: "sse.event", event: { id: 1, type: "done", summary: "up" } });
+  s = B.reduce(s, { type: "sse.error" });
+  assert.equal(s.name, "finished");
+  assert.equal(s.notice, null);
+});
+
+// ---- events that cannot be accepted where they arrive --------------------
+
+test("an event a state cannot accept leaves that state untouched", () => {
+  const cases = [
+    // [state builder, event, the state name that must survive]
+    [() => B.initial(), { type: "pair.ok" }, "replay"],
+    [() => B.initial(), { type: "pair.denied", status: 401, error: "pairing required" }, "replay"],
+    [() => B.initial(), { type: "sse.event", event: { id: 1, type: "log", text: "x" } }, "replay"],
+    [() => B.initial(), { type: "sse.error" }, "replay"],
+    [() => B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+     { type: "sse.event", event: { id: 1, type: "done", summary: "x" } }, "pairing"],
+    [() => B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+     { type: "sse.error" }, "pairing"],
+    [live, { type: "pair.denied", status: 401, error: "pairing required" }, "live"],
+    [live, { type: "nonsense" }, "live"],
+    [live, {}, "live"],
+    [live, null, "live"]
+  ];
+  for (const [build, event, expected] of cases) {
+    const before = build();
+    const after = B.reduce(before, event);
+    assert.equal(after.name, expected,
+      JSON.stringify(event) + " must not move a " + expected + " state");
+    assert.deepEqual(after.transcript, before.transcript, "nor add to the transcript");
+  }
+});
+
+test("reduce never mutates the state it was handed", () => {
+  const before = live();
+  B.reduce(before, { type: "sse.event", event: { id: 1, type: "log", text: "x" } });
+  B.reduce(before, { type: "sse.error" });
+  B.reduce(before, { type: "probe.fail", reason: "network" });
+  assert.equal(before.name, "live");
+  assert.deepEqual(before.transcript, []);
+});
+
+// ---- text ----------------------------------------------------------------
+
+test("the machine records string KEYS and text() is the only place they resolve", () => {
+  // Nothing user-facing is written in bridge.js: the state carries a key and
+  // the table in strings.js owns the sentence.
+  const s = B.reduce(B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+                     { type: "pair.denied", status: 401, error: "pairing required" });
+  assert.equal(s.notice, "pairBad");
+  globalThis.CLC_T = (key) => "<<" + key + ">>";
+  assert.equal(B.text(s), "<<pairBad>>");
+  assert.equal(B.text(B.initial()), null, "no notice is no text, not the empty string");
+  delete globalThis.CLC_T;
+});

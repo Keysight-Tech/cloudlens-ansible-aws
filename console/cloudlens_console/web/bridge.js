@@ -127,6 +127,19 @@
   // is in fact still replaying.
   var DENIAL_DEFAULT = { name: STATES.PAIRING, notice: "pairBad" };
 
+  // The state a stream event ends the job in, or null when the job carries on.
+  //
+  // `done` is terminal. `error` is terminal only when it names no node:
+  // events.py reports a failed resource with error(node=...) while the deploy
+  // continues, so treating every error as the end would black out the rest of
+  // a live deploy over a failure the operator can watch recover.
+  function endedBy(ev) {
+    if (!ev || typeof ev.type !== "string") { return null; }
+    if (ev.type === "done") { return STATES.FINISHED; }
+    if (ev.type === "error" && ev.node === undefined) { return STATES.FAILED; }
+    return null;
+  }
+
   // ---- the machine --------------------------------------------------------
 
   function initial() {
@@ -195,12 +208,57 @@
         if (state.name !== STATES.PAIRING) { return next(state, {}); }
         var d = DENIALS[event.error] || DENIAL_DEFAULT;
         return next(state, { name: d.name, notice: d.notice });
+
+      // /run handed back an id. It is a capability, not a label: /events/<id>
+      // has no pairing check because EventSource cannot send headers, so
+      // holding the id IS the authority to read that deploy.
+      case "job.started":
+        if (state.name !== STATES.LIVE) { return next(state, {}); }
+        return next(state, { jobId: event.jobId, transcript: [] });
+
+      // One frame off the real stream. Appended to a COPY: a state object
+      // already handed to a renderer must not change under it.
+      case "sse.event":
+        if (state.name !== STATES.LIVE || !event.event) { return next(state, {}); }
+        var kept = state.transcript.slice();
+        kept.push(event.event);
+        var ended = endedBy(event.event);
+        // The notice is cleared on the way out. It still says "connected" from
+        // pairing, and a finished job carrying a banner about the connection
+        // reads as though something is still running.
+        return next(state, {
+          name: ended || state.name,
+          notice: ended ? null : state.notice,
+          transcript: kept
+        });
+
+      // The stream broke. After the job ended this is the normal close (the
+      // server sends Connection: close and stops), so it is only a loss while
+      // the job was still running. The transcript is kept either way: the
+      // deploy is still running on their machine, and throwing away what we
+      // saw of it helps nobody.
+      case "sse.error":
+        if (state.name !== STATES.LIVE) { return next(state, {}); }
+        return next(state, { name: STATES.LOST, notice: "lostConsole" });
     }
     return next(state, {});
   }
 
+  // The ONE place a state turns into words. The machine only ever records a
+  // key, so every sentence the visitor reads comes out of the table in
+  // strings.js and can be translated by adding a sibling language to it.
+  // Returns null rather than "" for a state with nothing to say, so a caller
+  // can tell "no message" from "an empty message".
+  function text(state) {
+    if (!state || !state.notice) { return null; }
+    var t = (typeof window !== "undefined" ? window.CLC_T : null) ||
+            (typeof globalThis !== "undefined" ? globalThis.CLC_T : null);
+    return t ? t(state.notice) : state.notice;
+  }
+
   return {
     STATES: STATES,
+    text: text,
     isOurConsole: isOurConsole,
     looksLikeCode: looksLikeCode,
     initial: initial,
