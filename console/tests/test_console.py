@@ -1391,6 +1391,81 @@ def test_stack_cmd_speaks_the_flags_deploy_stack_actually_accepts():
     assert "--with-kvo" not in off and "--with-vpb" not in off
 
 
+def test_a_finished_node_never_goes_back_to_creating():
+    """Seen live: the VPC read "creating" for a whole successful deploy.
+
+    The resource map matches on a fragment, so one node covers several
+    resources. VpcGatewayAttachment contains "Vpc", and its CREATE_IN_
+    PROGRESS arrives after the VPC's own CREATE_COMPLETE. Without a guard
+    that late event drags a finished node backwards and it never recovers,
+    because the CREATE_COMPLETE that would relight it has already gone by.
+    """
+    import threading
+
+    events = []
+
+    class J(object):
+        stopped = False
+        flow = "stack"
+
+        def emit(self, ev):
+            events.append(ev)
+
+        def elapsed(self):
+            return 1
+
+    class FakeCF(object):
+        def describe_stack_events(self, StackName):
+            # Oldest last, the way CloudFormation returns them.
+            return {"StackEvents": [
+                {"EventId": "3", "LogicalResourceId": "VpcGatewayAttachment",
+                 "ResourceStatus": "CREATE_IN_PROGRESS"},
+                {"EventId": "2", "LogicalResourceId": "Vpc",
+                 "ResourceStatus": "CREATE_COMPLETE"},
+                {"EventId": "1", "LogicalResourceId": "Vpc",
+                 "ResourceStatus": "CREATE_IN_PROGRESS"},
+            ]}
+
+    import sys, types
+    fake_boto3 = types.ModuleType("boto3")
+    fake_sess = types.ModuleType("boto3.session")
+
+    class S(object):
+        def __init__(self, region_name=None):
+            pass
+
+        def client(self, _):
+            return FakeCF()
+
+    fake_sess.Session = S
+    fake_boto3.session = fake_sess
+    saved = sys.modules.get("boto3")
+    sys.modules["boto3"] = fake_boto3
+    sys.modules["boto3.session"] = fake_sess
+    stop = threading.Event()
+    try:
+        t = threading.Thread(
+            target=O._poll_cfn,
+            args=(J(), F.FLOWS["stack"], "st", "us-east-1", stop), daemon=True)
+        t.start()
+        time.sleep(0.4)
+        stop.set()
+        t.join(timeout=3)
+    finally:
+        if saved is not None:
+            sys.modules["boto3"] = saved
+        else:
+            sys.modules.pop("boto3", None)
+        sys.modules.pop("boto3.session", None)
+
+    vpc = [e for e in events
+           if e.get("type") == E.STATE and e.get("node") == "vpc"]
+    assert vpc, "the vpc node produced no state events at all"
+    assert vpc[-1]["status"] == E.LIVE, (
+        "a completed node ended as %r: a later matching CREATE_IN_PROGRESS "
+        "dragged it backwards" % (vpc[-1]["status"],))
+
+
 def test_stack_without_a_key_pair_fails_loudly_instead_of_hanging():
     """No key means an interactive prompt, and the console has no TTY.
 

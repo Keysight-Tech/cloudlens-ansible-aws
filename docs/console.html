@@ -1461,7 +1461,11 @@ function frame(m) {
     if (m.created != null) { $("mCreated").textContent = m.created; }
     // m.note is the server's own words about a real AWS wait, not a phrase of
     // ours to translate; waitingOnAws is the fallback when it sent none.
+    // m.waiting going false has to clear the note, or the pill keeps saying
+    // "waiting for the stack to appear" for the whole deploy: the stack turns
+    // up seconds later and every stat after that carries no note at all.
     if (m.waiting) { setPill("run", m.note || T("waitingOnAws")); }
+    else if (running) { setPill("run", T("statusRunning")); }
   } else if (m.type === "done") {
     narrate(m.summary, "good");
     if (m.outputs && m.outputs.note) { card("", T("cardNext"), m.outputs.note); }

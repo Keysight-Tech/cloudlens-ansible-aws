@@ -175,7 +175,12 @@ def _poll_cfn(job, flow, stack_name, region, stop_evt):
             status = se.get("ResourceStatus", "")
             node = next((n for frag, n in rmap.items() if frag in logical), None)
             if node:
-                if status.endswith("CREATE_IN_PROGRESS"):
+                if status.endswith("CREATE_IN_PROGRESS") and node not in lit:
+                    # "not in lit" or a finished node goes backwards. The map
+                    # matches on a fragment, so several resources share a node:
+                    # VpcGatewayAttachment contains "Vpc", and its CREATE_IN_
+                    # PROGRESS lands after the VPC's own CREATE_COMPLETE, which
+                    # left the VPC showing "creating" for the whole deploy.
                     job.emit(E.state(node, E.BUSY, "creating"))
                 elif status.endswith("CREATE_COMPLETE") and node not in lit:
                     lit.add(node)
@@ -189,7 +194,10 @@ def _poll_cfn(job, flow, stack_name, region, stop_evt):
                     job.emit(E.narrate(text, tone))
             if logical == stack_name and status == "CREATE_COMPLETE":
                 stop_evt.set()
-        job.emit(E.stat(elapsed=job.elapsed(), created=len(lit)))
+        # waiting=False explicitly: reaching here means describe_stack_events
+        # answered, so any earlier "waiting for the stack to appear" is stale
+        # and the page needs telling, not just an absent field.
+        job.emit(E.stat(elapsed=job.elapsed(), created=len(lit), waiting=False))
         time.sleep(POLL_SECS)
 
 
