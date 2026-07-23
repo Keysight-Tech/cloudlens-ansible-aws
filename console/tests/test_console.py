@@ -120,7 +120,7 @@ def _no_banner():
 
 
 @contextlib.contextmanager
-def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
+def _running_server(host="127.0.0.1", allow_remote=False, quiet=True, dev_origin=None):
     """A real listener on a scratch port, with every global serve() touches
     restored on the way out.
 
@@ -130,9 +130,10 @@ def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
     from threading import Thread
     saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
              server.LOOPBACK_ONLY, server.OUR_HOSTS, dict(server.JOBS),
-             server.REMOTE_WILDCARD, server.JOB_TTL)
+             server.REMOTE_WILDCARD, server.JOB_TTL, server.DEV_ORIGIN)
     with _no_banner():
-        httpd = server.serve(host, 0, allow_remote=allow_remote)
+        httpd = server.serve(host, 0, allow_remote=allow_remote,
+                             dev_origin=dev_origin)
     if quiet:
         # Tests that walk away from a never-ending stream RST the socket. That
         # is the test being rude, not the server misbehaving.
@@ -142,7 +143,8 @@ def _running_server(host="127.0.0.1", allow_remote=False, quiet=True):
         yield httpd, httpd.server_address[1]
     finally:
         httpd.shutdown(); httpd.server_close()
-        allowed, selfo, loopback, hosts, jobs, wild, ttl = saved
+        allowed, selfo, loopback, hosts, jobs, wild, ttl, dev = saved
+        server.DEV_ORIGIN = dev
         server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
         server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
         server.LOOPBACK_ONLY = loopback
@@ -1275,8 +1277,9 @@ def test_main_threads_allow_remote_into_serve():
         def shutdown(self):
             pass
 
-    def fake_serve(host, port, allow_remote=False):
-        seen.update(host=host, port=port, allow_remote=allow_remote)
+    def fake_serve(host, port, allow_remote=False, dev_origin=None):
+        seen.update(host=host, port=port, allow_remote=allow_remote,
+                    dev_origin=dev_origin)
         return FakeHTTPD()
 
     old = server.serve
@@ -1285,7 +1288,8 @@ def test_main_threads_allow_remote_into_serve():
         M.main(["--host", "127.0.0.1", "--no-open"])
         assert seen["allow_remote"] is False
         M.main(["--host", "0.0.0.0", "--allow-remote", "--no-open"])
-        assert seen == {"host": "0.0.0.0", "port": 8760, "allow_remote": True}
+        assert seen == {"host": "0.0.0.0", "port": 8760, "allow_remote": True,
+                        "dev_origin": None}
     finally:
         server.serve = old
 
@@ -1318,7 +1322,7 @@ def test_main_opens_the_port_that_was_bound_not_the_one_requested():
 
     opened = []
     saved = (server.serve, M.threading, M.webbrowser.open)
-    server.serve = lambda host, port, allow_remote=False: FakeHTTPD()
+    server.serve = lambda host, port, allow_remote=False, dev_origin=None: FakeHTTPD()
     M.threading = FakeThreading
     M.webbrowser.open = opened.append
     try:
@@ -1330,28 +1334,30 @@ def test_main_opens_the_port_that_was_bound_not_the_one_requested():
 
 
 @contextlib.contextmanager
-def _served_quietly(host="127.0.0.1"):
+def _served_quietly(host="127.0.0.1", dev_origin=None):
     """serve() on a scratch port, its banner captured, globals restored.
 
     Yields (banner_text, port). The listener is closed before the body runs, so
     a failing assertion cannot leave a thread or a socket behind.
     """
     saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS),
-             server.LOOPBACK_ONLY, server.OUR_HOSTS, server.REMOTE_WILDCARD)
+             server.LOOPBACK_ONLY, server.OUR_HOSTS, server.REMOTE_WILDCARD,
+             server.DEV_ORIGIN)
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            httpd = server.serve(host, 0)
+            httpd = server.serve(host, 0, dev_origin=dev_origin)
         port = httpd.server_address[1]
         httpd.server_close()          # never serve_forever: nothing has to be shut down
         yield buf.getvalue(), port
     finally:
-        allowed, selfo, loopback, hosts, wild = saved
+        allowed, selfo, loopback, hosts, wild, dev = saved
         server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
         server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
         server.LOOPBACK_ONLY = loopback
         server.OUR_HOSTS = hosts
         server.REMOTE_WILDCARD = wild
+        server.DEV_ORIGIN = dev
 
 
 def test_cfn_poller_stops_even_when_the_subprocess_never_starts():
@@ -1468,6 +1474,187 @@ def test_run_mints_its_job_id_through_new_job_id():
     finally:
         server.new_job_id = saved
         server.JOBS.pop("MINTED-BY-THE-HELPER", None)
+
+
+DEV_ORIGIN = "http://localhost:4173"
+
+
+def test_dev_origin_is_absent_unless_it_is_asked_for():
+    """The default posture is the shipped one, byte for byte.
+
+    A development affordance that is on when nobody asked for it is not an
+    affordance, it is a hole. Asserted against a REAL serve() rather than the
+    module's import-time state, because serve() is what rebuilds the allowlist.
+    """
+    assert server.DEV_ORIGIN is None, "import alone must grant nothing"
+    with _served_quietly() as (out, port):
+        assert server.DEV_ORIGIN is None
+        assert DEV_ORIGIN not in server.ALLOWED_ORIGINS
+        assert "DEV ORIGIN" not in out, \
+            "a banner that shouts about a grant nobody made trains people to " \
+            "scroll past the one that matters"
+        # The allowlist is exactly the Pages origin plus this console's own
+        # loopback spellings, and nothing else.
+        assert server.ALLOWED_ORIGINS == {PAGES_ORIGIN} | {
+            "http://127.0.0.1:%d" % port, "http://localhost:%d" % port,
+            "http://[::1]:%d" % port}
+
+
+def test_dev_origin_is_announced_loudly_and_by_name():
+    # It must never be possible to have a foreign origin granted and not know:
+    # this process holds the operator's AWS identity.
+    with _served_quietly(dev_origin=DEV_ORIGIN) as (out, _port):
+        assert "DEV ORIGIN GRANTED: %s" % DEV_ORIGIN in out, \
+            "the banner must name the origin it granted: %r" % out
+        assert "NOT exempt" in out, \
+            "the banner must say the grant does not skip pairing"
+
+
+def test_dev_origin_still_has_to_pair():
+    """The whole point, and the property that must never regress.
+
+    The console's own origin is exempt from pairing because local code already
+    has the shell and the AWS identity. A dev origin is a foreign page and gets
+    no such exemption: it is on the allowlist so that CORS lets it speak, and it
+    goes through the same gate as any other stranger. Were it exempt, this flag
+    would be a pairing bypass rather than a way to observe pairing.
+    """
+    with _served_quietly(dev_origin=DEV_ORIGIN) as (_out, _port):
+        assert DEV_ORIGIN in server.ALLOWED_ORIGINS, "it may speak to us"
+        assert DEV_ORIGIN not in server.SELF_ORIGINS, \
+            "SELF_ORIGINS is the pairing exemption, and this is not our page"
+
+        raw = json.dumps({"flow": "stack", "replay": True})
+
+        def body():
+            hdrs = [("Origin", DEV_ORIGIN), ("Host", "127.0.0.1:8760")]
+            # No code at all: refused, exactly as any foreign origin is.
+            r = _handler_response("/run", "POST", headers=hdrs, body=raw)
+            assert r.status == 401
+            assert r.payload == {"error": "pairing required"}
+
+            # A wrong code: still refused. The grant is not a code.
+            r = _handler_response("/run", "POST", body=raw,
+                                  headers=hdrs + [("X-CloudLens-Pair", "WRONGCOD")])
+            assert r.status == 401
+
+            # The real code: accepted, and readable by that origin.
+            r = _handler_response("/run", "POST", body=raw,
+                                  headers=hdrs + [("X-CloudLens-Pair", "ABC23456")])
+            try:
+                assert r.status == 200 and r.payload["job_id"]
+                assert r.headers.get("Access-Control-Allow-Origin") == DEV_ORIGIN
+            finally:
+                server.JOBS.pop((r.payload or {}).get("job_id"), None)
+
+        _with_pair_code("ABC23456", body)
+
+
+def test_a_dev_origin_does_not_widen_anything_else():
+    # Granting one origin must not become granting a second console, a second
+    # host, or the network. Everything else stays where it was.
+    with _served_quietly(dev_origin=DEV_ORIGIN) as (_out, _port):
+        assert server.LOOPBACK_ONLY is True
+        assert server.OUR_HOSTS == server.DEFAULT_HOSTS
+        assert server.REMOTE_WILDCARD is False
+        # An origin one character away is still a stranger.
+        r = _handler_response("/run", "POST",
+                              headers=[("Origin", "http://localhost:4174"),
+                                       ("Host", "127.0.0.1:8760")],
+                              body=json.dumps({"flow": "stack", "replay": True}))
+        assert r.status == 401
+        assert r.headers.get("Access-Control-Allow-Origin") is None
+        # And a bad Host is refused before pairing is even consulted, dev
+        # origin or not.
+        r = _handler_response("/run", "POST",
+                              headers=[("Origin", DEV_ORIGIN),
+                                       ("Host", "evil.example.com"),
+                                       ("X-CloudLens-Pair", server.PAIR_CODE)],
+                              body=json.dumps({"flow": "stack", "replay": True}))
+        assert r.status == 403
+        assert r.payload == {"error": "bad host"}
+
+
+def test_a_dev_origin_grant_does_not_outlive_the_serve_that_asked_for_it():
+    # ALLOWED_ORIGINS is a standing grant. One left behind by a previous serve()
+    # is a grant nobody asked for, and on a shared machine it hands that grant
+    # to whatever answers on the port next.
+    with _served_quietly(dev_origin=DEV_ORIGIN) as (_out, _port):
+        assert DEV_ORIGIN in server.ALLOWED_ORIGINS
+        with _served_quietly() as (_out2, _port2):
+            assert server.DEV_ORIGIN is None
+            assert DEV_ORIGIN not in server.ALLOWED_ORIGINS
+        # The Pages origin is never swept by any of this.
+        assert PAGES_ORIGIN in server.ALLOWED_ORIGINS
+
+
+def test_dev_origin_values_that_are_not_origins_are_refused():
+    good = ["http://localhost:4173", "https://example.test",
+            "http://127.0.0.1:5173", "http://[::1]:5173"]
+    for v in good:
+        assert server.normalise_dev_origin(v) == v.lower()
+    # A trailing slash is the common one, and it can never match an Origin
+    # header, so accepting it would make the flag silently inert.
+    bad = ["*", "", "   ", "localhost:4173", "http://", "ftp://x",
+           "http://localhost:4173/", "http://localhost:4173/page",
+           "http://localhost:4173?x=1", "http://user@localhost:4173",
+           "null", "http://a b"]
+    for v in bad:
+        raised = False
+        try:
+            server.normalise_dev_origin(v)
+        except ValueError:
+            raised = True
+        assert raised, "accepted %r as an origin" % v
+
+
+def test_main_refuses_a_bad_dev_origin_before_anything_binds():
+    from cloudlens_console import __main__ as M
+    called = []
+
+    def fake_serve(*a, **k):
+        called.append(k)
+        raise AssertionError("serve() must not be reached")
+
+    old = server.serve
+    server.serve = fake_serve
+    try:
+        code = None
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                M.main(["--dev-origin", "*", "--no-open"])
+        except SystemExit as exc:
+            code = exc.code
+        assert code == 2, "argparse must reject it, not the running server"
+        assert called == []
+    finally:
+        server.serve = old
+
+
+def test_main_threads_dev_origin_into_serve():
+    from cloudlens_console import __main__ as M
+    seen = {}
+
+    class FakeHTTPD:
+        server_address = ("127.0.0.1", 8760)
+        def serve_forever(self):
+            raise KeyboardInterrupt
+        def shutdown(self):
+            pass
+
+    def fake_serve(host, port, allow_remote=False, dev_origin=None):
+        seen.update(dev_origin=dev_origin)
+        return FakeHTTPD()
+
+    old = server.serve
+    server.serve = fake_serve
+    try:
+        M.main(["--no-open"])
+        assert seen["dev_origin"] is None, "absent by default, in main too"
+        M.main(["--dev-origin", DEV_ORIGIN, "--no-open"])
+        assert seen["dev_origin"] == DEV_ORIGIN
+    finally:
+        server.serve = old
 
 
 def test_replay_needs_no_boto3(monkeypatch=None):

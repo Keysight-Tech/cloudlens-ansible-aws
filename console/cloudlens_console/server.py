@@ -30,6 +30,7 @@ under the operator's AWS identity, so that gate is load-bearing, not cosmetic.
 """
 from __future__ import annotations
 import os
+import re
 import sys
 import hmac
 import json
@@ -40,6 +41,7 @@ import socket
 import ipaddress
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from . import events as E
 from . import flows as F
@@ -117,6 +119,18 @@ PAGES_ORIGIN = "https://keysight-tech.github.io"
 # any embedder that never calls serve() still behave.
 ALLOWED_ORIGINS = {PAGES_ORIGIN}
 
+# One extra browser origin, granted by --dev-origin and by nothing else. None
+# unless the operator passed the flag, so the default posture is untouched.
+#
+# It is added to ALLOWED_ORIGINS and deliberately NOT to SELF_ORIGINS: the
+# allowlist decides who may SPEAK to us, SELF_ORIGINS decides who is exempt from
+# pairing. A dev origin is a foreign page, so it goes through the full gate like
+# any other. That is the whole value of the flag - the pairing screen, a wrong
+# code, the guess cap and the Host refusal are all unreachable from a browser
+# otherwise, because the console's own page is exempt and every other local
+# origin is stopped by CORS before the bridge ever sees a body.
+DEV_ORIGIN = None
+
 # The console's own UI. These exist for one narrow reason: a same-origin POST
 # still carries an Origin header (per Fetch, Origin is omitted only on
 # same-origin GET/HEAD), so /run and /stop/ from our own page arrive with an
@@ -153,6 +167,51 @@ def _set_self_origins(port):
 
 
 _set_self_origins(8760)
+
+
+# A registered name or an IPv4 literal, or a bracketed IPv6 one, and an
+# optional port. Exactly the authority forms a browser can put in an Origin.
+_NETLOC_RE = re.compile(
+    r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::\d{1,5})?$")
+
+
+def normalise_dev_origin(raw):
+    """The single extra origin --dev-origin may grant, or raise ValueError.
+
+    An origin is scheme://host[:port] and nothing after it. Anything else is
+    rejected rather than trimmed into shape: a browser sends the serialised
+    origin, so a value carrying a path or a trailing slash could never match
+    what arrives on the wire, and the flag would look enabled while being off.
+    A wrong-looking value is far more likely a mistake worth refusing than a
+    grant worth guessing at.
+
+    "*" is refused explicitly. It is the one value someone reaches for out of
+    habit, and it would turn a one-origin development affordance into "every
+    site on the internet may drive real AWS deploys on this machine".
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("empty value")
+    if raw == "*":
+        raise ValueError("'*' is not an origin: this grants exactly one, by name")
+    p = urlsplit(raw)
+    if p.scheme not in ("http", "https"):
+        raise ValueError("must start http:// or https://")
+    if not p.netloc:
+        raise ValueError("no host")
+    if p.path or p.query or p.fragment:
+        raise ValueError("an origin is scheme://host[:port] with nothing after it")
+    if "@" in p.netloc:
+        raise ValueError("an origin carries no credentials")
+    # urlsplit is permissive about the authority: it happily returns 'a b' as a
+    # netloc. Nothing a browser can serialise looks like that, so a value that
+    # does is a mistake, and letting it onto the allowlist would only ever be a
+    # grant that never matches.
+    if not _NETLOC_RE.match(p.netloc):
+        raise ValueError("not a host[:port]")
+    # Lower-cased because a browser serialises the host that way, and this
+    # string is compared to the Origin header exactly.
+    return p.scheme + "://" + p.netloc.lower()
 
 
 def _origin_if_allowed(origin):
@@ -718,6 +777,15 @@ def print_banner(host, port):
     print("\n  CloudLens live console  ->  %s" % _banner_url(host, port))
     print("  %s Runs the real deploy scripts against your AWS identity." % (
         "Loopback only." if LOOPBACK_ONLY else "REACHABLE FROM THE NETWORK."))
+    # Loud by construction. A foreign browser origin that may talk to a process
+    # holding the visitor's AWS identity is never allowed to be a quiet setting
+    # somebody forgot was on, so it is announced every single startup, in the
+    # same shout the network-bind warning uses, and it names the origin.
+    if DEV_ORIGIN:
+        print("\n  !!  DEV ORIGIN GRANTED: %s" % DEV_ORIGIN)
+        print("  !!  That web origin may talk to this console. It is NOT exempt")
+        print("  !!  from pairing: it must still send the code below.")
+        print("  !!  Development affordance. Do not leave it running.")
     if PAIR_CODE is None:
         print("\n  Pairing is DISABLED. Restart the console to pair a browser.\n")
     else:
@@ -778,7 +846,26 @@ def _server_class(host):
         return _Server
 
 
-def serve(host="127.0.0.1", port=8760, allow_remote=False):
+def _set_dev_origin(origin):
+    """Grant the one extra browser origin, and retire the previous grant.
+
+    Retired for the same reason _set_self_origins() retires the previous port's
+    entries: ALLOWED_ORIGINS is a standing grant to a browser origin, and one
+    that survives the serve() which stopped asking for it is a grant nobody
+    asked for. Never touches SELF_ORIGINS or PAGES_ORIGIN, and never removes
+    them - a dev origin that happens to name the console's own port must not be
+    able to revoke the console's own page on the way out.
+    """
+    global DEV_ORIGIN
+    prev = DEV_ORIGIN
+    DEV_ORIGIN = normalise_dev_origin(origin) if origin else None
+    if DEV_ORIGIN:
+        ALLOWED_ORIGINS.add(DEV_ORIGIN)
+    if prev and prev != DEV_ORIGIN and prev != PAGES_ORIGIN and prev not in SELF_ORIGINS:
+        ALLOWED_ORIGINS.discard(prev)
+
+
+def serve(host="127.0.0.1", port=8760, allow_remote=False, dev_origin=None):
     # NOT re-entrant: LOOPBACK_ONLY, OUR_HOSTS, REMOTE_WILDCARD and the origin
     # allowlist are module state, so two servers in one process would share one
     # security posture and the last serve() would win. Only __main__ calls
@@ -814,6 +901,9 @@ def serve(host="127.0.0.1", port=8760, allow_remote=False):
     # The UI's own POSTs carry an Origin naming the port we actually bound,
     # so the allowlist has to follow --port rather than assume 8760.
     _set_self_origins(httpd.server_address[1])
+    # After _set_self_origins, which rebuilds the loopback entries and must not
+    # be able to sweep this one away, and before the banner, which announces it.
+    _set_dev_origin(dev_origin)
     # After the bind, so the URL names the port we got rather than the one we
     # asked for, and so nothing is announced if the bind raised.
     print_banner(host, httpd.server_address[1])

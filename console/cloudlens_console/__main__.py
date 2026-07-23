@@ -36,7 +36,20 @@ def main(argv=None):
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
     ap.add_argument("--allow-remote", action="store_true",
                     help="permit a non-loopback --host (exposes real AWS deploys to the network)")
+    ap.add_argument("--dev-origin", metavar="ORIGIN", default=None,
+                    help="ALSO accept this one browser origin, e.g. "
+                         "http://localhost:4173. For developing the public page "
+                         "against a local console. It is NOT exempt from pairing. "
+                         "Off unless passed.")
     args = ap.parse_args(argv)
+
+    # Validated here rather than inside serve(): a typo must be an argparse
+    # error before anything binds, not a traceback out of a listening server.
+    if args.dev_origin:
+        try:
+            server.normalise_dev_origin(args.dev_origin)
+        except ValueError as exc:
+            ap.error("--dev-origin {!r}: {}".format(args.dev_origin, exc))
 
     if not is_loopback(args.host) and not args.allow_remote:
         ap.error(
@@ -55,7 +68,8 @@ def main(argv=None):
     # flag is documented but dead.
     # serve() prints the banner itself, pairing code included: it is the only
     # caller that knows the bound port, and the code has to be the live one.
-    httpd = server.serve(args.host, args.port, allow_remote=args.allow_remote)
+    httpd = server.serve(args.host, args.port, allow_remote=args.allow_remote,
+                         dev_origin=args.dev_origin)
     if not args.no_open:
         # From the BOUND port, never args.port: --port 0 means "any free port",
         # so the requested value is 0 and the browser would open
