@@ -1253,6 +1253,13 @@ else
   # While only the SPA is up, POST to the login route is unroutable and nginx
   # answers 405. Once the API is live that route answers 400/401/422 for bad
   # credentials, which is the real readiness signal.
+  #
+  # The route is /cloudlens/api/v1/identity/login. This probed /api/v3/users/
+  # login, which does not exist on this product: it answers 405 forever, so the
+  # loop could never match and every deploy burned the full 20 minutes and then
+  # warned that the API never came up. Phase 9 would immediately log in and
+  # succeed against the real path, which is what gave the lie away.
+  # scripts/vcontroller_project_key.py already documents the same mistake.
   echo "vController needs ~15 minutes to initialize. Waiting for its REST API"
   echo "(not just port 443, which opens much earlier)."
   deadline=$(( $(date +%s) + 20*60 ))
@@ -1263,7 +1270,7 @@ else
     code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 -X POST \
              -H "Content-Type: application/json" \
              -d '{"username":"__probe__","password":"__probe__"}' \
-             "https://${CLMS_PUBLIC_IP}/api/v3/users/login" 2>/dev/null || echo "000")
+             "https://${CLMS_PUBLIC_IP}/cloudlens/api/v1/identity/login" 2>/dev/null || echo "000")
     case "$code" in
       200|400|401|403|422) echo; ok "vController API is serving (probe HTTP ${code})"; api_ready=true; break ;;
     esac
@@ -1275,7 +1282,7 @@ else
     note "The instance is running; it may just need longer, or the subnet may lack"
     note "the outbound internet access the appliance needs on first boot."
     note "Check manually: curl -sk -o /dev/null -w '%{http_code}\\n' \\"
-    note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/api/v3/users/login"
+    note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/cloudlens/api/v1/identity/login"
   fi
 fi
 
