@@ -10,6 +10,9 @@
 customer_input.yaml
 inventory/group_vars/secrets.yaml
 
+# Rendered at run time by scripts/render_inventory.py from customer_input.yaml
+inventory/generated.aws_ec2.yaml
+
 # Azure SP credentials
 azure_sp_creds.json
 .azure/
