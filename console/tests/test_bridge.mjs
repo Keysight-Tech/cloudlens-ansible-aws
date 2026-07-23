@@ -194,6 +194,51 @@ test("a job id is the capability, and the machine holds it", () => {
   assert.equal(s.jobId, "0123456789abcdef0123456789abcdef");
 });
 
+test("a second deploy can start from wherever the first one ended", () => {
+  // "Run again" is the ordinary next thing a visitor does, and the first run
+  // always leaves the machine in one of these three. While job.started was
+  // accepted from live alone, the new id was dropped on the floor, every frame
+  // after it was refused for arriving outside a live state, and the page went
+  // on showing the previous run's outcome over a deploy that was under way.
+  const enders = [
+    [{ type: "sse.event", event: { id: 1, type: "done", summary: "up" } }, "finished"],
+    [{ type: "sse.event", event: { id: 1, type: "error", text: "rolled back" } }, "failed"],
+    [{ type: "sse.error" }, "lost"]
+  ];
+  for (const [ending, name] of enders) {
+    const ended = B.reduce(live(), ending);
+    assert.equal(ended.name, name);
+    const again = B.reduce(ended, {
+      type: "job.started", jobId: "ffffffffffffffffffffffffffffffff"
+    });
+    assert.equal(again.name, "live", "a console that answered /run is a console we are paired to");
+    assert.equal(again.jobId, "ffffffffffffffffffffffffffffffff");
+    assert.deepEqual(again.transcript, [], "the new deploy starts on a clean transcript");
+    assert.equal(again.notice, null, "the last run's banner is a sentence about nothing now");
+    // and the stream is heard again
+    const framed = B.reduce(again, { type: "sse.event", event: { id: 9, type: "log", text: "creating" } });
+    assert.equal(framed.transcript.length, 1);
+  }
+});
+
+test("a job id from a state that never paired is not accepted", () => {
+  // /run from replay, pairing, disabled or refused has nothing to answer it,
+  // so a job.started arriving there is not a deploy of ours to watch.
+  for (const build of [
+    () => B.initial(),
+    () => B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+    () => B.reduce(B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+                   { type: "pair.denied", status: 403, error: "pairing disabled, restart the console" }),
+    () => B.reduce(B.reduce(B.initial(), { type: "probe.ok", body: HEALTH }),
+                   { type: "pair.denied", status: 403, error: "bad host" })
+  ]) {
+    const before = build();
+    const after = B.reduce(before, { type: "job.started", jobId: "aa" });
+    assert.equal(after.name, before.name);
+    assert.equal(after.jobId, null);
+  }
+});
+
 test("stream events accumulate in order", () => {
   let s = live();
   s = B.reduce(s, { type: "sse.event", event: { id: 1, type: "log", text: "one" } });

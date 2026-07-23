@@ -134,6 +134,16 @@
   // is in fact still replaying.
   var DENIAL_DEFAULT = { name: STATES.PAIRING, notice: "pairBad" };
 
+  // The states in which we hold a working pairing: live, and the three a
+  // finished deploy leaves behind. All four can start another deploy, and none
+  // of the others can - /run from replay, pairing, disabled or refused has
+  // nothing to answer it.
+  var PAIRED = {};
+  PAIRED[STATES.LIVE] = 1;
+  PAIRED[STATES.FINISHED] = 1;
+  PAIRED[STATES.FAILED] = 1;
+  PAIRED[STATES.LOST] = 1;
+
   // The state a stream event ends the job in, or null when the job carries on.
   //
   // `done` is terminal. `error` is terminal only when it names no node:
@@ -227,9 +237,21 @@
       // /run handed back an id. It is a capability, not a label: /events/<id>
       // has no pairing check because EventSource cannot send headers, so
       // holding the id IS the authority to read that deploy.
+      //
+      // Accepted from every state a PAIRED console leaves us in, not from LIVE
+      // alone. The first deploy ends in finished, failed or lost, and "run
+      // again" is the ordinary next thing a visitor does: while this took LIVE
+      // only, the second run's id was dropped, every frame after it was refused
+      // as arriving outside a live state, and the page reported the previous
+      // run's "complete" the instant the new one started.
+      //
+      // The notice goes with it. A banner about the last run's lost connection
+      // sitting over a run that has just started is a sentence about nothing.
       case "job.started":
-        if (state.name !== STATES.LIVE) { return next(state, {}); }
-        return next(state, { jobId: event.jobId, transcript: [] });
+        if (!PAIRED[state.name]) { return next(state, {}); }
+        return next(state, {
+          name: STATES.LIVE, notice: null, jobId: event.jobId, transcript: []
+        });
 
       // One frame off the real stream. Appended to a COPY: a state object
       // already handed to a renderer must not change under it.
