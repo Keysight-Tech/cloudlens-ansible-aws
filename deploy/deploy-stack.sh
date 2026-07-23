@@ -177,6 +177,7 @@ DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 # Rollback: when true AND we created the stack this run, on_error deletes it.
 ROLLBACK_ON_FAIL="${CLOUDLENS_ROLLBACK_ON_FAIL:-false}"
 
+WINDOWS_INSTANCE_PROFILE="${CLOUDLENS_WINDOWS_INSTANCE_PROFILE:-}"
 SUMMARY_FILE="cloudlens-deploy-summary.txt"
 LOG_FILE="cloudlens-deploy-stack.log"
 
@@ -1416,6 +1417,11 @@ VM names (optional, default <stack-name>-vcontroller / -kvo / -vpb):
   --vpb-name NAME           Name tag for the vPB instance
 
 Test workloads (optional, deployed into the stack's own subnet):
+  --windows-instance-profile NAME
+                            EC2 instance profile for the Windows test VM.
+                            Ansible reaches Windows over SSM, which needs
+                            AmazonSSMManagedInstanceCore. Without it the VM
+                            deploys but the sensor step cannot reach it.
   --test-vms LIST           Comma list of throwaway VMs to deploy alongside the
                             stack so you can prove the sensor path immediately:
                             ubuntu, rhel, windows, all, or none (default none).
@@ -1579,6 +1585,7 @@ while [[ $# -gt 0 ]]; do
     --rollback) ROLLBACK_ON_FAIL=true; shift ;;
     --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
 
+    --windows-instance-profile) WINDOWS_INSTANCE_PROFILE="$2"; shift 2 ;;
     --discovery-tag-key) DISCOVERY_TAG_KEY="$2"; DISCOVERY_TAG_EXPLICIT=true; shift 2 ;;
     --discovery-tag-value) DISCOVERY_TAG_VALUE="$2"; DISCOVERY_TAG_EXPLICIT=true; shift 2 ;;
 
@@ -2525,6 +2532,20 @@ deploy_cfn() {
   [[ "$DEPLOY_KVO" == "true" ]] && kvo_yn="yes"
   [[ "$DEPLOY_VPB" == "true" ]] && vpb_yn="yes"
 
+  # A Windows test VM with no instance profile deploys fine and is then
+  # unreachable: Ansible drives Windows over SSM, and SSM only manages an
+  # instance carrying AmazonSSMManagedInstanceCore. The template supports the
+  # profile and documents it; nothing was passing it, so --test-vms windows
+  # always produced a VM the sensor step could not touch.
+  if [[ "$TEST_WINDOWS" == "yes" && -z "$WINDOWS_INSTANCE_PROFILE" ]]; then
+    warn "Deploying a Windows test VM with no instance profile."
+    note "Ansible reaches Windows over SSM, which needs a profile granting"
+    note "AmazonSSMManagedInstanceCore. Without one the VM comes up fine but"
+    note "the sensor step cannot reach it. Pass an existing profile with:"
+    note "  --windows-instance-profile NAME"
+    note "The Linux test VMs are unaffected."
+  fi
+
   # Build parameter-overrides. Always pass the core set; append brownfield /
   # access params only when the customer set them, so blank ones keep the
   # template defaults (greenfield, public IPs, template-managed SG).
@@ -2542,6 +2563,7 @@ deploy_cfn() {
     "DeployTestWorkloadUbuntu=$TEST_UBUNTU"
     "DeployTestWorkloadRhel=$TEST_RHEL"
     "DeployTestWorkloadWindows=$TEST_WINDOWS"
+    "TestWindowsInstanceProfile=$WINDOWS_INSTANCE_PROFILE"
     "DiscoveryTagKey=$DISCOVERY_TAG_KEY"
     "DiscoveryTagValue=$DISCOVERY_TAG_VALUE"
     "VcontrollerInstanceType=$CLMS_TYPE"
