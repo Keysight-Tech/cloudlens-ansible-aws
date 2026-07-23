@@ -238,8 +238,41 @@ def run_job(job, replay=None):
         job.finish()
 
 
+def _stack_cmd(job, stack, region):
+    """Build the deploy-stack.sh argv.
+
+    Three things the script insists on that are easy to get wrong, and did
+    get wrong: the flag is --stack-name (--stack is rejected outright), the
+    toggles are bare booleans (--with-kvo / --no-kvo) not "--kvo yes", and
+    --key-name has to be supplied. Omit the key and the script drops into an
+    interactive picker, but the console gives it no TTY, so the run hangs
+    with nothing on screen instead of failing. --no-sensors because sensors
+    are their own flow here.
+    """
+    i = job.inputs
+    cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),
+           "--stack-name", stack, "--region", region, "--no-sensors"]
+    cmd.append("--with-kvo" if _yes(i.get("kvo", "yes")) else "--no-kvo")
+    cmd.append("--with-vpb" if _yes(i.get("vpb", "yes")) else "--no-vpb")
+    key = (i.get("key") or "").strip()
+    if not key:
+        raise ValueError(
+            "An EC2 key pair name is required: without it the deploy script "
+            "stops at an interactive prompt this console cannot answer.")
+    cmd += ["--key-name", key]
+    return cmd
+
+
+def _yes(v):
+    return str(v).strip().lower() in ("yes", "y", "true", "1", "on")
+
+
 def _run_cfn_flow(job, flow, region):
     stack = job.inputs.get("stack", "cloudlens-live")
+    # Built before the poller starts: a bad argv is the job's fault, not
+    # AWS's, and there is no reason to spin up a polling thread for a run
+    # that cannot launch.
+    cmd = _stack_cmd(job, stack, region)
     for nid in flow["nodes"]:
         job.emit(E.state(nid, E.GHOST))
     stop_evt = threading.Event()
@@ -256,9 +289,6 @@ def _run_cfn_flow(job, flow, region):
     # JOBS to prune it a second time. job.stopped never rescues it either: the
     # operator's /stop is gone with the job entry.
     try:
-        cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),
-               "--stack", stack, "--region", region,
-               "--kvo", job.inputs.get("kvo", "yes"), "--vpb", job.inputs.get("vpb", "yes")]
         rc = _stream_subprocess(job, cmd, REPO_ROOT, on_line=lambda l: None)
         time.sleep(POLL_SECS + 1)  # let the poller catch the final CREATE_COMPLETE
     finally:

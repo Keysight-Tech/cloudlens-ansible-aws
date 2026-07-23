@@ -1360,6 +1360,57 @@ def _served_quietly(host="127.0.0.1", dev_origin=None):
         server.DEV_ORIGIN = dev
 
 
+def test_stack_cmd_speaks_the_flags_deploy_stack_actually_accepts():
+    """The argv is a contract with deploy-stack.sh, and it was broken.
+
+    The console shipped "--stack", "--kvo yes" and "--vpb yes". The script
+    takes --stack-name and bare --with-kvo / --no-kvo toggles, so every real
+    run died on "Unknown argument: --stack" after the replay had passed. The
+    literals below are read off deploy-stack.sh --help, not off our own code.
+    """
+    from cloudlens_console import orchestrator as O
+
+    class J(object):
+        inputs = {"key": "some-key", "kvo": "yes", "vpb": "yes"}
+
+    cmd = O._stack_cmd(J(), "st", "us-east-1")
+    assert "--stack" not in cmd, "--stack is rejected by the script"
+    assert "--stack-name" in cmd and cmd[cmd.index("--stack-name") + 1] == "st"
+    assert "--region" in cmd and cmd[cmd.index("--region") + 1] == "us-east-1"
+    assert "--with-kvo" in cmd and "--with-vpb" in cmd
+    assert "--key-name" in cmd and cmd[cmd.index("--key-name") + 1] == "some-key"
+    # A bare toggle must never be followed by a value the script would then
+    # try to parse as the next flag.
+    assert "yes" not in cmd and "no" not in cmd
+
+    class N(object):
+        inputs = {"key": "k", "kvo": "no", "vpb": "no"}
+
+    off = O._stack_cmd(N(), "st", "us-east-1")
+    assert "--no-kvo" in off and "--no-vpb" in off
+    assert "--with-kvo" not in off and "--with-vpb" not in off
+
+
+def test_stack_without_a_key_pair_fails_loudly_instead_of_hanging():
+    """No key means an interactive prompt, and the console has no TTY.
+
+    The script's key-pair picker reads from stdin. Under the console that
+    blocks forever with an empty screen, which reads to the visitor as a
+    hung deploy. Refusing up front is the honest failure.
+    """
+    from cloudlens_console import orchestrator as O
+
+    class J(object):
+        inputs = {"kvo": "yes", "vpb": "yes"}  # no key
+
+    try:
+        O._stack_cmd(J(), "st", "us-east-1")
+    except ValueError as exc:
+        assert "key pair" in str(exc).lower()
+    else:
+        raise AssertionError("a missing key pair must raise, not hang")
+
+
 def test_cfn_poller_stops_even_when_the_subprocess_never_starts():
     """The poller is stopped in a finally, or it outlives the job forever.
 
@@ -1386,7 +1437,9 @@ def test_cfn_poller_stops_even_when_the_subprocess_never_starts():
     saved = (O._poll_cfn, O._stream_subprocess)
     O._poll_cfn, O._stream_subprocess = fake_poll, wont_launch
     try:
-        job = O.Job(server.new_job_id(), "stack", {})
+        # A key pair, or _stack_cmd refuses before the poller ever starts and
+        # this test stops exercising the launch-failure path it is named for.
+        job = O.Job(server.new_job_id(), "stack", {"key": "test-key"})
         raised = None
         try:
             O._run_cfn_flow(job, F.FLOWS["stack"], "us-east-1")

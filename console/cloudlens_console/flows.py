@@ -36,6 +36,7 @@ STACK = {
     "inputs": [
         _field("stack", "Stack name", "cloudlens-live", "cloudlens-live"),
         _field("region", "Region", "us-east-1", "us-east-1"),
+        _field("key", "EC2 key pair", "", "my-ec2-key"),
         _field("kvo", "Deploy KVO", "yes", "yes / no"),
         _field("vpb", "Deploy vPB", "yes", "yes / no"),
     ],
