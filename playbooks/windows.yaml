@@ -1,10 +1,40 @@
 ---
-- name: Deploy CloudLens Agent to Windows VMs 
+# This check lives in its own play, on localhost, with facts off. It cannot go
+# in pre_tasks of the play below: Gathering Facts runs BEFORE pre_tasks and is
+# itself the thing that opens the SSM connection, so the run dies there before
+# any assertion of ours is reached. Verified: the assert never fired.
+- name: Check the Windows connection is actually usable
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  vars_files:
+    - ../vars/cloudlens.yaml
+  tasks:
+    # community.aws.aws_ssm stages every file through an S3 bucket. There is no
+    # bucket-less mode, despite a comment in group_vars that said to leave it
+    # blank: blank reaches boto3 as bucket "" and fails on Gathering Facts with
+    # 'Invalid bucket name ""' and a regex that says nothing about what to do.
+    # Seen live on a real Windows host: ok=0, failed=1, before any task ran.
+    - name: SSM needs an S3 bucket, so say so before anything connects
+      ansible.builtin.assert:
+        that:
+          - ((aws | default({})).get('ssm_bucket_name', '') | default('', true)) | length > 0
+        fail_msg: >-
+          Windows over SSM needs an S3 bucket for file transfer, and none is set.
+          Add it to customer_input.yaml:
+          aws: {ssm_bucket_name: "your-existing-bucket"}
+          The bucket must be in {{ (aws | default({})).get('regions', ['us-east-1'])[0] }} and the instance
+          role must allow s3:GetObject, s3:PutObject and s3:ListBucket on it.
+          To use WinRM instead set aws.windows_connection to "winrm" and open 5985/5986.
+        success_msg: "SSM file transfer bucket: {{ (aws | default({})).get('ssm_bucket_name', '') }}"
+      when: ((aws | default({})).get('windows_connection', 'ssm')) == 'ssm'
+
+- name: Deploy CloudLens Agent to Windows VMs
   hosts: "{{ target_group }}"
   become: no
   vars_files:
     - ../vars/cloudlens.yaml
-  
+
   tasks:
     - name: Ensure C:\temp directory exists
       win_file:

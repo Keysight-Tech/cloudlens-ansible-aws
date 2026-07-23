@@ -16,7 +16,11 @@ ansible_connection: "{{ 'community.aws.aws_ssm' if (aws.windows_connection | def
 # "A worker was found in a dead state".
 ansible_aws_ssm_instance_id: "{{ instance_id }}"
 ansible_aws_ssm_region: "{{ aws.regions[0] | default('us-east-1') }}"
-ansible_aws_ssm_bucket_name: "{{ aws.ssm_bucket_name | default('') }}"   # leave blank to use plaintext mode
+# Required, not optional. community.aws.aws_ssm stages every file through S3;
+# there is no bucket-less mode. Blank reaches boto3 as bucket "" and dies on
+# Gathering Facts with an opaque regex error. playbooks/windows.yaml asserts
+# this up front so the message names the fix instead.
+ansible_aws_ssm_bucket_name: "{{ aws.ssm_bucket_name | default('') }}"
 # Resolved at runtime. A hardcoded /usr/local/bin breaks on Apple Silicon
 # (Homebrew installs to /opt/homebrew/bin) and anywhere else the plugin
 # lives, failing with "failed to find the executable specified".
