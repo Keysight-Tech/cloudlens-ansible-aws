@@ -205,8 +205,16 @@
       // The console would not act for us. Which of the three it is decides
       // whether the visitor has anything left to try.
       case "pair.denied":
-        if (state.name !== STATES.PAIRING) { return next(state, {}); }
         var d = DENIALS[event.error] || DENIAL_DEFAULT;
+        // A dead end is a dead end wherever it arrives. The guess cap is
+        // global and cumulative, so another tab on the same machine can
+        // disable pairing while we hold a live session, and every later
+        // acting request fails permanently: the visitor has to be told.
+        // The retry case is the opposite - outside pairing there is nothing
+        // to retype, and a wrong-code banner must not tear down a live view.
+        if (d === DENIAL_DEFAULT && state.name !== STATES.PAIRING) {
+          return next(state, {});
+        }
         return next(state, { name: d.name, notice: d.notice });
 
       // /run handed back an id. It is a capability, not a label: /events/<id>
@@ -256,9 +264,194 @@
     return t ? t(state.notice) : state.notice;
   }
 
+  // ---- the transport ------------------------------------------------------
+  //
+  // The only half that touches the network. It turns outcomes into machine
+  // events and decides nothing else: no state name and no string key is
+  // chosen down here.
+
+  var DEFAULT_BASE = "http://127.0.0.1:8760";
+
+  // Named events, from events.py. EventSource fires "message" only for frames
+  // with no event: line, and every frame the console sends names its type, so
+  // each one needs its own listener or the stream looks silent.
+  var EVENT_TYPES = ["hello", "log", "state", "narrate", "stat", "done", "error"];
+
+  // Frames that end the job. Kept beside EVENT_TYPES so the transport knows
+  // when to close the socket, while endedBy() stays the machine's own rule.
+  function isTerminalFrame(ev) { return endedBy(ev) !== null; }
+
+  // Whether a failed probe is worth blaming on Private Network Access.
+  //
+  // A GUESS, and it is allowed to be one: it only ever picks between saying
+  // nothing and offering advice, because both paths land in replay. Chrome
+  // gives a public page no way to tell the PNA block from a closed port - both
+  // reject with the same TypeError - so the only signal available is that we
+  // are the kind of page the block applies to: a secure, non-loopback origin
+  // reaching loopback. Never let this read as a diagnosis.
+  function looksBlocked(loc) {
+    if (!loc) { return false; }
+    if (loc.protocol !== "https:") { return false; }
+    return loc.hostname !== "localhost" && loc.hostname.indexOf("127.") !== 0;
+  }
+
+  // The pairing header. The visitor's code travels on it for every acting
+  // request; the SSE stream cannot carry it and does not need to.
+  var PAIR_HEADER = "X-CloudLens-Pair";
+
+  function create(opts) {
+    opts = opts || {};
+    var base = opts.base || DEFAULT_BASE;
+    var fetchFn = opts.fetch || (typeof fetch !== "undefined" ? fetch : null);
+    var ES = opts.EventSource || (typeof EventSource !== "undefined" ? EventSource : null);
+    var loc = opts.location || (typeof location !== "undefined" ? location : null);
+    var state = initial();
+    var code = null;
+    var stream = null;
+
+    function dispatch(event) {
+      state = reduce(state, event);
+      if (opts.onState) { opts.onState(state, event); }
+      return state;
+    }
+
+    function headers() {
+      var h = { "Content-Type": "application/json" };
+      if (code) { h[PAIR_HEADER] = code; }
+      return h;
+    }
+
+    // The refusal body, or "" for anything unreadable. The machine falls back
+    // to "wrong code" on an unrecognised value, so an unparseable body is safe
+    // here: it can only ever be less specific, never wrongly reassuring.
+    function denial(r) {
+      return r.json().then(function (b) {
+        return (b && typeof b.error === "string") ? b.error : "";
+      }, function () { return ""; });
+    }
+
+    return {
+      state: function () { return state; },
+
+      // Is a console there? Answers into the machine, never by throwing: a
+      // rejection here is the ordinary case for the overwhelming majority of
+      // visitors, who have no console running at all.
+      probe: function () {
+        if (!fetchFn) {
+          dispatch({ type: "probe.fail", reason: "network" });
+          return Promise.resolve(state);
+        }
+        return fetchFn(base + "/health", { mode: "cors", cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) { throw new Error("health"); }
+            return r.json();
+          })
+          .then(function (body) { return dispatch({ type: "probe.ok", body: body }); },
+                function () {
+                  return dispatch({
+                    type: "probe.fail",
+                    reason: looksBlocked(loc) ? "blocked" : "network"
+                  });
+                });
+      },
+
+      // Try the code the visitor typed. /flows is the cheapest paired route
+      // and has no side effect, so a wrong guess costs a rejected read rather
+      // than a half-started deploy.
+      pair: function (typed) {
+        if (!looksLikeCode(typed)) {
+          return Promise.resolve(dispatch({
+            type: "pair.denied", status: 0, error: ""
+          }));
+        }
+        code = typed;
+        return fetchFn(base + "/flows", { mode: "cors", cache: "no-store",
+                                          headers: headers() })
+          .then(function (r) {
+            if (r.ok) {
+              return r.json().then(function (flows) {
+                return dispatch({ type: "pair.ok", flows: flows });
+              });
+            }
+            code = null;
+            return denial(r).then(function (err) {
+              return dispatch({ type: "pair.denied", status: r.status, error: err });
+            });
+          }, function () {
+            code = null;
+            return dispatch({
+              type: "probe.fail", reason: looksBlocked(loc) ? "blocked" : "network"
+            });
+          });
+      },
+
+      // Start a real deploy and stream it.
+      run: function (flow, inputs) {
+        return fetchFn(base + "/run", {
+          method: "POST", mode: "cors", headers: headers(),
+          body: JSON.stringify({ flow: flow, inputs: inputs || {} })
+        }).then(function (r) {
+          if (!r.ok) {
+            return denial(r).then(function (err) {
+              return dispatch({ type: "pair.denied", status: r.status, error: err });
+            });
+          }
+          return r.json().then(function (b) {
+            dispatch({ type: "job.started", jobId: b.job_id });
+            open(b.job_id);
+            return state;
+          });
+        }, function () {
+          return dispatch({ type: "sse.error" });
+        });
+      },
+
+      stop: function () {
+        if (!state.jobId) { return Promise.resolve(state); }
+        return fetchFn(base + "/stop/" + state.jobId, {
+          method: "POST", mode: "cors", headers: headers()
+        }).then(function () { return state; }, function () { return state; });
+      },
+
+      close: close
+    };
+
+    // The job id IS the authorisation to read this stream, which is why no
+    // header is set here and none can be: EventSource cannot send one.
+    function open(jobId) {
+      close();
+      if (!ES) { dispatch({ type: "sse.error" }); return; }
+      stream = new ES(base + "/events/" + jobId);
+      EVENT_TYPES.forEach(function (name) {
+        stream.addEventListener(name, function (m) {
+          var ev;
+          try { ev = JSON.parse(m.data); } catch (e) { return; }
+          dispatch({ type: "sse.event", event: ev });
+          // Close on the last frame rather than waiting for the server's
+          // close: EventSource reconnects on its own, and a reconnect after a
+          // finished job would replay the whole buffer into the transcript.
+          if (isTerminalFrame(ev)) { close(); }
+        });
+      });
+      stream.onerror = function () {
+        // Also fired on a retryable hiccup, but the browser reconnects on its
+        // own and would deliver the same frames twice into the transcript.
+        // One reader, one connection: report the drop and let the visitor
+        // reconnect deliberately.
+        close();
+        dispatch({ type: "sse.error" });
+      };
+    }
+
+    function close() {
+      if (stream) { stream.close(); stream = null; }
+    }
+  }
+
   return {
     STATES: STATES,
     text: text,
+    create: create,
     isOurConsole: isOurConsole,
     looksLikeCode: looksLikeCode,
     initial: initial,

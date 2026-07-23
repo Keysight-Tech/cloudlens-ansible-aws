@@ -280,3 +280,135 @@ test("the machine records string KEYS and text() is the only place they resolve"
   assert.equal(B.text(B.initial()), null, "no notice is no text, not the empty string");
   delete globalThis.CLC_T;
 });
+
+test("a dead-end refusal reaches the visitor even after we were live", () => {
+  // A console can disable pairing while we hold a live session: the guess cap
+  // is global and cumulative, so a hostile tab on the same machine can spend
+  // it. The next acting request then fails forever, and a retry banner would
+  // be a lie. A plain wrong-code refusal is different: there is nothing for
+  // the visitor to do about it here, and it must not tear down a live view.
+  const s = B.reduce(live(), {
+    type: "pair.denied", status: 403, error: "pairing disabled, restart the console"
+  });
+  assert.equal(s.name, "disabled");
+  assert.equal(s.notice, "pairDisabled");
+
+  const still = B.reduce(live(), {
+    type: "pair.denied", status: 401, error: "pairing required" });
+  assert.equal(still.name, "live");
+});
+
+// ---- the transport -------------------------------------------------------
+//
+// Thin by design, but it is the half that can wire the machine up wrongly, so
+// it is driven here with a fake fetch and a fake EventSource. Everything
+// asserted below is a literal: the URL, the header name, the state name.
+
+function fakeFetch(routes) {
+  const calls = [];
+  const fn = (url, init) => {
+    calls.push({ url, init: init || {} });
+    const r = routes[url.replace("http://127.0.0.1:8760", "")];
+    if (!r) { return Promise.reject(new TypeError("Failed to fetch")); }
+    return Promise.resolve({
+      ok: r.status === 200,
+      status: r.status,
+      json: () => Promise.resolve(r.body)
+    });
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+class FakeEventSource {
+  constructor(url) { this.url = url; this.listeners = {}; this.closed = false; FakeEventSource.last = this; }
+  addEventListener(name, fn) { this.listeners[name] = fn; }
+  close() { this.closed = true; }
+  emit(name, data) { this.listeners[name]({ data: JSON.stringify(data) }); }
+}
+
+test("probe hits /health and lands in pairing", async () => {
+  const f = fakeFetch({ "/health": { status: 200, body: { ok: true, version: "1.0" } } });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource });
+  await b.probe();
+  assert.equal(f.calls[0].url, "http://127.0.0.1:8760/health");
+  assert.equal(b.state().name, "pairing");
+});
+
+test("a probe against a dead port lands in replay, and says nothing about it", async () => {
+  const b = B.create({ fetch: fakeFetch({}), EventSource: FakeEventSource,
+                       location: { protocol: "http:", hostname: "localhost" } });
+  await b.probe();
+  assert.equal(b.state().name, "replay");
+  assert.equal(b.state().notice, null);
+});
+
+test("the same failure from a public https page offers the private-network advice", async () => {
+  const b = B.create({ fetch: fakeFetch({}), EventSource: FakeEventSource,
+                       location: { protocol: "https:", hostname: "keysight-tech.github.io" } });
+  await b.probe();
+  assert.equal(b.state().name, "replay", "advice or not, it still degrades to replay");
+  assert.equal(b.state().notice, "blockedPNA");
+});
+
+test("pairing sends the code on X-CloudLens-Pair, byte for byte", async () => {
+  const f = fakeFetch({
+    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/flows": { status: 200, body: { order: [], flows: {} } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource });
+  await b.probe();
+  await b.pair("ABCD2345");
+  const flows = f.calls[1];
+  assert.equal(flows.url, "http://127.0.0.1:8760/flows");
+  assert.equal(flows.init.headers["X-CloudLens-Pair"], "ABCD2345");
+  assert.equal(b.state().name, "live");
+});
+
+test("a refused code is read out of the body, not guessed from the status", async () => {
+  const f = fakeFetch({
+    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/flows": { status: 403, body: { error: "pairing disabled, restart the console" } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource });
+  await b.probe();
+  await b.pair("ABCD2345");
+  assert.equal(b.state().name, "disabled");
+});
+
+test("input that cannot be the code never reaches the server", async () => {
+  // The guess budget is cumulative and never resets, so a stray keystroke must
+  // not spend one.
+  const f = fakeFetch({ "/health": { status: 200, body: { ok: true, version: "1.0" } } });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource });
+  await b.probe();
+  await b.pair("abc");
+  assert.equal(f.calls.length, 1, "only the probe was sent");
+  assert.equal(b.state().name, "pairing");
+  assert.equal(b.state().notice, "pairBad");
+});
+
+test("run streams /events/<job_id> with no header on it at all", async () => {
+  const f = fakeFetch({
+    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/flows": { status: 200, body: { order: [], flows: {} } },
+    "/run": { status: 200, body: { job_id: "0123456789abcdef0123456789abcdef", replay: false } }
+  });
+  const b = B.create({ fetch: f, EventSource: FakeEventSource });
+  await b.probe();
+  await b.pair("ABCD2345");
+  await b.run("stack", {});
+  const es = FakeEventSource.last;
+  assert.equal(es.url, "http://127.0.0.1:8760/events/0123456789abcdef0123456789abcdef",
+    "the id is the capability: EventSource cannot send a header");
+  // Every frame the console sends names its type, so "message" alone is deaf.
+  for (const name of ["hello", "log", "state", "narrate", "stat", "done", "error"]) {
+    assert.equal(typeof es.listeners[name], "function", name + " needs its own listener");
+  }
+  es.emit("log", { id: 1, type: "log", text: "creating" });
+  assert.equal(b.state().transcript.length, 1);
+  es.emit("done", { id: 2, type: "done", summary: "up" });
+  assert.equal(b.state().name, "finished");
+  assert.equal(es.closed, true,
+    "EventSource reconnects on its own, and a reconnect would replay the buffer");
+});
