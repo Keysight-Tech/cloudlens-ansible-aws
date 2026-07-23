@@ -43,6 +43,7 @@ override.tf.json
 # deploy-stack.sh runtime logs
 cloudlens-deploy-stack.log
 cloudlens-deploy-summary.txt
+.cloudlens-deploy-*.state
 load_aws_creds.sh
 
 # ansible-galaxy local install target

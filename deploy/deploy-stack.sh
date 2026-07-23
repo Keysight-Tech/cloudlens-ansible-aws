@@ -44,9 +44,24 @@
 #   --with-mirror    Also attempt the AWS mirror session (default: no)
 #   --key-name NAME  EC2 key pair to attach (created if missing)
 #   --rollback       Delete the stack we created on any failure
+#   --resume         Continue from the first unfinished phase (default when
+#                    there is no terminal). Phases are skipped only when the
+#                    REAL system says the work is already done.
+#   --fresh          Run every phase again (still deletes nothing)
+#   --from PHASE     Start at PHASE: stack|wait|bootstrap|key|license|adopt|
+#                    sensors|vpb|path|mirror
+#   --only PHASE     Run exactly one phase
 #   -h | --help      Show this banner and exit
 # =====================================================================
 set -euo pipefail
+# NOTE on error reporting: the ERR trap below is NOT inherited by shell
+# functions (that would need `set -E`), so a command failing inside a function
+# under `set -e` kills the run with no message at all. That is exactly how a
+# failing read-only probe once ended a deploy with a bare exit 254 and nothing
+# printed. `set -E` is the wrong cure: with errtrace on, the trap also fires
+# inside every guarded x="$(cmd || fallback)" and cries failure for normal
+# things like a grep that matched nothing. The cure used here is the EXIT trap
+# (on_exit), which fires once, in the real shell, and can never be silent.
 
 # ---------------------------------------------------------------------
 # Re-attach stdin to the terminal when invoked via `curl ... | bash`.
@@ -174,6 +189,66 @@ CHAIN_SENSORS=""
 ARG_REGION=""
 ARG_STACK=""
 
+# ---------------------------------------------------------------------
+# Re-run control.
+#
+# A re-run must never start from zero. Every phase that can be skipped has a
+# read-only detect_* that asks the REAL system whether the work is already
+# done. The state file below is a convenience only: it remembers inputs so a
+# resume does not re-prompt for them. When the state file and reality disagree,
+# reality wins and we say so out loud.
+# ---------------------------------------------------------------------
+RESUME_MODE=""            # resume | fresh | "" = ask (non-interactive: resume)
+FROM_PHASE=""             # --from PHASE: start at this phase
+ONLY_PHASE=""             # --only PHASE: run just this phase
+RESUME_ACTIVE=false       # true once we decide to skip already-done phases
+PHASE_SKIP_REASON=""
+STATE_FILE=""
+
+# Where phase 9 stores the working vController login + project key (mode 600).
+VC_CREDS_FILE="${CLOUDLENS_VC_CREDS_FILE:-$HOME/.cloudlens-vcontroller-creds.json}"
+
+# KVO admin used by the read-only probes. Same defaults the scripts/ use.
+KVO_ADMIN_USER="${CLOUDLENS_KVO_ADMIN_USER:-admin}"
+KVO_ADMIN_PASS="${CLOUDLENS_KVO_ADMIN_PASS:-admin}"
+
+# Hard wall-clock limit for any single detection probe. Detection is meant to
+# save time, so it is never allowed to cost more than a few seconds per check.
+PROBE_TIMEOUT="${CLOUDLENS_PROBE_TIMEOUT:-25}"
+
+# Can this shell talk to AWS at all? Answered once, in phase 2, and then used
+# instead of letting nine probes fail one after another.
+AWS_USABLE=false
+AWS_UNUSABLE_WHY=""
+
+# Detection results. "unknown" is a real answer and never means "missing":
+# a probe that failed makes us ask, it does not make us re-create anything.
+DET_STACK="unknown";     DET_STACK_ERR=""
+DET_VC="unknown";        DET_VC_OK=false
+DET_KEY="unknown";       DET_KEY_OK=false
+DET_LICENSE="unknown";   DET_LICENSE_OK=false
+DET_ADOPT="unknown";     DET_ADOPT_OK=false
+DET_CC="unknown";        DET_CC_OK=false
+DET_SENSORS="unknown";   DET_SENSORS_N=""
+DET_VPB_KVO="unknown";   DET_VPB_KVO_OK=false
+DET_MIRROR="unknown";    DET_MIRROR_OK=false
+FOUND_DEPLOYMENT=false
+VPB_IN_KVO=false
+
+SKIP_STACK=false;   REASON_STACK=""
+SKIP_WAIT=false;    REASON_WAIT=""
+# The vPB bootstrap has no reliable read-only "already done" probe, so it is
+# never auto-skipped. It stays in the phase list only so --from / --only can
+# select it, and it is prompt-gated as before.
+SKIP_BOOTSTRAP=false; REASON_BOOTSTRAP=""
+SKIP_KEY=false;     REASON_KEY=""
+SKIP_LICENSE=false; REASON_LICENSE=""
+SKIP_ADOPT=false;   REASON_ADOPT=""
+SKIP_SENSORS=false; REASON_SENSORS=""
+SKIP_VPB=false;     REASON_VPB=""
+SKIP_PATH=false;    REASON_PATH=""
+SKIP_MIRROR=false;  REASON_MIRROR=""
+
 # Post-deploy orchestration (phases 10-16). Blank = prompt, and every prompt
 # falls back to the documented default when there is no terminal to ask on.
 SENSOR_MODE=""                # standalone | kvo | none
@@ -190,6 +265,9 @@ MIRROR_ACCESS_KEY="${CLOUDLENS_MIRROR_ACCESS_KEY:-}"
 MIRROR_SECRET_KEY="${CLOUDLENS_MIRROR_SECRET_KEY:-}"
 
 # State trackers (filled as we go) for trap reporting
+# SCRIPT_DONE means "this exit has already been explained to the operator",
+# so the EXIT trap knows to stay quiet.
+SCRIPT_DONE=false
 PHASE_NAME="init"
 CREATED_STACK=false
 CLMS_PUBLIC_IP=""
@@ -230,7 +308,7 @@ banner() {
 }
 ok()    { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
 warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
-fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; exit 1; }
+fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; exit 1; }
 step()  { echo; echo -e "${C_BLUE}--- $1 ---${C_RESET}"; PHASE_NAME="$1"; }
 note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
 dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
@@ -266,6 +344,853 @@ ask_yn() {
 }
 
 # ---------------------------------------------------------------------
+# Phase names, and the decision of what to run.
+#
+# Short, STABLE names, not numbers: numbers shift every time a phase is added
+# and this script has to survive years of that.
+#   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
+#   vpb=14  path=15  mirror=16
+# ---------------------------------------------------------------------
+PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb path mirror"
+
+phase_index() {
+  local want="$1" i=1 p
+  for p in $PHASE_ORDER; do
+    [[ "$p" == "$want" ]] && { printf '%s' "$i"; return 0; }
+    i=$((i+1))
+  done
+  return 1
+}
+
+phase_label() {
+  case "$1" in
+    stack)   printf '%s' "Deploy the stack" ;;
+    wait)    printf '%s' "Wait for the vController API" ;;
+    bootstrap) printf '%s' "vPB bootstrap over SSH" ;;
+    key)     printf '%s' "vController project key" ;;
+    license) printf '%s' "KVO licensing" ;;
+    adopt)   printf '%s' "Adopt CLMS into KVO" ;;
+    sensors) printf '%s' "Sensors" ;;
+    vpb)     printf '%s' "vPB in KVO" ;;
+    path)    printf '%s' "vPB traffic path" ;;
+    mirror)  printf '%s' "AWS mirror" ;;
+    *)       printf '%s' "$1" ;;
+  esac
+}
+
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+# run_phase NAME -> 0 run it, 1 skip it (why: PHASE_SKIP_REASON)
+run_phase() {
+  local name="$1" idx want skipvar reasonvar
+  PHASE_SKIP_REASON=""
+  if [[ -n "$ONLY_PHASE" ]]; then
+    [[ "$ONLY_PHASE" == "$name" ]] && return 0
+    PHASE_SKIP_REASON="--only ${ONLY_PHASE}"
+    return 1
+  fi
+  if [[ -n "$FROM_PHASE" ]]; then
+    idx="$(phase_index "$name")"; want="$(phase_index "$FROM_PHASE")"
+    if (( idx < want )); then PHASE_SKIP_REASON="--from ${FROM_PHASE}"; return 1; fi
+  fi
+  # --fresh (RESUME_ACTIVE=false) stops skipping. It never deletes anything:
+  # it just runs every phase again.
+  [[ "$RESUME_ACTIVE" == "true" ]] || return 0
+  skipvar="SKIP_$(upper "$name")"; reasonvar="REASON_$(upper "$name")"
+  if [[ "${!skipvar:-false}" == "true" ]]; then
+    PHASE_SKIP_REASON="${!reasonvar:-already done}"
+    return 1
+  fi
+  return 0
+}
+
+skip_note() { note "Skipping $1: ${PHASE_SKIP_REASON}."; }
+
+# Is this phase even part of this run? A stack with no KVO never licenses one.
+# Blank toggles mean "not decided yet", which counts as applicable.
+phase_applicable() {
+  case "$1" in
+    bootstrap|vpb|path) [[ "$DEPLOY_VPB" == "false" ]] && return 1 ;;
+  esac
+  case "$1" in
+    license|adopt|mirror|vpb|path) [[ "$DEPLOY_KVO" == "false" ]] && return 1 ;;
+  esac
+  case "$1" in
+    sensors) [[ "$CHAIN_SENSORS" == "false" || "$SENSOR_MODE" == "none" ]] && return 1 ;;
+  esac
+  return 0
+}
+
+first_pending_phase() {
+  local p skipvar
+  for p in $PHASE_ORDER; do
+    skipvar="SKIP_$(upper "$p")"
+    [[ "${!skipvar:-false}" == "true" ]] && continue
+    phase_applicable "$p" || continue
+    phase_label "$p"; return 0
+  done
+  printf '%s' "the final summary"
+}
+
+# ---------------------------------------------------------------------
+# State file: inputs and outcomes only, NEVER a secret.
+#
+# Named per stack + region so two deployments in one directory cannot collide.
+# It is parsed line by line and never sourced, so a corrupt file is a non-event:
+# unreadable lines are ignored and detection still works from reality alone.
+# ---------------------------------------------------------------------
+state_init() {
+  [[ -n "${STACK_NAME:-}" && -n "${REGION:-}" ]] || return 0
+  STATE_FILE=".cloudlens-deploy-${STACK_NAME}-${REGION}.state"
+  if [[ ! -f "$STATE_FILE" ]]; then
+    if ! ( umask 077; : > "$STATE_FILE" ) 2>/dev/null; then
+      warn "Could not create ${STATE_FILE}; continuing without a state file."
+      STATE_FILE=""
+      return 0
+    fi
+  fi
+  chmod 600 "$STATE_FILE" 2>/dev/null || true
+}
+
+# state_get KEY -> value on stdout, exit 1 when absent/unreadable
+state_get() {
+  local k="$1" line
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 1
+  line="$(grep -m1 "^${k}=" "$STATE_FILE" 2>/dev/null)" || return 1
+  [[ -n "$line" ]] || return 1
+  printf '%s' "${line#*=}"
+}
+
+state_set() {
+  local k="$1" v="${2:-}" tmp
+  [[ -n "$STATE_FILE" ]] || return 0
+  # Secrets do not live here. The project key stays in the mode-600 creds file
+  # and is referenced, never copied. This guard is the backstop for that rule.
+  case "$k" in
+    *PASSWORD*|*SECRET*|*PROJECT_KEY*|*ACCESS_KEY*|*TOKEN*|*CREDENTIAL*)
+      warn "Refusing to write '${k}' to the state file: that name looks like a secret."
+      return 0 ;;
+  esac
+  [[ "$k" =~ ^[A-Z][A-Z0-9_]*$ ]] || return 0
+  v="${v//$'\n'/ }"
+  tmp="${STATE_FILE}.tmp.$$"
+  ( umask 077; { grep -v "^${k}=" "$STATE_FILE" 2>/dev/null || true
+                 printf '%s=%s\n' "$k" "$v"; } > "$tmp" ) 2>/dev/null || return 0
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# state_phase NAME done|failed|skipped [detail]
+# A dry run records itself as a dry run: it did not actually do the work.
+state_phase() {
+  local outcome="$2"
+  [[ "$DRY_RUN" == "true" ]] && outcome="dry-run ${outcome}"
+  state_set "PHASE_$(upper "$1")" "${outcome} at $(date -u +%FT%TZ)${3:+ (${3})}"
+}
+
+# ---------------------------------------------------------------------
+# Detection: read-only, side-effect free, and it runs even under --dry-run.
+#
+# Every function here only READS. None of them creates, modifies or deletes
+# anything, which is exactly why they are safe to run in a dry run: detection
+# that lied in dry-run would defeat the point of dry-run.
+# ---------------------------------------------------------------------
+# probe CMD... -> stdout of CMD. ALWAYS exits 0, ALWAYS returns within
+# PROBE_TIMEOUT seconds.
+#
+# Two hard rules live in this one function:
+#
+#   1. A probe may never abort the run. Under `set -e` an assignment like
+#      x="$(aws ...)" carries the command's exit status, so a single expired
+#      SSO token used to kill the whole script (silently, because the ERR trap
+#      is not inherited into functions without -E). Routing every probe through
+#      here makes that structurally impossible instead of relying on remembering
+#      `|| true` at each call site.
+#   2. A probe may never hang the run. `timeout(1)` is not on macOS, so the
+#      watchdog is done by hand.
+#
+# Anything that fails, times out, or is killed yields EMPTY output, and every
+# caller reads empty (or unparseable) as "unknown": never as "missing", and
+# never as "already done".
+#
+# Detection must also be unable to trip the failure traps. A non-zero exit
+# inside a read-only probe is NORMAL: a stack that does not exist, a grep that
+# matched nothing, an appliance that is not up yet. errexit and the ERR trap
+# are lifted for the length of the checks and restored exactly as found.
+PROBE_ERREXIT_WAS=false
+probe_guard_begin() {
+  PROBE_ERREXIT_WAS=false
+  case "$-" in *e*) PROBE_ERREXIT_WAS=true ;; esac
+  set +e
+  trap - ERR
+  return 0
+}
+probe_guard_end() {
+  trap on_error ERR
+  [[ "$PROBE_ERREXIT_WAS" == "true" ]] && set -e
+  return 0
+}
+
+PROBE_TICK=""
+probe() {
+  local out="" tmp pid ticks=0 limit
+  if [[ -z "$PROBE_TICK" ]]; then
+    # Sub-second sleeps are not universal (busybox). Establish which we have.
+    if sleep 0.2 >/dev/null 2>&1; then PROBE_TICK="0.2"; else PROBE_TICK="1"; fi
+  fi
+  if [[ "$PROBE_TICK" == "0.2" ]]; then limit=$(( PROBE_TIMEOUT * 5 )); else limit="$PROBE_TIMEOUT"; fi
+
+  tmp="$(mktemp "${TMPDIR:-/tmp}/cloudlens-probe.XXXXXX" 2>/dev/null)" || tmp=""
+  if [[ -z "$tmp" ]]; then
+    # No temp file: run it inline. Still cannot fail the script.
+    if [[ "${PROBE_MERGE_STDERR:-}" == "1" ]]; then "$@" 2>&1 || true; else "$@" 2>/dev/null || true; fi
+    return 0
+  fi
+
+  if [[ "${PROBE_MERGE_STDERR:-}" == "1" ]]; then
+    "$@" >"$tmp" 2>&1 &
+  else
+    "$@" >"$tmp" 2>/dev/null &
+  fi
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && (( ticks < limit )); do
+    sleep "$PROBE_TICK" 2>/dev/null || sleep 1
+    ticks=$((ticks+1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+    : > "$tmp"          # a half-written answer is not an answer
+  fi
+  wait "$pid" 2>/dev/null || true
+  out="$(cat "$tmp" 2>/dev/null || true)"
+  rm -f "$tmp" 2>/dev/null || true
+  printf '%s' "$out"
+  return 0
+}
+
+ro_aws() { probe aws "${AWS_REGION_ARG[@]}" "$@"; }
+
+det_clean() { local v="$1"; [[ "$v" == "None" ]] && v=""; printf '%s' "$v"; }
+
+# First NON-BLANK line. The AWS CLI v2 leads its error output with an empty
+# line, so a plain `head -1` reports "no answer" for an error that is sitting
+# right there on line 2.
+first_line() {
+  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' 2>/dev/null | head -1 || true
+}
+
+det_cfn_output() {
+  det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+    --query "Stacks[0].Outputs[?OutputKey=='${1}'].OutputValue | [0]" --output text)"
+}
+
+# Public IP if there is one, otherwise the private IP (--no-public-ip deploys).
+det_ec2_addr() {
+  local v
+  v="$(det_clean "$(ro_aws ec2 describe-instances \
+        --filters "Name=tag:Name,Values=${1}" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)")"
+  [[ -z "$v" ]] && v="$(det_clean "$(ro_aws ec2 describe-instances \
+        --filters "Name=tag:Name,Values=${1}" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)")"
+  printf '%s' "$v"
+}
+
+# Phase 6. Statuses are NOT all the same thing, so each is handled distinctly.
+# A probe that cannot answer leaves DET_STACK as "unknown", which is neither
+# "missing" (would re-create) nor "complete" (would skip). Unknown asks.
+detect_stack() {
+  local out
+  DET_STACK="unknown"; DET_STACK_ERR=""
+  if [[ "$AWS_USABLE" != "true" ]]; then
+    DET_STACK_ERR="${AWS_UNUSABLE_WHY:-AWS is not reachable from this shell}"
+    return 0
+  fi
+  if [[ "$IAC" == "terraform" ]]; then
+    # There is no CloudFormation stack to ask about. The closest read-only
+    # truth is whether the vController this workspace names is running.
+    if [[ -n "$(det_ec2_addr "${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}")" ]]; then
+      DET_STACK="APPLIED"
+    else
+      DET_STACK="MISSING"
+    fi
+    return 0
+  fi
+  # stderr is merged in on purpose: "does not exist" is the answer we want, and
+  # anything else is an error we must NOT read as "no stack here".
+  out="$(PROBE_MERGE_STDERR=1 ro_aws cloudformation describe-stacks \
+          --stack-name "$STACK_NAME" --query 'Stacks[0].StackStatus' --output text)"
+  out="$(first_line "$out")"
+  if [[ "$out" =~ ^[A-Z][A-Z_]*$ ]]; then
+    DET_STACK="$out"
+  elif [[ "$out" == *"does not exist"* ]]; then
+    DET_STACK="MISSING"
+  else
+    DET_STACK="unknown"
+    DET_STACK_ERR="${out:-the AWS CLI did not answer (timeout or no network)}"
+  fi
+  return 0
+}
+
+stack_usable() {
+  case "$DET_STACK" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|APPLIED) return 0 ;;
+  esac
+  return 1
+}
+# CloudFormation can never update a stack in these states: it has to be deleted
+# first. We print the command and let the human run it. We never delete.
+stack_needs_delete() {
+  case "$DET_STACK" in
+    ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|DELETE_FAILED) return 0 ;;
+  esac
+  return 1
+}
+stack_in_flight() {
+  case "$DET_STACK" in *_IN_PROGRESS) return 0 ;; esac
+  return 1
+}
+
+detect_addresses() {
+  if [[ "$IAC" == "terraform" ]]; then
+    [[ -z "$CLMS_PUBLIC_IP" ]] && CLMS_PUBLIC_IP="$(det_ec2_addr "${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}")"
+    [[ -z "$KVO_PUBLIC_IP"  ]] && KVO_PUBLIC_IP="$(det_ec2_addr "${KVO_NAME:-${STACK_NAME}-kvo}")"
+    [[ -z "$VPB_PUBLIC_IP"  ]] && VPB_PUBLIC_IP="$(det_ec2_addr "${VPB_NAME:-${STACK_NAME}-vpb}")"
+    return 0
+  fi
+  [[ -z "$CLMS_PUBLIC_IP" ]] && CLMS_PUBLIC_IP="$(det_cfn_output VcontrollerAddress)"
+  [[ -z "$KVO_PUBLIC_IP"  ]] && KVO_PUBLIC_IP="$(det_cfn_output KvoAddress)"
+  [[ -z "$VPB_PUBLIC_IP"  ]] && VPB_PUBLIC_IP="$(det_cfn_output VpbAddress)"
+  [[ -z "$CLMS_PUBLIC_IP" ]] && CLMS_PUBLIC_IP="$(det_ec2_addr "${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}")"
+  [[ -z "$KVO_PUBLIC_IP"  ]] && KVO_PUBLIC_IP="$(det_ec2_addr "${KVO_NAME:-${STACK_NAME}-kvo}")"
+  [[ -z "$VPB_PUBLIC_IP"  ]] && VPB_PUBLIC_IP="$(det_ec2_addr "${VPB_NAME:-${STACK_NAME}-vpb}")"
+  return 0
+}
+
+# Phase 7. Same probe the wait loop uses: POST to the real login route. nginx
+# serves the SPA long before the API answers, so only these codes mean serving.
+vc_api_probe() {
+  local code
+  code="$(probe curl -sk -o /dev/null -w '%{http_code}' \
+            --connect-timeout 5 --max-time 8 -X POST \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"__probe__","password":"__probe__"}' \
+            "https://${1}/cloudlens/api/v1/identity/login")"
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code="000"
+  printf '%s' "$code"
+}
+
+detect_vcontroller() {
+  DET_VC="unknown"; DET_VC_OK=false
+  [[ -n "$CLMS_PUBLIC_IP" ]] || { DET_VC="no address yet"; return 0; }
+  local code; code="$(vc_api_probe "$CLMS_PUBLIC_IP")"
+  case "$code" in
+    200|400|401|403|422) DET_VC="serving at ${CLMS_PUBLIC_IP}"; DET_VC_OK=true ;;
+    000) DET_VC="unknown (probe did not answer)" ;;
+    *)   DET_VC="not serving yet (HTTP ${code})" ;;
+  esac
+}
+
+# Phase 9. Re-running the key step re-rotates an already-rotated admin password,
+# which fails, so reusing an existing key for THIS vController matters.
+vc_key_from_creds() {
+  local k=""
+  [[ -f "$VC_CREDS_FILE" ]] || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    k="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("project_key",""))
+except Exception: pass' "$VC_CREDS_FILE" 2>/dev/null)" || k=""
+  fi
+  [[ -z "$k" ]] && { k="$(grep -o '"project_key"[^,}]*' "$VC_CREDS_FILE" 2>/dev/null | cut -d'"' -f4)" || k=""; }
+  [[ -n "$k" ]] || return 1
+  printf '%s' "$k"
+}
+
+detect_project_key() {
+  DET_KEY="unknown"; DET_KEY_OK=false
+  if [[ ! -f "$VC_CREDS_FILE" ]]; then DET_KEY="not present"; return 0; fi
+  if ! vc_key_from_creds >/dev/null 2>&1; then DET_KEY="not present"; return 0; fi
+  # The creds file records the UI url, so it can be matched to this vController.
+  if [[ -n "$CLMS_PUBLIC_IP" ]] && ! grep -q "$CLMS_PUBLIC_IP" "$VC_CREDS_FILE" 2>/dev/null; then
+    DET_KEY="present, but for a different vController"
+    return 0
+  fi
+  DET_KEY="present"; DET_KEY_OK=true
+}
+
+# ---- KVO probes ------------------------------------------------------
+# A freshly booted KVO 302-redirects everything to /eula/static/ until the EULA
+# is accepted. That is "not ready", not an error, and it is never "licensed".
+KVO_TOKEN_CACHE=""
+KVO_TOKEN_STATE=""    # "" untried | ok | eula | fail
+
+# kvo_auth sets KVO_TOKEN_CACHE / KVO_TOKEN_STATE as GLOBALS, so it must be
+# called as a plain statement, never inside $( ). A command substitution runs
+# in a subshell and the state would be lost the moment it returned.
+kvo_auth() {
+  local host="$1" body code tok
+  [[ "$KVO_TOKEN_STATE" == "ok" ]] && return 0
+  [[ -n "$KVO_TOKEN_STATE" ]] && return 1
+  if ! command -v python3 >/dev/null 2>&1; then KVO_TOKEN_STATE="fail"; return 1; fi
+  body="$(probe curl -sk --connect-timeout 5 --max-time 15 -w $'\n%{http_code}' -X POST \
+           -H 'Content-Type: application/x-www-form-urlencoded' \
+           --data "grant_type=password&client_id=vision-orchestrator&username=${KVO_ADMIN_USER}&password=${KVO_ADMIN_PASS}" \
+           "https://${host}/auth/realms/keysight/protocol/openid-connect/token")" || body=""
+  code="${body##*$'\n'}"; body="${body%$'\n'*}"
+  case "$code" in
+    30[0-9]) KVO_TOKEN_STATE="eula"; return 1 ;;
+    200) ;;
+    *)   KVO_TOKEN_STATE="fail"; return 1 ;;
+  esac
+  tok="$(printf '%s' "$body" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("access_token",""))
+except Exception: pass' 2>/dev/null)" || tok=""
+  [[ -n "$tok" ]] || { KVO_TOKEN_STATE="fail"; return 1; }
+  KVO_TOKEN_CACHE="$tok"; KVO_TOKEN_STATE="ok"
+  return 0
+}
+
+# Why the KVO could not be talked to, in English.
+kvo_auth_why() {
+  case "$KVO_TOKEN_STATE" in
+    eula) printf '%s' "KVO is still on the EULA page" ;;
+    *)    printf '%s' "could not authenticate to KVO" ;;
+  esac
+}
+
+# kvo_gql HOST QUERY -> raw JSON. Read-only, and it only READS the cached
+# token, so it is safe to call from inside $( ). Queries here carry no double
+# quotes on purpose: names are matched in the parser, not inlined.
+kvo_gql() {
+  local host="$1" query="$2"
+  [[ -n "$KVO_TOKEN_CACHE" ]] || return 1
+  probe curl -sk --connect-timeout 5 --max-time 20 -X POST \
+       -H "Authorization: Bearer ${KVO_TOKEN_CACHE}" \
+       -H 'Content-Type: application/json' \
+       --data "{\"query\":\"${query}\"}" \
+       "https://${host}/public/graphql"
+}
+
+# Phase 11. REST, /api/v2/licensing/licenses, exactly what kvo_license.py reads.
+# Re-activating a consumed code spends real entitlement, so "unknown" here has
+# to stay "unknown" and become a question, never an assumption.
+detect_license() {
+  DET_LICENSE="unknown"; DET_LICENSE_OK=false
+  [[ -n "$KVO_PUBLIC_IP" ]] || { DET_LICENSE="n/a (no KVO)"; return 0; }
+  local body n
+  if ! kvo_auth "$KVO_PUBLIC_IP"; then
+    case "$KVO_TOKEN_STATE" in
+      eula) DET_LICENSE="not licensed (KVO is still on the EULA page)" ;;
+      *)    DET_LICENSE="unknown ($(kvo_auth_why))" ;;
+    esac
+    return 0
+  fi
+  body="$(probe curl -sk --connect-timeout 5 --max-time 20 \
+           -H "Authorization: Bearer ${KVO_TOKEN_CACHE}" \
+           "https://${KVO_PUBLIC_IP}/api/v2/licensing/licenses")" || body=""
+  n="$(printf '%s' "$body" | python3 -c 'import json,sys
+try: d = json.load(sys.stdin)
+except Exception: print("?"); raise SystemExit
+print(len(d) if isinstance(d, list) else "?")' 2>/dev/null)" || n=""
+  case "$n" in
+    ""|"?") DET_LICENSE="unknown (licensing API answer not understood)" ;;
+    0)      DET_LICENSE="not licensed" ;;
+    *)      DET_LICENSE="licensed (${n} installed)"; DET_LICENSE_OK=true ;;
+  esac
+}
+
+# Phase 12a. Re-adopting an adopted manager errors, so CONNECTED means skip.
+detect_adopt() {
+  DET_ADOPT="unknown"; DET_ADOPT_OK=false
+  [[ -n "$KVO_PUBLIC_IP" ]] || { DET_ADOPT="n/a (no KVO)"; return 0; }
+  kvo_auth "$KVO_PUBLIC_IP" || { DET_ADOPT="unknown ($(kvo_auth_why))"; return 0; }
+  local body status
+  body="$(kvo_gql "$KVO_PUBLIC_IP" "{ cloudLensManagersFeed { cloudLensManagers { name ip status } } }")" \
+    || { DET_ADOPT="unknown (KVO query failed)"; return 0; }
+  status="$(printf '%s' "$body" | CLM="$CLM_NAME_IN_KVO" python3 -c '
+import json,os,sys
+try: d = json.load(sys.stdin)
+except Exception: print("ERR"); raise SystemExit
+if d.get("errors"): print("ERR"); raise SystemExit
+rows = ((d.get("data") or {}).get("cloudLensManagersFeed") or {}).get("cloudLensManagers") or []
+want = os.environ["CLM"]
+for r in rows:
+    if r.get("name") == want:
+        print(r.get("status") or "UNKNOWN"); break
+else:
+    print("MISSING")' 2>/dev/null)" || status=""
+  case "$status" in
+    CONNECTED) DET_ADOPT="adopted and CONNECTED"; DET_ADOPT_OK=true ;;
+    MISSING)   DET_ADOPT="not done" ;;
+    ""|ERR)    DET_ADOPT="unknown (KVO answer not understood)" ;;
+    *)         DET_ADOPT="adopted, status ${status}" ;;
+  esac
+}
+
+# Phase 12b. Exists by name means reuse it, and reuse its project key.
+detect_cloud_config() {
+  DET_CC="unknown"; DET_CC_OK=false
+  [[ -n "$KVO_PUBLIC_IP" ]] || { DET_CC="n/a (no KVO)"; return 0; }
+  kvo_auth "$KVO_PUBLIC_IP" || { DET_CC="unknown ($(kvo_auth_why))"; return 0; }
+  local body found
+  body="$(kvo_gql "$KVO_PUBLIC_IP" "{ cloudConfigs { name } }")" \
+    || { DET_CC="unknown (KVO query failed)"; return 0; }
+  found="$(printf '%s' "$body" | CC="$CLOUD_CONFIG_NAME" python3 -c '
+import json,os,sys
+try: d = json.load(sys.stdin)
+except Exception: print("ERR"); raise SystemExit
+if d.get("errors"): print("ERR"); raise SystemExit
+names = [c.get("name") for c in ((d.get("data") or {}).get("cloudConfigs") or [])]
+print("YES" if os.environ["CC"] in names else "NO")' 2>/dev/null)" || found=""
+  case "$found" in
+    YES) DET_CC="present (${CLOUD_CONFIG_NAME})"; DET_CC_OK=true ;;
+    NO)  DET_CC="not done" ;;
+    *)   DET_CC="unknown (KVO answer not understood)" ;;
+  esac
+}
+
+# The key the Cloud Config provisioned. Read back so a resume does not have to
+# re-create anything to get it. Printed nowhere, written to no file but the
+# existing mode-600 customer_input.yaml.
+# Call kvo_auth BEFORE this (it is used inside $( ), so it cannot authenticate
+# for itself: the cached token would not survive the subshell).
+kvo_cloud_config_key() {
+  local body key
+  body="$(kvo_gql "$1" "{ customClouds { name clmsProjectId clmsProjectApiKey } }")" || return 1
+  key="$(printf '%s' "$body" | CC="$CLOUD_CONFIG_NAME" python3 -c '
+import json,os,sys
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+for c in ((d.get("data") or {}).get("customClouds") or []):
+    if c.get("name") == os.environ["CC"]:
+        print(c.get("clmsProjectApiKey") or ""); break' 2>/dev/null)" || key=""
+  [[ -n "$key" ]] || return 1
+  printf '%s' "$key"
+}
+
+# Phase 13. Best effort: sensorCount comes from KVO, so with no KVO (or an
+# unreadable one) this stays unknown and the sensor step is OFFERED, not
+# skipped. Sensor install is idempotent enough to re-run.
+detect_sensors() {
+  DET_SENSORS="unknown"; DET_SENSORS_N=""
+  [[ -n "$KVO_PUBLIC_IP" ]] || { DET_SENSORS="unknown (no KVO to ask)"; return 0; }
+  kvo_auth "$KVO_PUBLIC_IP" || { DET_SENSORS="unknown ($(kvo_auth_why))"; return 0; }
+  local body n
+  body="$(kvo_gql "$KVO_PUBLIC_IP" "{ cloudLensManagersFeed { cloudLensManagers { name sensorCount } } }")" \
+    || { DET_SENSORS="unknown (KVO query failed)"; return 0; }
+  n="$(printf '%s' "$body" | CLM="$CLM_NAME_IN_KVO" python3 -c '
+import json,os,sys
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+if d.get("errors"): raise SystemExit
+rows = ((d.get("data") or {}).get("cloudLensManagersFeed") or {}).get("cloudLensManagers") or []
+want = os.environ["CLM"]
+tot = 0
+for r in rows:
+    if r.get("name") == want:
+        tot = r.get("sensorCount") or 0; break
+print(int(tot))' 2>/dev/null)" || n=""
+  if [[ "$n" =~ ^[0-9]+$ ]]; then
+    DET_SENSORS="${n} registered"; DET_SENSORS_N="$n"
+  else
+    DET_SENSORS="unknown (KVO does not report a sensor count here)"
+  fi
+}
+
+# Phase 14. Device present in KVO means the adoption already happened.
+detect_vpb_in_kvo() {
+  DET_VPB_KVO="unknown"; DET_VPB_KVO_OK=false
+  [[ -n "$KVO_PUBLIC_IP" ]] || { DET_VPB_KVO="n/a (no KVO)"; return 0; }
+  kvo_auth "$KVO_PUBLIC_IP" || { DET_VPB_KVO="unknown ($(kvo_auth_why))"; return 0; }
+  local body found
+  body="$(kvo_gql "$KVO_PUBLIC_IP" "{ devices { uid name } }")" \
+    || { DET_VPB_KVO="unknown (KVO query failed)"; return 0; }
+  found="$(printf '%s' "$body" | DEV="$VPB_DEVICE_NAME" python3 -c '
+import json,os,sys
+try: d = json.load(sys.stdin)
+except Exception: print("ERR"); raise SystemExit
+if d.get("errors"): print("ERR"); raise SystemExit
+names = [x.get("name") for x in ((d.get("data") or {}).get("devices") or [])]
+print("YES" if os.environ["DEV"] in names else "NO")' 2>/dev/null)" || found=""
+  case "$found" in
+    YES) DET_VPB_KVO="present (${VPB_DEVICE_NAME})"; DET_VPB_KVO_OK=true; VPB_IN_KVO=true ;;
+    NO)  DET_VPB_KVO="not done" ;;
+    *)   DET_VPB_KVO="unknown (KVO answer not understood)" ;;
+  esac
+}
+
+# Phase 16. Plain EC2 reads: targets, filters, sessions. Any answer that is not
+# three plain integers is "unknown", never zero.
+detect_mirror() {
+  DET_MIRROR="unknown"; DET_MIRROR_OK=false
+  local t f s_
+  if [[ "$AWS_USABLE" != "true" ]]; then
+    DET_MIRROR="unknown (could not check: ${AWS_UNUSABLE_WHY:-AWS is not reachable})"
+    return 0
+  fi
+  t="$(ro_aws ec2 describe-traffic-mirror-targets  --query 'length(TrafficMirrorTargets)'  --output text)"
+  f="$(ro_aws ec2 describe-traffic-mirror-filters  --query 'length(TrafficMirrorFilters)'  --output text)"
+  s_="$(ro_aws ec2 describe-traffic-mirror-sessions --query 'length(TrafficMirrorSessions)' --output text)"
+  if [[ "$t" =~ ^[0-9]+$ && "$f" =~ ^[0-9]+$ && "$s_" =~ ^[0-9]+$ ]]; then
+    DET_MIRROR="${t} target(s), ${f} filter(s), ${s_} session(s)"
+    [[ "$s_" != "0" ]] && DET_MIRROR_OK=true
+  else
+    DET_MIRROR="unknown (could not read the traffic mirror resources)"
+  fi
+  return 0
+}
+
+detect_all() {
+  # Belt and braces. Every probe below is individually guarded, but detection
+  # must NEVER be the thing that ends a deploy, including after some future
+  # edit adds a tenth probe and forgets a guard.
+  probe_guard_begin
+
+  detect_stack
+  if stack_usable || stack_in_flight; then
+    detect_addresses
+  fi
+  detect_vcontroller
+  detect_project_key
+  detect_license
+  detect_adopt
+  detect_cloud_config
+  detect_sensors
+  detect_vpb_in_kvo
+  detect_mirror
+
+  probe_guard_end
+  return 0
+}
+
+# ---------------------------------------------------------------------
+# The resume banner: what reality says, and where we would continue from.
+# ---------------------------------------------------------------------
+print_resume_banner() {
+  local last
+  echo
+  echo "Found an existing deployment: ${STACK_NAME} in ${REGION}"
+  echo
+  local stack_row="$DET_STACK"
+  [[ "$DET_STACK" == "unknown" && -n "$DET_STACK_ERR" ]] \
+    && stack_row="unknown (could not check: ${DET_STACK_ERR})"
+  printf "  %-22s %s\n" "Stack" "$stack_row"
+  printf "  %-22s %s\n" "vController" "$DET_VC"
+  printf "  %-22s %s\n" "Project key" "$DET_KEY"
+  printf "  %-22s %s\n" "KVO licensing" "$DET_LICENSE"
+  printf "  %-22s %s\n" "Adopt CLMS into KVO" "$DET_ADOPT"
+  printf "  %-22s %s\n" "KVO Cloud Config" "$DET_CC"
+  printf "  %-22s %s\n" "Sensors" "$DET_SENSORS"
+  printf "  %-22s %s\n" "vPB in KVO" "$DET_VPB_KVO"
+  printf "  %-22s %s\n" "AWS mirror" "$DET_MIRROR"
+  echo
+  if last="$(state_get LAST_FAILURE)" && [[ -n "$last" && "$last" != "none" ]]; then
+    warn "Last run stopped at ${last}"
+    echo
+  fi
+}
+
+# Turn the detected reality into skip decisions. Anything not proven done runs.
+resume_decide() {
+  # THE INVARIANT: a phase is skipped only on a positive, specific answer from
+  # the real system. "unknown" (probe failed, timed out, or returned something
+  # unparseable) never skips anything, because skipping is the dangerous
+  # direction: it silently drops real work. Unknown falls through to running
+  # the phase, or to a question where the answer costs money (licensing).
+  if stack_usable; then
+    SKIP_STACK=true;  REASON_STACK="the stack is ${DET_STACK}"
+  fi
+  if [[ "$DET_VC_OK" == "true" ]]; then
+    SKIP_WAIT=true;   REASON_WAIT="the vController API is already serving"
+  fi
+  if [[ "$DET_KEY_OK" == "true" ]]; then
+    SKIP_KEY=true
+    REASON_KEY="a project key for this vController is already in ${VC_CREDS_FILE}"
+  fi
+  if [[ "$DET_LICENSE_OK" == "true" ]]; then
+    SKIP_LICENSE=true; REASON_LICENSE="KVO is already ${DET_LICENSE}"
+  fi
+  # Phase 12 does BOTH the adoption and the Cloud Config, so it is only skipped
+  # when both are already there. The adopt script is idempotent on an adopted
+  # manager, so running it again to add a missing Cloud Config is safe.
+  if [[ "$DET_ADOPT_OK" == "true" && "$DET_CC_OK" == "true" ]]; then
+    SKIP_ADOPT=true;  REASON_ADOPT="${CLM_NAME_IN_KVO} is ${DET_ADOPT} and Cloud Config ${DET_CC}"
+  fi
+  if [[ "$DET_VPB_KVO_OK" == "true" ]]; then
+    SKIP_VPB=true;    REASON_VPB="the vPB is already a device in KVO (${VPB_DEVICE_NAME})"
+  fi
+  if [[ "$DET_MIRROR_OK" == "true" ]]; then
+    SKIP_MIRROR=true; REASON_MIRROR="the mirror fabric already exists: ${DET_MIRROR}"
+  fi
+  # Sensors are OFFERED, never silently skipped: see resume_ask_ambiguous.
+  # The traffic path has no reliable "already wired" probe, so it always runs
+  # (it is prompt-gated and defaults to no anyway).
+  return 0
+}
+
+# Questions that only make sense once the operator has said "continue".
+resume_ask_ambiguous() {
+  # Licensing is the one place where guessing costs money: re-activating a
+  # consumed code spends entitlement quantity. So when it cannot be determined,
+  # ASK, and default to skipping.
+  # This is the ONE place an "unknown" leads to a skip, and it is a question
+  # rather than an assumption. It is here because the two mistakes are not
+  # symmetric: skipping costs a re-run, re-activating a consumed code spends
+  # entitlement quantity that does not come back.
+  if [[ "$DET_LICENSE_OK" != "true" && "$DET_LICENSE" == unknown* ]]; then
+    echo
+    warn "KVO licensing state could not be determined: ${DET_LICENSE}."
+    echo "  Re-activating a code that was already consumed spends entitlement"
+    echo "  quantity, which is real money, so this is not something to guess at."
+    echo "  Force it anyway with: bash deploy/deploy-stack.sh --only license"
+    if ask_yn "  Skip KVO licensing this run (safe default)? [Y/n]: " y; then
+      SKIP_LICENSE=true
+      if [[ "$INTERACTIVE" == "true" ]]; then
+        REASON_LICENSE="licensing state unknown and you chose to skip"
+      else
+        REASON_LICENSE="licensing state unknown, and skipping is the safe default with nobody to ask"
+      fi
+    else
+      SKIP_LICENSE=false
+    fi
+  fi
+
+  # Sensors: show the count, then offer. Default follows the count.
+  if [[ -n "$DET_SENSORS_N" ]] && (( DET_SENSORS_N > 0 )); then
+    echo
+    echo "  ${DET_SENSORS_N} sensor(s) are already registered."
+    if ask_yn "  Run the sensor install again anyway? [y/N]: " n; then
+      SKIP_SENSORS=false
+    else
+      SKIP_SENSORS=true; REASON_SENSORS="${DET_SENSORS_N} sensor(s) already registered"
+    fi
+  fi
+  return 0
+}
+
+# The whole resume decision, run once region + stack name are known.
+resume_check() {
+  step "Phase 3b: Existing deployment check"
+
+  state_init
+  if [[ -n "$STATE_FILE" ]]; then
+    note "State file: ${STATE_FILE} (inputs only, never secrets)"
+  fi
+
+  note "Checking the real system, not the state file: every probe below is read-only."
+  detect_all
+
+  # Reality beats the state file, loudly.
+  local remembered
+  if remembered="$(state_get STACK_STATUS)" && [[ -n "$remembered" ]]; then
+    if [[ "$DET_STACK" == "MISSING" && "$remembered" != "MISSING" ]]; then
+      warn "The state file remembers this stack as ${remembered}, but ${REGION} says it does not exist."
+      note "Reality wins: this run deploys from scratch."
+    fi
+  fi
+  state_set STACK_STATUS "$DET_STACK"
+
+  # A stack in one of these states can never be updated: CloudFormation needs
+  # it deleted first. We print the command. We do not run it.
+  if stack_needs_delete; then
+    echo
+    warn "Stack ${STACK_NAME} is ${DET_STACK}."
+    echo "  CloudFormation can never update a stack in this state: it has to be"
+    echo "  deleted before anything can be deployed under this name again."
+    echo
+    echo "  Delete it yourself (this script will not delete anything):"
+    echo "    aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}"
+    echo "    aws cloudformation wait stack-delete-complete --stack-name ${STACK_NAME} --region ${REGION}"
+    echo
+    echo "  Then re-run this script. Or deploy under a different --stack-name."
+    fail "Stopping: ${STACK_NAME} is ${DET_STACK} and must be deleted by hand first."
+  fi
+
+  # Someone else may be mid-deploy. Never redeploy on top of that.
+  if stack_in_flight; then
+    echo
+    warn "Stack ${STACK_NAME} is ${DET_STACK}: another deploy is already running."
+    echo "  Redeploying on top of that would collide with it, so this run will not."
+    if [[ "$INTERACTIVE" == "true" ]] && [[ "$DET_STACK" != "DELETE_IN_PROGRESS" ]] \
+       && ask_yn "  Wait for it to finish (read-only polling)? [y/N]: " n; then
+      note "Waiting: aws cloudformation wait stack-create-complete --stack-name ${STACK_NAME}"
+      if aws "${AWS_REGION_ARG[@]}" cloudformation wait stack-create-complete \
+           --stack-name "$STACK_NAME" 2>/dev/null; then
+        ok "The other deploy finished."
+        detect_stack
+        detect_addresses
+      else
+        fail "The stack did not reach a complete state. Inspect it, then re-run."
+      fi
+    else
+      echo "  Watch it with:"
+      echo "    aws cloudformation describe-stacks --stack-name ${STACK_NAME} --region ${REGION}"
+      fail "Stopping while ${STACK_NAME} is ${DET_STACK}."
+    fi
+  fi
+
+  # Nothing there: a normal first deploy.
+  if [[ "$DET_STACK" == "MISSING" ]]; then
+    ok "No existing deployment for ${STACK_NAME} in ${REGION}: deploying everything."
+    return 0
+  fi
+
+  if [[ "$DET_STACK" == "unknown" ]]; then
+    warn "Could not check whether ${STACK_NAME} exists${DET_STACK_ERR:+: ${DET_STACK_ERR}}."
+    [[ "$AWS_USABLE" != "true" ]] && aws_credentials_advice
+    echo "  A failed probe is NOT proof that the stack is missing, so nothing is"
+    echo "  assumed and NO phase is skipped on it. 'cloudformation deploy' updates"
+    echo "  an existing stack rather than replacing it, so continuing is safe, but"
+    echo "  you should know that is what is happening."
+    if [[ "$INTERACTIVE" == "true" ]] && ! ask_yn "  Continue anyway? [Y/n]: " y; then
+      fail "Stopping at your request: stack state could not be determined."
+    fi
+    return 0
+  fi
+
+  FOUND_DEPLOYMENT=true
+  resume_decide
+  print_resume_banner
+  echo "Everything above the first \"not done\" will be skipped."
+
+  if [[ "$RESUME_MODE" == "fresh" ]]; then
+    RESUME_ACTIVE=false
+    note "--fresh: every phase runs again. Nothing is deleted; phases just stop being skipped."
+  elif [[ "$RESUME_MODE" == "resume" ]]; then
+    RESUME_ACTIVE=true
+    ok "--resume: continuing from '$(first_pending_phase)'."
+  elif [[ "$INTERACTIVE" != "true" ]]; then
+    RESUME_ACTIVE=true
+    ok "Non-interactive: resuming from '$(first_pending_phase)'. Skipping finished work cannot destroy anything; redoing it can."
+  elif ask_yn "  Continue from: $(first_pending_phase)?  [Y/n]: " y; then
+    RESUME_ACTIVE=true
+  else
+    RESUME_ACTIVE=false
+    note "Running every phase again. Nothing is deleted; the finished phases simply run once more."
+  fi
+
+  [[ "$RESUME_ACTIVE" == "true" ]] && resume_ask_ambiguous
+  return 0
+}
+
+# Pre-fill this run's inputs from the previous one so a resume does not have to
+# re-ask for everything. Flags and env vars still win: this only fills blanks.
+resume_load_inputs() {
+  local v
+  [[ -n "$STATE_FILE" ]] || return 0
+  if [[ -z "$KEY_NAME" ]] && v="$(state_get EC2_KEY_PAIR)" && [[ -n "$v" ]]; then
+    KEY_NAME="$v"; note "Key pair from the previous run: ${KEY_NAME}"
+  fi
+  if [[ -z "$SENSOR_MODE" ]] && v="$(state_get SENSOR_MODE)" && [[ -n "$v" ]]; then
+    case "$v" in standalone|kvo|none) SENSOR_MODE="$v"; note "Sensor mode from the previous run: ${SENSOR_MODE}" ;; esac
+  fi
+  if v="$(state_get CLOUD_CONFIG)" && [[ -n "$v" ]] && [[ "$CLOUD_CONFIG_NAME" == "cloudlens-aws" ]]; then
+    CLOUD_CONFIG_NAME="$v"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------
 # Logging: tee everything to log file
 # ---------------------------------------------------------------------
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -283,6 +1208,42 @@ Usage:
 Options:
   --dry-run                 Walk through prompts and print would-be aws
                             commands without touching AWS. Safe anywhere.
+                            Detection still runs (it only reads), so a dry run
+                            also shows what it found and what would be skipped.
+
+Re-running a deploy (resume):
+  A re-run never starts from zero. Before anything is created, every phase that
+  can be skipped is checked against the REAL system: CloudFormation for the
+  stack, the vController API, the KVO licensing API and GraphQL, and EC2 for
+  the mirror resources. A state file (.cloudlens-deploy-<stack>-<region>.state,
+  mode 600) only remembers inputs so a resume does not re-prompt for them; it
+  holds no secrets. If the state file and reality disagree, reality wins.
+
+  Nothing in this script is destructive, including under --fresh. Where a
+  delete is genuinely required (a ROLLBACK_COMPLETE stack, which CloudFormation
+  can never update), the exact command is printed for you to run.
+
+  --resume                  Continue from the first unfinished phase without
+                            asking. This is the default when there is no
+                            terminal: skipping finished work cannot destroy
+                            anything, whereas redoing it can.
+  --fresh                   Run every phase again, skipping nothing. Still
+                            deletes nothing.
+  --from PHASE              Start at PHASE and run everything after it.
+  --only PHASE              Run exactly one phase.
+                            PHASE is one of the stable short names:
+                              stack    deploy the stack            (phase 6)
+                              wait     wait for the vController    (phase 7)
+                              bootstrap vPB bootstrap over SSH     (phase 8)
+                              key      vController project key     (phase 9)
+                              license  KVO licensing               (phase 11)
+                              adopt    adopt CLMS + Cloud Config   (phase 12)
+                              sensors  sensor install              (phase 13)
+                              vpb      adopt the vPB into KVO      (phase 14)
+                              path     vPB traffic path            (phase 15)
+                              mirror   AWS mirror session          (phase 16)
+                            Names, not numbers: numbers shift when phases are
+                            added, these do not.
 
 Region + naming (all have sensible defaults, all overridable):
   --region REGION           AWS region             (default: us-east-1)
@@ -426,6 +1387,9 @@ What it does (phases):
   1. Banner + environment detection (CloudShell vs local)
   2. Pre-flight checks (aws CLI, caller identity)
   3. Customer input (region, stack name, key pair, toggles)
+ 3b. Existing deployment check: read-only probes of the real system, then a
+     status table and an offer to continue from the first unfinished phase
+     (--resume / --fresh / --from / --only)
   4. Marketplace AMI subscription check (vController + KVO + vPB)
   5. Infra engine selection (CloudFormation or Terraform)
   6. Deploy the stack (vController + optional KVO + optional vPB)
@@ -445,6 +1409,10 @@ What it does (phases):
 Phases 11 and 12 deliberately run BEFORE the sensors: in KVO-managed mode the
 project key does not exist until the Cloud Config provisions it, and a sensor
 installed with the phase 9 key registers to the wrong project.
+
+Any phase from 6 onwards is skipped on a re-run when the real system says it is
+already done. Re-run this script as often as you like: it picks up where it
+stopped, and it never deletes anything.
 HLP
 }
 
@@ -486,6 +1454,11 @@ while [[ $# -gt 0 ]]; do
     --discovery-tag-key) DISCOVERY_TAG_KEY="$2"; shift 2 ;;
     --discovery-tag-value) DISCOVERY_TAG_VALUE="$2"; shift 2 ;;
 
+    --resume) RESUME_MODE="resume"; shift ;;
+    --fresh) RESUME_MODE="fresh"; shift ;;
+    --from) FROM_PHASE="$(to_lower "$2")"; shift 2 ;;
+    --only) ONLY_PHASE="$(to_lower "$2")"; shift 2 ;;
+
     --region) ARG_REGION="$2"; shift 2 ;;
     --stack-name) ARG_STACK="$2"; shift 2 ;;
     --admin-user) DEFAULT_ADMIN_USER="$2"; shift 2 ;;
@@ -520,6 +1493,19 @@ done
 
 if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
   fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
+fi
+
+# Phase selectors use the stable short names, not numbers.
+if [[ -n "$FROM_PHASE" && -n "$ONLY_PHASE" ]]; then
+  fail "--from and --only are mutually exclusive."
+fi
+for _p in "$FROM_PHASE" "$ONLY_PHASE"; do
+  [[ -z "$_p" ]] && continue
+  phase_index "$_p" >/dev/null \
+    || fail "Unknown phase '${_p}'. Valid phases: ${PHASE_ORDER}."
+done
+if [[ "$RESUME_MODE" == "fresh" && ( -n "$FROM_PHASE" || -n "$ONLY_PHASE" ) ]]; then
+  note "--fresh with --from/--only: the selector still limits which phases run."
 fi
 
 case "$SENSOR_MODE" in
@@ -627,6 +1613,10 @@ on_error() {
   echo
   echo -e "${C_RED}[x] FAILED in phase: ${PHASE_NAME}${C_RESET}"
   echo -e "${C_RED}    exit code: ${exit_code}${C_RESET}"
+  # Remember where this run stopped so the next one can say so up front. The
+  # next run still re-checks reality: this is a hint, not an authority.
+  state_set LAST_FAILURE "${PHASE_NAME} (exit ${exit_code}) at $(date -u +%FT%TZ)"
+
   echo
   echo "What was created so far:"
   [[ "$CREATED_STACK" == "true" ]] && echo "  - Stack: ${STACK_NAME:-unknown} (engine: ${IAC})"
@@ -666,14 +1656,45 @@ on_error() {
       echo "  Delete everything now:   aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}"
     fi
   fi
-  echo "  Re-run this script:      bash deploy/deploy-stack.sh    # idempotent"
+  echo "  Re-run this script:      bash deploy/deploy-stack.sh --region ${REGION:-REGION} --stack-name ${STACK_NAME:-NAME}"
+  echo "                           It resumes: every finished phase is detected"
+  echo "                           against the real system and skipped."
   echo "  Inspect log:             ${LOG_FILE}"
+  SCRIPT_DONE=true
 }
 trap on_error ERR
 
+# ---------------------------------------------------------------------
+# Last line of defence: no exit may ever be silent.
+#
+# `set -e` inside a shell function does not run the ERR trap, so before this
+# existed a single failed AWS call inside a detect_* ended the whole run with a
+# bare exit code and not one word of explanation. This fires once, in the real
+# shell (never in a $( ) subshell), for any non-zero exit that nothing else has
+# already explained.
+# ---------------------------------------------------------------------
+on_exit() {
+  local code=$?
+  [[ "${BASHPID:-$$}" == "$$" ]] || return 0
+  [[ "$SCRIPT_DONE" == "true" ]] && return 0
+  (( code == 0 )) && return 0
+  echo
+  echo -e "${C_RED}[x] Stopped in phase: ${PHASE_NAME} (exit ${code})${C_RESET}" >&2
+  echo "    Nothing above explained this, which means a command failed inside a" >&2
+  echo "    function under 'set -e'. The usual cause is an AWS call: expired or" >&2
+  echo "    invalid credentials, no network, or a missing permission." >&2
+  echo "    Check with: aws sts get-caller-identity" >&2
+  echo "    Full log:   ${LOG_FILE}" >&2
+  state_set LAST_FAILURE "${PHASE_NAME} (exit ${code}, unexplained) at $(date -u +%FT%TZ)" 2>/dev/null || true
+}
+trap on_exit EXIT
+
 on_interrupt() {
   echo
+  state_set LAST_FAILURE "interrupted in ${PHASE_NAME} at $(date -u +%FT%TZ)"
+  SCRIPT_DONE=true
   warn "Interrupted in phase: ${PHASE_NAME}"
+  warn "Re-run the same command to resume: finished phases are detected and skipped."
   [[ "$CREATED_STACK" == "true" ]] && [[ -n "${STACK_NAME:-}" ]] \
     && warn "To remove what got created: see cleanup options in ${LOG_FILE}"
   exit 130
@@ -797,10 +1818,75 @@ else
   ok "AWS CLI present ($(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2 2>/dev/null || echo unknown))"
 fi
 
-# Verify caller identity (credentials present + valid)
-if [[ "$DRY_RUN" == "false" ]]; then
-  if ! aws sts get-caller-identity >/dev/null 2>&1; then
-    warn "No valid AWS credentials found in this shell."
+# ---------------------------------------------------------------------
+# Verify caller identity (credentials present + valid).
+#
+# This is answered ONCE, here, and the answer is reused by every read-only
+# probe in phase 3b. Nine "unknown" rows with no explanation is a terrible way
+# to tell somebody their SSO token expired, and an expiring token mid-session
+# is routine, not hypothetical.
+# ---------------------------------------------------------------------
+aws_identity_check() {
+  local out
+  AWS_USABLE=false; AWS_UNUSABLE_WHY=""
+  if ! command -v aws >/dev/null 2>&1; then
+    AWS_UNUSABLE_WHY="the AWS CLI is not on PATH"
+    return 0
+  fi
+  out="$(PROBE_MERGE_STDERR=1 probe aws sts get-caller-identity --query Account --output text)"
+  out="$(first_line "$out")"
+  if [[ "$out" =~ ^[0-9]{12}$ ]]; then
+    ACCOUNT_ID="$out"; AWS_USABLE=true
+    return 0
+  fi
+  case "$out" in
+    *ExpiredToken*|*TokenRefreshRequired*|*"security token included in the request is expired"*)
+      AWS_UNUSABLE_WHY="your AWS credentials have expired" ;;
+    *InvalidClientTokenId*|*SignatureDoesNotMatch*|*UnrecognizedClientException*|*AuthFailure*|*AccessDenied*)
+      AWS_UNUSABLE_WHY="AWS rejected these credentials as invalid" ;;
+    *"Unable to locate credentials"*|*NoCredentialProviders*|*"You must specify a region"*)
+      AWS_UNUSABLE_WHY="this shell has no AWS credentials configured" ;;
+    "")
+      AWS_UNUSABLE_WHY="the AWS CLI did not answer within ${PROBE_TIMEOUT}s (timeout or no network)" ;;
+    *)
+      AWS_UNUSABLE_WHY="the AWS identity check failed: ${out:0:160}" ;;
+  esac
+  return 0
+}
+
+aws_credentials_advice() {
+  echo "  Fix it with ONE of these, then re-run the same command:"
+  if [[ -n "${AWS_PROFILE:-}" ]]; then
+    echo "    aws sso login --profile ${AWS_PROFILE}    # this shell has AWS_PROFILE=${AWS_PROFILE}"
+  else
+    echo "    aws sso login --profile NAME              # IAM Identity Center / SSO"
+  fi
+  echo "    aws configure                             # static access key + secret"
+  echo "    export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # fresh keys in this shell"
+  echo "  Check it worked with: aws sts get-caller-identity"
+}
+
+probe_guard_begin
+aws_identity_check
+probe_guard_end
+
+if [[ "$AWS_USABLE" == "true" ]]; then
+  CALLER_ARN="$(probe aws sts get-caller-identity --query Arn --output text)"
+  [[ -n "$CALLER_ARN" ]] || CALLER_ARN="unknown"
+  ok "AWS account: ${ACCOUNT_ID}"
+  note "Caller: ${CALLER_ARN}"
+elif [[ "$DRY_RUN" == "true" ]]; then
+  # Dry-run is meant to work anywhere, including offline, so this is a warning
+  # and the run continues. Say plainly what it means for the checks that follow.
+  warn "Cannot talk to AWS: ${AWS_UNUSABLE_WHY}."
+  aws_credentials_advice
+  note "--dry-run continues anyway. Every AWS check below will read 'unknown',"
+  note "which means 'not checked', not 'not there': nothing is skipped on it."
+  ACCOUNT_ID="000000000000"
+  CALLER_ARN="arn:aws:iam::000000000000:user/dry-run"
+else
+  warn "Cannot talk to AWS: ${AWS_UNUSABLE_WHY}."
+  if [[ "$INTERACTIVE" == "true" ]]; then
     echo
     echo "  How do you sign in to AWS?"
     echo "    1) IAM Identity Center / SSO   (runs: aws sso login)"
@@ -823,26 +1909,27 @@ if [[ "$DRY_RUN" == "false" ]]; then
         aws configure || true
         ;;
       *)
-        echo "  Sign in with one of these, then re-run this installer:"
-        echo "    aws sso login --profile NAME  # IAM Identity Center / SSO"
-        echo "    aws configure                 # static access key"
+        aws_credentials_advice
         fail "Cannot proceed without valid AWS credentials."
         ;;
     esac
-    # Re-check after the assisted login.
-    if ! aws sts get-caller-identity >/dev/null 2>&1; then
-      fail "Still no valid credentials. Sign in, then re-run this installer."
-    fi
-    ok "Signed in."
+    probe_guard_begin
+    aws_identity_check
+    probe_guard_end
   fi
-  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-  CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+  if [[ "$AWS_USABLE" != "true" ]]; then
+    # Nothing downstream can work: every phase either creates or inspects AWS
+    # resources. Stop here, with the reason and the fix, rather than failing
+    # nine probes and then a deploy.
+    echo
+    aws_credentials_advice
+    fail "Cannot proceed: ${AWS_UNUSABLE_WHY}."
+  fi
+  ok "Signed in."
+  CALLER_ARN="$(probe aws sts get-caller-identity --query Arn --output text)"
+  [[ -n "$CALLER_ARN" ]] || CALLER_ARN="unknown"
   ok "AWS account: ${ACCOUNT_ID}"
   note "Caller: ${CALLER_ARN}"
-else
-  ACCOUNT_ID="000000000000"
-  CALLER_ARN="arn:aws:iam::000000000000:user/dry-run"
-  ok "AWS account: ${ACCOUNT_ID}  [dry-run placeholder]"
 fi
 
 # Locate the repo root so we can find the CFN template / Terraform dir.
@@ -929,6 +2016,23 @@ else
     if [[ "$(to_lower "$use_sugg")" != "n" ]]; then STACK_NAME="$suggestion"; break; fi
   done
   ok "Stack name: ${STACK_NAME}"
+fi
+
+# =====================================================================
+# Phase 3b: Existing deployment check (resume)
+# =====================================================================
+# Runs the moment stack name + region are known, which is the earliest point at
+# which "does this deployment already exist" is a question that can be asked.
+# Everything it does is read-only.
+resume_check
+resume_load_inputs
+
+# An appliance that is already in this stack is not worth prompting about.
+if [[ "$FOUND_DEPLOYMENT" == "true" ]]; then
+  [[ -z "$DEPLOY_KVO" && -n "$KVO_PUBLIC_IP" ]] \
+    && { DEPLOY_KVO=true; note "KVO is already part of this stack (${KVO_PUBLIC_IP})."; }
+  [[ -z "$DEPLOY_VPB" && -n "$VPB_PUBLIC_IP" ]] \
+    && { DEPLOY_VPB=true; note "vPB is already part of this stack (${VPB_PUBLIC_IP})."; }
 fi
 
 # EC2 key pair. AWS appliances use SSH key auth, not passwords. Create one
@@ -1063,6 +2167,20 @@ fi
 [[ -n "$EXISTING_SG_ID" ]] && printf "  %-22s %s\n" "Existing SG:" "$EXISTING_SG_ID"
 printf "  %-22s %s\n" "Rollback on failure:" "$ROLLBACK_ON_FAIL"
 echo
+
+# Remember the inputs (never the secrets) so a resume does not re-ask for them.
+state_set REGION "$REGION"
+state_set STACK_NAME "$STACK_NAME"
+state_set IAC "$IAC"
+state_set EC2_KEY_PAIR "$KEY_NAME"
+state_set DEPLOY_KVO "$DEPLOY_KVO"
+state_set DEPLOY_VPB "$DEPLOY_VPB"
+state_set ADMIN_USER "$ADMIN_USERNAME"
+state_set CLOUD_CONFIG "$CLOUD_CONFIG_NAME"
+state_set CLM_NAME "$CLM_NAME_IN_KVO"
+state_set VPB_DEVICE_NAME "$VPB_DEVICE_NAME"
+state_set DISCOVERY_TAG "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+state_set LAST_RUN "$(date -u +%FT%TZ)"
 
 # =====================================================================
 # Phase 4: Marketplace AMI subscription check
@@ -1354,22 +2472,41 @@ tf_output() {
 }
 
 if [[ "$IAC" == "terraform" ]]; then
-  deploy_terraform
-  CLMS_PUBLIC_IP="$(tf_output controller_public_ip)"
-  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(tf_output kvo_public_ip)"
-  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(tf_output vpb_public_ip)"
+  if run_phase stack; then
+    # A real apply can move addresses, so re-read them rather than trusting
+    # what detection saw before it ran.
+    CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
+    deploy_terraform
+  else
+    skip_note "the Terraform apply"
+    note "Keeping the addresses detection already read from the existing workspace."
+  fi
+  [[ -z "$CLMS_PUBLIC_IP" ]] && CLMS_PUBLIC_IP="$(tf_output controller_public_ip)"
+  [[ "$DEPLOY_KVO" == "true" && -z "$KVO_PUBLIC_IP" ]] && KVO_PUBLIC_IP="$(tf_output kvo_public_ip)"
+  [[ "$DEPLOY_VPB" == "true" && -z "$VPB_PUBLIC_IP" ]] && VPB_PUBLIC_IP="$(tf_output vpb_public_ip)"
 else
-  deploy_cfn
+  if run_phase stack; then
+    CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
+    deploy_cfn
+  else
+    skip_note "the CloudFormation deploy"
+    note "Keeping the addresses detection already read from the existing stack."
+  fi
   # Outputs are named *Address (public EIP when AssignPublicIp=yes, else the
   # private IP). Same variable is used downstream for the wait + sensor chain.
-  CLMS_PUBLIC_IP="$(cfn_output VcontrollerAddress)"
-  [[ "$DEPLOY_KVO" == "true" ]] && KVO_PUBLIC_IP="$(cfn_output KvoAddress)"
-  [[ "$DEPLOY_VPB" == "true" ]] && VPB_PUBLIC_IP="$(cfn_output VpbAddress)"
+  [[ -z "$CLMS_PUBLIC_IP" ]] && CLMS_PUBLIC_IP="$(cfn_output VcontrollerAddress)"
+  [[ "$DEPLOY_KVO" == "true" && -z "$KVO_PUBLIC_IP" ]] && KVO_PUBLIC_IP="$(cfn_output KvoAddress)"
+  [[ "$DEPLOY_VPB" == "true" && -z "$VPB_PUBLIC_IP" ]] && VPB_PUBLIC_IP="$(cfn_output VpbAddress)"
 fi
 
 ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
 [[ "$DEPLOY_KVO" == "true" ]] && ok "KVO at ${KVO_PUBLIC_IP:-unknown}"
 [[ "$DEPLOY_VPB" == "true" ]] && ok "vPB at ${VPB_PUBLIC_IP:-unknown} (SSH on port ${VPB_SSH_PORT})"
+
+state_set VCONTROLLER_ADDRESS "$CLMS_PUBLIC_IP"
+state_set KVO_ADDRESS "$KVO_PUBLIC_IP"
+state_set VPB_ADDRESS "$VPB_PUBLIC_IP"
+state_phase stack done
 
 # ---------------------------------------------------------------------
 # Post-deploy helpers, shared by phases 8 and 10-16.
@@ -1472,7 +2609,10 @@ discover_stack_facts
 # =====================================================================
 step "Phase 7: Wait for vController initialization"
 
-if [[ "$DRY_RUN" == "true" ]]; then
+if ! run_phase wait; then
+  skip_note "the vController wait"
+  ok "The vController API answered during detection, so there is nothing to wait for."
+elif [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would poll https://${CLMS_PUBLIC_IP}:443 every 15s for up to 17 minutes"
 elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
   warn "No address available, skipping wait"
@@ -1527,6 +2667,7 @@ else
     note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/cloudlens/api/v1/identity/login"
   fi
 fi
+state_phase wait done
 
 # =====================================================================
 # Phase 8: vPB post-deploy bootstrap (KCOS wait + vpb CLI wrapper)
@@ -1546,6 +2687,11 @@ vpb_bootstrap_manual_note() {
 if [[ "$DEPLOY_VPB" == "true" ]]; then
   step "Phase 8: vPB post-deploy bootstrap"
   note "vPB management SSH is reachable on port ${VPB_SSH_PORT} within ~5 minutes."
+
+  if ! run_phase bootstrap; then
+    skip_note "the vPB bootstrap"
+    BOOTSTRAP_VPB=false
+  fi
 
   if [[ -z "$BOOTSTRAP_VPB" ]]; then
     if ask_yn "Run the vPB bootstrap over SSH now? [Y/n]: " y; then
@@ -1609,11 +2755,22 @@ step "Phase 9: Project key + vController login"
 # script's own token. scripts/vcontroller_project_key.py does all of it:
 # login -> set known password -> create project -> return key, and prints the
 # full login (url / user / password / project / key) for the operator.
-VC_CREDS_FILE="$HOME/.cloudlens-vcontroller-creds.json"
+# (VC_CREDS_FILE is defined up top: detection reads it too.)
 
 vc_key_script() { find_repo_script "scripts/vcontroller_project_key.py"; }
 
-if [[ "$DRY_RUN" == "true" ]]; then
+# Re-running this step against an already-rotated admin password FAILS, so a
+# resume reuses the key already in the creds file rather than rotating again.
+if ! run_phase key; then
+  skip_note "the project key step"
+  if VC_PROJECT_KEY="$(vc_key_from_creds)"; then
+    ok "Reusing the project key already in ${VC_CREDS_FILE} (${#VC_PROJECT_KEY} characters)."
+  else
+    VC_PROJECT_KEY=""
+    warn "Could not read a project key back from ${VC_CREDS_FILE}."
+    note "Re-run with --only key to mint one, or paste it when asked below."
+  fi
+elif [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would run vcontroller_project_key.py --host ${CLMS_PUBLIC_IP} to mint the key and set a known admin password"
 elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
   warn "No vController address available; skipping automated key retrieval."
@@ -1670,6 +2827,7 @@ Manual path: to deploy sensors, you need a project key.
 
 EOM
 fi
+state_phase key done
 
 # Pre-flight: count already-tagged EC2s using the chosen discovery tag.
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
@@ -1779,7 +2937,12 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
   step "Phase 11: KVO product licensing"
   LIC_SCRIPT="$(find_repo_script scripts/kvo_license.py || true)"
 
-  if [[ "$DRY_RUN" == "true" ]]; then
+  # Activation codes are consumable: re-activating one that is already spent
+  # burns entitlement quantity. An already-licensed KVO is therefore left alone.
+  if ! run_phase license; then
+    skip_note "KVO licensing"
+    ok "No activation code is re-used, so no entitlement quantity is spent."
+  elif [[ "$DRY_RUN" == "true" ]]; then
     dryrun_say "python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure ${KVO_CODES[@]+--codes ${KVO_CODES[*]}}"
     [[ ${#KVO_CODES[@]} -eq 0 ]] && dryrun_say "no --kvo-codes given: on a terminal kvo_license.py would prompt for code + quantity"
   elif [[ -z "$LIC_SCRIPT" ]]; then
@@ -1812,6 +2975,10 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       note "KVO-managed sensors therefore have no project key to register with."
     note "Fix licensing and re-run with:"
     note "  bash deploy/deploy-stack.sh --sensor-mode ${SENSOR_MODE} --kvo-codes CODE[,QTY]"
+    note "The re-run resumes: everything already done above is detected and skipped."
+    state_phase license failed "KVO licensing did not complete"
+  else
+    state_phase license done
   fi
 fi
 
@@ -1834,18 +3001,35 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
   fi
   VC_ADMIN_PASS="${VC_ADMIN_PASS:-Cl0udLens@dm!n}"
 
-  echo
-  echo "  Adopting ${CLM_NAME_IN_KVO} (${CLMS_PUBLIC_IP}) into KVO and creating"
-  echo "  Cloud Config '${CLOUD_CONFIG_NAME}'. This accepts the KVO EULA on your"
-  echo "  behalf, which is a legal acceptance."
-  if [[ "$DRY_RUN" == "true" ]]; then
+  # The notice is only printed on the paths that are actually going to adopt.
+  adopt_notice() {
+    echo
+    echo "  Adopting ${CLM_NAME_IN_KVO} (${CLMS_PUBLIC_IP}) into KVO and creating"
+    echo "  Cloud Config '${CLOUD_CONFIG_NAME}'. This accepts the KVO EULA on your"
+    echo "  behalf, which is a legal acceptance."
+  }
+
+  # Re-adopting an already-adopted manager errors, and the Cloud Config is
+  # reusable by name, so a resume reads the existing key back instead.
+  if ! run_phase adopt; then
+    skip_note "the KVO adoption and Cloud Config"
+    kvo_auth "$KVO_PUBLIC_IP" || true
+    if KVO_PROJECT_KEY="$(kvo_cloud_config_key "$KVO_PUBLIC_IP")"; then
+      ok "Reusing the project key from Cloud Config '${CLOUD_CONFIG_NAME}' (${#KVO_PROJECT_KEY} characters)."
+    else
+      KVO_PROJECT_KEY=""
+      warn "Could not read the project key back from Cloud Config '${CLOUD_CONFIG_NAME}'."
+      note "Re-run with --only adopt if KVO-managed sensors need it."
+    fi
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    adopt_notice
     dryrun_say "python3 scripts/kvo_adopt_clms.py --clms ${CLMS_PUBLIC_IP} --clms-admin-pass <hidden> --kvo ${KVO_PUBLIC_IP} --name ${CLM_NAME_IN_KVO} --cloud-config ${CLOUD_CONFIG_NAME} --accept-eula --insecure"
     if [[ "$SENSOR_MODE" == "kvo" ]]; then
       dryrun_say "would capture the provisioned project key from its stdout and use it for the sensors"
     else
       dryrun_say "would capture the provisioned project key from its stdout (unused in ${SENSOR_MODE} mode)"
     fi
-  elif ! ask_yn "  Adopt now? [Y/n]: " y; then
+  elif { adopt_notice; ! ask_yn "  Adopt now? [Y/n]: " y; }; then
     warn "Adoption skipped."
     [[ "$SENSOR_MODE" == "kvo" ]] && \
       note "KVO-managed sensors have no project key without it."
@@ -1868,6 +3052,11 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
       warn "Adoption or Cloud Config creation did not return a project key."
       KVO_CHAIN_OK=false
     fi
+  fi
+  if [[ "$KVO_CHAIN_OK" == "true" ]]; then
+    state_phase adopt done
+  else
+    state_phase adopt failed "adoption or Cloud Config did not complete"
   fi
 fi
 
@@ -1910,6 +3099,15 @@ fi
 # =====================================================================
 # Phase 13: Sensor chain (optional)
 # =====================================================================
+# The sensor install is idempotent enough to re-run, so this is the one phase
+# that is offered rather than hard-skipped (see resume_ask_ambiguous).
+SENSOR_SKIP_REASON=""
+if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]] \
+   && ! run_phase sensors; then
+  SENSOR_SKIP_REASON="$PHASE_SKIP_REASON"
+  CHAIN_SENSORS=false
+fi
+
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; then
   warn "Sensor chain disabled: Ansible cannot run on Windows shells."
   warn "Run sensors from AWS CloudShell, WSL, or a Linux EC2 with:"
@@ -1993,8 +3191,15 @@ YAML
         || warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
     fi
   fi
+  state_phase sensors done
 else
   step "Phase 13: Sensor chain (skipped)"
+  if [[ -n "$SENSOR_SKIP_REASON" ]]; then
+    note "Skipping the sensor install: ${SENSOR_SKIP_REASON}."
+    note "Install them later with: curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    note "Or force it now with:    bash deploy/deploy-stack.sh --only sensors"
+    state_phase sensors skipped "$SENSOR_SKIP_REASON"
+  fi
 fi
 
 # =====================================================================
@@ -2005,6 +3210,12 @@ fi
 # device with autoBind, so KVO creates the Device Config and licenses it.
 if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
   step "Phase 14: Adopt the vPB into KVO"
+
+  # A device already in KVO must not be adopted twice.
+  if ! run_phase vpb; then
+    skip_note "the vPB adoption"
+    ADOPT_VPB=false
+  fi
 
   if [[ -z "$ADOPT_VPB" ]]; then
     if ask_yn "Adopt the vPB into KVO now (accepts the vPB EULA)? [Y/n]: " y; then
@@ -2039,9 +3250,12 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
          ${VPB_PRIVATE_IP:+--vpb-mgmt-ip "$VPB_PRIVATE_IP"} \
          --device-name "$VPB_DEVICE_NAME" --wait-cli --accept-eula --insecure; then
       ok "vPB adopted into KVO as '${VPB_DEVICE_NAME}'."
+      VPB_IN_KVO=true
+      state_phase vpb done
     else
       warn "vPB adoption did not complete; the rest of the run continues."
       ADOPT_VPB=false
+      state_phase vpb failed "vpb_kvo_adopt.py exited non-zero"
     fi
   fi
 fi
@@ -2054,8 +3268,16 @@ fi
 # data ports ON the vPB, and that bring-up is not automated anywhere in this
 # repo. With no ports there is nothing for the bind stage to bind, so the step
 # is offered and then reported truthfully rather than claimed as a success.
-if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" && "$ADOPT_VPB" == "true" ]]; then
+# VPB_IN_KVO covers the resume case: the vPB was adopted by an earlier run, so
+# phase 14 skipped, but the traffic path is still worth offering.
+if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
+   && [[ "$ADOPT_VPB" == "true" || "$VPB_IN_KVO" == "true" ]]; then
   step "Phase 15: vPB traffic path + monitoring policy"
+
+  if ! run_phase path; then
+    skip_note "the vPB traffic path"
+    WIRE_VPB_PATH=false
+  fi
 
   echo
   echo "  Heads up before you choose: this step needs the vPB data interfaces"
@@ -2087,6 +3309,7 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" && "$ADOPT_VPB" == "tru
          --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
          --ingress-ip "$VPB_INGRESS_IP" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
+      state_phase path done
     else
       warn "The vPB traffic path did NOT complete. This is expected on a fresh vPB:"
       note "the device config has no ports until eth1/eth2 are up as DPDK data ports"
@@ -2107,6 +3330,12 @@ fi
 # product item, not something this script can work around.
 if [[ "$DEPLOY_KVO" == "true" ]]; then
   step "Phase 16: AWS mirror session (optional)"
+
+  if ! run_phase mirror; then
+    skip_note "the AWS mirror step"
+    note "Found in ${REGION}: ${DET_MIRROR}"
+    WITH_MIRROR=false
+  fi
 
   echo
   echo "  Before you choose: this step does not currently produce mirror sessions."
@@ -2160,6 +3389,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            --tool-encap L2GRE \
            --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
            --accept-eula --insecure; then
+      state_phase mirror done
       ok "AWS mirror fabric committed in KVO."
       warn "Expect ZERO traffic mirror sessions: the collector SVM is never adopted."
       note "Check for yourself: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
@@ -2246,11 +3476,23 @@ EOM
   fi
   cat <<EOM
 
+--- Re-running ---
+Safe to re-run at any time. Each phase is checked against the real system
+first and skipped when it is already done:
+  bash deploy/deploy-stack.sh --region ${REGION} --stack-name ${STACK_NAME} --resume
+  --fresh          run every phase again (still deletes nothing)
+  --from PHASE     start at stack|wait|bootstrap|key|license|adopt|sensors|vpb|path|mirror
+  --only PHASE     run exactly one phase
+State file (inputs only, no secrets): ${STATE_FILE:-none}
+
 --- Log ---
 Full deployment log: ${LOG_FILE}
 ========================================================================
 EOM
 }
+
+# The run finished: clear the "stopped at" hint the next run would report.
+state_set LAST_FAILURE "none"
 
 write_summary | tee "$SUMMARY_FILE" >/dev/null
 
@@ -2263,6 +3505,7 @@ echo "vController UI:      https://${CLMS_PUBLIC_IP}"
 [[ "$DEPLOY_VPB" == "true" ]] && echo "vPB management:      ${VPB_PUBLIC_IP} (SSH port ${VPB_SSH_PORT})"
 echo
 ok "Done."
+SCRIPT_DONE=true
 trap - ERR
 exit 0
 
