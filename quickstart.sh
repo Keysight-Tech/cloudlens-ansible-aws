@@ -119,6 +119,11 @@ command -v aws                >/dev/null 2>&1 || MISSING_BIN="$MISSING_BIN awscl
 command -v ansible-playbook   >/dev/null 2>&1 || MISSING_PIP="$MISSING_PIP ansible"
 python3 -c "import boto3"     >/dev/null 2>&1 || MISSING_PIP="$MISSING_PIP boto3"
 python3 -c "import botocore"  >/dev/null 2>&1 || MISSING_PIP="$MISSING_PIP botocore"
+# PyYAML is a hard dependency of ansible-core, so it is present on every
+# machine that can run this at all. It is checked anyway because the inventory
+# renderer needs it before the first playbook ever runs, and "ImportError:
+# yaml" from a python script is a worse message than a named prerequisite.
+python3 -c "import yaml"      >/dev/null 2>&1 || MISSING_PIP="$MISSING_PIP pyyaml"
 
 # Only needed for the Windows sensor path, and which one depends on the
 # connection mode chosen in customer_input.yaml.
@@ -207,31 +212,177 @@ else
   fail "AWS credentials invalid. Run: aws sso login   OR   aws configure"
 fi
 
+# =====================================================================
+# Build the inventory discovery will actually use
+# =====================================================================
+# The tag and region an operator sets in customer_input.yaml (or passes to
+# deploy-stack.sh, which writes them there) used to be ignored: discovery ran
+# against inventory/aws_ec2.yaml, which hard-coded tag:cloudlens=yes and had
+# regions commented out. A customer tagged Environment=prod got zero hosts, no
+# error, and flags that appeared to do nothing.
+#
+# render_inventory.py merges customer_input.yaml onto the checked-in
+# inventory/aws_ec2.yaml and writes inventory/generated.aws_ec2.yaml. Nobody
+# hand-edits a file a script also writes, which is how the mismatch happened.
+echo ""
+echo "→ Building inventory from customer_input.yaml..."
+INV_SUMMARY=$(python3 scripts/render_inventory.py) \
+  || fail "Could not build the inventory from customer_input.yaml. The error above says why."
+eval "$INV_SUMMARY"
+INVENTORY="${CL_INV_PATH:-inventory/aws_ec2.yaml}"
+
+case "$CL_INV_MODE" in
+  static)
+    ok "Using the existing inventory you pointed at: $INVENTORY (AWS discovery skipped)"
+    warn "Connection settings in inventory/group_vars do NOT apply to an external"
+    warn "inventory file. Put ansible_user, ansible_ssh_private_key_file and"
+    warn "ansible_connection in that file, or in a group_vars dir beside it."
+    ;;
+  instance-ids)
+    ok "Discovery restricted to the instance ids in customer_input.yaml: $CL_INV_FILTERS"
+    ;;
+  *)
+    if [ "$CL_INV_DEFAULT" = "true" ]; then
+      ok "Discovery filters: $CL_INV_FILTERS (repository default)"
+    else
+      ok "Discovery filters: $CL_INV_FILTERS"
+    fi
+    ;;
+esac
+if [ -n "$CL_INV_REGIONS" ]; then
+  ok "Regions: $CL_INV_REGIONS"
+elif [ "$CL_INV_MODE" != "static" ]; then
+  ok "Regions: every enabled region (set aws.regions in customer_input.yaml to narrow it)"
+fi
+
+# =====================================================================
+# Zero-host diagnostics
+# =====================================================================
+# "Found 0 hosts" with no detail is what made the tag mismatch invisible for
+# so long. On an empty result, say exactly what was searched and whether any
+# running instances exist at all: instances present but unmatched means the
+# tag is wrong, none present means the region or credentials are.
+diagnose_zero_hosts() {
+  DIAG_REGIONS="$CL_INV_REGIONS"
+  DIAG_SCOPE_NOTE=""
+  if [ -z "$DIAG_REGIONS" ]; then
+    DIAG_REGIONS=$(aws configure get region 2>/dev/null || true)
+    DIAG_REGIONS=${DIAG_REGIONS:-${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}}
+    DIAG_SCOPE_NOTE="customer_input.yaml sets no aws.regions, so every enabled region was scanned; the counts below are for $DIAG_REGIONS only"
+  fi
+
+  echo ""
+  echo "  What was searched"
+  echo "    inventory:  $INVENTORY"
+  echo "    regions:    $DIAG_REGIONS"
+  if [ -n "$DIAG_SCOPE_NOTE" ]; then
+    echo "                ($DIAG_SCOPE_NOTE)"
+  fi
+  echo "    filters:    instance-state-name=running"
+  for f in $CL_INV_FILTERS; do
+    echo "                $f"
+  done
+
+  TOTAL_RUNNING=0
+  echo ""
+  echo "  Running instances present in those regions, ignoring every filter above"
+  for r in $DIAG_REGIONS; do
+    n=$(aws ec2 describe-instances --region "$r" \
+          --filters Name=instance-state-name,Values=running \
+          --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo 0)
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    echo "    $r: $n running instance(s)"
+    TOTAL_RUNNING=$((TOTAL_RUNNING + n))
+  done
+  echo "    total: $TOTAL_RUNNING"
+
+  echo ""
+  if [ "$TOTAL_RUNNING" -eq 0 ]; then
+    echo "  There are no running instances at all in those regions."
+    echo "  So this is a region or credentials problem, not a tagging one:"
+    echo "    - set aws.regions in customer_input.yaml to the region your workloads are in"
+    echo "    - confirm the account: aws sts get-caller-identity"
+    echo "    - confirm the instances are running, not stopped"
+  else
+    echo "  $TOTAL_RUNNING running instance(s) exist, but none carry every filter above."
+    echo "  That means the discovery tag is wrong, not your credentials."
+    echo ""
+    echo "  Tags actually present on running instances (up to 25):"
+    for r in $DIAG_REGIONS; do
+      # Tag VALUES are printed so the operator can copy the right one into
+      # tag_filters, but some tags hold secrets (cloudlens:projectKey is one
+      # AWS itself writes onto collector instances), so anything that looks
+      # like a credential shows its key only.
+      aws ec2 describe-instances --region "$r" \
+        --filters Name=instance-state-name,Values=running \
+        --query 'Reservations[].Instances[].Tags[]' --output text 2>/dev/null \
+        | awk 'NF>=1 {
+                 k=$1; $1=""; sub(/^ /,""); v=$0; lk=tolower(k);
+                 if (lk ~ /key|secret|token|password|passwd|credential/) v="<redacted>";
+                 print "    tag:" k "=" v
+               }' \
+        | sort -u | head -25
+    done
+    echo ""
+    echo "  Fix it either way:"
+    echo "    - point customer_input.yaml at the tags you already use:"
+    echo "        aws:"
+    echo "          tag_filters:"
+    echo "            Environment: \"prod\""
+    echo "    - or name the instances outright:"
+    echo "        aws:"
+    echo "          instance_ids: [i-0123456789abcdef0]"
+    echo "    - or tag the workloads to match what you asked for:"
+    echo "        aws ec2 create-tags --resources <instance-id> \\"
+    echo "            --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod"
+    echo "      (os = ubuntu | rhel | windows ; env = prod | dev | test)"
+    echo "    - or skip AWS discovery entirely with an inventory you already have:"
+    echo "        aws:"
+    echo "          inventory_file: \"/path/to/hosts.ini\""
+  fi
+  echo ""
+}
+
 # === Run dynamic inventory probe ===
 echo ""
-echo "→ Probing AWS EC2 inventory..."
-DISCOVERED=$(ansible-inventory --list -i inventory/aws_ec2.yaml 2>/dev/null | python3 -c "import sys, json; d=json.load(sys.stdin); print(sum(len(g.get('hosts', [])) for k,g in d.items() if k not in ('_meta','all')))" 2>/dev/null || echo "0")
-ok "Discovered $DISCOVERED tagged EC2 instance(s)"
+if [ "$CL_INV_MODE" = "static" ]; then
+  echo "→ Reading $INVENTORY..."
+else
+  echo "→ Probing AWS EC2 inventory..."
+fi
+# Count DISTINCT hosts. The old sum over every group counted each host once
+# per group it landed in (aws_ec2 + os_* + platform_* + env_* + region_* +
+# *_prod_vms), so one instance was reported as six and the numbers in the
+# summary never matched what the customer had.
+DISCOVERED=$(ansible-inventory --list -i "$INVENTORY" 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hosts = set(d.get('_meta', {}).get('hostvars', {}))
+for name, g in d.items():
+    if name != '_meta' and isinstance(g, dict):
+        hosts.update(g.get('hosts', []))
+print(len(hosts))
+" 2>/dev/null || echo "0")
+ok "Discovered $DISCOVERED EC2 instance(s)"
 
 if [ "$DISCOVERED" = "0" ]; then
-  warn "Zero instances discovered, so there is nothing to install a sensor on."
-  echo "  Tag the workloads you want monitored, then re-run this script:"
-  echo "    aws ec2 create-tags --resources <instance-id> \\"
-  echo "        --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod"
-  echo "  (os = ubuntu | rhel | windows ; env = prod | dev)"
-  echo "  Check what is currently tagged:"
-  echo "    aws ec2 describe-instances --filters Name=tag:cloudlens,Values=yes \\"
-  echo "        --query 'Reservations[].Instances[].InstanceId' --output text"
-  echo ""
+  warn "Zero hosts discovered, so there is nothing to install a sensor on."
+  if [ "$CL_INV_MODE" = "static" ]; then
+    echo "  $INVENTORY parsed but produced no hosts. Check its contents with:"
+    echo "    ansible-inventory --list -i $INVENTORY"
+    echo ""
+  else
+    diagnose_zero_hosts
+  fi
   # Running the playbook against an empty inventory installs nothing but still
   # exits 0, which previously printed a "Deploy complete" that was not true.
-  fail "Nothing to deploy. Tag at least one running instance and re-run."
+  fail "Nothing to deploy. Fix the discovery above and re-run."
 fi
 
 # === Run the deploy ===
 echo ""
 echo "→ Running deploy.yaml against $DISCOVERED instance(s)..."
-if ansible-playbook deploy.yaml --extra-vars "@customer_input.yaml"; then
+if ansible-playbook deploy.yaml -i "$INVENTORY" --extra-vars "@customer_input.yaml"; then
   ok "Deploy complete on $DISCOVERED instance(s). Verify in the vController UI: https://$(grep manager_ip_or_fqdn customer_input.yaml | awk '{print $2}' | tr -d '\"')/"
 else
   fail "ansible-playbook failed. The output above shows which task and host failed."
