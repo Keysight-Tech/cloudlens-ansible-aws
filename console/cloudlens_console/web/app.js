@@ -162,7 +162,11 @@ function run(){
      es.addEventListener("narrate",function(e){var m=JSON.parse(e.data);narrate(m.text,m.tone);});
      es.addEventListener("stat",function(e){var m=JSON.parse(e.data);
        if(m.created!=null)$("mCreated").textContent=m.created;
-       if(m.waiting){setPill("run",m.note||"waiting on AWS");}});
+       // m.waiting going false has to clear the note, or the pill keeps saying
+       // "waiting for the stack to appear" for the whole deploy: the stack turns
+       // up seconds later and every stat after that carries no note at all.
+       if(m.waiting){setPill("run",m.note||"waiting on AWS");}
+       else if(es){setPill("run","running");}});
      es.addEventListener("done",function(e){var m=JSON.parse(e.data);
        finish("done","complete");narrate(m.summary,"good");
        if(m.outputs&&m.outputs.note)card("","Next",m.outputs.note);});
