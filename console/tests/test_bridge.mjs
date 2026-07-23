@@ -14,7 +14,7 @@ import B from "../cloudlens_console/web/bridge.js";
 
 // What the real /health answers with. Kept as a literal rather than imported
 // from anywhere: if the server's body changes, this file is meant to fail.
-const HEALTH = { ok: true, version: "1.0" };
+const HEALTH = { ok: true, service: "cloudlens-console", version: "1.0" };
 
 test("the machine starts in replay: the public page ships working, always", () => {
   const s = B.initial();
@@ -33,15 +33,26 @@ test("a probe answered by something that is NOT our console stays in replay", ()
   // A random dev server on the same port. It is listening, it speaks JSON, and
   // it is not us. Reaching pairing here would ask the visitor to type a code
   // into a page that will never accept one.
+  const S = "cloudlens-console";
   const impostors = [
     { ok: true },                                  // no version
-    { ok: true, version: "1.0", extra: "x" },      // not the closed key set
+    { ok: true, service: S, version: "1.0", extra: "x" },  // not the closed key set
     { version: "1.0" },                            // no ok
-    { ok: "true", version: "1.0" },                // ok not a boolean
-    { ok: true, version: "v1.0" },                 // not a wire-contract number
-    { ok: true, version: "1.0.3" },                // ditto: N.N only
-    { ok: true, version: 1.0 },                    // not a string
-    { ok: false, version: "1.0" },
+    { ok: "true", service: S, version: "1.0" },    // ok not a boolean
+    { ok: true, service: S, version: "v1.0" },     // not a wire-contract number
+    { ok: true, service: S, version: "1.0.3" },    // ditto: N.N only
+    { ok: true, service: S, version: 1.0 },        // not a string
+    { ok: false, service: S, version: "1.0" },
+    // Right shape, wrong software. This is the case the service key exists
+    // for: before it, a body of exactly {ok:true, version:"1.0"} from anything
+    // at all was indistinguishable from our console, and the visitor was put
+    // in front of a pairing prompt a stranger can never accept.
+    { ok: true, version: "1.0" },                  // no service at all
+    { ok: true, service: "", version: "1.0" },
+    { ok: true, service: "cloudlens", version: "1.0" },       // not the full name
+    { ok: true, service: "Cloudlens-Console", version: "1.0" },  // compared byte for byte
+    { ok: true, service: "cloudlens-console-dev", version: "1.0" },
+    { ok: true, service: true, version: "1.0" },   // not a string
     {},
     null,
     "OK",
@@ -51,6 +62,16 @@ test("a probe answered by something that is NOT our console stays in replay", ()
     const s = B.reduce(B.initial(), { type: "probe.ok", body: body });
     assert.equal(s.name, "replay", "body " + JSON.stringify(body) + " is not our console");
   }
+});
+
+test("the service name is what decides it, not the shape around it", () => {
+  // Hold everything else constant and change only "service". If this pair ever
+  // agrees, identification has quietly gone back to being an inference from
+  // the shape, and any dev server answering that shape is us again.
+  const ours = { ok: true, service: "cloudlens-console", version: "1.0" };
+  const theirs = { ok: true, service: "some-other-server", version: "1.0" };
+  assert.equal(B.reduce(B.initial(), { type: "probe.ok", body: ours }).name, "pairing");
+  assert.equal(B.reduce(B.initial(), { type: "probe.ok", body: theirs }).name, "replay");
 });
 
 test("a probe that fails degrades to replay, never to an error state", () => {
@@ -328,7 +349,7 @@ class FakeEventSource {
 }
 
 test("probe hits /health and lands in pairing", async () => {
-  const f = fakeFetch({ "/health": { status: 200, body: { ok: true, version: "1.0" } } });
+  const f = fakeFetch({ "/health": { status: 200, body: HEALTH } });
   const b = B.create({ fetch: f, EventSource: FakeEventSource });
   await b.probe();
   assert.equal(f.calls[0].url, "http://127.0.0.1:8760/health");
@@ -353,7 +374,7 @@ test("the same failure from a public https page offers the private-network advic
 
 test("pairing sends the code on X-CloudLens-Pair, byte for byte", async () => {
   const f = fakeFetch({
-    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/health": { status: 200, body: HEALTH },
     "/flows": { status: 200, body: { order: [], flows: {} } }
   });
   const b = B.create({ fetch: f, EventSource: FakeEventSource });
@@ -367,7 +388,7 @@ test("pairing sends the code on X-CloudLens-Pair, byte for byte", async () => {
 
 test("a refused code is read out of the body, not guessed from the status", async () => {
   const f = fakeFetch({
-    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/health": { status: 200, body: HEALTH },
     "/flows": { status: 403, body: { error: "pairing disabled, restart the console" } }
   });
   const b = B.create({ fetch: f, EventSource: FakeEventSource });
@@ -379,7 +400,7 @@ test("a refused code is read out of the body, not guessed from the status", asyn
 test("input that cannot be the code never reaches the server", async () => {
   // The guess budget is cumulative and never resets, so a stray keystroke must
   // not spend one.
-  const f = fakeFetch({ "/health": { status: 200, body: { ok: true, version: "1.0" } } });
+  const f = fakeFetch({ "/health": { status: 200, body: HEALTH } });
   const b = B.create({ fetch: f, EventSource: FakeEventSource });
   await b.probe();
   await b.pair("abc");
@@ -390,7 +411,7 @@ test("input that cannot be the code never reaches the server", async () => {
 
 test("run streams /events/<job_id> with no header on it at all", async () => {
   const f = fakeFetch({
-    "/health": { status: 200, body: { ok: true, version: "1.0" } },
+    "/health": { status: 200, body: HEALTH },
     "/flows": { status: 200, body: { order: [], flows: {} } },
     "/run": { status: 200, body: { job_id: "0123456789abcdef0123456789abcdef", replay: false } }
   });

@@ -2,7 +2,9 @@
 
 Routes (nothing else is exposed). "paired" means a cross-origin caller must
 send X-CloudLens-Pair; the console's own UI is exempt:
-  GET  /health           -> {ok, version} - liveness probe, open by design
+  GET  /health           -> {ok, service, version} - liveness probe, open by
+                            design. "service" is the constant a public page
+                            identifies this console by
   GET  /                 -> the premium UI (web/index.html)
   GET  /flows            -> paired. the four flows as JSON (the UI renders it)
   POST /run              -> paired. {flow, inputs, replay?} -> {job_id}
@@ -91,6 +93,12 @@ def _prune_jobs(now=None):
 # Stays a plain N.N: a build id or commit SHA here would fingerprint the
 # visitor's machine for any unauthenticated prober.
 VERSION = "1.0"
+
+# How a caller knows this is OUR console and not some other server that happens
+# to answer /health. A constant, never derived from the host or the build: the
+# public page compares it byte for byte, so changing this string is changing the
+# wire contract and every deployed bridge.js stops recognising us.
+SERVICE = "cloudlens-console"
 
 # Reachable without a pairing code, by design. Adding to this set means
 # accepting that any origin on the machine can read the response.
@@ -501,7 +509,12 @@ class Handler(BaseHTTPRequestHandler):
             # page must probe before the visitor has typed anything. So it must
             # leak nothing - no account, region, flow list, hostname or path.
             # Liveness and a wire-contract version, and that is all.
-            return self._send(200, {"ok": True, "version": VERSION})
+            # "service" is what the public page identifies us BY, so that it is
+            # a fact on the wire instead of an inference from the shape of the
+            # body. It is a fixed constant naming the software: it says nothing
+            # about the host, the account or the build, and a prober that got
+            # this response already knew something was listening.
+            return self._send(200, {"ok": True, "service": SERVICE, "version": VERSION})
         if path == "/":
             return self._file("index.html", "text/html; charset=utf-8")
         if path == "/flows":

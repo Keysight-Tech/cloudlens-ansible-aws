@@ -175,8 +175,17 @@ def _offmachine_addr():
 def test_health_leaks_nothing():
     r = _handler_response("/health")
     assert r.status == 200
-    assert set(r.payload.keys()) == {"ok", "version"}
+    # Widened for "service". A closed set still: the point of this assertion is
+    # that no hostname, path, Python version or AWS account id can appear here
+    # without failing. "service" is a fixed constant naming the software, not
+    # anything about the machine, and an unauthenticated prober that got a
+    # response already knows something is listening.
+    assert set(r.payload.keys()) == {"ok", "version", "service"}
     assert r.payload["ok"] is True
+    # The public page identifies us by this, byte for byte, instead of
+    # inferring it from the shape of a two-key body that any dev server could
+    # happen to answer with. A typo here is a bridge that never goes live.
+    assert r.payload["service"] == "cloudlens-console"
     assert re.fullmatch(r"\d+\.\d+", r.payload["version"]), \
         "version is a wire-contract number, not a build id: a SHA would " \
         "fingerprint the visitor's machine"

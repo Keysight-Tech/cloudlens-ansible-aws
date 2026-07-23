@@ -52,18 +52,24 @@
   // ---- identifying OUR console -------------------------------------------
   //
   // /health is the only unauthenticated route, and it answers a closed body:
-  //   {"ok": true, "version": "1.0"}
+  //   {"ok": true, "service": "cloudlens-console", "version": "1.0"}
   // and nothing else, by design - it must leak no account, region, hostname or
-  // path to an unauthenticated prober. That closed shape is the whole of what
-  // we have to recognise ourselves by, so we hold it exactly: both keys, no
-  // third key, ok strictly boolean true, and version the wire-contract number
-  // (N.N, never a SHA or a build id, for the same fingerprinting reason).
+  // path to an unauthenticated prober.
   //
-  // The point is the negative case. A random dev server on the same port is
-  // reachable, speaks JSON and is not us; treating it as us would put the
-  // visitor in front of a pairing prompt that can never succeed. Note the
-  // Server header would be a cleaner marker but is not readable cross-origin,
-  // so the body is all a public page gets.
+  // "service" is the identification, and it is a fact rather than a guess: the
+  // console states what it is, and this compares that string exactly. Without
+  // it there was nothing to match on but the SHAPE of a two-key body, and any
+  // dev server answering {ok:true, version:"1.0"} was indistinguishable from
+  // our console - a false positive that puts the visitor in front of a pairing
+  // prompt a stranger can never accept.
+  //
+  // The rest of the shape is still held exactly, because a body that carries
+  // our name and then does not look like ours is a mismatch worth refusing:
+  // the closed key set, ok strictly boolean true, and version the wire-contract
+  // number (N.N, never a SHA or a build id, for the fingerprinting reason).
+  // Note the Server header would be a cleaner marker but is not readable
+  // cross-origin, so the body is all a public page gets.
+  var SERVICE = "cloudlens-console";
   var VERSION_RE = /^\d+\.\d+$/;
 
   // The major version we know how to talk to. A console announcing 2.x speaks
@@ -79,7 +85,8 @@
     for (var k in body) {
       if (Object.prototype.hasOwnProperty.call(body, k)) { keys.push(k); }
     }
-    if (keys.length !== 2) { return false; }
+    if (keys.length !== 3) { return false; }
+    if (body.service !== SERVICE) { return false; }
     if (body.ok !== true) { return false; }
     if (typeof body.version !== "string" || !VERSION_RE.test(body.version)) { return false; }
     return body.version.split(".")[0] === WIRE_MAJOR;
