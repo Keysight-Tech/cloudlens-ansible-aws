@@ -43,6 +43,9 @@ window.CLC_STRINGS = {
     statusComplete:   "complete",
     statusFailed:     "failed",
     statusStopped:    "stopped",
+    // Not "failed": the deploy is still running on their machine, we simply
+    // cannot see it any more.
+    statusLost:       "disconnected",
 
     // the instrument's own furniture
     inputsTitle:      "Inputs",

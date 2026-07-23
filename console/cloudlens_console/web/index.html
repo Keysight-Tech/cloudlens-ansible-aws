@@ -147,6 +147,37 @@
   .field input{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
   .field input:focus{outline:2px solid var(--accent);outline-offset:1px}
 
+  /* the live link: the offer in replay, the code box in pairing, gone in live */
+  .link{margin-bottom:14px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+  .link[hidden]{display:none}
+  .link-txt{flex:1 1 260px;min-width:0}
+  .link-h{font-size:14px;font-weight:650}
+  .link-b{margin:2px 0 0;font-size:13px;color:var(--ink-soft)}
+  .link-cmd{display:flex;align-items:center;gap:8px}
+  .link-cmd[hidden]{display:none}
+  .link-cmd code{font-family:var(--mono);font-size:12.5px;background:var(--line-soft);
+    padding:6px 10px;border-radius:8px;color:var(--ink);white-space:nowrap}
+  .link-copy{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--ink-soft);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+  .link-copy:hover{color:var(--ink);border-color:var(--ink-faint)}
+  .link-pair{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .link-pair[hidden]{display:none}
+  .link-lab{font-size:11.5px;font-weight:600;color:var(--ink-soft)}
+  .link-in{width:11ch;font-family:var(--mono);font-size:14px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink);background:var(--paper);
+    border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .link-in:disabled{opacity:.55}
+  .link-go{font-family:var(--sans);font-size:13px;font-weight:650;background:var(--accent);
+    color:var(--accent-ink);border:0;border-radius:9px;padding:9px 16px;cursor:pointer}
+  .link-go:disabled{opacity:.55;cursor:default}
+  .link-help{flex:1 1 100%;font-size:11.5px;color:var(--ink-faint)}
+  .link-note{margin:0 0 14px;font-size:13px;color:var(--ink-soft);border-left:3px solid var(--amber);
+    background:var(--panel);border-radius:0 10px 10px 0;padding:12px 15px}
+  /* An empty live region keeps its place in the DOM - a display:none region
+     that reappears with text is announced unreliably - but takes no box. */
+  .link-note:empty{margin:0;padding:0;border:0}
+
   section{padding:56px 0;border-top:1px solid var(--line)}
   .sec-head{max-width:60ch}.sec-head h2{font-size:clamp(24px,3.2vw,34px);letter-spacing:-.03em;font-weight:780;line-height:1.05}
   .sec-head p{color:var(--ink-soft);font-size:16px;margin-top:10px}
@@ -194,19 +225,40 @@
     <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
   </nav>
   <div class="sp"></div>
-  <div class="demo-t" title="Replay real captured events - no AWS calls">
-    <span>Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true" tabindex="0"></div>
+  <div class="demo-t" id="demoWrap" title="Replay real captured events - no AWS calls" hidden>
+    <span id="demoLab">Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true"
+      aria-labelledby="demoLab" tabindex="0"></div>
   </div>
   <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
 </div></header>
 
 <div class="hero"><div class="wrap">
-  <span class="badge"><span class="live"></span> <span id="modeBadge">DEMO · REPLAYING REAL EVENTS</span></span>
+  <span class="badge"><span class="live"></span> <span id="modeBadge"></span></span>
   <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
   <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
 </div></div>
 
 <div class="wrap">
+  <div class="link" id="link">
+    <div class="link-txt">
+      <div class="link-h" id="linkTitle"></div>
+      <p class="link-b" id="linkBody"></p>
+    </div>
+    <div class="link-cmd" id="linkCmdWrap">
+      <code id="linkCmd"></code>
+      <button class="link-copy" id="copyBtn" type="button"></button>
+    </div>
+    <form class="link-pair" id="pairForm" hidden>
+      <label class="link-lab" for="pairInput" id="pairLabel"></label>
+      <input class="link-in" id="pairInput" name="pair" type="text" maxlength="8"
+             autocomplete="off" autocorrect="off" autocapitalize="characters"
+             spellcheck="false" aria-describedby="pairHelp">
+      <button class="link-go" id="pairBtn" type="submit"></button>
+      <span class="link-help" id="pairHelp"></span>
+    </form>
+  </div>
+  <p class="link-note" id="notice" role="status" aria-live="polite"></p>
+
   <div class="instrument">
     <div class="inst-bar">
       <div class="traffic"><i></i><i></i><i></i></div>
@@ -215,14 +267,14 @@
       <div class="inst-right">
         <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
         <div class="metric">created<b id="mCreated">0</b></div>
-        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
-        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
+        <span class="pill" id="statusPill" role="status" aria-live="polite"><span class="d"></span><span id="statusTxt"></span></span>
+        <button class="stopbtn" id="stopBtn" hidden></button>
       </div>
     </div>
     <div class="inst-body">
       <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
       <div class="rightcol">
-        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs — with the why behind it.</div></div>
+        <div class="narr" id="narr"></div>
         <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
         <div class="console" id="console"></div>
       </div>
@@ -231,7 +283,7 @@
 
   <div class="rig">
     <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
-    <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+    <button class="runbtn" id="runBtn"><span class="tri"></span> <span id="runTxt"></span></button>
   </div>
 
   <div class="cfg">
@@ -394,6 +446,8 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
 
+<script src="/web/strings.js"></script>
+<script src="/web/bridge.js"></script>
 <script src="/web/app.js"></script>
 </body>
 </html>
