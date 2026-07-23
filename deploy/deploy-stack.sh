@@ -1848,7 +1848,11 @@ if [[ "${AWS_EXECUTION_ENV:-}" == *CloudShell* ]] \
    || [[ -n "${CLOUDSHELL_USER:-}" ]] \
    || [[ -d /usr/local/cloudshell ]]; then
   IN_CLOUD_SHELL=true
-  ok "Detected: AWS CloudShell (pre-authenticated, Ansible-ready)"
+  # Pre-authenticated, yes. Ansible-ready, no: the CloudShell pre-installed
+  # software list (Amazon Linux 2023) has python3 and pip3 and no Ansible. The
+  # infra phases run fine here; the sensor phase installs it with one pip
+  # command, which phase 9 prints if ansible-playbook turns out to be missing.
+  ok "Detected: AWS CloudShell (pre-authenticated; Ansible is a pip install away)"
 elif [[ "$KERNEL" == "Linux" ]] && grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
   IN_WSL=true
   ok "Detected: WSL on Windows"
@@ -2963,20 +2967,120 @@ state_phase key done
 # licensing, adoption, sensors, vPB) is visible in its UI while it happens.
 announce_vcontroller_login
 
-# Pre-flight: count already-tagged EC2s using the chosen discovery tag.
+# ---------------------------------------------------------------------
+# What discovery will ACTUALLY search for.
+#
+# customer_input.yaml, not --discovery-tag-key/value, is the source of truth
+# once it exists: scripts/render_inventory.py builds the runtime inventory from
+# aws.tag_filters (which can hold several tags, all ANDed), aws.instance_ids,
+# or aws.inventory_file. A count taken from one tag alone would therefore
+# describe a search nobody is going to run. Read the file when it is there, and
+# say plainly when the count is only an approximation.
+#
+# Sets: DISCOVERY_MODE (tags|instance-ids|static|approx), DISCOVERY_DESC,
+#       DISCOVERY_FILTER_ARGS (aws ec2 describe-instances --filters values).
+# ---------------------------------------------------------------------
+DISCOVERY_MODE="approx"
+DISCOVERY_DESC="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+DISCOVERY_FILTER_ARGS=()
+
+discovery_scope() {
+  DISCOVERY_MODE="approx"
+  DISCOVERY_DESC="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+  DISCOVERY_FILTER_ARGS=("Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}")
+
+  [[ -f customer_input.yaml ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local out=""
+  out="$(python3 - customer_input.yaml <<'PY' 2>/dev/null
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(1)
+try:
+    with open(sys.argv[1]) as fh:
+        doc = yaml.safe_load(fh)
+except Exception:
+    sys.exit(1)
+if not isinstance(doc, dict):
+    sys.exit(1)
+aws = doc.get("aws") if isinstance(doc.get("aws"), dict) else {}
+
+def text(v):
+    if v is True:
+        return "yes"
+    if v is False:
+        return "no"
+    return "" if v is None else str(v)
+
+if aws.get("inventory_file"):
+    print("static")
+    print("the inventory file %s" % text(aws["inventory_file"]))
+    sys.exit(0)
+
+ids = aws.get("instance_ids") or []
+if isinstance(ids, (list, tuple)) and ids:
+    ids = [text(i) for i in ids if text(i)]
+    print("instance-ids")
+    print("instance ids " + " ".join(ids))
+    print("Name=instance-id,Values=" + ",".join(ids))
+    sys.exit(0)
+
+tags = aws.get("tag_filters")
+if isinstance(tags, dict) and tags:
+    print("tags")
+    print(" ".join("%s=%s" % (k, text(v)) for k, v in tags.items()))
+    for k, v in tags.items():
+        print("Name=tag:%s,Values=%s" % (k, text(v)))
+    sys.exit(0)
+sys.exit(1)
+PY
+)" || out=""
+  [[ -n "$out" ]] || return 0
+
+  local line i=0
+  DISCOVERY_FILTER_ARGS=()
+  while IFS= read -r line; do
+    case "$i" in
+      0) DISCOVERY_MODE="$line" ;;
+      1) DISCOVERY_DESC="$line" ;;
+      *) DISCOVERY_FILTER_ARGS+=("$line") ;;
+    esac
+    i=$((i+1))
+  done <<< "$out"
+  return 0
+}
+
+# Pre-flight: count the EC2s the sensor step will actually discover.
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
-  TAGGED_COUNT=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
-    --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" "Name=instance-state-name,Values=running" \
-    --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo "?")
-  if [[ "$TAGGED_COUNT" == "0" ]]; then
-    echo "  Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: 0"
-    echo "  Tag a running instance so the sensor installs on it:"
-    echo "    aws ec2 create-tags --resources <instance-id> \\"
-    echo "        --tags Key=${DISCOVERY_TAG_KEY},Value=${DISCOVERY_TAG_VALUE} Key=os,Value=ubuntu Key=env,Value=prod"
-    echo "  (Tag os = ubuntu | rhel | windows ; env = prod | dev)"
+  discovery_scope
+  if [[ "$DISCOVERY_MODE" == "static" ]]; then
+    TAGGED_COUNT="?"
+    echo "  Discovery source: ${DISCOVERY_DESC} (from customer_input.yaml)."
+    echo "  AWS discovery is skipped entirely, so there is nothing to count here."
   else
-    echo "  Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: ${TAGGED_COUNT}"
-    echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
+    TAGGED_COUNT=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
+      --filters "${DISCOVERY_FILTER_ARGS[@]}" "Name=instance-state-name,Values=running" \
+      --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo "?")
+    case "$DISCOVERY_MODE" in
+      tags)         echo "  Discovery (from customer_input.yaml, ALL must match): ${DISCOVERY_DESC}" ;;
+      instance-ids) echo "  Discovery (from customer_input.yaml): ${DISCOVERY_DESC}" ;;
+      *)            echo "  Discovery: ${DISCOVERY_DESC}"
+                    echo "  Approximate: customer_input.yaml is not readable here, so this counts"
+                    echo "  the single tag this run was given, not whatever that file ends up with." ;;
+    esac
+    if [[ "$TAGGED_COUNT" == "0" ]]; then
+      echo "  Matching running EC2s: 0"
+      echo "  Tag a running instance so the sensor installs on it:"
+      echo "    aws ec2 create-tags --resources <instance-id> \\"
+      echo "        --tags Key=${DISCOVERY_TAG_KEY},Value=${DISCOVERY_TAG_VALUE} Key=os,Value=ubuntu Key=env,Value=prod"
+      echo "  (Tag os = ubuntu | rhel | windows ; env = prod | dev)"
+    else
+      echo "  Matching running EC2s: ${TAGGED_COUNT}"
+      echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
+    fi
   fi
   echo
 fi
@@ -2991,15 +3095,28 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   if ! command -v ansible-playbook >/dev/null 2>&1; then
     sensor_blocker="ansible"
     warn "Ansible is not installed on this machine, so the sensor step cannot run here."
-    echo "    Install it:   pip install ansible boto3"
-    echo "    Or run the sensor step later from AWS CloudShell (Ansible preinstalled):"
-    echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    if [[ "$IN_CLOUD_SHELL" == "true" ]]; then
+      # AWS CloudShell does NOT ship Ansible: the pre-installed software list in
+      # the CloudShell user guide has python3 + pip3 and no Ansible at all. It
+      # is one pip away, and --user keeps it under $HOME, which is the only part
+      # of a CloudShell environment that survives the session.
+      echo "    CloudShell does not ship Ansible. Install it into your persistent home:"
+      echo "      pip3 install --user ansible boto3"
+      echo "      export PATH=\"\$HOME/.local/bin:\$PATH\"    (add to ~/.bashrc to keep it)"
+      echo "    Then re-run:"
+      echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    else
+      echo "    Install it:   pip3 install --user ansible boto3"
+      echo "    Or run the sensor step later from AWS CloudShell:"
+      echo "      pip3 install --user ansible boto3 && export PATH=\"\$HOME/.local/bin:\$PATH\""
+      echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    fi
   fi
 
   if [[ "${TAGGED_COUNT:-0}" == "0" ]]; then
     [[ -n "$sensor_blocker" ]] && echo
     sensor_blocker="${sensor_blocker:+$sensor_blocker,}notags"
-    warn "No running EC2 instances carry ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}, so there is nothing to install a sensor on."
+    warn "No running EC2 instances match ${DISCOVERY_DESC}, so there is nothing to install a sensor on."
     echo "    Tag your workloads first (see the command above), then run:"
     echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
   fi
@@ -3235,49 +3352,42 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
   fi
 fi
 
-# =====================================================================
-# Phase 13: Sensor chain (optional)
-# =====================================================================
-# The sensor install is idempotent enough to re-run, so this is the one phase
-# that is offered rather than hard-skipped (see resume_ask_ambiguous).
-SENSOR_SKIP_REASON=""
-if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]] \
-   && ! run_phase sensors; then
-  SENSOR_SKIP_REASON="$PHASE_SKIP_REASON"
-  CHAIN_SENSORS=false
-fi
-
-if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; then
-  warn "Sensor chain disabled: Ansible cannot run on Windows shells."
-  warn "Run sensors from AWS CloudShell, WSL, or a Linux EC2 with:"
-  warn "  curl -sSL ${REPO_RAW}/quickstart.sh | bash"
-  CHAIN_SENSORS=write_yaml_only
-fi
-
-if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
-  step "Phase 13: Chain into sensor deployment"
-
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "would generate customer_input.yaml and run bash quickstart.sh"
-  else
-    # Linux SSH auth: prefer the key pair PEM we know about.
-    if [[ -f "$KEY_PEM" ]]; then
-      SSH_KEY_LINE="ssh_key_path:    \"${KEY_PEM}\""
-    else
-      SSH_KEY_LINE="ssh_key_path:    \"~/.ssh/${KEY_NAME}.pem\""
-    fi
-
-    # Create the file with tight permissions BEFORE writing the project key
-    # into it, so the secret is never briefly world-readable.
-    umask 077
-    : > customer_input.yaml
-    chmod 600 customer_input.yaml 2>/dev/null || true
-
-    cat > customer_input.yaml <<YAML
+# ---------------------------------------------------------------------
+# customer_input.yaml: this script owns two keys in it, and the operator owns
+# the rest.
+#
+# Since scripts/render_inventory.py landed, this file is the source of truth
+# for host discovery: aws.tag_filters can hold SEVERAL tags, aws.instance_ids
+# names exact hosts, aws.inventory_file skips AWS discovery altogether, and the
+# ssh_user_* values are per site. Rewriting the whole file every run threw all
+# of that away, including on a resumed run, which is the one run most likely to
+# happen after the operator edited it.
+#
+# So: no file, write one. A file that is there, update ONLY
+# cloudlens.manager_ip_or_fqdn and cloudlens.project_key and leave everything
+# else exactly as found. A file that cannot be parsed is backed up with a
+# timestamp and said so loudly: it is never silently discarded.
+#
+# The merge is done in python with PyYAML (already required by
+# render_inventory.py) rather than with sed: hand-rolled YAML edits are how the
+# discovery settings got lost in the first place.
+# ---------------------------------------------------------------------
+write_customer_input_fresh() {
+  # Create the file with tight permissions BEFORE writing the project key into
+  # it, so the secret is never briefly world-readable.
+  ( umask 077; : > customer_input.yaml )
+  chmod 600 customer_input.yaml 2>/dev/null || true
+  cat > customer_input.yaml <<YAML
 # Auto-generated by deploy-stack.sh on $(date -u +%FT%TZ)
-# Edit BEFORE running quickstart.sh ONLY if:
-#   - Your workload EC2s use a different ssh_user than the defaults
-#   - You want to filter by more tags than just ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}
+# This file is yours to edit. A later run of deploy-stack.sh updates only
+# cloudlens.manager_ip_or_fqdn and cloudlens.project_key and keeps everything
+# else, so discovery settings you add here survive.
+#
+# Discovery keys that matter (see scripts/render_inventory.py):
+#   aws.tag_filters     one or more tags, ALL of which must match
+#   aws.instance_ids    exactly these instances, ignoring tags
+#   aws.inventory_file  an inventory you already have; skips AWS discovery
+#   aws.regions         which regions to scan
 
 aws:
   profile: "${AWS_PROFILE:-default}"
@@ -3301,8 +3411,157 @@ cloudlens:
 vpc_ids:    []
 subnet_ids: []
 YAML
-    chmod 600 customer_input.yaml 2>/dev/null || true
-    ok "Wrote customer_input.yaml (mode 600, contains the ${SENSOR_MODE} project key)"
+  chmod 600 customer_input.yaml 2>/dev/null || true
+}
+
+# Update the two owned keys in an existing file.
+#   0  merged
+#   3  python3 or PyYAML unavailable
+#   4  the file does not parse as a YAML mapping
+# The project key is passed in the environment and never printed.
+merge_customer_input() {
+  command -v python3 >/dev/null 2>&1 || return 3
+  CL_ADDR="$CLMS_PUBLIC_IP" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
+    python3 - customer_input.yaml <<'PY'
+import os, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(3)
+
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        doc = yaml.safe_load(fh)
+except Exception:
+    sys.exit(4)
+if doc is None:
+    doc = {}
+if not isinstance(doc, dict):
+    sys.exit(4)
+
+cl = doc.get("cloudlens")
+if not isinstance(cl, dict):
+    cl = {}
+addr = os.environ.get("CL_ADDR", "")
+key = os.environ.get("CL_KEY", "")
+if addr:
+    cl["manager_ip_or_fqdn"] = addr
+if key:
+    cl["project_key"] = key
+# Only filled when absent: an operator who set them keeps their choice.
+cl.setdefault("registry_type", "insecure")
+cl.setdefault("linux_runtime", "auto")
+doc["cloudlens"] = cl
+
+tmp = path + ".tmp"
+old_umask = os.umask(0o077)
+try:
+    with open(tmp, "w") as fh:
+        fh.write(
+            "# Updated by deploy-stack.sh on %s\n"
+            "# Only cloudlens.manager_ip_or_fqdn and cloudlens.project_key were\n"
+            "# rewritten. Everything under aws: is yours and was kept as found.\n"
+            "# Comments elsewhere in the file are not carried through this update.\n"
+            % os.environ.get("CL_STAMP", "")
+        )
+        yaml.safe_dump(doc, fh, default_flow_style=False, sort_keys=False, width=10000)
+finally:
+    os.umask(old_umask)
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+}
+
+# Back up a file we are about to replace, with a timestamp, mode 600.
+backup_customer_input() {
+  local bak="customer_input.yaml.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+  if cp customer_input.yaml "$bak" 2>/dev/null; then
+    chmod 600 "$bak" 2>/dev/null || true
+    printf '%s' "$bak"
+    return 0
+  fi
+  return 1
+}
+
+# =====================================================================
+# Phase 13: Sensor chain (optional)
+# =====================================================================
+# The sensor install is idempotent enough to re-run, so this is the one phase
+# that is offered rather than hard-skipped (see resume_ask_ambiguous).
+SENSOR_SKIP_REASON=""
+if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]] \
+   && ! run_phase sensors; then
+  SENSOR_SKIP_REASON="$PHASE_SKIP_REASON"
+  CHAIN_SENSORS=false
+fi
+
+if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$IS_NATIVE_WINDOWS" == "true" ]]; then
+  warn "Sensor chain disabled: Ansible cannot run on Windows shells."
+  warn "Run sensors from AWS CloudShell, WSL, or a Linux EC2 with:"
+  warn "  curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+  CHAIN_SENSORS=write_yaml_only
+fi
+
+if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; then
+  step "Phase 13: Chain into sensor deployment"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ -f customer_input.yaml ]]; then
+      dryrun_say "customer_input.yaml exists: would keep your discovery settings and update only the vController address and the project key"
+    else
+      dryrun_say "would write a new customer_input.yaml (mode 600)"
+    fi
+    dryrun_say "would run bash quickstart.sh"
+  else
+    # Linux SSH auth: prefer the key pair PEM we know about.
+    if [[ -f "$KEY_PEM" ]]; then
+      SSH_KEY_LINE="ssh_key_path:    \"${KEY_PEM}\""
+    else
+      SSH_KEY_LINE="ssh_key_path:    \"~/.ssh/${KEY_NAME}.pem\""
+    fi
+
+    if [[ ! -f customer_input.yaml ]]; then
+      write_customer_input_fresh
+      ok "Wrote a new customer_input.yaml (mode 600, contains the ${SENSOR_MODE} project key)"
+    else
+      merge_rc=0
+      merge_customer_input || merge_rc=$?
+      case "$merge_rc" in
+        0)
+          chmod 600 customer_input.yaml 2>/dev/null || true
+          ok "Kept your existing discovery settings in customer_input.yaml."
+          note "Only the vController address and the ${SENSOR_MODE} project key were updated."
+          ;;
+        3)
+          CI_BAK="$(backup_customer_input || true)"
+          warn "python3 with PyYAML is not available here, so customer_input.yaml cannot be merged."
+          if [[ -n "$CI_BAK" ]]; then
+            warn "YOUR FILE WAS NOT DISCARDED: it is saved as ${CI_BAK} (mode 600)."
+            warn "Copy any aws: discovery settings from it back into the new file."
+          else
+            warn "The existing file could not even be backed up; leaving it untouched."
+          fi
+          if [[ -n "$CI_BAK" ]]; then
+            write_customer_input_fresh
+            ok "Wrote a fresh customer_input.yaml (mode 600, contains the ${SENSOR_MODE} project key)"
+          fi
+          ;;
+        *)
+          CI_BAK="$(backup_customer_input || true)"
+          warn "customer_input.yaml does not parse as YAML, so it could not be merged."
+          if [[ -n "$CI_BAK" ]]; then
+            warn "YOUR FILE WAS NOT DISCARDED: it is saved as ${CI_BAK} (mode 600)."
+            warn "Copy any aws: discovery settings from it back into the new file."
+            write_customer_input_fresh
+            ok "Wrote a fresh customer_input.yaml (mode 600, contains the ${SENSOR_MODE} project key)"
+          else
+            warn "The existing file could not be backed up either, so it is left exactly as it is."
+            warn "Fix the YAML by hand, then re-run with --only sensors."
+          fi
+          ;;
+      esac
+    fi
 
     # Locate quickstart.sh (current dir, repo dir, or clone).
     QS_DIR=""
@@ -3323,7 +3582,10 @@ YAML
     fi
 
     if [[ -n "$QS_DIR" ]]; then
+      # cp creates the copy under the current umask, and it holds the project
+      # key, so the copy is tightened explicitly rather than by side effect.
       cp customer_input.yaml "$QS_DIR/customer_input.yaml" 2>/dev/null || true
+      chmod 600 "$QS_DIR/customer_input.yaml" 2>/dev/null || true
       chmod +x "$QS_DIR/quickstart.sh" 2>/dev/null || true
       ok "Launching quickstart.sh from $QS_DIR"
       ( cd "$QS_DIR" && bash quickstart.sh ) \
