@@ -1059,6 +1059,52 @@ def test_ipv6_host_actually_binds_and_answers():
         server.LOOPBACK_ONLY = loopback
 
 
+def test_ipv6_bind_admits_its_own_pages_origin():
+    """--host ::1 sends the visitor to http://[::1]:PORT/, so that origin has
+    to be a self-origin or the console cannot be driven from its own page.
+
+    A same-origin GET sends no Origin, so / and /flows look fine; the first
+    POST /run carries Origin: http://[::1]:PORT, which is on neither list, and
+    _check_pairing() answers 401. The deploy button is simply dead.
+
+    [::1] is the browser's serialisation of the IPv6 loopback origin. Only a
+    process on this machine can produce it, so it carries exactly the trust
+    http://localhost:PORT already has, and no more.
+    """
+    import socket
+    # Probe with our own socket, never by wrapping serve() in except OSError:
+    # gaierror IS an OSError, so that would read a real regression as a skip.
+    probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        probe.bind(("::1", 0))
+    except OSError:
+        print("SKIP (no IPv6 loopback on this host)", end=" ")
+        return
+    finally:
+        probe.close()
+
+    saved = (set(server.ALLOWED_ORIGINS), set(server.SELF_ORIGINS), server.LOOPBACK_ONLY)
+    with _no_banner():
+        httpd = server.serve("::1", 0)
+    port = httpd.server_address[1]
+    try:
+        want = "http://[::1]:%d" % port
+        assert want in server.SELF_ORIGINS, \
+            "the console's own IPv6 page origin is not a self-origin: %r" % (
+                sorted(server.SELF_ORIGINS),)
+        assert want in server.ALLOWED_ORIGINS
+        # The v4 forms stay: --host ::1 does not stop anyone dialling
+        # http://localhost:PORT, which most browsers resolve to ::1 anyway.
+        assert "http://127.0.0.1:%d" % port in server.SELF_ORIGINS
+        assert "http://localhost:%d" % port in server.SELF_ORIGINS
+    finally:
+        httpd.server_close()
+        allowed, selfo, loopback = saved
+        server.ALLOWED_ORIGINS.clear(); server.ALLOWED_ORIGINS.update(allowed)
+        server.SELF_ORIGINS.clear(); server.SELF_ORIGINS.update(selfo)
+        server.LOOPBACK_ONLY = loopback
+
+
 def test_ipv4_mapped_addresses_compare_as_the_ipv4_they_are():
     # The trap that comes with binding AF_INET6: on a dual-stack `--host ::`
     # an IPv4 client's accepted socket reports ::ffff:10.0.0.27 while its Host

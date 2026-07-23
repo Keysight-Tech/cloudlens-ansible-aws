@@ -118,9 +118,16 @@ SELF_ORIGINS = set()
 
 
 def _set_self_origins(port):
-    """Loopback origins for the console's own UI. Derive from 127.0.0.1 and
-    localhost only, never from --host: with --host 0.0.0.0 there is no
-    meaningful self-origin a browser would send."""
+    """Loopback origins for the console's own UI. Derive from the three
+    loopback spellings a browser can produce, never from --host: with --host
+    0.0.0.0 there is no meaningful self-origin a browser would send.
+
+    [::1] is included because --host ::1 sends the visitor to
+    http://[::1]:PORT/ and its POSTs carry that Origin verbatim. Without it the
+    console cannot be driven from its own page: the GETs pass (a same-origin
+    GET sends no Origin) and the first /run is a 401. It is a loopback literal
+    only a process on this machine can present, so it carries exactly the trust
+    http://localhost:PORT already has."""
     # Retire the previous port's entries. ALLOWED_ORIGINS is a standing grant
     # to a browser origin, so leaving http://localhost:8760 on it after moving
     # to 8890 hands that grant to whatever answers on 8760 next - on a shared
@@ -129,7 +136,8 @@ def _set_self_origins(port):
     # Add before removing, and remove only what is not in the new set: a
     # handler thread reading the allowlist between the two steps must never
     # see a moment in which the console's own origin is missing.
-    fresh = {"http://127.0.0.1:%d" % port, "http://localhost:%d" % port}
+    fresh = {"http://127.0.0.1:%d" % port, "http://localhost:%d" % port,
+             "http://[::1]:%d" % port}
     ALLOWED_ORIGINS.update(fresh)
     ALLOWED_ORIGINS.difference_update(SELF_ORIGINS - fresh)
     SELF_ORIGINS.clear()
