@@ -14,6 +14,13 @@ ansible_connection: "{{ 'community.aws.aws_ssm' if (aws.windows_connection | def
 # to be supplied separately here. Without it the plugin tries to open an SSM
 # session against an IP and the worker dies with the opaque
 # "A worker was found in a dead state".
+# community.aws.aws_ssm opens a POSIX shell unless told otherwise, even against
+# a Windows host. Without this it sends bash to PowerShell: the first thing it
+# tries is  PS1='' ; bind 'set enable-bracketed-paste off'  which PowerShell
+# never answers, and the host is reported UNREACHABLE on a prompt timeout with
+# nothing to suggest the shell type is wrong. Seen live on Server 2022.
+# WinRM infers powershell on its own, so this is harmless in that mode.
+ansible_shell_type: powershell
 ansible_aws_ssm_instance_id: "{{ instance_id }}"
 ansible_aws_ssm_region: "{{ aws.regions[0] | default('us-east-1') }}"
 # Required, not optional. community.aws.aws_ssm stages every file through S3;
