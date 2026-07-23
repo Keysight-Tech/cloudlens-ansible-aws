@@ -172,7 +172,13 @@ def new_pair_code(n=8):
     return "".join(secrets.choice(PAIR_ALPHABET) for _ in range(n))
 
 
-PAIR_CODE = new_pair_code()   # one per process; re-set by serve()
+# One code per process, minted here at import and NEVER re-minted. serve() must
+# not mint a second one: print_banner() prints THIS value, and a code minted
+# after the banner would be printed by nobody while the handler compared
+# against it, so every pairing attempt would fail with no visible cause. The
+# only assignment after this line is to None, when the guess cap fires and the
+# process gives up pairing for good.
+PAIR_CODE = new_pair_code()
 
 
 def new_job_id():
