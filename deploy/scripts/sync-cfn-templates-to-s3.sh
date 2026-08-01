@@ -143,20 +143,43 @@ for f in "${TEMPLATES[@]}"; do
   ok "$f uploaded"
 done
 
-step "Verifying public HTTPS reads"
+step "Verifying public HTTPS reads match the local files"
+# Compare the served object to the local file by content hash. The old check
+# was "HTTP 200 and more than 100 bytes", which a truncated or stale object
+# passes: a run of this script reported "200, 243 bytes" for a 41 KB template
+# and still printed a tick, then declared it CloudFormation-validated. A
+# partial template validates fine and deploys almost nothing, so size alone
+# can never be the test. A short retry covers read-after-write settling.
 FAILED=0
 for f in "${TEMPLATES[@]}"; do
   URL="https://${BUCKET}.s3.${REGION}.amazonaws.com/$PREFIX/$f"
-  CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
-  BYTES=$(curl -sSL "$URL" | wc -c | tr -d ' ')
-  if [[ "$CODE" == "200" && "$BYTES" -gt 100 ]]; then
-    ok "$f  [$CODE, $BYTES bytes]  $URL"
+  WANT=$(shasum -a 256 "$CFN_DIR/$f" | cut -d' ' -f1)
+  CODE=""; GOT=""; BYTES=0
+  for attempt in 1 2 3 4 5; do
+    TMPF=$(mktemp)
+    CODE=$(curl -sSL -o "$TMPF" -w "%{http_code}" "$URL" || echo "000")
+    # Hash the downloaded FILE, never a shell variable: command substitution
+    # strips trailing newlines, so $(curl ...) loses the file's final byte and
+    # the hash can never match. That cost one debugging round here.
+    GOT=$(shasum -a 256 "$TMPF" | cut -d' ' -f1)
+    BYTES=$(wc -c < "$TMPF" | tr -d ' ')
+    rm -f "$TMPF"
+    [[ "$CODE" == "200" && "$GOT" == "$WANT" ]] && break
+    sleep 2
+  done
+  if [[ "$CODE" == "200" && "$GOT" == "$WANT" ]]; then
+    ok "$f  [$CODE, $BYTES bytes, hash matches]  $URL"
+  elif [[ "$CODE" == "200" ]]; then
+    warn "$f  [$CODE, $BYTES bytes] SERVED COPY DOES NOT MATCH THE LOCAL FILE"
+    echo "    local $WANT"
+    echo "    s3    $GOT"
+    FAILED=$((FAILED+1))
   else
-    warn "$f  [$CODE, $BYTES bytes]  $URL"
+    warn "$f  [$CODE] not readable  $URL"
     FAILED=$((FAILED+1))
   fi
 done
-[[ "$FAILED" -eq 0 ]] || fail "$FAILED template(s) failed public read - do not ship."
+[[ "$FAILED" -eq 0 ]] || fail "$FAILED template(s) do not match what is on disk - do not ship."
 
 step "Testing CloudFormation acceptance (validate-template)"
 for f in "${TEMPLATES[@]}"; do
