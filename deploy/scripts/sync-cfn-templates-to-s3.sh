@@ -30,6 +30,14 @@ set -euo pipefail
 BUCKET="${BUCKET:-keysight-cloudlens-templates}"
 REGION="${REGION:-us-east-1}"
 PREFIX="${PREFIX:-aws}"
+BOOTSTRAP=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bootstrap) BOOTSTRAP=true; shift ;;
+    -h|--help) sed -n '1,/^set -e/p' "$0" | head -n -1 | tail -n +2; exit 0 ;;
+    *) echo "Unknown arg: $1"; exit 1 ;;
+  esac
+done
 
 C_GREEN='\033[0;32m'; C_BLUE='\033[0;34m'; C_RED='\033[0;31m'; C_YELLOW='\033[1;33m'; C_RESET='\033[0m'
 ok()   { echo -e "${C_GREEN}\xE2\x9C\x93${C_RESET} $1"; }
@@ -70,13 +78,60 @@ else
 fi
 
 step "Verifying bucket exists + public-read on /$PREFIX/*"
-aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1 \
-  || fail "Bucket $BUCKET missing. Run the one-time bootstrap first (see docs/OPERATIONS.md)."
+
+# The bucket holds only the CloudFormation templates that are already public
+# on GitHub, and it exists solely because Quick-Create URLs reject non-S3
+# URLs. It is recreatable, so --bootstrap builds it rather than pointing the
+# operator at a procedure to run by hand. Everything except /$PREFIX/* stays
+# private: the public grant is scoped to that prefix and nothing else.
+bootstrap_bucket() {
+  step "Bootstrapping bucket $BUCKET in $REGION"
+  if [[ "$REGION" == "us-east-1" ]]; then
+    aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null
+  else
+    aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+      --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null
+  fi
+  # Public-read on the template prefix needs the account-level block relaxed
+  # for policies. ACLs stay blocked: the grant comes from the policy alone.
+  aws s3api put-public-access-block --bucket "$BUCKET" \
+    --public-access-block-configuration \
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false" >/dev/null
+  aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Sid\": \"PublicReadTemplates\",
+      \"Effect\": \"Allow\",
+      \"Principal\": \"*\",
+      \"Action\": \"s3:GetObject\",
+      \"Resource\": \"arn:aws:s3:::$BUCKET/$PREFIX/*\"
+    }]
+  }" >/dev/null
+  ok "Bucket created with public-read scoped to /$PREFIX/* only"
+}
+
+if ! aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
+  if [[ "$BOOTSTRAP" == "true" ]]; then
+    bootstrap_bucket
+  else
+    echo
+    warn "Bucket $BUCKET does not exist in this account."
+    echo "    It holds only the CloudFormation templates the Launch buttons point at,"
+    echo "    and it is safe to recreate. Create it with:"
+    echo "      bash $0 --bootstrap"
+    fail "Nothing uploaded."
+  fi
+fi
+
 POLICY=$(aws s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text 2>/dev/null || echo "")
 if echo "$POLICY" | grep -q "arn:aws:s3:::$BUCKET/$PREFIX/\*"; then
   ok "Public-read policy on /$PREFIX/* is in place"
+elif [[ "$BOOTSTRAP" == "true" ]]; then
+  bootstrap_bucket
 else
-  fail "Bucket policy does NOT allow public-read on /$PREFIX/*. Fix before syncing."
+  warn "Bucket policy does NOT allow public-read on /$PREFIX/*."
+  echo "    Repair it with:  bash $0 --bootstrap"
+  fail "Nothing uploaded: the Launch buttons would 403."
 fi
 
 step "Uploading"
