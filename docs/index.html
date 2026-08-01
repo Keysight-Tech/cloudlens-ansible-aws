@@ -102,11 +102,12 @@
                 <small>CloudFormation, one click</small>
               </span>
             </a>
-            <a class="btn btn-secondary tier" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">
+            <a class="btn btn-secondary tier" id="cloudshell-btn" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener"
+               data-cmd="curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash">
               <span class="tier-num">2</span>
               <span class="tier-label">
                 <strong>Open in CloudShell</strong>
-                <small>One curl command</small>
+                <small id="cloudshell-sub">Copies the command, then paste</small>
               </span>
             </a>
             <a class="btn btn-tertiary tier" href="#docker">
@@ -1346,5 +1347,33 @@ window.addEventListener("hashchange",openTarget);window.addEventListener("load",
 document.addEventListener("click",function(e){var a=e.target.closest&&e.target.closest('a[href^="#"]');
 if(!a)return;var t=document.querySelector(a.getAttribute("href"));if(!t)return;
 var d=t.querySelector("details.sec-collapse");if(d)d.open=true;});})();</script>
+<script>
+(function(){
+  var b=document.getElementById("cloudshell-btn");
+  if(!b) return;
+  var sub=document.getElementById("cloudshell-sub");
+  var was=sub?sub.textContent:"";
+  b.addEventListener("click",function(){
+    var cmd=b.getAttribute("data-cmd")||"";
+    var done=function(ok){
+      if(!sub) return;
+      sub.textContent = ok ? "Command copied, paste it in CloudShell"
+                           : "Copy the command below, then paste it";
+      setTimeout(function(){ sub.textContent=was; },6000);
+    };
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(cmd).then(function(){done(true);},function(){done(false);});
+    }else{
+      try{
+        var t=document.createElement("textarea");
+        t.value=cmd; t.setAttribute("readonly","");
+        t.style.position="absolute"; t.style.left="-9999px";
+        document.body.appendChild(t); t.select();
+        done(document.execCommand("copy")); document.body.removeChild(t);
+      }catch(e){ done(false); }
+    }
+  });
+})();
+</script>
 </body>
 </html>
