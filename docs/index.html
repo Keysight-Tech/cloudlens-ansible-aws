@@ -28,6 +28,19 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23E90029'/%3E%3Cpath d='M8 20 L16 8 L24 20 Z' fill='%23fff'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css?v=5" />
   <link rel="stylesheet" href="glass.css" />
+<style>
+.cs-panel{margin:1rem 0 0;padding:1rem 1.15rem;border:1px solid var(--border,#d8dde3);border-radius:10px;background:var(--surface,#fff);max-width:760px}
+.cs-step{margin:0 0 .5rem;font-size:.92rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
+.cs-step:not(:first-child){margin-top:1rem}
+.cs-n{display:inline-flex;align-items:center;justify-content:center;width:1.35rem;height:1.35rem;border-radius:50%;background:#c8102e;color:#fff;font-size:.75rem;flex:none}
+.cs-cmd{display:flex;gap:.5rem;align-items:stretch;background:#0f1720;border-radius:7px;padding:.6rem .7rem;overflow-x:auto}
+.cs-cmd code{color:#e6edf3;font-size:.79rem;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;flex:1}
+.cs-copy{flex:none;background:#243040;color:#e6edf3;border:1px solid #3a4757;border-radius:5px;padding:.2rem .7rem;font-size:.78rem;cursor:pointer}
+.cs-copy:hover{background:#2f3d4f}
+.cs-open{display:inline-block;margin-top:.15rem;padding:.5rem 1rem;border-radius:7px;background:#232f3e;color:#fff;text-decoration:none;font-size:.88rem;font-weight:600}
+.cs-open:hover{background:#31415a}
+.cs-note{margin:.9rem 0 0;font-size:.82rem;color:var(--muted,#5b6672);line-height:1.5}
+</style>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -102,14 +115,15 @@
                 <small>CloudFormation, one click</small>
               </span>
             </a>
-            <a class="btn btn-secondary tier" id="cloudshell-btn" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener"
+            <button class="btn btn-secondary tier" id="cloudshell-btn" type="button"
+               aria-expanded="false" aria-controls="cloudshell-panel"
                data-cmd="curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash">
               <span class="tier-num">2</span>
               <span class="tier-label">
-                <strong>Open in CloudShell</strong>
-                <small id="cloudshell-sub">Copies the command, then paste</small>
+                <strong>Run in CloudShell</strong>
+                <small id="cloudshell-sub">Get the command, then open</small>
               </span>
-            </a>
+            </button>
             <a class="btn btn-tertiary tier" href="#docker">
               <span class="tier-num">3</span>
               <span class="tier-label">
@@ -123,6 +137,16 @@
             <span class="badge rh">RHEL 7/8/9</span>
             <span class="badge win">Windows 2019/2022</span>
             <span class="badge ok">3/3 verified</span>
+          </div>
+          <div id="cloudshell-panel" class="cs-panel" hidden>
+            <p class="cs-step"><span class="cs-n">1</span> Copy this command</p>
+            <div class="cs-cmd">
+              <code id="cs-cmd-text">curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash</code>
+              <button type="button" class="cs-copy" id="cs-copy">Copy</button>
+            </div>
+            <p class="cs-step"><span class="cs-n">2</span> Open CloudShell and paste it at the prompt</p>
+            <a class="cs-open" id="cs-open" href="https://console.aws.amazon.com/cloudshell/home?region=us-east-1" target="_blank" rel="noopener">Open AWS CloudShell</a>
+            <p class="cs-note">CloudShell cannot be handed a command through a link, so it always opens at an empty prompt. Paste the line above and press Enter.</p>
           </div>
         </div>
         <div class="hero-demo">
@@ -1349,28 +1373,24 @@ if(!a)return;var t=document.querySelector(a.getAttribute("href"));if(!t)return;
 var d=t.querySelector("details.sec-collapse");if(d)d.open=true;});})();</script>
 <script>
 (function(){
-  var b=document.getElementById("cloudshell-btn");
-  if(!b) return;
-  var sub=document.getElementById("cloudshell-sub");
-  var was=sub?sub.textContent:"";
+  var b=document.getElementById("cloudshell-btn"),
+      panel=document.getElementById("cloudshell-panel"),
+      copy=document.getElementById("cs-copy");
+  if(!b||!panel) return;
   b.addEventListener("click",function(){
+    var open=!panel.hidden;
+    panel.hidden=open;
+    b.setAttribute("aria-expanded", String(!open));
+    if(!open) panel.scrollIntoView({block:"nearest",behavior:"smooth"});
+  });
+  if(copy) copy.addEventListener("click",function(){
     var cmd=b.getAttribute("data-cmd")||"";
-    var done=function(ok){
-      if(!sub) return;
-      sub.textContent = ok ? "Command copied, paste it in CloudShell"
-                           : "Copy the command below, then paste it";
-      setTimeout(function(){ sub.textContent=was; },6000);
-    };
+    var done=function(ok){ copy.textContent = ok?"Copied":"Select and copy"; setTimeout(function(){copy.textContent="Copy";},4000); };
     if(navigator.clipboard&&navigator.clipboard.writeText){
       navigator.clipboard.writeText(cmd).then(function(){done(true);},function(){done(false);});
     }else{
-      try{
-        var t=document.createElement("textarea");
-        t.value=cmd; t.setAttribute("readonly","");
-        t.style.position="absolute"; t.style.left="-9999px";
-        document.body.appendChild(t); t.select();
-        done(document.execCommand("copy")); document.body.removeChild(t);
-      }catch(e){ done(false); }
+      try{var t=document.createElement("textarea");t.value=cmd;t.style.position="absolute";t.style.left="-9999px";
+        document.body.appendChild(t);t.select();done(document.execCommand("copy"));document.body.removeChild(t);}catch(e){done(false);}
     }
   });
 })();
