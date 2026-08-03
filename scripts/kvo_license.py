@@ -342,6 +342,32 @@ def main():
     if isinstance(final, list):
         for L in final:
             print(f"    {L.get('activationCode')} {L.get('product')} qty={L.get('quantity')}")
+
+    # Coverage, not just a count. KVO is the licence authority for the whole
+    # fabric: the vPB and the sensors draw from ITS pool, they are not licensed
+    # separately. So a KVO with one entitlement looks "licensed" while the
+    # phases that need the others fail later for reasons that read as unrelated.
+    # Say which parts of the deployment are covered, while the operator still
+    # has their codes to hand.
+    products = " ".join(str(L.get("product", "")) for L in (final or [])).lower()
+    checks = [
+        ("KVO device licences", "adopting the vController and the vPB",
+         any(k in products for k in ("kvo-device", "visionorchestrator", "kvo device"))),
+        ("vPB feature licences", "vPB advanced features: dedup, data masking, tunnelling",
+         any(k in products for k in ("vpb", "advperm"))),
+        ("CloudLens sensor credits", "sensors registering and being counted",
+         any(k in products for k in ("cloudlens", "credit", "cl-credit"))),
+    ]
+    print("[license] coverage:")
+    missing = []
+    for name, purpose, have in checks:
+        print(f"    {'yes' if have else 'NO '}  {name:<26} {purpose}")
+        if not have:
+            missing.append(name)
+    if missing:
+        print("[license] not covered: " + ", ".join(missing))
+        print("[license] those come as separate activation codes. Re-run this script")
+        print("[license] with them at any time; activations are additive.")
     return 0 if n > 0 else 5
 
 

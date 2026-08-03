@@ -3303,6 +3303,92 @@ deploy_test_workloads_now() {
   return 0
 }
 
+# ---------------------------------------------------------------------
+# Windows sensors go over AWS SSM, and that plugin stages every file
+# through an S3 bucket. Telling the operator to create one, wire an IAM
+# policy, and edit a YAML file is three manual steps mid-run: exactly the
+# homework this script exists to remove. Do it here instead.
+# Returns 1 when it declines or cannot, and the caller keeps its message.
+# ---------------------------------------------------------------------
+ensure_ssm_bucket_now() {
+  local have=""
+  if [[ -f customer_input.yaml ]] && command -v python3 >/dev/null 2>&1; then
+    have="$(python3 -c 'import sys,yaml
+try: d=yaml.safe_load(open("customer_input.yaml")) or {}
+except Exception: sys.exit(0)
+print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)"
+  fi
+  [[ -n "$have" ]] && { SSM_BUCKET_NAME="$have"; return 0; }
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would create a private S3 bucket for Windows SSM file transfer and grant the Windows instance role access"
+    return 0
+  fi
+
+  echo
+  echo "  Windows sensors install over AWS SSM, which stages files through an S3"
+  echo "  bucket. None is configured, so the Windows host cannot be reached."
+  echo "  A private bucket can be created now and wired to the Windows instance"
+  echo "  role. Storage cost is a few cents a month."
+  ask_yn "  Create it? [Y/n]: " "y" || return 1
+
+  local acct bucket
+  acct="$(probe aws sts get-caller-identity --query Account --output text)"
+  [[ -z "$acct" || "$acct" == "None" ]] && { warn "Could not read the AWS account id."; return 1; }
+  bucket="cloudlens-ssm-transfer-${acct}"
+
+  step "S3 bucket for Windows SSM transfer"
+  if probe aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
+    ok "Bucket ${bucket} already exists"
+  else
+    local mk=0
+    if [[ "$REGION" == "us-east-1" ]]; then
+      aws s3api create-bucket --bucket "$bucket" --region "$REGION" >/dev/null 2>&1 || mk=1
+    else
+      aws s3api create-bucket --bucket "$bucket" --region "$REGION" \
+        --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null 2>&1 || mk=1
+    fi
+    [[ "$mk" -ne 0 ]] && { warn "Could not create ${bucket}."; return 1; }
+    aws s3api put-public-access-block --bucket "$bucket" \
+      --public-access-block-configuration \
+      "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null 2>&1 || true
+    ok "Created ${bucket} (private, nothing public)"
+  fi
+
+  # Grant the role the Windows hosts actually run under, read from the
+  # instances themselves. A BYO Windows host will not be using the role this
+  # repo's test-VM script creates, so assuming that name would be wrong.
+  local prof_arn role
+  prof_arn="$(probe aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=tag:os,Values=windows" "Name=instance-state-name,Values=running" \
+      --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)"
+  if [[ -z "$prof_arn" || "$prof_arn" == "None" ]]; then
+    warn "The Windows host has no IAM instance profile, so SSM cannot manage it."
+    note "Bucket ${bucket} is ready, but the instance needs a profile granting"
+    note "AmazonSSMManagedInstanceCore before Windows is reachable at all."
+    return 1
+  fi
+  role="$(probe aws iam get-instance-profile --instance-profile-name "${prof_arn##*/}" \
+        --query 'InstanceProfile.Roles[0].RoleName' --output text)"
+  if [[ -n "$role" && "$role" != "None" ]]; then
+    local pol="/tmp/ssm-bucket-policy.$$.json"
+    printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:ListBucket"],"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*"]}]}' "$bucket" "$bucket" > "$pol"
+    if aws iam put-role-policy --role-name "$role" --policy-name SsmTransferBucket \
+         --policy-document "file://$pol" >/dev/null 2>&1; then
+      ok "Granted ${role} read and write on ${bucket}"
+    else
+      warn "Could not attach the S3 policy to ${role} (needs iam:PutRolePolicy)."
+      rm -f "$pol"; return 1
+    fi
+    rm -f "$pol"
+  fi
+
+  SSM_BUCKET_NAME="$bucket"
+  ok "Windows SSM transfer bucket ready: ${bucket}"
+  return 0
+}
+
+
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   discovery_scope
   if [[ "$DISCOVERY_MODE" == "static" ]]; then
@@ -3706,7 +3792,7 @@ merge_customer_input() {
   command -v python3 >/dev/null 2>&1 || return 3
   CL_ADDR="$CLMS_PUBLIC_IP" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
   CL_TAG_K="$DISCOVERY_TAG_KEY" CL_TAG_V="$DISCOVERY_TAG_VALUE" \
-  CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" \
+  CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" CL_SSM_BUCKET="${SSM_BUCKET_NAME:-}" \
     python3 - customer_input.yaml <<'PY'
 import os, sys
 try:
@@ -3743,6 +3829,16 @@ doc["cloudlens"] = cl
 # filters, even though the file is otherwise the operator's to keep. Leaving
 # a stale file to win made the flags do nothing at all, silently: a run asking
 # for monitoring=enabled searched for cloudlens=yes and found no hosts.
+# The SSM bucket the Windows play needs. Written here so the operator never
+# has to hand-edit this file between phases.
+_ssm = os.environ.get("CL_SSM_BUCKET", "")
+if _ssm:
+    aws_blk = doc.get("aws")
+    if not isinstance(aws_blk, dict):
+        aws_blk = {}
+    aws_blk["ssm_bucket_name"] = _ssm
+    doc["aws"] = aws_blk
+
 if os.environ.get("CL_TAG_EXPLICIT") == "true":
     tk = os.environ.get("CL_TAG_K", "")
     tv = os.environ.get("CL_TAG_V", "")
@@ -3890,6 +3986,14 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
       cp customer_input.yaml "$QS_DIR/customer_input.yaml" 2>/dev/null || true
       chmod 600 "$QS_DIR/customer_input.yaml" 2>/dev/null || true
       chmod +x "$QS_DIR/quickstart.sh" 2>/dev/null || true
+      # Windows needs the SSM transfer bucket before the playbook runs, or its
+      # play asserts and takes the whole run's exit code with it even when
+      # Linux succeeded.
+      if probe aws ec2 describe-instances --region "$REGION" \
+           --filters "Name=tag:os,Values=windows" "Name=instance-state-name,Values=running" \
+           --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null | grep -q '^i-'; then
+        ensure_ssm_bucket_now || true
+      fi
       ok "Launching quickstart.sh from $QS_DIR"
       ( cd "$QS_DIR" && bash quickstart.sh ) \
         || warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
