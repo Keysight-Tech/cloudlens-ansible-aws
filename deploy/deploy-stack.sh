@@ -2092,7 +2092,11 @@ elif [[ -f "$PWD/$CFN_TEMPLATE_REL" ]]; then
   REPO_DIR="$PWD"
 else
   REPO_DIR="$HOME/${REPO_NAME}"
+  # We created this clone, so we own keeping it current. A checkout the operator
+  # is working in is never touched.
+  REPO_DIR_IS_OURS=true
 fi
+REPO_DIR_IS_OURS="${REPO_DIR_IS_OURS:-false}"
 
 # =====================================================================
 # Phase 3: Customer input
@@ -2515,6 +2519,32 @@ if [[ ! -f "$REPO_DIR/$CFN_TEMPLATE_REL" ]] && [[ "$DRY_RUN" != "true" ]]; then
   if [[ ! -d "$REPO_DIR/.git" ]]; then
     git clone -q "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "$REPO_DIR" 2>/dev/null \
       || warn "Could not clone repo. Run this script from inside a checkout of ${REPO_NAME}."
+  fi
+fi
+
+# Refresh a clone WE created. curl|bash always fetches the newest deploy-stack.sh,
+# but the helper scripts it calls come off disk, so a clone left by an earlier run
+# silently pins them to whatever commit that run saw. That is version skew between
+# the orchestrator and its own helpers, and it surfaces as nonsense: a live run hit
+#   kvo_license.py: error: unrecognized arguments: --accept-eula
+# because the new deploy-stack.sh was calling a months-old kvo_license.py.
+# Only a clone at $HOME/<repo> is touched. A checkout the operator works in is
+# never modified, and a dirty tree is left alone even then.
+if [[ "$REPO_DIR_IS_OURS" == "true" && -d "$REPO_DIR/.git" && "$DRY_RUN" != "true" ]]; then
+  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+    warn "Local changes in $REPO_DIR; leaving it as it is."
+    note "Helper scripts may be older than this one. Commit or stash, or delete that directory."
+  else
+    _before="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if git -C "$REPO_DIR" fetch -q --depth 1 origin main 2>/dev/null \
+       && git -C "$REPO_DIR" reset -q --hard FETCH_HEAD 2>/dev/null; then
+      _after="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+      if [[ "$_before" != "$_after" ]]; then
+        ok "Helper scripts updated: ${_before} -> ${_after}"
+      fi
+    else
+      warn "Could not refresh $REPO_DIR; helper scripts may be out of date."
+    fi
   fi
 fi
 
