@@ -178,6 +178,12 @@ DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 ROLLBACK_ON_FAIL="${CLOUDLENS_ROLLBACK_ON_FAIL:-false}"
 
 WINDOWS_INSTANCE_PROFILE="${CLOUDLENS_WINDOWS_INSTANCE_PROFILE:-}"
+# The Windows sensor is a native .exe served by the CloudLens Manager. Unlike
+# Linux (a container pull) it needs the installer URL from the CLMS "Launch
+# Agent -> Start New Agents -> Windows agents" link. Supply it here and the
+# Windows host downloads it directly; otherwise the playbook asserts early with
+# the fix rather than failing silently at the copy step.
+WINDOWS_INSTALLER_URL="${CLOUDLENS_WINDOWS_INSTALLER_URL:-}"
 SUMMARY_FILE="cloudlens-deploy-summary.txt"
 LOG_FILE="cloudlens-deploy-stack.log"
 
@@ -2665,6 +2671,13 @@ deploy_cfn() {
     note "  --windows-instance-profile NAME"
     note "The Linux test VMs are unaffected."
   fi
+  if [[ "$TEST_WINDOWS" == "yes" && -z "$WINDOWS_INSTALLER_URL" ]]; then
+    note "Windows sensors also need the installer URL from the CloudLens Manager"
+    note "(Launch Agent -> Start New Agents -> the Windows agents link). Set it with"
+    note "  CLOUDLENS_WINDOWS_INSTALLER_URL=... or windows.installer_url in customer_input.yaml."
+    note "Without it the Windows sensor step asserts early with the fix. Windows is"
+    note "already covered agentlessly by the AWS mirror, so the sensor is additive."
+  fi
 
   # Build parameter-overrides. Always pass the core set; append brownfield /
   # access params only when the customer set them, so blank ones keep the
@@ -3864,6 +3877,16 @@ cloudlens:
   custom_tags:        "DeployedBy=stack Region=${REGION}"
   registry_type:      "insecure"
   linux_runtime:      "auto"
+
+# Windows sensors only. The Windows sensor is a native .exe, not a container.
+# Set installer_url to the download link from the CloudLens Manager
+# (Launch Agent -> Start New Agents -> the Windows agents link) and the host
+# pulls it directly. Leave it blank if you are not installing Windows sensors,
+# or set installer_path instead to a .exe you have already downloaded.
+# Windows is also covered agentlessly by AWS VPC Traffic Mirroring, so the
+# sensor is additive, not required.
+windows:
+  installer_url: "${WINDOWS_INSTALLER_URL}"
 
 vpc_ids:    []
 subnet_ids: []

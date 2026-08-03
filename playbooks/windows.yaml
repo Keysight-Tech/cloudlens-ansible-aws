@@ -29,6 +29,33 @@
         success_msg: "SSM file transfer bucket: {{ (aws | default({})).get('ssm_bucket_name', '') }}"
       when: ((aws | default({})).get('windows_connection', 'ssm')) == 'ssm'
 
+    # The Windows sensor is a native .exe. There is no container-pull like
+    # Linux, so the installer must come from ONE of two places: a URL the host
+    # downloads from the CLMS (preferred), or a pre-staged local file. When
+    # neither resolves, the run used to die at the copy step with a bare "file
+    # not found", which is why Windows never registered. Fail here instead,
+    # naming both fixes, before anything connects.
+    - name: A Windows sensor installer must be available (URL or local file)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (((windows | default({})).get('installer_url', '') | default('', true)) | length > 0)
+            or (lookup('ansible.builtin.fileglob', local_installer_path, errors='ignore') | length > 0)
+        fail_msg: >-
+          No Windows sensor installer is available. Supply ONE of these in
+          customer_input.yaml:
+          windows: {installer_url: "https://<clms-ip>/<path>"}   (get the path from
+          the CloudLens Manager: Launch Agent -> Start New Agents -> the Windows
+          agents link), OR
+          windows: {installer_path: "files/cloudlens-win-sensor-X.Y.Z.exe"} pointing
+          at an installer you have already downloaded onto this machine.
+          Note: Windows is also covered agentlessly by AWS VPC Traffic Mirroring,
+          so the sensor is additive, not required for visibility.
+        success_msg: >-
+          Windows installer source:
+          {{ 'URL ' + windows.installer_url if ((windows | default({})).get('installer_url','') | length > 0)
+             else 'local file ' + local_installer_path }}
+
 - name: Deploy CloudLens Agent to Windows VMs
   hosts: "{{ target_group }}"
   become: no
@@ -207,10 +234,23 @@
             state: absent
           ignore_errors: yes
 
-        - name: Transfer CloudLens installer
+        # Preferred: the host pulls the installer straight from the CLMS. This
+        # is the documented flow and avoids staging a large .exe through the
+        # SSM S3 bucket. SSL_Verify=no in the install args mirrors a CLMS with
+        # a self-signed cert, so validate_certs is off to match.
+        - name: Download CloudLens installer from the CLMS (when a URL is given)
+          win_get_url:
+            url: "{{ cloudlens_installer_url }}"
+            dest: C:\temp\{{ cloudlens_installer_filename }}
+            validate_certs: "{{ ssl_verify == 'yes' }}"
+          when: cloudlens_installer_url | length > 0
+
+        # Fallback: copy a pre-staged installer from the Ansible controller.
+        - name: Transfer CloudLens installer from a local file (when no URL)
           win_copy:
             src: "{{ local_installer_path }}"
             dest: C:\temp\{{ cloudlens_installer_filename }}
+          when: cloudlens_installer_url | length == 0
 
         - name: Verify installer exists
           win_stat:

@@ -9,10 +9,26 @@
 podman_command: podman
 redhat_ca_cert_dir: "/etc/pki/ca-trust/source/anchors"
 
-# Windows installer defaults, overridden by customer_input.yaml.windows.installer_path
-# To use a different installer, set in customer_input.yaml:
-#   windows:
-#     installer_path: "files/cloudlens-win-sensor-X.Y.Z.exe"
-#     installer_filename: "cloudlens-win-sensor-X.Y.Z.exe"
+# Windows installer. There are two ways to supply it, in order of preference:
+#
+#   1. installer_url  (recommended): the Windows host downloads the .exe
+#      straight from the CloudLens Manager. This is the documented flow:
+#      the vController User Guide says to take the sensor installer download
+#      URL from the "Launch Agent -> Start New Agents -> Windows agents" link
+#      and pull it onto the VM. No large binary is staged through S3, and the
+#      repo (which is public) never carries a vendor installer.
+#        windows:
+#          installer_url: "https://<clms-ip>/<path-from-Start-New-Agents>"
+#
+#   2. installer_path (fallback): a pre-staged .exe already on the machine
+#      running Ansible, copied to the host with win_copy.
+#        windows:
+#          installer_path: "files/cloudlens-win-sensor-X.Y.Z.exe"
+#          installer_filename: "cloudlens-win-sensor-X.Y.Z.exe"
+#
+# The playbook asserts up front that at least one of these resolves, so a
+# missing installer fails early with a clear message instead of silently at
+# the copy step (the reason Windows never registered before).
+cloudlens_installer_url: "{{ windows.installer_url | default('') }}"
 local_installer_path: "{{ windows.installer_path | default(playbook_dir + '/../files/cloudlens-win-sensor-6.13.0.359.exe') }}"
 cloudlens_installer_filename: "{{ windows.installer_filename | default('cloudlens-win-sensor-6.13.0.359.exe') }}"
