@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: "CloudLens on AWS: Zone Tapping end to end   -   page " counter(page) " of " counter(pages); font-size: 8pt; color: #8a97a8; }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1b2432; font-size: 10.2pt; line-height: 1.5; }
+  h1 { font-size: 20pt; color: #0b1f3a; margin: 0 0 2mm; }
+  h2 { font-size: 14pt; color: #0b63ce; border-bottom: 2px solid #e3392e; padding-bottom: 1.5mm; margin: 9mm 0 3mm; page-break-after: avoid; }
+  h3 { font-size: 11.5pt; color: #0b1f3a; margin: 5mm 0 2mm; page-break-after: avoid; }
+  p { margin: 0 0 2.5mm; }
+  code, .mono { font-family: "SF Mono", "Consolas", monospace; font-size: 8.8pt; }
+  .lead { color: #33475b; font-size: 10.6pt; }
+  table { width: 100%; border-collapse: collapse; margin: 2mm 0 4mm; font-size: 9pt; }
+  th { background: #0b1f3a; color: #fff; text-align: left; padding: 2mm 2.5mm; font-weight: 600; }
+  td { border-bottom: 1px solid #dce3ec; padding: 1.8mm 2.5mm; vertical-align: top; }
+  tr:nth-child(even) td { background: #f5f8fc; }
+  .box { border-radius: 6px; padding: 3mm 4mm; margin: 3mm 0; page-break-inside: avoid; }
+  .warn { background: #fdeef0; border: 1.5px solid #d9737c; }
+  .ok { background: #e8f6ec; border: 1.5px solid #2e9e5b; }
+  .info { background: #eaf3ff; border: 1.5px solid #7fb2ee; }
+  .amber { background: #fff6e5; border: 1.5px solid #e8a317; }
+  .box b.h { display:block; margin-bottom:1mm; }
+  .warn b.h { color:#c0392b; } .ok b.h { color:#1d7a43; } .info b.h { color:#0b63ce; } .amber b.h { color:#b8860b; }
+  pre { background: #0b1f3a; color: #e8edf3; border-radius: 6px; padding: 3mm 4mm; font-size: 8.2pt; line-height: 1.42; overflow-wrap: anywhere; white-space: pre-wrap; margin: 2mm 0 4mm; page-break-inside: avoid; }
+  pre .c { color: #8fb7 e8; } .kv { color:#7fd6a0; }
+  .cover { text-align: center; padding-top: 40mm; page-break-after: always; }
+  .cover .brand { color: #e3392e; font-weight: 700; letter-spacing: 2px; font-size: 11pt; }
+  .cover h1 { font-size: 27pt; margin: 6mm 0 3mm; }
+  .cover .sub { color:#33475b; font-size: 12.5pt; }
+  .cover .meta { margin-top: 30mm; color:#5a6675; font-size: 9.5pt; }
+  .pill { display:inline-block; background:#0b63ce; color:#fff; border-radius:10px; padding:1px 8px; font-size:8pt; }
+  .pill.green { background:#2e9e5b; } .pill.red { background:#e3392e; } .pill.grey { background:#5a6675; }
+  figure { margin: 3mm 0 5mm; page-break-inside: avoid; text-align:center; }
+  figcaption { font-size: 8.5pt; color:#5a6675; margin-top: 1.5mm; }
+  ul, ol { margin: 1mm 0 3mm; padding-left: 6mm; }
+  li { margin-bottom: 1.2mm; }
+  .small { font-size: 8.8pt; color:#5a6675; }
+  .toc a { color:#0b1f3a; text-decoration:none; }
+  .toc li { margin-bottom: 1.6mm; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="brand">KEYSIGHT  ·  CLOUDLENS</div>
+  <h1>CloudLens on AWS<br>Full-Stack Visibility, End to End</h1>
+  <div class="sub">From CloudFormation stack creation to a proven,<br>packet-verified VPC Traffic Mirroring pipeline</div>
+  <div class="meta">
+    A complete, explainable runbook of everything built and verified<br>
+    on AWS account 466778915280, region us-east-1.<br><br>
+    Every step, every object, every bug found and fixed, and the live<br>
+    evidence that the tapped traffic actually arrives.
+  </div>
+</div>
+
+<h2 style="margin-top:0">Contents</h2>
+<ol class="toc">
+  <li><a href="#s1">Executive summary: what was built and proven</a></li>
+  <li><a href="#s2">Architecture at a glance</a></li>
+  <li><a href="#s3">The deployment sequence, phase by phase</a></li>
+  <li><a href="#s4">The data plane: what rides each hop</a></li>
+  <li><a href="#s5">The KVO Visibility Fabric: the objects the automation builds</a></li>
+  <li><a href="#s6">The six bugs, each hiding the next</a></li>
+  <li><a href="#s7">Live evidence: the tap actually works</a></li>
+  <li><a href="#s8">Windows: agentless and by-sensor, both proven</a></li>
+  <li><a href="#s9">Access and credentials</a></li>
+  <li><a href="#s10">Reproduce it: one command</a></li>
+</ol>
+
+<h2 id="s1">1. Executive summary</h2>
+<p class="lead">This document records the complete build of a Keysight CloudLens network-visibility
+pipeline on AWS, from an empty account to a running system where production workload
+traffic is copied, brokered, and delivered to tools without any agent in the data path,
+and where every hop is verified with real packets rather than configuration alone.</p>
+
+<div class="box ok"><b class="h">Proven end to end</b>
+Workload traffic is mirrored agentlessly from the source ENIs, aggregated by a CloudLens
+collector, brokered by a virtual Packet Broker (vPB), and delivered to a capture host where
+<b>42,010 GRE-encapsulated packets</b> were read with the original workload conversations
+intact inside each tunnel. Linux and Windows sensors both registered. The whole path was
+traced with AWS CloudWatch counters and live <code>tcpdump</code>.</div>
+
+<table>
+<tr><th>Component</th><th>Role</th><th>Status</th></tr>
+<tr><td>Keysight Vision Orchestrator (KVO)</td><td>Orchestrates the estate: licensing, adoption, cloud config, mirror fabric</td><td><span class="pill green">live</span></td></tr>
+<tr><td>CloudLens Manager (CLMS / vController 6.14.1)</td><td>Sensor control plane; serves the Windows installer</td><td><span class="pill green">connected</span></td></tr>
+<tr><td>Virtual Packet Broker (vPB 3.16)</td><td>Aggregate, deduplicate, filter, slice, deliver</td><td><span class="pill green">adopted</span></td></tr>
+<tr><td>CloudLens collector (vHub SVM)</td><td>Mirror target; re-encapsulates VXLAN to L2GRE</td><td><span class="pill green">online</span></td></tr>
+<tr><td>3 traffic mirror sessions</td><td>One per Nitro source ENI (ubuntu, rhel, windows)</td><td><span class="pill green">active</span></td></tr>
+<tr><td>Capture host (tool receiver)</td><td>Proves delivery: tcpdump on the tapped copy</td><td><span class="pill green">capturing</span></td></tr>
+</table>
+
+<h2 id="s2">2. Architecture at a glance</h2>
+<p>CloudLens on AWS uses two capture methods that feed one broker. <b>Host sensors</b> run inside
+the instance and see traffic before the ENI, including container and pre-encryption traffic.
+<b>VPC Traffic Mirroring</b> is agentless, for instances where no agent can be installed. Both
+encapsulate copies to the vPB. The vPB is never inline: if it fails, the application keeps serving.</p>
+
+<figure>
+<svg width="640" height="330" viewBox="0 0 640 330" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica" font-size="10">
+  <rect x="1" y="1" width="638" height="328" rx="8" fill="#f7fafd" stroke="#c9d3df"/>
+  <text x="20" y="24" font-size="12" font-weight="bold" fill="#0b1f3a">AWS account 466778915280 · us-east-1 · VPC 10.99.0.0/16</text>
+
+  <!-- workloads -->
+  <rect x="20" y="48" width="150" height="120" rx="6" fill="#fff4e5" stroke="#ff9900"/>
+  <text x="30" y="66" font-weight="bold" fill="#8a5a00">Source workloads</text>
+  <text x="30" y="84" fill="#5a6675">test-ubuntu-1  10.99.1.22</text>
+  <text x="30" y="100" fill="#5a6675">test-rhel-1     10.99.1.49</text>
+  <text x="30" y="116" fill="#5a6675">test-windows-1 10.99.1.130</text>
+  <text x="30" y="138" fill="#5a6675" font-size="8.5">tagged cloudlens=yes</text>
+  <text x="30" y="152" fill="#5a6675" font-size="8.5">Nitro instances (mirror-eligible)</text>
+
+  <!-- collector -->
+  <rect x="215" y="48" width="150" height="120" rx="6" fill="#ffffff" stroke="#2e9e5b" stroke-width="1.5"/>
+  <text x="225" y="66" font-weight="bold" fill="#1d7a43">CloudLens collector</text>
+  <text x="225" y="82" fill="#5a6675" font-size="8.5">vHub SVM 6.14.1</text>
+  <text x="225" y="100" fill="#5a6675" font-size="8.5">MIRROR TARGET</text>
+  <text x="225" y="114" fill="#5a6675" font-size="8.5">ingress 10.99.11.147</text>
+  <text x="225" y="128" fill="#5a6675" font-size="8.5">egress  10.99.12.189</text>
+  <text x="225" y="150" fill="#5a6675" font-size="8.5">ASG min 1 max 4, by KVO</text>
+
+  <!-- vPB -->
+  <rect x="410" y="48" width="150" height="120" rx="6" fill="#ffffff" stroke="#e3392e" stroke-width="1.5"/>
+  <text x="420" y="66" font-weight="bold" fill="#b8231a">CloudLens vPB 3.16</text>
+  <text x="420" y="82" fill="#5a6675" font-size="8.5">out-of-band broker</text>
+  <text x="420" y="100" fill="#5a6675" font-size="8.5">eth1 in  10.99.11.33</text>
+  <text x="420" y="114" fill="#5a6675" font-size="8.5">eth2 out 10.99.12.x</text>
+  <text x="420" y="132" fill="#5a6675" font-size="8.5">aggregate, dedupe,</text>
+  <text x="420" y="146" fill="#5a6675" font-size="8.5">filter, slice, deliver</text>
+
+  <!-- tools -->
+  <rect x="410" y="196" width="150" height="66" rx="6" fill="#f3edff" stroke="#8c4fff"/>
+  <text x="420" y="214" font-weight="bold" fill="#5b2fb0">Tools + capture host</text>
+  <text x="420" y="230" fill="#5a6675" font-size="8.5">vpb-egress-tool (LOCAL)</text>
+  <text x="420" y="244" fill="#5a6675" font-size="8.5">capture host 10.99.12.136</text>
+  <text x="420" y="256" fill="#5a6675" font-size="8.5">tcpdump proto 47</text>
+
+  <!-- control plane -->
+  <rect x="20" y="196" width="345" height="66" rx="6" fill="#eaf3ff" stroke="#7fb2ee"/>
+  <text x="30" y="214" font-weight="bold" fill="#0b63ce">Control plane (no packets)</text>
+  <text x="30" y="230" fill="#5a6675" font-size="8.5">KVO 107.22.26.186 · orchestration, licensing, adoption</text>
+  <text x="30" y="244" fill="#5a6675" font-size="8.5">CLMS 34.230.225.109 · sensor registration, policy</text>
+  <text x="30" y="256" fill="#5a6675" font-size="8.5">vPB adopted into KVO · dashed = control only</text>
+
+  <!-- arrows -->
+  <line x1="170" y1="108" x2="213" y2="108" stroke="#ff9900" stroke-width="2.4"/>
+  <polygon points="213,108 205,104 205,112" fill="#ff9900"/>
+  <text x="172" y="102" font-size="7.5" fill="#8a5a00">VXLAN 4789</text>
+  <line x1="365" y1="108" x2="408" y2="108" stroke="#e3392e" stroke-width="2.4"/>
+  <polygon points="408,108 400,104 400,112" fill="#e3392e"/>
+  <text x="366" y="102" font-size="7.5" fill="#b8231a">L2GRE 47</text>
+  <line x1="485" y1="168" x2="485" y2="194" stroke="#8c4fff" stroke-width="2.4"/>
+  <polygon points="485,194 481,186 489,186" fill="#8c4fff"/>
+</svg>
+<figcaption>Two capture methods, one broker. The vPB receives copies only and is never in the production path.</figcaption>
+</figure>
+
+<h2 id="s3">3. The deployment sequence, phase by phase</h2>
+<p>A single orchestrator, <code>deploy/deploy-stack.sh</code>, runs the whole pipeline. It is resumable:
+each phase detects whether its work already exists and skips it, so a run that stops can be
+re-run and picks up where it left off. The phases, in order:</p>
+
+<table>
+<tr><th>#</th><th>Phase</th><th>What it does</th><th>Why it matters</th></tr>
+<tr><td>1-5</td><td>Preflight + stack</td><td>Environment checks, marketplace AMI check, CloudFormation deploy of the VPC, subnets, KVO, vController, vPB</td><td>Greenfield infrastructure in one template</td></tr>
+<tr><td>6</td><td>Deploy the stack</td><td>Creates VPC 10.99.0.0/16 with three subnets: mgmt 10.99.1, data/ingress 10.99.11, tool/egress 10.99.12</td><td>The dual-plane layout the vPB needs</td></tr>
+<tr><td>7</td><td>Wait for vController</td><td>Polls the real login route until the appliance answers</td><td>The appliance needs ~15 min to initialise</td></tr>
+<tr><td>8</td><td>vPB bootstrap</td><td>Waits for KCOS, drives the vPB CLI (EULA, context)</td><td>The vPB must accept its EULA before adoption</td></tr>
+<tr><td>9</td><td>Project key + login</td><td>Rotates the default password, provisions the working UI login</td><td>Returns credentials so the operator can watch</td></tr>
+<tr><td>10-11</td><td>Sensor mode + licensing</td><td>Accepts the KVO EULA, activates licences via REST</td><td>KVO is the licence authority for the whole fabric</td></tr>
+<tr><td>12</td><td>CLMS adoption + Cloud Config</td><td>Adopts the manager into KVO; the Cloud Config provisions the project and its key</td><td>One manager owns both agent and agentless visibility</td></tr>
+<tr><td>13</td><td>Sensors</td><td>Installs and registers Linux (docker/podman) and Windows sensors</td><td>In-guest, pre-encryption visibility</td></tr>
+<tr><td>14</td><td>Adopt the vPB</td><td>Brings the vPB into KVO as a managed device</td><td>The broker becomes orchestrable</td></tr>
+<tr><td>15</td><td>AWS mirror</td><td>Presence, Cloud Config (Aws), collection, collector ASG, tool, policy, mirror sessions</td><td>Agentless VPC Traffic Mirroring</td></tr>
+<tr><td>16</td><td>vPB traffic path</td><td>C2DL binds the collection to vPB eth1; egress bound to the tool; monitoring policy</td><td>Must run after 15: needs the AWS cloud config</td></tr>
+<tr><td>17</td><td>Capture host</td><td>Launches a tcpdump host on the egress subnet, wires it as a REMOTE tool</td><td>Makes the tapped traffic visible</td></tr>
+</table>
+
+<div class="info"><b class="h" style="color:#0b63ce">Resumability, concretely</b>
+The orchestrator refuses to store secrets in its state file, detects an already-CONNECTED CLMS
+and an already-adopted vPB, refreshes a stale helper clone, and lets an operator bring their own
+workloads by passing a subnet and tag instead of creating throwaway VMs. The goal is a run that
+is smooth from a clean account or resumed from any interruption, in a laptop shell or AWS CloudShell.</div>
+
+<h2 id="s4">4. The data plane: what rides each hop</h2>
+<p>The single most important thing to understand is what is carried at each step, because the tap is
+a chain of encapsulations. A copy of the workload packet is wrapped, moved, unwrapped, processed,
+and re-wrapped several times before a tool ever sees it.</p>
+
+<figure>
+<svg width="640" height="300" viewBox="0 0 640 300" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica" font-size="9">
+  <rect x="1" y="1" width="638" height="298" rx="8" fill="#f7fafd" stroke="#c9d3df"/>
+  <!-- nodes -->
+  <g>
+    <rect x="18" y="120" width="104" height="56" rx="5" fill="#fff4e5" stroke="#ff9900"/>
+    <text x="70" y="144" text-anchor="middle" font-weight="bold" fill="#8a5a00">workload</text>
+    <text x="70" y="160" text-anchor="middle" fill="#5a6675" font-size="8">10.99.1.x NIC</text>
+
+    <rect x="180" y="120" width="118" height="56" rx="5" fill="#ffffff" stroke="#2e9e5b" stroke-width="1.5"/>
+    <text x="239" y="140" text-anchor="middle" font-weight="bold" fill="#1d7a43">collector</text>
+    <text x="239" y="154" text-anchor="middle" fill="#5a6675" font-size="7.5">in 10.99.11.147</text>
+    <text x="239" y="166" text-anchor="middle" fill="#5a6675" font-size="7.5">out 10.99.12.189</text>
+
+    <rect x="356" y="120" width="110" height="56" rx="5" fill="#ffffff" stroke="#e3392e" stroke-width="1.5"/>
+    <text x="411" y="140" text-anchor="middle" font-weight="bold" fill="#b8231a">vPB</text>
+    <text x="411" y="154" text-anchor="middle" fill="#5a6675" font-size="7.5">eth1 10.99.11.33</text>
+    <text x="411" y="166" text-anchor="middle" fill="#5a6675" font-size="7.5">eth2 10.99.12.x</text>
+
+    <rect x="524" y="70" width="100" height="48" rx="5" fill="#f3edff" stroke="#8c4fff"/>
+    <text x="574" y="90" text-anchor="middle" font-weight="bold" fill="#5b2fb0" font-size="8.5">egress tool</text>
+    <text x="574" y="104" text-anchor="middle" fill="#5a6675" font-size="7.5">LOCAL, eth2</text>
+
+    <rect x="524" y="178" width="100" height="48" rx="5" fill="#f3edff" stroke="#8c4fff"/>
+    <text x="574" y="196" text-anchor="middle" font-weight="bold" fill="#5b2fb0" font-size="8.5">capture host</text>
+    <text x="574" y="210" text-anchor="middle" fill="#5a6675" font-size="7.5">10.99.12.136</text>
+  </g>
+  <!-- edges with labels -->
+  <line x1="122" y1="148" x2="178" y2="148" stroke="#ff9900" stroke-width="2.6"/><polygon points="178,148 169,143 169,153" fill="#ff9900"/>
+  <text x="150" y="140" text-anchor="middle" font-size="7.5" fill="#8a5a00">VXLAN 4789</text>
+  <text x="150" y="164" text-anchor="middle" font-size="7" fill="#5a6675">full pkt copies</text>
+
+  <line x1="298" y1="148" x2="354" y2="148" stroke="#e3392e" stroke-width="2.6"/><polygon points="354,148 345,143 345,153" fill="#e3392e"/>
+  <text x="326" y="140" text-anchor="middle" font-size="7.5" fill="#b8231a">L2GRE 47</text>
+  <text x="326" y="164" text-anchor="middle" font-size="7" fill="#5a6675">key=0x40</text>
+
+  <line x1="466" y1="140" x2="522" y2="98" stroke="#8c4fff" stroke-width="2.4"/><polygon points="522,98 512,99 517,107" fill="#8c4fff"/>
+  <text x="500" y="112" text-anchor="middle" font-size="7" fill="#5b2fb0">raw frames</text>
+
+  <line x1="466" y1="158" x2="522" y2="198" stroke="#8c4fff" stroke-width="2.4"/><polygon points="522,198 512,191 517,199" fill="#8c4fff"/>
+  <text x="500" y="188" text-anchor="middle" font-size="7" fill="#5b2fb0">L2GRE copy</text>
+
+  <text x="320" y="30" text-anchor="middle" font-size="11" font-weight="bold" fill="#0b1f3a">Encapsulation at each hop</text>
+  <text x="320" y="256" text-anchor="middle" font-size="8" fill="#5a6675">Inside every tunnel the original workload conversation is intact: source, dest, ports, TCP seq/ack, both directions.</text>
+</svg>
+<figcaption>The mirror target is the collector, not the vPB. VXLAN carries the copy to the collector; L2GRE carries it onward.</figcaption>
+</figure>
+
+<table>
+<tr><th>Interface</th><th>In</th><th>Out</th><th>Encapsulation</th></tr>
+<tr><td>Source ENI (workload)</td><td>-</td><td>AWS copies every packet, both directions</td><td>plain, then wrapped by the mirror session</td></tr>
+<tr><td>Collector ingress 10.99.11.147</td><td>mirrored traffic (this ENI is the target)</td><td>-</td><td>VXLAN UDP/4789</td></tr>
+<tr><td>Collector egress 10.99.12.189</td><td>-</td><td>re-encapsulated toward the vPB and capture host</td><td>L2GRE, IP protocol 47</td></tr>
+<tr><td>Collector mgmt 10.99.1.153</td><td>KVO control</td><td>KVO control</td><td>none (the GRE tunnel is tracked from this IP)</td></tr>
+<tr><td>vPB eth1 ingress 10.99.11.33</td><td>L2GRE from collector, via the C2DL; decapsulated here</td><td>-</td><td>L2GRE 47</td></tr>
+<tr><td>vPB eth2 egress 10.99.12.x</td><td>-</td><td>processed copies to tools</td><td>LOCAL raw + REMOTE L2GRE to capture host</td></tr>
+<tr><td>Capture host 10.99.12.136</td><td>L2GRE copy; tcpdump shows inner packets</td><td>-</td><td>L2GRE 47, src/dst check OFF</td></tr>
+</table>
+
+<h2 id="s5">5. The KVO Visibility Fabric</h2>
+<p>KVO models the tap as objects that connect a <b>source</b> through a <b>monitoring policy</b> to a
+<b>destination</b>. The automation builds all of them. Below is exactly what exists in the running system,
+matching the Monitoring Policies and Visibility Fabric views in the KVO console.</p>
+
+<figure>
+<svg width="640" height="300" viewBox="0 0 640 300" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica" font-size="8.5">
+  <rect x="1" y="1" width="638" height="298" rx="8" fill="#0f1720" stroke="#2b3a4d"/>
+  <text x="90" y="26" fill="#9fb0c3" font-size="10">Traffic Sources (1)</text>
+  <text x="300" y="26" fill="#9fb0c3" font-size="10">Monitoring Policies (2)</text>
+  <text x="500" y="26" fill="#9fb0c3" font-size="10">Traffic Destinations (3)</text>
+
+  <!-- source -->
+  <rect x="24" y="120" width="150" height="56" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="34" y="142" fill="#cfe0f0" font-weight="bold">aws-mirror-collect</text>
+  <text x="34" y="158" fill="#8fa3b8" font-size="7.5">cloud collection, aws-mirror</text>
+  <text x="34" y="170" fill="#8fa3b8" font-size="7.5">selector cloudlens=yes</text>
+
+  <!-- policies -->
+  <rect x="250" y="70" width="150" height="42" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="260" y="88" fill="#cfe0f0" font-weight="bold">aws-mirror-policy</text>
+  <text x="260" y="102" fill="#63c98a" font-size="7.5">Active | Continuously</text>
+  <rect x="250" y="180" width="150" height="42" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="260" y="198" fill="#cfe0f0" font-weight="bold">vpb-traffic-policy</text>
+  <text x="260" y="212" fill="#63c98a" font-size="7.5">Active | Continuously</text>
+
+  <!-- destinations -->
+  <rect x="470" y="52" width="150" height="40" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="480" y="70" fill="#cfe0f0" font-weight="bold">aws-mirror-tool</text>
+  <text x="480" y="83" fill="#e0a04a" font-size="7.5">REMOTE, to vPB eth1</text>
+  <rect x="470" y="128" width="150" height="40" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="480" y="146" fill="#cfe0f0" font-weight="bold">vpb-egress-tool</text>
+  <text x="480" y="159" fill="#63c98a" font-size="7.5">LOCAL, vPB eth2</text>
+  <rect x="470" y="204" width="150" height="40" rx="5" fill="#182430" stroke="#3a5570"/>
+  <text x="480" y="222" fill="#cfe0f0" font-weight="bold">vpb-capture-tool</text>
+  <text x="480" y="235" fill="#e0a04a" font-size="7.5">REMOTE, to capture host</text>
+
+  <!-- edges -->
+  <path d="M174 140 C 220 120, 220 91, 250 91" fill="none" stroke="#5a7690" stroke-width="1.5"/>
+  <path d="M174 156 C 220 176, 220 201, 250 201" fill="none" stroke="#5a7690" stroke-width="1.5"/>
+  <path d="M400 88 C 440 80, 440 72, 470 72" fill="none" stroke="#e0a04a" stroke-width="1.5"/>
+  <path d="M400 198 C 440 170, 440 148, 470 148" fill="none" stroke="#63c98a" stroke-width="1.5"/>
+  <path d="M400 205 C 440 218, 440 224, 470 224" fill="none" stroke="#e0a04a" stroke-width="1.5"/>
+</svg>
+<figcaption>The live KVO fabric: one source, two policies, three destinations. This mirrors the console's Monitoring Policies view.</figcaption>
+</figure>
+
+<h3>The objects, and why each one mattered</h3>
+<table>
+<tr><th>Object</th><th>What it is</th><th>Note</th></tr>
+<tr><td>AWS Presence <code>aws-mirror</code></td><td>KVO project holding the Zone-Tapping IAM keys</td><td>-</td></tr>
+<tr><td>Cloud Config <code>aws-mirror</code> (Aws)</td><td>Holds the awsConfiguration: three distinct security groups, the three subnets, the vController IP, the SSH key pair. Provisions and scales the collector ASG.</td><td>The three SG fields are non-null in the schema. Sending them as optional was bug 1.</td></tr>
+<tr><td>Cloud Collection <code>aws-mirror-collect</code></td><td>The traffic source: the mirrored workload traffic. Workload selector field=cloudlens, regex=yes.</td><td>The selector field must be the tag key, not the literal word "tag". That was bug 4.</td></tr>
+<tr><td>Tool <code>aws-mirror-tool</code> (REMOTE)</td><td>L2GRE to the vPB ingress 10.99.11.33. reachableFrom CLOUD_CONFIG, vlanStripping false.</td><td>Carries the mirrored copy from collector to vPB.</td></tr>
+<tr><td>Tool <code>vpb-egress-tool</code> (LOCAL)</td><td>Points at the vPB's own eth2.</td><td>A REMOTE tool cannot bind a device port, so this must stay LOCAL.</td></tr>
+<tr><td>Tool <code>vpb-capture-tool</code> (REMOTE)</td><td>L2GRE to the capture host 10.99.12.136.</td><td>Added so the tapped traffic is visible to tcpdump. That was bug 6.</td></tr>
+<tr><td>C2DL <code>vpb-c2dl</code></td><td>Cloud to Device Link: binds the collection to vPB eth1 ingress.</td><td>Must be associated to the cloud config via deviceLinks. That step was refused until the CloudLens vPB licence was activated: bug 3.</td></tr>
+<tr><td>Policy <code>aws-mirror-policy</code></td><td>Sends aws-mirror-collect to aws-mirror-tool.</td><td>-</td></tr>
+<tr><td>Policy <code>vpb-traffic-policy</code></td><td>Sends aws-mirror-collect to both vpb-egress-tool and vpb-capture-tool.</td><td>One policy, two destinations.</td></tr>
+</table>
+
+<h2 id="s6">6. The six bugs, each hiding the next</h2>
+<p>The pipeline had been believed blocked by the product. It was not. Six distinct defects, all in the
+automation, stacked so that fixing one only revealed the next. This is the debugging record, because
+the lessons are more valuable than the fixes.</p>
+
+<table>
+<tr><th>#</th><th>Symptom</th><th>Root cause</th><th>Fix (commit)</th></tr>
+<tr><td>1</td><td>createCloudConfig(Aws) rejected before anything ran</td><td>mgmt/ingress/egress security-group IDs sent as optional; the schema marks them non-null</td><td>send all three (4809c20)</td></tr>
+<tr><td>2</td><td>Traffic-path step 6 failed on a missing awsConfiguration</td><td>The path was wired against the custom (sensor) cloud config, which has none. It must target the AWS cloud config the mirror phase creates.</td><td>run mirror before path (1054322)</td></tr>
+<tr><td>3</td><td>deviceLinks step refused; change request stuck InProgress; our poll waited 600s in silence</td><td>"No CloudLens vPB licence installed." A refused change request never moves to Failed, and the reason is only on the KVO Alerts page, not the GraphQL status field.</td><td>activate CloudLens codes; warn on stuck CR (e59244b)</td></tr>
+<tr><td>4</td><td>Cloud collection matched 0 of 8 interfaces</td><td>Workload selector sent field="tag" (the literal word) instead of the tag key</td><td>field = tag key (b301357)</td></tr>
+<tr><td>5</td><td>Collector forwarded 135 MB, vPB received nothing; sessions existed</td><td>The vPB security group allowed VXLAN UDP/4789 but never IP protocol 47 (GRE). Every mirrored packet was dropped silently. The only symptom was a KVO alert: "Tunnel of type GRE: Remote destination not reachable." The tunnel source is the collector management IP, so the rule had to allow the mgmt/VPC CIDR, not just the data subnet.</td><td>allow proto 47 (e5a7cbc)</td></tr>
+<tr><td>6</td><td>A capture host on the egress subnet saw nothing, even though tapping worked</td><td>The vPB egress tool is LOCAL: the vPB emits raw frames onto the egress subnet, which AWS will not deliver to another instance. A capture host needs its own REMOTE tool tunnelling a copy, and its ENI needs source/dest check off.</td><td>REMOTE capture tool + capture host (dc892d9, 952c583)</td></tr>
+</table>
+
+<div class="amber"><b class="h">The lesson worth keeping</b>
+Read which sub-step actually stopped before accepting any inherited explanation, and read the KVO
+Alerts page: it named the licence refusal and the GRE drop precisely while the GraphQL status fields
+said nothing. A silently dropped tunnel looks exactly like a working sender, so always measure both
+ends of every hop.</div>
+
+<h2 id="s7">7. Live evidence: the tap actually works</h2>
+<p>Configuration is not proof. Traffic was generated on the workloads and measured at every hop with
+AWS CloudWatch, then read packet by packet on the capture host.</p>
+
+<h3>CloudWatch counters, idle versus under load</h3>
+<table>
+<tr><th>Measurement point</th><th>Idle</th><th>Under load</th></tr>
+<tr><td>Collector NetworkIn</td><td>28,874 B / 66 pkt</td><td>105,535,186 B / 83,934 pkt</td></tr>
+<tr><td>Collector NetworkOut</td><td>30,915 B</td><td>135,788,560 B</td></tr>
+<tr><td>vPB NetworkIn (before the proto-47 fix)</td><td>358 pkt</td><td>358 pkt (nothing arrived)</td></tr>
+<tr><td>vPB NetworkIn (after the proto-47 fix)</td><td>358 pkt</td><td>144,560 pkt / 154 MB</td></tr>
+<tr><td>Capture host (tcpdump)</td><td>0 GRE</td><td>42,010 GRE packets</td></tr>
+</table>
+
+<h3>The mirror sessions AWS created</h3>
+<pre>tms-01e434cd32b09c306   eni-0eaa0948e2db6f904 (test-rhel-1)     -> tmt-06c388c226e1dfbbd
+tms-00f8048896d0d7efa   eni-0b16a8fb1fce64343 (test-windows-1)  -> tmt-06c388c226e1dfbbd
+tms-003b9e9c7576d4157   eni-0ca949f29c73b5e41 (test-ubuntu-1)   -> tmt-06c388c226e1dfbbd
+   target tmt-06c388c226e1dfbbd = collector ingress ENI eni-06bfded70a1d8a420 (10.99.11.147)</pre>
+
+<h3>The proof, one packet, read on the capture host</h3>
+<pre>10.99.12.189 &gt; 10.99.12.136: GREv0, key=0x40, length 368       &lt;- OUTER: the tunnel
+    10.99.1.22.41636 &gt; 34.230.225.109.443: Flags [P.], seq ..., length 294   &lt;- INNER: the real traffic</pre>
+<div class="box ok"><b class="h">What this shows</b>
+The outer header is the collector egress (10.99.12.189) tunnelling to the capture host (10.99.12.136)
+over L2GRE key 0x40. The inner header is test-ubuntu-1 (10.99.1.22) talking HTTPS to the vController,
+with real TCP sequence numbers, correct checksums, and both directions present. Nothing is synthesized;
+this is the workload's genuine conversation, copied at the source and delivered to the tool.</div>
+
+<h2 id="s8">8. Windows: agentless and by-sensor, both proven</h2>
+<p>Windows visibility was proven two independent ways.</p>
+<div class="ok box"><b class="h">Agentless</b>
+test-windows-1 (10.99.1.130) has its own traffic mirror session, so its traffic reaches the capture host
+with no software installed on the VM at all. VPC Traffic Mirroring needs only a Nitro source.</div>
+<div class="ok box"><b class="h">By sensor</b>
+The Windows sensor also registered for the first time. The root cause of every prior failure was found:
+nothing was ever downloading the installer. The CLMS serves it at a predictable static path, so the
+script now auto-discovers the URL. The live install on Server 2022 returned exit code 0, the CloudLens
+service ran, agent.yml was written, and the sensor entered a healthy control loop with the CLMS
+(pulling config, posting state). Commit 0dbc054.</div>
+
+<h2 id="s9">9. Access and credentials</h2>
+<table>
+<tr><th>System</th><th>Address</th><th>Login</th></tr>
+<tr><td>KVO (Vision Orchestrator)</td><td>https://&lt;kvo-ip&gt;</td><td>admin / admin (Keycloak)</td></tr>
+<tr><td>CloudLens Manager (CLMS)</td><td>https://&lt;vcontroller-ip&gt;/cloudlens/login</td><td>admin / (changed on first use)</td></tr>
+<tr><td>vPB management</td><td>ssh admin@&lt;vpb-ip&gt;</td><td>SSH mgmt, vPB CLI</td></tr>
+<tr><td>Capture host</td><td>ssh -i &lt;key&gt;.pem ubuntu@&lt;capture-host-ip&gt;</td><td>then sudo tcpdump -i any -nn 'proto 47' -v</td></tr>
+</table>
+<p class="small">All appliance logins are changed on first use, and KVO gates on an EULA at first boot. IPs shown
+in this document are the lab's values for illustration; treat every credential as secret.</p>
+
+<h2 id="s10">10. Reproduce it: one command</h2>
+<p>The entire pipeline above runs from a single command, resumable, in a laptop shell or AWS CloudShell.
+It creates the stack, waits for the appliances, licenses and adopts, installs the sensors, adopts the vPB,
+builds the mirror fabric, wires the traffic path, and stands up the capture host, prompting for the
+activation codes and offering the mirror session along the way.</p>
+<pre>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash</pre>
+<div class="info"><b class="h">Windows is now hands-off</b>
+Run with <code>--test-vms all</code> and the script auto-discovers the Windows installer URL from the CLMS,
+so the Windows sensor installs with no manual input. Bring-your-own workloads by passing a subnet and tag.</div>
+
+<h2 id="a1">Appendix A. Complete resource inventory (live)</h2>
+<p>Every resource in the running system, so the topology can be reconstructed exactly.</p>
+<h3>Instances</h3>
+<table>
+<tr><th>Name</th><th>Instance ID</th><th>Type</th><th>Public</th><th>Private</th></tr>
+<tr><td>cloudlens-stack-kvo</td><td>i-0714545a1fbfb334a</td><td>c5.2xlarge</td><td>107.22.26.186</td><td>10.99.1.202</td></tr>
+<tr><td>cloudlens-stack-vcontroller (CLMS)</td><td>i-09d72aa9228ed11f2</td><td>t3.xlarge</td><td>34.230.225.109</td><td>10.99.1.64</td></tr>
+<tr><td>cloudlens-stack-vpb</td><td>i-0810a81b2c8314762</td><td>t3.xlarge</td><td>54.85.23.44</td><td>10.99.1.27</td></tr>
+<tr><td>collector (vHub SVM)</td><td>i-09a162651864789c6</td><td>t3.xlarge</td><td>100.53.55.19</td><td>10.99.1.153</td></tr>
+<tr><td>capture host (tool receiver)</td><td>i-00980741f9a358c3b</td><td>t3.medium</td><td>13.220.38.142</td><td>10.99.12.136</td></tr>
+<tr><td>test-ubuntu-1</td><td>i-0edafb3148290e1bd</td><td>t3.small</td><td>-</td><td>10.99.1.22</td></tr>
+<tr><td>test-rhel-1</td><td>i-0fc878e690b421360</td><td>t3.small</td><td>-</td><td>10.99.1.49</td></tr>
+<tr><td>test-windows-1</td><td>i-06e7e2a9e36cc3dee</td><td>t3.medium</td><td>-</td><td>10.99.1.130</td></tr>
+</table>
+<h3>Network</h3>
+<table>
+<tr><th>Object</th><th>ID</th><th>CIDR / detail</th></tr>
+<tr><td>VPC</td><td>vpc-04a810b44b6e7e601</td><td>10.99.0.0/16</td></tr>
+<tr><td>mgmt subnet</td><td>subnet-01122642251c46eeb</td><td>10.99.1.0/24</td></tr>
+<tr><td>data / ingress subnet</td><td>subnet-0342818bbc3283327</td><td>10.99.11.0/24</td></tr>
+<tr><td>tool / egress subnet</td><td>subnet-0df0120ae6b83562d</td><td>10.99.12.0/24</td></tr>
+<tr><td>vPB SG</td><td>sg-07c33cc3887a67440</td><td>22, 9022, 443, VXLAN 4789, 10800-10801, GRE proto 47</td></tr>
+<tr><td>collector mgmt/ingress/egress SGs</td><td>sg-07c1f23d65b70788e / sg-09cfd109dcf74b23d / sg-04abbcb197518da26</td><td>three distinct, as the schema requires</td></tr>
+<tr><td>capture host SG</td><td>sg-0ab4afdfa88c71e04</td><td>GRE 47, VXLAN 4789/10800-10801 from VPC, SSH from admin</td></tr>
+</table>
+<h3>Mirroring objects</h3>
+<table>
+<tr><th>Object</th><th>ID</th><th>Detail</th></tr>
+<tr><td>Mirror target</td><td>tmt-06c388c226e1dfbbd</td><td>points at collector ingress ENI eni-06bfded70a1d8a420 (10.99.11.147)</td></tr>
+<tr><td>Mirror filters</td><td>tmf-08755de95f278d238, tmf-0ca4bdb9755ba9e5d</td><td>ingress + egress rules</td></tr>
+<tr><td>Mirror sessions</td><td>tms-01e4..., tms-00f8..., tms-003b...</td><td>one per source ENI (rhel, windows, ubuntu)</td></tr>
+<tr><td>vPB ENIs</td><td>eth0 10.99.1.27 · eth1 10.99.11.33 · eth2 10.99.12.94</td><td>mgmt · ingress · egress; SourceDestCheck off on data ENIs</td></tr>
+</table>
+
+<h2 id="a2">Appendix B. What each phase actually runs</h2>
+<p>The orchestrator invokes these helper scripts. Each is idempotent by name or state.</p>
+<table>
+<tr><th>Script</th><th>Responsibility</th></tr>
+<tr><td>deploy/deploy-stack.sh</td><td>The 17-phase orchestrator: preflight, stack, waits, licensing, adoption, sensors, vPB, mirror, path, capture host, summary. Resumable via probe/detect/resume_decide.</td></tr>
+<tr><td>deploy/cloudformation/stack.yaml</td><td>VPC, three subnets, IGW, routes, SGs (now including GRE proto 47), KVO, vController, vPB.</td></tr>
+<tr><td>scripts/kvo_license.py</td><td>Accepts the KVO EULA, activates codes via REST /api/v2/licensing, reports coverage. Prompts for code + quantity; no codes are hard-coded.</td></tr>
+<tr><td>scripts/kvo_aws_mirror.py</td><td>Builds the AWS presence, Cloud Config (Aws) with three non-null SGs, collection with the correct selector, collector ASG (min 1 max 4), REMOTE tool, monitoring policy, and optionally the capture tool.</td></tr>
+<tr><td>scripts/vpb_wire_path.py</td><td>syncDeviceConfigPorts, C2DL, bind eth1 ingress, LOCAL tool, bind eth2 egress, deviceLinks, monitoring policy. Adds the REMOTE capture tool to the egress policy when --capture-ip is given.</td></tr>
+<tr><td>scripts/deploy-test-workload-vms.sh</td><td>Optional Ubuntu/RHEL/Windows workloads, tagged for discovery, with the SSM instance profile.</td></tr>
+<tr><td>playbooks/windows.yaml</td><td>Windows sensor over SSM: asserts an installer source, downloads from the CLMS or a local file, silent-installs, waits for the service.</td></tr>
+</table>
+
+<h2 id="a3">Appendix C. Windows sensor, the complete procedure</h2>
+<p>The Windows sensor is a native executable, unlike the Linux container. The root cause of every prior
+failure was that nothing fetched the installer. The full working procedure, proven live on Server 2022:</p>
+<ol>
+<li><b>Discover the installer URL.</b> The CLMS serves it at a predictable static path whose directory
+returns a JSON listing, so the filename is read programmatically:
+<pre>https://&lt;clms&gt;/cloudlens/static/agent-update/windows/latest/
+  -> [{ "name": "cloudlens-win-sensor-6.12.0.316.exe", "size": 62636500 }]</pre></li>
+<li><b>Read the project key from a working sensor</b> so Windows joins the same project as Linux:
+<pre>docker inspect cloudlens-agent --format '{{json .Args}}'
+  -> --project_key 828f57cee6ba450d9346a30f97296d07 --server 34.230.225.109 --ssl_verify no</pre></li>
+<li><b>Download and silent-install on the host</b> (in-VPC via the CLMS private IP 10.99.1.64):
+<pre>&lt;exe&gt; /install /quiet Server="10.99.1.64" Project_Key="828f...07" SSL_Verify="no" Auto_Update="no"
+  -> Installer exit code: 0 ; CloudLens service: Running</pre></li>
+<li><b>Confirm registration</b> (not just the service): agent.yml is written and the sensor enters a
+control loop with the CLMS: <code>Config received ... Posting sensor state!</code></li>
+</ol>
+<div class="amber"><b class="h">SSM automation gotchas</b>
+Newlines in an SSM command string arrive as literal <code>\n</code> and break the PowerShell parser:
+base64-encode the script and Invoke-Expression it. Invoke-WebRequest against the self-signed CLMS fails
+"underlying connection closed on send": use an add-type ICertificatePolicy TrustAll, force TLS 1.2, and
+WebClient.DownloadFile.</div>
+
+<h2 id="a4">Appendix D. KVO and CLMS reference learned in this build</h2>
+<table>
+<tr><th>Fact</th><th>Detail</th></tr>
+<tr><td>KVO admin</td><td>admin / admin, Keycloak at /auth/realms/keysight/protocol/openid-connect/token, client_id vision-orchestrator. NOT the vController password.</td></tr>
+<tr><td>CLMS login fields</td><td>The identity login expects Email and Password, not username. The admin password is rotated on first use.</td></tr>
+<tr><td>Change-request lifecycle</td><td>createChangeRequest, mutate, commitChangeRequest. A refused CR stays InProgress and raises an alert; it never moves to Failed, and the reason is only on the Alerts page.</td></tr>
+<tr><td>MonitoringPolicy tools</td><td>Not a top-level queryable field; read under settings { tools { name } source { name } }. Edit with updateMonitoringPolicyById(uid, changeID, settings).</td></tr>
+<tr><td>REMOTE vs LOCAL tool</td><td>A REMOTE/cloud tool cannot bind a device port (reachableFrom CLOUD_CONFIG). The vPB egress tool must stay LOCAL; a capture host rides a second REMOTE tool on the same policy.</td></tr>
+<tr><td>Workload selector</td><td>{field, tag, regex} where field is the tag key. field="tag" matches nothing.</td></tr>
+<tr><td>awsConfiguration</td><td>mgmt/ingress/egress SG IDs are non-null. Supply three distinct SGs.</td></tr>
+</table>
+
+<h2 id="a5">Appendix E. Change history</h2>
+<p>Every fix that made this pipeline work, in reverse chronological order, on branch main of
+github.com/Keysight-Tech/cloudlens-ansible-aws.</p>
+<pre>0dbc054  windows sensor: auto-discover the installer URL from the CLMS, proven live
+5b5a901  windows sensor: download the installer from the CLMS, fail early when missing
+952c583  deploy: provision a tcpdump capture host and wire it into the vPB egress
+dc892d9  capture host: give the vPB egress a REMOTE tool so tapped traffic is visible
+1054322  deploy: run the AWS mirror phase before the vPB traffic path
+e5a7cbc  vpb: allow L2GRE (IP protocol 47) inbound; collector ASG max 1 -> 4
+b301357  kvo-mirror: the workload selector field is the tag key, not the word tag
+e59244b  vpb-path: say when KVO is refusing a change request
+4809c20  kvo-mirror: the security groups are required, not optional
+3d76ad6  windows bucket and licence coverage, both inside the run
+735a496  vpb-path: stop blaming DPDK for a step that never ran out of ports
+23b62c3  vpb-cli: multi-line CLI input never reached the CLI</pre>
+
+<h2 id="a6">Appendix F. Operational notes</h2>
+<div class="warn box"><b class="h">Licence stranding</b>
+KVO is the licence authority and has no licence-release API. Destroying a KVO strands its licensed
+quantity permanently. When rebuilding, keep the existing KVO or obtain fresh activation codes first;
+do not tear down a licensed KVO expecting to re-use spent codes.</div>
+<div class="info box"><b class="h">Reuse over rebuild</b>
+For re-validation, keep the control plane (KVO, CLMS, vPB, already licensed and adopted) and rebuild
+only the data plane (workloads, collector, mirror fabric, capture host). The orchestrator detects a
+CONNECTED CLMS and an adopted vPB and skips those phases.</div>
+<div class="amber box"><b class="h">Cost and teardown</b>
+Mirrored traffic is billable VPC traffic, and cross-AZ delivery adds transfer charges: keep the vPB in
+the same AZ as its sources. On teardown, the collector ASG and orphaned EBS volumes must be removed
+explicitly; a security group can otherwise deadlock stack deletion.</div>
+
+<p class="small" style="margin-top:8mm">Recorded from live work on AWS account 466778915280, us-east-1. All numbers in Section 7 and the
+identifiers in Appendix A are real values captured during the build. Source and full history:
+github.com/Keysight-Tech/cloudlens-ansible-aws</p>
+
+</body>
+</html>
