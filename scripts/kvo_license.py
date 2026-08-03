@@ -191,8 +191,25 @@ def prompt_plan(kvo, base, tok, verify):
     """
     plan = []
     print("KVO licensing")
+    print("  Most deployments need TWO codes: one CloudLens (sensors) and one")
+    print("  VisionOrchestrator (KVO and vPB). Enter each in turn.")
     while True:
-        code = input("  Activation code (blank to finish): ").strip()
+        if not plan:
+            code = input("  Activation code: ").strip()
+        else:
+            # "blank to finish" after a successful activation reads as a dead
+            # end, not an invitation. An operator with a second code pressed
+            # Enter and moved on with only one entitlement licensed, then had
+            # to go back and add the other by hand. Ask the real question.
+            # plan entries are {"code":..., "picks":[(product, qty), ...]}: there
+            # is no "product" key at the top level, and reading one gave an empty
+            # summary that said "nothing yet" right after a successful activation.
+            have = ", ".join(sorted({prod for e in plan for prod, _q in e.get("picks", [])}))
+            print(f"  Licensed so far: {have or 'nothing yet'}")
+            more = input("  Add another activation code? [y/N]: ").strip().lower()
+            if more not in ("y", "yes"):
+                return plan
+            code = input("  Activation code: ").strip()
         if not code:
             return plan
         ents, info = lookup_code(kvo, base, tok, code, verify)
