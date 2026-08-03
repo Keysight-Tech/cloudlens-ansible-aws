@@ -58,6 +58,42 @@ def _req(method, url, token=None, body=None, verify=False, timeout=30):
             return e.code, raw
 
 
+def accept_eula(kvo, verify):
+    """Accept any pending KVO EULA.
+
+    A freshly booted KVO 302-redirects EVERY request to /eula/static/ until its
+    EULA is accepted, including the Keycloak token endpoint. So auth here fails
+    with a JSON parse error on an HTML redirect body, which reads as a broken
+    KVO rather than an unsigned agreement. Licensing runs before adoption in the
+    deploy chain, and only the adopt script accepted the EULA, so on a fresh KVO
+    licensing could never succeed no matter how valid the activation code was.
+
+    This is a legal acceptance, so it is gated behind --accept-eula.
+    """
+    base = "https://%s" % kvo
+    ctx = _ctx(verify)
+    try:
+        req = urllib.request.Request(base + "/eula/v1/eula")
+        with urllib.request.urlopen(req, context=ctx, timeout=20) as r:
+            items = json.loads(r.read().decode("utf8", "ignore"))
+    except Exception as e:
+        print("[license] could not list EULAs: %s" % e); return False
+    pending = [e for e in items if not e.get("accepted")]
+    if not pending:
+        return True
+    for e in pending:
+        try:
+            req = urllib.request.Request(
+                base + "/eula/v1/eula/%s" % e["id"],
+                data=json.dumps({"accepted": True}).encode("utf8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, context=ctx, timeout=20) as r:
+                print("[license] accepted KVO EULA %s (HTTP %s)" % (e["id"], r.status))
+        except Exception as ex:
+            print("[license] could not accept EULA %s: %s" % (e["id"], ex)); return False
+    return True
+
+
 def token(kvo, user, pw, verify):
     url = f"https://{kvo}/auth/realms/keysight/protocol/openid-connect/token"
     data = f"grant_type=password&client_id=vision-orchestrator&username={user}&password={pw}".encode()
@@ -181,6 +217,9 @@ def main():
     ap.add_argument("--password", default="admin")
     ap.add_argument("--codes", nargs="*", default=None,
                     help="activation codes, each optionally CODE,QTY; omit to be prompted (TTY only)")
+    ap.add_argument("--accept-eula", action="store_true",
+                    help="Accept the KVO EULA if pending. A fresh KVO blocks ALL auth, "
+                         "including the token endpoint, until this is done. Legal acceptance.")
     ap.add_argument("--insecure", action="store_true")
     a = ap.parse_args()
     verify = not a.insecure
@@ -202,10 +241,18 @@ def main():
               "pass --codes CODE[,QTY] ...", file=sys.stderr)
         return 2
 
+    # The EULA gate comes BEFORE auth on purpose: a fresh KVO 302-redirects the
+    # token endpoint itself, so without this the next line fails with a JSON
+    # parse error on an HTML body and reads as a broken KVO.
+    if a.accept_eula:
+        accept_eula(a.kvo, verify)
     try:
         tok = token(a.kvo, a.user, a.password, verify)
     except Exception as e:
         print(f"[license] auth failed: {e}", file=sys.stderr)
+        if not a.accept_eula:
+            print("[license] a freshly booted KVO redirects every request, including this "
+                  "one, until its EULA is accepted. Re-run with --accept-eula.", file=sys.stderr)
         return 6
     print(f"[license] authed to KVO {a.kvo}")
 

@@ -3333,7 +3333,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     skip_note "KVO licensing"
     ok "No activation code is re-used, so no entitlement quantity is spent."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure ${KVO_CODES[@]+--codes ${KVO_CODES[*]}}"
+    dryrun_say "python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure --accept-eula ${KVO_CODES[@]+--codes ${KVO_CODES[*]}}"
     [[ ${#KVO_CODES[@]} -eq 0 ]] && dryrun_say "no --kvo-codes given: on a terminal kvo_license.py would prompt for code + quantity"
   elif [[ -z "$LIC_SCRIPT" ]]; then
     warn "scripts/kvo_license.py not found; cannot license KVO."
@@ -3348,8 +3348,17 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     warn "No --kvo-codes given and no terminal to prompt on, so KVO stays unlicensed."
     KVO_CHAIN_OK=false
   else
+    note "This accepts the KVO EULA on your behalf: a fresh KVO blocks all API"
+    note "access, including login, until it is signed."
     note "Activating KVO licenses (kvo_license.py prompts for anything it needs)..."
-    if python3 "$LIC_SCRIPT" --kvo "$KVO_PUBLIC_IP" --insecure \
+    # --accept-eula is not optional here. A freshly booted KVO 302-redirects
+    # EVERY request until its EULA is signed, including the Keycloak token
+    # endpoint, so licensing cannot even authenticate. Licensing runs before
+    # adoption, and adoption was the only step passing this, which meant a
+    # fresh KVO could never be licensed however valid the code was. Seen live:
+    # "auth failed: Expecting value: line 1 column 1" on an HTML redirect body.
+    # Phase 12 already tells the operator this deploy accepts the KVO EULA.
+    if python3 "$LIC_SCRIPT" --kvo "$KVO_PUBLIC_IP" --insecure --accept-eula \
          ${KVO_CODES[@]+--codes "${KVO_CODES[@]}"}; then
       ok "KVO licensing completed."
     else
