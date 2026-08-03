@@ -83,6 +83,8 @@ def commit_cr(base, token, cr_uid, verify, timeout=600):
             log("  waiting for the previous processing to finish..."); time.sleep(10); continue
         log(f"commit failed: {msg[:220]}"); return False
     deadline = time.time() + timeout
+    warned = False
+    started = time.time()
     while time.time() < deadline:
         q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
         mine = [r for r in (q.get("data", {}).get("changeRequests") or []) if r["uid"] == cr_uid]
@@ -90,8 +92,23 @@ def commit_cr(base, token, cr_uid, verify, timeout=600):
             log("  committed"); return True
         if mine[0]["status"] in ("Failed", "Error"):
             log(f"  commit ended in {mine[0]['status']}"); return False
+        # A change request KVO refuses to commit stays at InProgress and raises an
+        # ALERT rather than moving to Failed, so watching status alone polls in
+        # silence for the whole timeout while the UI shows a plain reason. Seen
+        # live: "No CloudLens vPB license installed." sat on the change request
+        # for ten minutes while this loop reported nothing at all.
+        if not warned and time.time() - started > 90:
+            warned = True
+            log("  still InProgress after 90s. KVO may be refusing this change.")
+            log(f"  Open the change request in KVO and read its alerts:")
+            log(f"    Live Settings > Change Requests > {cr_uid}")
+            log("  A licence or validation error appears there, not in this status.")
         time.sleep(6)
-    log("timed out waiting for commit"); return False
+    log("timed out waiting for commit")
+    log(f"  check the change request alerts in KVO for {cr_uid}: an unmet")
+    log("  requirement (for example a missing CloudLens vPB licence) blocks the")
+    log("  commit without ever changing the status.")
+    return False
 
 def step(base, token, verify, label, mutation, variables):
     """One mutation inside its own committed change request."""
