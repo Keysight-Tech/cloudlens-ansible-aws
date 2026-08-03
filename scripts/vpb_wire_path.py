@@ -131,6 +131,18 @@ def main():
     ap.add_argument("--c2dl", default="vpb-c2dl")
     ap.add_argument("--tool", default="vpb-egress-tool")
     ap.add_argument("--policy", default="vpb-traffic-policy")
+    # A packet-capture host on the egress subnet sees NOTHING from the LOCAL
+    # egress tool: that tool points at the vPB's own eth2 and the vPB emits raw
+    # frames, which AWS will not deliver to another instance. Giving the capture
+    # host its own REMOTE tool inside the SAME policy tunnels it a copy of
+    # exactly what leaves the vPB egress, so "show me the packets" has an answer.
+    ap.add_argument("--capture-ip", default="",
+                    help="IP of a packet-capture host to attach to the vPB egress "
+                         "(adds a REMOTE tool to the same monitoring policy)")
+    ap.add_argument("--capture-tool", default="vpb-capture-tool")
+    ap.add_argument("--capture-encap", default="L2GRE", choices=["L2GRE", "VXLAN"])
+    ap.add_argument("--capture-gre-key", type=int, default=64)
+    ap.add_argument("--capture-vni", type=int, default=4096)
     ap.add_argument("--ingress-port", default="eth1")
     ap.add_argument("--egress-port", default="eth2")
     ap.add_argument("--ingress-ip", required=True, help="vPB ingress IP for the C2DL")
@@ -261,11 +273,32 @@ def main():
     if a.policy in existing("monitoringPolicies"):
         log(f"7/7 policy '{a.policy}' already exists")
     else:
+        # 6b. Optional capture host, created BEFORE the policy so it can be named
+        # in the same tools list. Same traffic, two destinations: the vPB egress
+        # port and a host that can actually run tcpdump.
+        policy_tools = [{"name": a.tool}]
+        if a.capture_ip:
+            if a.capture_tool in existing("tools"):
+                log(f"6b/7 capture tool '{a.capture_tool}' already exists")
+            else:
+                log(f"6b/7 createTool (REMOTE -> {a.capture_ip}, {a.capture_encap})")
+                cap = {"type": "REMOTE", "vlanStripping": False,
+                       "reachableFrom": "CLOUD_CONFIG",
+                       "tunnelOrigRemoteIP": a.capture_ip}
+                if a.capture_encap.upper() == "VXLAN":
+                    cap["vxlanEncapsulation"] = {"vnid": str(a.capture_vni), "udpDestPort": 4789}
+                else:
+                    cap["l2greEncapsulation"] = {"key": str(a.capture_gre_key)}
+                if not step(base, tok, verify, "create capture tool",
+                            "mutation($n:String!,$cr:String!,$c:String,$s:_ToolInput!){ createTool(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                            {"n": a.capture_tool, "c": cluster, "s": cap}): return 5
+            policy_tools.append({"name": a.capture_tool})
+
         log("7/7 createMonitoringPolicy")
         if not step(base, tok, verify, "create monitoring policy",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.policy, "c": cluster,
-                     "s": {"source": {"name": a.collection}, "tools": [{"name": a.tool}],
+                     "s": {"source": {"name": a.collection}, "tools": policy_tools,
                            "runMode": "CONTINUOUSLY", "type": "REGULAR"}}): return 5
 
     v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)

@@ -247,6 +247,35 @@ def create_monitoring_policy(base, token, cr, name, cluster, collection_name, to
     rows = d.get("data", {}).get("createMonitoringPolicy") or []
     return rows[0] if rows else None
 
+def ensure_tool_and_policy(kvo, tok, cluster, coll_name, tool_name, policy_name,
+                           remote_ip, encap, gre_key, vni, verify, label):
+    """Create a REMOTE tool at remote_ip and a policy sending coll_name to it.
+
+    Idempotent by name, so a resumed run reuses whatever already exists. Returns
+    True on success. Nothing reaches the destination without BOTH halves: the
+    tool alone is inert, and the policy is what makes KVO cut mirror sessions.
+    """
+    if exists_named(kvo, tok, "tools", tool_name, verify):
+        log(f"tool '{tool_name}' already exists; reusing")
+    else:
+        cr = open_cr(kvo, tok, f"{label}-tool", verify)
+        if not cr: return False
+        if not create_remote_tool(kvo, tok, cr, tool_name, cluster, remote_ip,
+                                  encap, gre_key, vni, verify): return False
+        if not commit_cr(kvo, tok, cr, verify): return False
+        log(f"remote tool '{tool_name}' -> {remote_ip} ({encap}) created")
+    if exists_named(kvo, tok, "monitoringPolicies", policy_name, verify):
+        log(f"monitoring policy '{policy_name}' already exists; reusing")
+    else:
+        cr = open_cr(kvo, tok, f"{label}-policy", verify)
+        if not cr: return False
+        if not create_monitoring_policy(kvo, tok, cr, policy_name, cluster,
+                                        coll_name, tool_name, verify): return False
+        if not commit_cr(kvo, tok, cr, verify): return False
+        log(f"monitoring policy '{policy_name}' ({coll_name} -> {tool_name}) committed")
+    return True
+
+
 def exists_named(base, token, collection, name, verify):
     d = gql(base, token, "{ %s { name } }" % collection, None, verify)
     return any(x.get("name") == name for x in (d.get("data", {}).get(collection) or []))
@@ -453,6 +482,25 @@ def main():
                 return 10
             if not commit_cr(kvo, tok, cr, verify): return 10
             log(f"monitoring policy '{policy_name}' ({coll_name} -> {tool_name}) committed")
+
+    # 6. Optional packet-capture receiver.
+    #
+    # The vPB egress tool is LOCAL, meaning it points at the vPB's own eth2 and
+    # the vPB emits raw frames onto the egress subnet. AWS will not deliver
+    # those to another instance, so a capture host on that subnet sees nothing
+    # and the deployment LOOKS silent even when tapping works perfectly. Giving
+    # the receiver its own REMOTE tool tunnels a copy straight to it, which is
+    # what makes "show me the packets" answerable.
+    if args.tool_receiver_ip:
+        if not ensure_tool_and_policy(kvo, tok, cluster, coll_name,
+                                      f"{args.name}-capture-tool",
+                                      f"{args.name}-capture-policy",
+                                      args.tool_receiver_ip, args.tool_encap,
+                                      args.gre_key, args.vni, verify, "aws-capture"):
+            return 11
+        log(f"capture receiver wired: {coll_name} -> {args.tool_receiver_ip} ({args.tool_encap})")
+        log(f"   verify on the receiver with:  sudo tcpdump -i any -nn "
+            f"'proto 47 or udp port 4789 or udp portrange 10800-10801'")
 
     log("")
     log("=====================================================================")
