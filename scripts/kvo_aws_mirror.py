@@ -182,8 +182,15 @@ def create_aws_cloud_config(base, token, cr, name, cluster, aws_cfg, verify):
     return rows[0] if rows else None
 
 def create_collection(base, token, cr, name, cluster, cfg_name, tag_key, tag_val, verify):
+    # `field` is the TAG KEY itself, not the literal string "tag". The KVO UI's
+    # workload-selector dropdown lists the tag keys present on the instances
+    # (Name, cloudlens, instance-id, aws:cloudformation:*), and that is what
+    # goes in `field`. Sending field="tag" produced a selector the UI rendered
+    # as "tag | yes" which matched ZERO hosts, while removing the selector
+    # entirely revealed all 8 interfaces: proof KVO could see them and only the
+    # selector was wrong. `tag` is carried too, since the input accepts it.
     settings = {"cloudConfig": {"name": cfg_name}, "tapType": "RAW",
-                "resourceSelector": [{"field": "tag", "tag": tag_key, "regex": tag_val}]}
+                "resourceSelector": [{"field": tag_key, "tag": tag_key, "regex": tag_val}]}
     q = ("mutation($n:String!,$c:String!,$cl:String!,$s:_CloudCollectionInput!){ "
          "createCloudCollection(name:$n, changeID:$c, clusterID:$cl, settings:$s){ uid name } }")
     d = gql(base, token, q, {"n": name, "c": cr, "cl": cluster, "s": settings}, verify)
