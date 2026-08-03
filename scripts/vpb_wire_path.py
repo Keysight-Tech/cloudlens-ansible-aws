@@ -217,7 +217,20 @@ def main():
     else:
         aws = st.get("awsConfiguration")
         if not aws:
-            log(f"cloud config '{a.cloud_config}' has no awsConfiguration to round-trip"); return 5
+            # Only an AWS-type cloud config carries awsConfiguration. A Custom
+            # Cloud, which is what kvo_adopt_clms.py creates for sensors, has no
+            # such block: on KVO 2.13.0 the field is not even on the CloudConfig
+            # type, so querying it fails schema validation. Everything the vPB
+            # itself needs is already committed by this point (ports synced,
+            # C2DL created, ingress and egress bound, tool created). Linking the
+            # C2DL to a cloud config is what ties the vPB to an AWS mirroring
+            # fabric, and there is no such fabric here.
+            log(f"cloud config '{a.cloud_config}' is not an AWS cloud config, so there is")
+            log("  no awsConfiguration to round-trip and no deviceLinks step to do.")
+            log("  The vPB path itself is complete: ports are bound and the tool exists.")
+            log("  This step applies when the vPB fronts an AWS mirroring cloud config,")
+            log("  which scripts/kvo_aws_mirror.py creates.")
+            return 0
         aws = {k: v for k, v in aws.items() if v is not None}
         for az in aws.get("availabilityZones", []):
             for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)

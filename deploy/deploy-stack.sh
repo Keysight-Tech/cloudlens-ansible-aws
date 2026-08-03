@@ -4015,10 +4015,15 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
       ok "vPB traffic path and monitoring policy committed."
       state_phase path done
     else
-      warn "The vPB traffic path did NOT complete. This is expected on a fresh vPB:"
-      note "the device config has no ports until eth1/eth2 are up as DPDK data ports"
-      note "on the vPB, so the port binds have nothing to bind to. Bring the data"
-      note "interfaces up on the vPB, then re-run:"
+      warn "The vPB traffic path did not finish every step."
+      note "Read WHICH step stopped before assuming why. Seen live: steps 1 to 5"
+      note "all committed (ports synced, C2DL created, eth1 and eth2 bound, tool"
+      note "created) and only the deviceLinks step stopped, because the cloud"
+      note "config was a Custom Cloud with no awsConfiguration. That is not a"
+      note "failure of the vPB path."
+      note "This warning used to blame the DPDK bring-up unconditionally. Only"
+      note "believe that if the PORT BIND steps themselves failed. If they did,"
+      note "bring eth1/eth2 up on the vPB and re-run:"
       note "  python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} \\"
       note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
     fi
