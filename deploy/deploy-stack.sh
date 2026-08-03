@@ -485,7 +485,7 @@ ask_yn() {
 #   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
 #   vpb=14  path=15  mirror=16
 # ---------------------------------------------------------------------
-PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb path mirror"
+PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb mirror path"
 
 phase_index() {
   local want="$1" i=1 p
@@ -4069,80 +4069,14 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
 fi
 
 # =====================================================================
-# Phase 15: vPB traffic path + monitoring policy
-# =====================================================================
-# HONEST WARNING, do not soften it: this cannot complete on a fresh vPB.
-# deviceConfig._portGroups stays EMPTY until eth1/eth2 are brought up as DPDK
-# data ports ON the vPB, and that bring-up is not automated anywhere in this
-# repo. With no ports there is nothing for the bind stage to bind, so the step
-# is offered and then reported truthfully rather than claimed as a success.
-# VPB_IN_KVO covers the resume case: the vPB was adopted by an earlier run, so
-# phase 14 skipped, but the traffic path is still worth offering.
-if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
-   && [[ "$ADOPT_VPB" == "true" || "$VPB_IN_KVO" == "true" ]]; then
-  step "Phase 15: vPB traffic path + monitoring policy"
-
-  if ! run_phase path; then
-    skip_note "the vPB traffic path"
-    WIRE_VPB_PATH=false
-  fi
-
-  echo
-  echo "  Heads up before you choose: this step needs the vPB data interfaces"
-  echo "  (eth1/eth2) up as DPDK data ports on the vPB itself. That bring-up is"
-  echo "  not automated, so on a fresh vPB the device config has no ports and the"
-  echo "  port-bind stage has nothing to bind."
-  if [[ -z "$WIRE_VPB_PATH" ]]; then
-    if ask_yn "  Try the traffic path anyway? [y/N]: " n; then
-      WIRE_VPB_PATH=true
-    else
-      WIRE_VPB_PATH=false
-    fi
-  fi
-  ok "Wire vPB path: ${WIRE_VPB_PATH}"
-
-  WIRE_SCRIPT="$(find_repo_script scripts/vpb_wire_path.py || true)"
-  WIRE_COLLECTION="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"
-  if [[ "$WIRE_VPB_PATH" != "true" ]]; then
-    note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
-  elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
-    dryrun_say "would report the port bind honestly: no ports found is NOT a success"
-  elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
-    warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
-  elif [[ -z "$VPB_INGRESS_IP" ]]; then
-    warn "No vPB ingress ENI found (--vpb-ingress-nics 0?), so there is no ingress IP for the C2DL. Skipping."
-  else
-    if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
-         --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
-         --ingress-ip "$VPB_INGRESS_IP" --insecure; then
-      ok "vPB traffic path and monitoring policy committed."
-      state_phase path done
-    else
-      warn "The vPB traffic path did not finish every step."
-      note "Read WHICH step stopped before assuming why. Seen live: steps 1 to 5"
-      note "all committed (ports synced, C2DL created, eth1 and eth2 bound, tool"
-      note "created) and only the deviceLinks step stopped, because the cloud"
-      note "config was a Custom Cloud with no awsConfiguration. That is not a"
-      note "failure of the vPB path."
-      note "This warning used to blame the DPDK bring-up unconditionally. Only"
-      note "believe that if the PORT BIND steps themselves failed. If they did,"
-      note "bring eth1/eth2 up on the vPB and re-run:"
-      note "  python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} \\"
-      note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
-    fi
-  fi
-fi
-
-# =====================================================================
-# Phase 16: AWS mirror session (agentless VPC Traffic Mirroring)
+# Phase 15: AWS mirror session (agentless VPC Traffic Mirroring)
 # =====================================================================
 # Default NO, and the prompt says why BEFORE the customer opts in: KVO creates
 # the mirror target and filter and launches the collector SVM, but never adopts
 # the collector, so zero mirror sessions are created. That is an open Keysight
 # product item, not something this script can work around.
 if [[ "$DEPLOY_KVO" == "true" ]]; then
-  step "Phase 16: AWS mirror session (optional)"
+  step "Phase 15: AWS mirror session (optional)"
 
   if ! run_phase mirror; then
     skip_note "the AWS mirror step"
@@ -4208,6 +4142,77 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       note "Check for yourself: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
     else
       warn "The AWS mirror step did not complete; the rest of the run continues."
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 16: vPB traffic path + monitoring policy
+#
+# MUST run after the mirror phase. Step 6 (updateCloudConfig deviceLinks)
+# writes to awsConfiguration, which exists only on an AWS-type cloud config,
+# and that config is created by the mirror phase. Run this first and step 6
+# has nothing to attach the C2DL to.
+# =====================================================================
+# HONEST WARNING, do not soften it: this cannot complete on a fresh vPB.
+# deviceConfig._portGroups stays EMPTY until eth1/eth2 are brought up as DPDK
+# data ports ON the vPB, and that bring-up is not automated anywhere in this
+# repo. With no ports there is nothing for the bind stage to bind, so the step
+# is offered and then reported truthfully rather than claimed as a success.
+# VPB_IN_KVO covers the resume case: the vPB was adopted by an earlier run, so
+# phase 14 skipped, but the traffic path is still worth offering.
+if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
+   && [[ "$ADOPT_VPB" == "true" || "$VPB_IN_KVO" == "true" ]]; then
+  step "Phase 16: vPB traffic path + monitoring policy"
+
+  if ! run_phase path; then
+    skip_note "the vPB traffic path"
+    WIRE_VPB_PATH=false
+  fi
+
+  echo
+  echo "  Heads up before you choose: this step needs the vPB data interfaces"
+  echo "  (eth1/eth2) up as DPDK data ports on the vPB itself. That bring-up is"
+  echo "  not automated, so on a fresh vPB the device config has no ports and the"
+  echo "  port-bind stage has nothing to bind."
+  if [[ -z "$WIRE_VPB_PATH" ]]; then
+    if ask_yn "  Try the traffic path anyway? [y/N]: " n; then
+      WIRE_VPB_PATH=true
+    else
+      WIRE_VPB_PATH=false
+    fi
+  fi
+  ok "Wire vPB path: ${WIRE_VPB_PATH}"
+
+  WIRE_SCRIPT="$(find_repo_script scripts/vpb_wire_path.py || true)"
+  WIRE_COLLECTION="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"
+  if [[ "$WIRE_VPB_PATH" != "true" ]]; then
+    note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
+    dryrun_say "would report the port bind honestly: no ports found is NOT a success"
+  elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
+    warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
+  elif [[ -z "$VPB_INGRESS_IP" ]]; then
+    warn "No vPB ingress ENI found (--vpb-ingress-nics 0?), so there is no ingress IP for the C2DL. Skipping."
+  else
+    if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
+         --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
+         --ingress-ip "$VPB_INGRESS_IP" --insecure; then
+      ok "vPB traffic path and monitoring policy committed."
+      state_phase path done
+    else
+      warn "The vPB traffic path did not finish every step."
+      note "Read WHICH step stopped before assuming why. Seen live: steps 1 to 5"
+      note "all committed (ports synced, C2DL created, eth1 and eth2 bound, tool"
+      note "created) and only the deviceLinks step stopped, because the cloud"
+      note "config was a Custom Cloud with no awsConfiguration. That is not a"
+      note "failure of the vPB path."
+      note "This warning used to blame the DPDK bring-up unconditionally. Only"
+      note "believe that if the PORT BIND steps themselves failed. If they did,"
+      note "bring eth1/eth2 up on the vPB and re-run:"
+      note "  python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} \\"
+      note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
     fi
   fi
 fi
