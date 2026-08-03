@@ -62,8 +62,17 @@ fi
 if [[ "${1:-}" == "-c" ]] && [[ -n "${2:-}" ]]; then
   # vPB 3.13 images: xf-client crashes if /data/xfilter/logs does not exist
   # yet on a fresh appliance, so create it before invoking the CLI.
+  #
+  # printf '%b', not echo. Several CLI sequences are multi-line and are passed
+  # as one argument with \n separators: the EULA needs two answers before any
+  # command, and `kvo` is an interactive context needing ip/port/enable/exit.
+  # bash's echo does not expand \n, and the single quotes preserve it, so
+  # `echo 'n\ny\nshow version'` sent the literal 16 characters on ONE line.
+  # The EULA was therefore never accepted, the CLI stayed blocked, and adoption
+  # failed with "vPB CLI never came up" after all 20 retries. Verified on the
+  # appliance with od -c: the bytes on the wire were n \ n y \ n s h o w ...
   if ! $KUBECTL --kubeconfig="$KCFG" exec -i -n "$NAMESPACE" "$POD" \
-       -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; echo '$2' | $CLI" 2>/tmp/vpb-cli.err; then
+       -c "$CONTAINER" -- bash -c "mkdir -p /data/xfilter/logs; printf '%b\\n' '$2' | $CLI" 2>/tmp/vpb-cli.err; then
     if grep -q "FileNotFoundError\|Connection refused" /tmp/vpb-cli.err 2>/dev/null; then
       echo "vpb: the vPB management plane is not answering yet." >&2
       echo "     A fresh appliance starts its management plane after first configuration." >&2
