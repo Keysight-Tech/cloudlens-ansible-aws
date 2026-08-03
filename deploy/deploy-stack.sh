@@ -3228,11 +3228,22 @@ install_ansible_now() {
   # nothing: a live CloudShell run failed here and the cause was invisible.
   # Newer distros also refuse a --user install into a managed environment
   # (PEP 668), so retry once with the documented escape hatch before giving up.
+  # --user is INVALID inside a virtualenv, and AWS CloudShell now runs one:
+  #   ERROR: Can not perform a '--user' install. User site-packages are not
+  #   visible in this virtualenv.
+  # So pick the flag from the environment instead of assuming. In a venv the
+  # plain install lands on PATH already; outside one, --user keeps it in $HOME,
+  # which is the only part of CloudShell that survives the session.
+  local _user_flag="--user"
+  if [[ -n "${VIRTUAL_ENV:-}" ]] || python3 -c 'import sys; sys.exit(0 if sys.prefix!=sys.base_prefix else 1)' 2>/dev/null; then
+    _user_flag=""
+    note "Python here is a virtualenv, so installing into it rather than --user."
+  fi
   local _pip_log; _pip_log="$(mktemp)"
-  if ! pip3 install --user --quiet ansible boto3 >"$_pip_log" 2>&1; then
+  if ! pip3 install ${_user_flag} --quiet ansible boto3 >"$_pip_log" 2>&1; then
     if grep -qi "externally-managed-environment" "$_pip_log"; then
       note "Python here refuses --user installs (PEP 668). Retrying into a managed break-out."
-      if ! pip3 install --user --quiet --break-system-packages ansible boto3 >>"$_pip_log" 2>&1; then
+      if ! pip3 install ${_user_flag} --quiet --break-system-packages ansible boto3 >>"$_pip_log" 2>&1; then
         warn "pip3 install failed. The error was:"
         sed -n '1,12p' "$_pip_log" | sed 's/^/      /'
         rm -f "$_pip_log"; return 1
@@ -3244,9 +3255,12 @@ install_ansible_now() {
     fi
   fi
   rm -f "$_pip_log"
-  export PATH="$HOME/.local/bin:$PATH"
-  if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
+  # Only a --user install needs the PATH help; a venv install is already on it.
+  if [[ -n "$_user_flag" ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
+      echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
+    fi
   fi
   command -v ansible-playbook >/dev/null 2>&1 || { warn "Ansible still not on PATH."; return 1; }
   ok "Ansible $(ansible --version 2>/dev/null | head -1 | awk '{print $2}') installed"
