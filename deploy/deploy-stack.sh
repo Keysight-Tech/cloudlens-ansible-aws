@@ -3108,6 +3108,61 @@ PY
 }
 
 # Pre-flight: count the EC2s the sensor step will actually discover.
+
+# ---------------------------------------------------------------------
+# Two things used to end a run with homework: no Ansible, and no workloads
+# to install onto. Both are one command away, so offer to do them here
+# rather than printing the command and stopping. Both return 1 when they
+# decline or fail, and the caller keeps its original blocker message.
+# ---------------------------------------------------------------------
+install_ansible_now() {
+  command -v ansible-playbook >/dev/null 2>&1 && return 0
+  command -v pip3 >/dev/null 2>&1 || return 1
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would pip3 install --user ansible boto3"; return 0; }
+  ask_yn "  Install Ansible now with pip3 (into your home, ~1 min)? [Y/n]: " "y" || return 1
+  step "Installing Ansible"
+  pip3 install --user --quiet ansible boto3 >/dev/null 2>&1 || {
+    warn "pip3 install failed. Install it by hand and re-run."; return 1; }
+  export PATH="$HOME/.local/bin:$PATH"
+  if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
+  fi
+  command -v ansible-playbook >/dev/null 2>&1 || { warn "Ansible still not on PATH."; return 1; }
+  ok "Ansible $(ansible --version 2>/dev/null | head -1 | awk '{print $2}') installed"
+  return 0
+}
+
+deploy_test_workloads_now() {
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would deploy Ubuntu + RHEL test workloads tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"; return 0; }
+  echo
+  echo "  There is nothing tagged ${DISCOVERY_DESC} to install a sensor on."
+  echo "  Two small throwaway EC2s (Ubuntu + RHEL, t3.small) can be created now,"
+  echo "  tagged so the sensor step finds them. They cost about \$0.04/hour."
+  ask_yn "  Create them? [y/N]: " "n" || return 1
+  local wl_subnet="${EXISTING_SUBNET_ID:-}"
+  if [[ -z "$wl_subnet" ]]; then
+    wl_subnet=$(probe aws ec2 describe-subnets --region "$REGION" \
+      --filters "Name=vpc-id,Values=${STACK_VPC_ID:-}" "Name=map-public-ip-on-launch,Values=true" \
+      --query 'Subnets[0].SubnetId' --output text 2>/dev/null | head -1)
+  fi
+  [[ -z "$wl_subnet" || "$wl_subnet" == "None" ]] && wl_subnet=$(probe aws ec2 describe-subnets \
+      --region "$REGION" --filters "Name=map-public-ip-on-launch,Values=true" \
+      --query 'Subnets[0].SubnetId' --output text 2>/dev/null | head -1)
+  [[ -z "$wl_subnet" || "$wl_subnet" == "None" ]] && { warn "No public subnet found for the workloads."; return 1; }
+  local wl_script; wl_script="$(find_repo_script scripts/deploy-test-workload-vms.sh || true)"
+  [[ -n "$wl_script" ]] || { warn "Could not locate deploy-test-workload-vms.sh."; return 1; }
+  step "Creating test workloads in ${wl_subnet}"
+  bash "$wl_script" --region "$REGION" --key-name "$KEY_NAME" --subnet-id "$wl_subnet" \
+       --tag-key "$DISCOVERY_TAG_KEY" --tag-value "$DISCOVERY_TAG_VALUE" --yes \
+    || { warn "Test workload creation failed."; return 1; }
+  TAGGED_COUNT=$(probe aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" \
+                "Name=instance-state-name,Values=running,pending" \
+      --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo 0)
+  ok "Workloads created. Matching instances now: ${TAGGED_COUNT:-0}"
+  return 0
+}
+
 if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   discovery_scope
   if [[ "$DISCOVERY_MODE" == "static" ]]; then
@@ -3149,7 +3204,13 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
   if ! command -v ansible-playbook >/dev/null 2>&1; then
     sensor_blocker="ansible"
     warn "Ansible is not installed on this machine, so the sensor step cannot run here."
-    if [[ "$IN_CLOUD_SHELL" == "true" ]]; then
+    # Printing the pip line and stopping made the operator leave the run, install
+    # by hand, and start over. It is one command and we are already here, so
+    # offer to run it. --user keeps it under $HOME, the only part of a CloudShell
+    # environment that survives the session.
+    if install_ansible_now; then
+      sensor_blocker=""
+    elif [[ "$IN_CLOUD_SHELL" == "true" ]]; then
       # AWS CloudShell does NOT ship Ansible: the pre-installed software list in
       # the CloudShell user guide has python3 + pip3 and no Ansible at all. It
       # is one pip away, and --user keeps it under $HOME, which is the only part
@@ -3171,8 +3232,16 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
     [[ -n "$sensor_blocker" ]] && echo
     sensor_blocker="${sensor_blocker:+$sensor_blocker,}notags"
     warn "No running EC2 instances match ${DISCOVERY_DESC}, so there is nothing to install a sensor on."
-    echo "    Tag your workloads first (see the command above), then run:"
-    echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    # Same reasoning as the Ansible branch: an empty account is the normal case
+    # on a first run, and telling someone to go tag something by hand ends the
+    # run. Offer to stand up throwaway workloads in the stack's own subnet.
+    if deploy_test_workloads_now; then
+      sensor_blocker="${sensor_blocker/notags/}"
+      sensor_blocker="${sensor_blocker%,}"; sensor_blocker="${sensor_blocker#,}"
+    else
+      echo "    Tag your workloads first (see the command above), then run:"
+      echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
+    fi
   fi
 
   if [[ -n "$sensor_blocker" ]]; then
