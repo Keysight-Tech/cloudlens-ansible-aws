@@ -341,7 +341,25 @@ def main():
     # The KVO UG (AWS Cloud Configs) requires the management, ingress, and egress
     # security groups to be DISTINCT (each in its own subnet). Passing one SG for
     # all three leaves the vHub's interface roles ambiguous. Warn loudly.
-    if args.mgmt_sg and len({args.mgmt_sg, args.ingress_sg, args.egress_sg}) < 3:
+    # These three are NON-NULL in the KVO schema (_AwsConfigurationInput:
+    # mgmtSecurityGroupIds!, ingressSecurityGroupIds!, egressSecurityGroupIds!),
+    # so omitting them does not create a config without security groups: the
+    # whole mutation is rejected. It was treated as optional here, and a live
+    # run failed with a raw GraphQL dump naming only "$s" and awsConfiguration,
+    # which reads as a malformed request rather than three missing arguments.
+    # Fail on the actual reason, before the round trip.
+    _missing = [n for n, v in (("--mgmt-sg", args.mgmt_sg),
+                               ("--ingress-sg", args.ingress_sg),
+                               ("--egress-sg", args.egress_sg)) if not v]
+    if _missing:
+        log("missing required security groups: " + ", ".join(_missing))
+        log("  KVO requires all three. They must be THREE DISTINCT security groups,")
+        log("  one per interface role. The management SG needs inbound 443 and 22")
+        log("  (KVO UG, AWS Cloud Configs). List candidates with:")
+        log(f"    aws ec2 describe-security-groups --region {args.region} \\")
+        log(f"      --filters Name=vpc-id,Values={args.vpc_id} --query 'SecurityGroups[].[GroupId,GroupName]' --output text")
+        return 2
+    if len({args.mgmt_sg, args.ingress_sg, args.egress_sg}) < 3:
         log("WARNING: mgmt/ingress/egress security groups must be THREE DISTINCT SGs "
             "(KVO UG requirement); using the same SG can break vHub bring-up.")
     if args.mgmt_sg:             aws_cfg["mgmtSecurityGroupIds"] = [args.mgmt_sg]
