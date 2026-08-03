@@ -2480,7 +2480,12 @@ report_marketplace_failure() {
   return 0
 }
 
-if [[ "$DRY_RUN" != "true" ]]; then
+# A stack that is already CREATE_COMPLETE launched from these AMIs, which is
+# proof the subscriptions exist. Asking about them on a resume, and blocking on
+# an Enter to do it, is asking whether something already demonstrated is true.
+if [[ "$SKIP_STACK" == "true" ]]; then
+  note "Skipping the Marketplace check: the stack already launched from these AMIs."
+elif [[ "$DRY_RUN" != "true" ]]; then
   echo "Each CloudLens product needs a one-time Marketplace subscription on this"
   echo "AWS account. Free to subscribe: you pay only for the EC2 hours."
   echo
