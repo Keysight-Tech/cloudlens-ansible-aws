@@ -3405,6 +3405,36 @@ UD
 }
 
 # ---------------------------------------------------------------------
+# The Windows sensor is a native .exe the CLMS serves at a predictable
+# static path, and the directory returns a JSON listing, so the URL can be
+# discovered without the operator copying it from the UI. Proven live
+# 2026-08-03: the sensor registered on Server 2022 with the URL this finds.
+# Sets WINDOWS_INSTALLER_URL. Non-fatal: if discovery fails the playbook
+# still asserts with the manual fix.
+# ---------------------------------------------------------------------
+discover_windows_installer_url() {
+  [[ -n "$WINDOWS_INSTALLER_URL" ]] && return 0          # operator supplied one
+  [[ -z "${CLMS_PUBLIC_IP:-}" ]] && return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  local listing exe
+  listing="$(curl -sk --max-time 15 \
+    "https://${CLMS_PUBLIC_IP}/cloudlens/static/agent-update/windows/latest/" 2>/dev/null)"
+  exe="$(printf '%s' "$listing" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+for f in (d if isinstance(d, list) else []):
+    n = f.get("name", "")
+    if n.endswith(".exe"): print(n); break' 2>/dev/null)"
+  [[ -z "$exe" ]] && return 1
+  # Sensors reach the CLMS in-VPC on its private address; fall back to public.
+  local host="${CLMS_PRIVATE_IP:-$CLMS_PUBLIC_IP}"
+  WINDOWS_INSTALLER_URL="https://${host}/cloudlens/static/agent-update/windows/latest/${exe}"
+  ok "Discovered Windows installer: ${exe}"
+  return 0
+}
+
+# ---------------------------------------------------------------------
 # Windows sensors go over AWS SSM, and that plugin stages every file
 # through an S3 bucket. Telling the operator to create one, wire an IAM
 # policy, and edit a YAML file is three manual steps mid-run: exactly the
@@ -4025,6 +4055,13 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
       SSH_KEY_LINE="ssh_key_path:    \"${KEY_PEM}\""
     else
       SSH_KEY_LINE="ssh_key_path:    \"~/.ssh/${KEY_NAME}.pem\""
+    fi
+
+    # Windows sensors need the installer .exe. Auto-discover its URL from the
+    # CLMS so the operator does not have to copy it from the UI. Best effort:
+    # if it fails the playbook still asserts with the manual fix.
+    if [[ "$TEST_WINDOWS" == "yes" ]]; then
+      discover_windows_installer_url || true
     fi
 
     if [[ ! -f customer_input.yaml ]]; then
