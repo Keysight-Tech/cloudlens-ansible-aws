@@ -3304,6 +3304,94 @@ deploy_test_workloads_now() {
 }
 
 # ---------------------------------------------------------------------
+# Capture host. The vPB egress tool is LOCAL, so the vPB emits raw frames
+# onto the egress subnet that AWS will not deliver to any instance. To let
+# an operator actually SEE the tapped traffic, we stand up a tiny host on
+# the egress subnet running tcpdump, then (in the wire phase) attach a
+# REMOTE tool at its IP to the same policy that feeds the vPB egress. Sets
+# CAPTURE_HOST_IP on success. Idempotent: reuses an existing one by tag.
+# ---------------------------------------------------------------------
+CAPTURE_HOST_IP=""
+ensure_capture_host_now() {
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would launch a tcpdump capture host on the egress subnet and set CAPTURE_HOST_IP"; CAPTURE_HOST_IP="10.0.0.250"; return 0; }
+  # reuse if one is already running
+  local existing
+  existing=$(probe aws ec2 describe-instances --region "$REGION" \
+      --filters "Name=tag:cloudlens-role,Values=tool-receiver" "Name=instance-state-name,Values=running,pending" \
+      --query 'Reservations[].Instances[0].PrivateIpAddress' --output text 2>/dev/null | head -1)
+  if [[ -n "$existing" && "$existing" != "None" ]]; then
+    CAPTURE_HOST_IP="$existing"; ok "Reusing capture host at ${CAPTURE_HOST_IP}"; return 0
+  fi
+  local egress_subnet="${EGRESS_SUBNET_ID:-}"
+  [[ -z "$egress_subnet" || "$egress_subnet" == "None" ]] && { warn "No egress subnet id known; cannot place a capture host."; return 1; }
+  # SG: accept the encapsulated tap (GRE + VXLAN) from anywhere in the VPC
+  local vpc_cidr sg
+  vpc_cidr=$(probe aws ec2 describe-vpcs --region "$REGION" --vpc-ids "${STACK_VPC_ID}" --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null)
+  [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]] && vpc_cidr="10.0.0.0/8"
+  sg=$(probe aws ec2 create-security-group --region "$REGION" --group-name "cloudlens-tool-receiver-${STACK_NAME}" \
+       --description "CloudLens tool receiver: mirrored traffic from vPB egress" --vpc-id "$STACK_VPC_ID" \
+       --query 'GroupId' --output text 2>/dev/null) \
+    || sg=$(probe aws ec2 describe-security-groups --region "$REGION" \
+       --filters "Name=group-name,Values=cloudlens-tool-receiver-${STACK_NAME}" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+  [[ -z "$sg" || "$sg" == "None" ]] && { warn "Could not create the capture host security group."; return 1; }
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+    --ip-permissions "IpProtocol=47,IpRanges=[{CidrIp=${vpc_cidr},Description=L2GRE tap}]" >/dev/null 2>&1
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+    --ip-permissions "IpProtocol=udp,FromPort=4789,ToPort=4789,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+    --ip-permissions "IpProtocol=udp,FromPort=10800,ToPort=10801,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
+  # SSH from the same admin CIDR the rest of the stack uses, so the operator can log in and watch
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+    --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
+  # Ubuntu 22.04 AMI + tcpdump-on-boot user-data
+  local ami
+  ami=$(probe aws ssm get-parameter --region "$REGION" \
+      --name /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id \
+      --query 'Parameter.Value' --output text 2>/dev/null)
+  [[ -z "$ami" || "$ami" == "None" ]] && { warn "Could not resolve an Ubuntu AMI for the capture host."; return 1; }
+  local ud; ud="$(mktemp)"
+  cat > "$ud" <<'UD'
+#!/bin/bash
+apt-get update -y && apt-get install -y tcpdump
+mkdir -p /var/log/cloudlens-tool
+cat > /etc/systemd/system/cloudlens-tap.service <<'SVC'
+[Unit]
+Description=CloudLens tool receiver capture
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/tcpdump -i any -nn -s 0 -U -W 10 -C 100 -w /var/log/cloudlens-tool/tap.pcap proto 47 or udp port 4789 or udp portrange 10800-10801
+Restart=always
+[Install]
+WantedBy=multi-user.target
+SVC
+systemctl daemon-reload && systemctl enable --now cloudlens-tap.service
+UD
+  local prof_arg=()
+  [[ -n "${WINDOWS_INSTANCE_PROFILE:-}" ]] && prof_arg=(--iam-instance-profile "Name=${WINDOWS_INSTANCE_PROFILE}")
+  step "Launching capture host on ${egress_subnet}"
+  local iid
+  iid=$(probe aws ec2 run-instances --region "$REGION" --image-id "$ami" --instance-type t3.medium \
+      --subnet-id "$egress_subnet" --security-group-ids "$sg" --associate-public-ip-address \
+      ${KEY_NAME:+--key-name "$KEY_NAME"} "${prof_arg[@]}" \
+      --user-data "file://$ud" \
+      --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=cloudlens-tool-receiver},{Key=cloudlens-role,Value=tool-receiver}]' \
+      --query 'Instances[0].InstanceId' --output text 2>/dev/null)
+  rm -f "$ud"
+  [[ -z "$iid" || "$iid" == "None" ]] && { warn "Capture host launch failed."; return 1; }
+  # a REMOTE tool delivers frames not addressed to the ENI: turn off src/dst check
+  local eni
+  probe aws ec2 wait instance-running --region "$REGION" --instance-ids "$iid" 2>/dev/null
+  eni=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+      --query 'Reservations[].Instances[].NetworkInterfaces[0].NetworkInterfaceId' --output text 2>/dev/null)
+  [[ -n "$eni" && "$eni" != "None" ]] && probe aws ec2 modify-network-interface-attribute \
+      --region "$REGION" --network-interface-id "$eni" --no-source-dest-check >/dev/null 2>&1
+  CAPTURE_HOST_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+      --query 'Reservations[].Instances[].PrivateIpAddress' --output text 2>/dev/null)
+  ok "Capture host ${iid} at ${CAPTURE_HOST_IP} (tcpdump on boot, pcaps in /var/log/cloudlens-tool)"
+  return 0
+}
+
+# ---------------------------------------------------------------------
 # Windows sensors go over AWS SSM, and that plugin stages every file
 # through an S3 bucket. Telling the operator to create one, wire an IAM
 # policy, and edit a YAML file is three manual steps mid-run: exactly the
@@ -4186,10 +4274,17 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
 
   WIRE_SCRIPT="$(find_repo_script scripts/vpb_wire_path.py || true)"
   WIRE_COLLECTION="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"
+  # Stand up a capture host so the tapped traffic is actually visible. Opt-out
+  # with CLOUDLENS_CAPTURE_HOST=no. Failure here is non-fatal: the vPB path is
+  # wired either way, the operator just would not have a tcpdump host.
+  if [[ "$WIRE_VPB_PATH" == "true" && "${CLOUDLENS_CAPTURE_HOST:-yes}" != "no" && -z "$CAPTURE_HOST_IP" ]]; then
+    ensure_capture_host_now || note "Continuing without a capture host; the vPB path is still wired."
+  fi
+  CAPTURE_ARG=(); [[ -n "$CAPTURE_HOST_IP" ]] && CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
   if [[ "$WIRE_VPB_PATH" != "true" ]]; then
     note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
+    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} ${CAPTURE_ARG[*]} --insecure"
     dryrun_say "would report the port bind honestly: no ports found is NOT a success"
   elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
     warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
@@ -4198,8 +4293,15 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   else
     if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
          --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
-         --ingress-ip "$VPB_INGRESS_IP" --insecure; then
+         --ingress-ip "$VPB_INGRESS_IP" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
+      if [[ -n "$CAPTURE_HOST_IP" ]]; then
+        ok "Capture host wired to the vPB egress: ${CAPTURE_HOST_IP}"
+        note "Watch live tapped traffic (decapsulated) on the capture host:"
+        note "  ssh ${KEY_NAME:+-i ~/.ssh/${KEY_NAME}.pem }ubuntu@${CAPTURE_HOST_IP}"
+        note "  sudo tcpdump -i any -nn 'proto 47' -v"
+        note "  # or read the rolling pcaps in /var/log/cloudlens-tool/"
+      fi
       state_phase path done
     else
       warn "The vPB traffic path did not finish every step."
