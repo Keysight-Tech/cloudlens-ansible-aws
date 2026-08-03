@@ -2195,9 +2195,57 @@ fi
 # on demand if the customer does not already have a key pair.
 ensure_key_pair() {
   local name="$1"
+  local pem="$HOME/.ssh/${name}.pem"
   [[ "$DRY_RUN" == "true" ]] && { note "would ensure key pair $name exists"; return 0; }
   if aws "${AWS_REGION_ARG[@]}" ec2 describe-key-pairs --key-names "$name" >/dev/null 2>&1; then
     ok "Key pair '${name}' exists in ${REGION}"
+    # Existing in AWS is only half of it. AWS keeps the public half; the private
+    # half exists once, wherever it was created. Deploying against a key pair
+    # whose .pem is not on THIS machine builds the whole stack and then fails
+    # every SSH step at the end: sensors go UNREACHABLE and vPB adoption is
+    # skipped, 25 minutes after the choice that caused it. Say it now, while
+    # nothing has been spent.
+    if [[ ! -f "$pem" ]]; then
+      # Look where people actually leave a downloaded .pem before concluding it
+      # is missing. A key downloaded from the console lands in ~/Downloads far
+      # more often than in ~/.ssh.
+      local found=""
+      local cand
+      for cand in "$HOME/Downloads/${name}.pem" "$HOME/${name}.pem" "$PWD/${name}.pem" \
+                  "$HOME/Downloads/${name}.cer" "$HOME/.ssh/${name}"; do
+        [[ -f "$cand" ]] && { found="$cand"; break; }
+      done
+      if [[ -n "$found" ]]; then
+        note "Found the private key at ${found}"
+        mkdir -p "$HOME/.ssh" 2>/dev/null || true
+        if cp "$found" "$pem" 2>/dev/null && chmod 600 "$pem" 2>/dev/null; then
+          ok "Copied it to ${pem} (mode 600)"
+        else
+          warn "Could not copy ${found} to ${pem}. Do it by hand, then re-run."
+          KEY_PEM_MISSING=true
+        fi
+      else
+        echo
+        warn "The private key for '${name}' is not on this machine."
+        note "Looked in ~/.ssh, ~/Downloads, and the current directory."
+        note "AWS stores only the public half, so the .pem exists once, wherever"
+        note "it was first downloaded. Without it this deploy builds fine and"
+        note "then fails every step that needs SSH: sensor install and vPB"
+        note "adoption, about 25 minutes from now."
+        note "Fix it either way:"
+        note "  copy the .pem to ${pem} and chmod 600, or"
+        note "  re-run with --key-name <a-new-name> and a fresh pair is created"
+        note "  for you, with the .pem saved where this script expects it."
+        if [[ "$INTERACTIVE" == "true" ]]; then
+          if ! ask_yn "  Continue anyway (every SSH step will be skipped)? [y/N]: " "n"; then
+            fail "Stopped before deploying. Nothing was created, nothing was spent."
+          fi
+        else
+          note "Non-interactive: continuing. The SSH steps will report this again."
+        fi
+        KEY_PEM_MISSING=true
+      fi
+    fi
     return 0
   fi
   note "Key pair '${name}' not found in ${REGION}. Creating it..."
