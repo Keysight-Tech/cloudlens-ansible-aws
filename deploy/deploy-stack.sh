@@ -367,7 +367,16 @@ announce_vcontroller_login() {
   else
     echo "    ${VC_ADMIN_USER} / ${VC_FACTORY_PASS}   (the first login forces a change)"
   fi
-  echo "  Sensors will appear under project '${PROJECT_NAME}' as they register."
+  # Which project the sensors land in depends on the sensor mode, and this line
+  # used to name the standalone one unconditionally. In KVO mode the sensors
+  # register with the key the Cloud Config provisioned, into KVO_<cloud-config>,
+  # so pointing the operator at 'cloudlens-autopilot' sent them to a project that
+  # stays permanently empty while they wonder where their sensors went.
+  local _proj="$PROJECT_NAME"
+  if [[ "$SENSOR_MODE" == "kvo" && -n "${CLOUD_CONFIG_NAME:-}" ]]; then
+    _proj="KVO_${CLOUD_CONFIG_NAME}"
+  fi
+  echo "  Sensors will appear under project '${_proj}' as they register."
   echo
 }
 
