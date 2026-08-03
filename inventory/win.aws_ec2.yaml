@@ -1,0 +1,49 @@
+# =====================================================================
+# GENERATED FILE - DO NOT EDIT
+# =====================================================================
+# Written by scripts/render_inventory.py from:
+#   inventory/aws_ec2.yaml   (the checked-in defaults and grouping rules)
+#   customer_input.yaml      (aws.regions / aws.tag_filters / aws.instance_ids)
+#
+# Edit one of those two and re-run quickstart.sh. Anything you write here is
+# overwritten on the next run.
+#
+# It lives in inventory/ so that inventory/group_vars still applies: Ansible
+# resolves group_vars relative to the inventory source.
+# =====================================================================
+plugin: amazon.aws.aws_ec2
+filters:
+  instance-state-name: running
+  tag:monitoring: enabled
+hostnames:
+- tag:Name
+- instance-id
+keyed_groups:
+- prefix: os
+  key: tags.os | default('untagged')
+- prefix: platform
+  key: tags.Platform | default('untagged')
+- prefix: env
+  key: tags.env | default('untagged')
+- prefix: region
+  key: placement.region
+groups:
+  ubuntu_prod_vms: tags.os | default('') == 'ubuntu' and tags.env | default('') == 'prod'
+  redhat_prod_vms: tags.os | default('') == 'rhel' and tags.env | default('') == 'prod'
+  windows_prod_vms: tags.os | default('') == 'windows' and tags.env | default('') == 'prod'
+  ubuntu_dev_vms: tags.os | default('') == 'ubuntu' and tags.env | default('') == 'dev'
+  redhat_dev_vms: tags.os | default('') == 'rhel' and tags.env | default('') == 'dev'
+  windows_dev_vms: tags.os | default('') == 'windows' and tags.env | default('') == 'dev'
+  ubuntu_test_vms: tags.os | default('') == 'ubuntu' and tags.env | default('') == 'test'
+  redhat_test_vms: tags.os | default('') == 'rhel' and tags.env | default('') == 'test'
+  windows_test_vms: tags.os | default('') == 'windows' and tags.env | default('') == 'test'
+compose:
+  ansible_host: public_ip_address if (public_ip_address is defined and public_ip_address != '') else private_ip_address
+  aws_region: placement.region
+  aws_instance_id: instance_id
+  aws_private_ip: private_ip_address
+  aws_public_ip: public_ip_address | default('', true)
+  aws_vpc_id: vpc_id
+  aws_subnet_id: subnet_id
+regions:
+- us-east-1

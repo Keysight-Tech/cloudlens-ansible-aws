@@ -277,7 +277,12 @@ def main():
     ap.add_argument("--ingress-subnet", help="collector ingress subnet id (receives mirrored traffic)")
     ap.add_argument("--egress-subnet", help="collector egress subnet id (to tools)")
     ap.add_argument("--min-size", type=int, default=1, help="collector ASG min size")
-    ap.add_argument("--max-size", type=int, default=1, help="collector ASG max size")
+    # KVO sizes the collector fleet from the number of sources it has to tap. A
+    # max of 1 makes it raise "Desired capacity for auto scaling group in
+    # availability zone <az> is greater than the maximum size" as soon as it
+    # wants more than one collector, even though tapping still works on the one
+    # it has. Leave the floor at 1 for cost and give it room to scale up.
+    ap.add_argument("--max-size", type=int, default=4, help="collector ASG max size")
     # Destination tool: the analyzer/NPB IP that receives the tapped traffic.
     # Required to actually create mirror sessions (KVO needs a complete path).
     ap.add_argument("--tool-remote-ip", help="IP of the destination analyzer/vPB that receives "

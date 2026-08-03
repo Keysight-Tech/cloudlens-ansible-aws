@@ -575,6 +575,9 @@ Resources:
           FromPort: 10800
           ToPort: 10801
           CidrIp: !Ref AdminIngressCidr
+        - Description: L2GRE tunnel from CloudLens collector (IP protocol 47, no ports)
+          IpProtocol: "47"
+          CidrIp: !Ref AdminIngressCidr
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"

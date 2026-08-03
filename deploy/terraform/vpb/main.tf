@@ -168,6 +168,19 @@ resource "aws_security_group" "vpb_mgmt" {
     cidr_blocks = var.vxlan_ingress_cidrs
   }
 
+  # L2GRE carries mirrored traffic from the CloudLens collector to the vPB data
+  # NIC. GRE is IP protocol 47 and has no ports, so from_port/to_port are 0.
+  # Without this rule the collector forwards correctly and every packet is
+  # dropped silently at the vPB, which surfaces in KVO only as
+  # "Tunnel of type GRE: Remote destination <ip> not reachable".
+  ingress {
+    description = "L2GRE tunnel from CloudLens collector"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "47"
+    cidr_blocks = var.vxlan_ingress_cidrs
+  }
+
   egress {
     description = "Allow all outbound"
     from_port   = 0
