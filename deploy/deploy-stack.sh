@@ -2285,15 +2285,30 @@ select_key_pair() {
 
   echo
   echo "EC2 key pairs in ${REGION}:"
-  local i=1
+  # Mark the ones whose private key is actually on THIS machine. AWS keeps only
+  # the public half, so an existing pair is useless here unless its .pem came
+  # along. Picking one blind builds the stack and then fails every SSH step.
+  local i=1 usable_here=0
   for line in "${existing[@]}"; do
-    printf "  %2d) %s\n" "$i" "$line"
+    if [[ -f "$HOME/.ssh/${line}.pem" ]]; then
+      printf "  %2d) %-40s (private key present here)\n" "$i" "$line"
+      usable_here=$((usable_here+1))
+    else
+      printf "  %2d) %-40s (no private key on this machine)\n" "$i" "$line"
+    fi
     i=$((i+1))
   done
-  printf "  %2d) Create a NEW key pair\n" "$i"
+  printf "  %2d) Create a NEW key pair  <- recommended\n" "$i"
   echo
-  read -rp "Choose 1-${i}, or type a key pair name [1]: " pick || true
-  pick="${pick:-1}"
+  if (( usable_here == 0 )); then
+    note "None of the existing pairs has its private key here, so SSH steps"
+    note "(sensor install, vPB adoption) would fail with any of them."
+  fi
+  # Default to creating a new pair. Defaulting to the FIRST existing pair meant
+  # pressing Enter picked a key whose .pem was on a different machine entirely,
+  # which is how a full deploy reached the sensor step and died UNREACHABLE.
+  read -rp "Choose 1-${i}, or type a key pair name [${i}]: " pick || true
+  pick="${pick:-$i}"
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
     KEY_NAME="${existing[$((pick-1))]}"
