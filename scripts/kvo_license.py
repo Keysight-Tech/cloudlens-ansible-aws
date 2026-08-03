@@ -191,8 +191,10 @@ def prompt_plan(kvo, base, tok, verify):
     """
     plan = []
     print("KVO licensing")
-    print("  Most deployments need TWO codes: one CloudLens (sensors) and one")
-    print("  VisionOrchestrator (KVO and vPB). Enter each in turn.")
+    print("  Enter every code you were issued, one at a time. A full KVO")
+    print("  deployment usually needs several distinct entitlements, for")
+    print("  example sensor credits, KVO device licences, and vPB feature")
+    print("  licences. Each arrives as its own activation code.")
     while True:
         if not plan:
             code = input("  Activation code: ").strip()
