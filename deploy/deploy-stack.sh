@@ -3151,8 +3151,27 @@ install_ansible_now() {
   [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would pip3 install --user ansible boto3"; return 0; }
   ask_yn "  Install Ansible now with pip3 (into your home, ~1 min)? [Y/n]: " "y" || return 1
   step "Installing Ansible"
-  pip3 install --user --quiet ansible boto3 >/dev/null 2>&1 || {
-    warn "pip3 install failed. Install it by hand and re-run."; return 1; }
+  # Show the real error. The first version of this sent stdout AND stderr to
+  # /dev/null and printed "pip3 install failed", which told the operator
+  # nothing: a live CloudShell run failed here and the cause was invisible.
+  # Newer distros also refuse a --user install into a managed environment
+  # (PEP 668), so retry once with the documented escape hatch before giving up.
+  local _pip_log; _pip_log="$(mktemp)"
+  if ! pip3 install --user --quiet ansible boto3 >"$_pip_log" 2>&1; then
+    if grep -qi "externally-managed-environment" "$_pip_log"; then
+      note "Python here refuses --user installs (PEP 668). Retrying into a managed break-out."
+      if ! pip3 install --user --quiet --break-system-packages ansible boto3 >>"$_pip_log" 2>&1; then
+        warn "pip3 install failed. The error was:"
+        sed -n '1,12p' "$_pip_log" | sed 's/^/      /'
+        rm -f "$_pip_log"; return 1
+      fi
+    else
+      warn "pip3 install failed. The error was:"
+      sed -n '1,12p' "$_pip_log" | sed 's/^/      /'
+      rm -f "$_pip_log"; return 1
+    fi
+  fi
+  rm -f "$_pip_log"
   export PATH="$HOME/.local/bin:$PATH"
   if ! grep -qs 'HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null || true
