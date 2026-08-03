@@ -131,6 +131,34 @@ bash deploy-stack.sh \
 
 ---
 
+## If a run stops partway
+
+A deploy can stop for ordinary reasons: Ansible is not installed yet, there is
+nothing tagged to put a sensor on, an SSO token expires, a laptop sleeps. None
+of that loses the infrastructure already built.
+
+Re-run the same command with `--resume` and it checks the real system rather
+than a state file: CloudFormation for the stack, the vController API, the KVO
+licensing API. Everything already finished is skipped, and it picks up at the
+first unfinished step. That takes about a minute, not another full deploy.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
+  --region us-east-1 --stack-name cloudlens-stack --resume
+```
+
+Related flags:
+
+| Flag | What it does |
+|---|---|
+| `--resume` | Continue from the first unfinished phase. The default when there is no terminal. |
+| `--fresh` | Run every phase again, skipping nothing. Still deletes nothing. |
+| `--from PHASE` | Start at a named phase: `stack`, `wait`, `key`, `license`, `adopt`, `sensors`, `vpb`, `path`, `mirror`. |
+| `--only PHASE` | Run exactly one phase. |
+
+Nothing in the deploy script deletes anything, including under `--fresh`. Teardown
+is a separate, explicitly confirmed command: `deploy/teardown-stack.sh`.
+
 ## Marketplace AMIs (subscribe once per account)
 
 The stack launches Marketplace AMIs. Subscribe once per AWS account, then deploy as many times as you like. Instance types are fixed to the size each AMI is qualified on.

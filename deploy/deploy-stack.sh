@@ -3249,6 +3249,17 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
     read -rp "Skip the sensor step for now? [Y/n]: " skip_yn || true
     if [[ "$(to_lower "${skip_yn:-y}")" != "n" ]]; then
       warn "Skipping sensor deployment. Infrastructure is deployed and ready."
+      # Do not end here without saying how to come back. The stack is built and
+      # a re-run resumes in about a minute, but nobody can guess --resume: it
+      # was in --help and in no user-facing doc at all.
+      echo
+      echo "  Nothing is lost. When you are ready, re-run this and it will detect"
+      echo "  everything already built, skip it, and pick up at the sensor step:"
+      echo
+      echo "    curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh | bash -s -- \\"
+      echo "      --region ${REGION} --stack-name ${STACK_NAME} --resume"
+      echo
+      echo "  That takes about a minute, not another full deploy."
       CHAIN_SENSORS=false
     fi
   fi

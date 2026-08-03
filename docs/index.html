@@ -1193,6 +1193,17 @@ aws cloudformation wait stack-delete-complete \
 
         <div class="faq-grid">
           <details class="faq-item">
+            <summary>My deploy stopped partway. Do I have to start over?</summary>
+            <div class="faq-body">
+              <p><strong>No.</strong> A run can stop for ordinary reasons: Ansible is not installed yet, there is nothing tagged to put a sensor on, an SSO token expires, a laptop sleeps. None of that loses the infrastructure already built.</p>
+              <p>Re-run the same command with <code>--resume</code>. It checks the real system rather than a state file: CloudFormation for the stack, the vController API, the KVO licensing API. Everything already finished is skipped and it picks up at the first unfinished step, usually in about a minute.</p>
+              <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
+  --region us-east-1 --stack-name cloudlens-stack --resume</code></pre>
+              <p>Related: <code>--fresh</code> runs every phase again and skips nothing; <code>--from PHASE</code> starts at a named phase (<code>stack</code>, <code>wait</code>, <code>key</code>, <code>license</code>, <code>adopt</code>, <code>sensors</code>, <code>vpb</code>, <code>path</code>, <code>mirror</code>); <code>--only PHASE</code> runs exactly one.</p>
+              <p class="muted">Nothing in the deploy script deletes anything, including under <code>--fresh</code>. Teardown is a separate, explicitly confirmed command.</p>
+            </div>
+          </details>
+          <details class="faq-item">
             <summary>Stack rolled back: "The maximum number of addresses has been reached"</summary>
             <div class="faq-body">
               <p>You are out of Elastic IPs. <strong>The default quota is 5 per region</strong>, and the full stack needs 3 (one each for vController, KVO, and vPB). If the account already holds EIPs, the deploy runs for several minutes, allocates what it can, then fails on the last one and rolls the whole stack back.</p>
