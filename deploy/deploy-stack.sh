@@ -3564,6 +3564,21 @@ print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)
     return 0
   fi
 
+  # Idempotent on resume: if the well-known bucket already exists in AWS, reuse
+  # it without prompting. A resume rewrites customer_input.yaml and may not carry
+  # the bucket name forward, so checking AWS (not just the file) is what stops
+  # this step from re-asking on every re-run.
+  local _acct _bkt
+  _acct="$(probe aws sts get-caller-identity --query Account --output text 2>/dev/null)"
+  if [[ -n "$_acct" && "$_acct" != "None" ]]; then
+    _bkt="cloudlens-ssm-transfer-${_acct}"
+    if probe aws s3api head-bucket --bucket "$_bkt" >/dev/null 2>&1; then
+      SSM_BUCKET_NAME="$_bkt"
+      ok "Reusing existing Windows SSM transfer bucket: ${_bkt}"
+      return 0
+    fi
+  fi
+
   echo
   echo "  Windows sensors install over AWS SSM, which stages files through an S3"
   echo "  bucket. None is configured, so the Windows host cannot be reached."
