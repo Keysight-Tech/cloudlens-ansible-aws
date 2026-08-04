@@ -3384,7 +3384,13 @@ ensure_collector_sgs() {
   [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]] && vpc_cidr="10.0.0.0/8"
   # role: sg-name-suffix; returns the SG id (reused if it already exists)
   _mk_sg() {
-    local role="$1" desc="$2" name="cloudlens-collector-${role}-${STACK_NAME}" id
+    # Separate locals on purpose: referencing ${role} in the same `local` line
+    # that first assigns it expands before the assignment, so under `set -u` it
+    # is unbound and every SG creation aborts with "role: unbound variable".
+    local role="$1"
+    local desc="$2"
+    local name="cloudlens-collector-${role}-${STACK_NAME}"
+    local id
     id=$(probe aws ec2 create-security-group --region "$REGION" --group-name "$name" \
          --description "$desc" --vpc-id "$STACK_VPC_ID" --query 'GroupId' --output text 2>/dev/null) \
       || id=$(probe aws ec2 describe-security-groups --region "$REGION" \
@@ -4657,19 +4663,25 @@ secure_run_file "$SUMMARY_FILE"
 # the one command that finishes it. A run where SSH steps were skipped for a
 # missing .pem used to end with a cheerful "Done" and no hint it was incomplete.
 completion_report() {
-  local labels="sensors:Linux/Windows sensors vpb:vPB adopted mirror:AWS mirror sessions path:vPB traffic path"
   local pending=() p name val
   for p in sensors vpb mirror path; do
     val="$(state_get "PHASE_$(upper "$p")" 2>/dev/null || echo '')"
     case "$val" in
-      done*|"dry-run"*) : ;;                       # done (or dry-run) counts as covered
-      *) name="$(printf '%s' "$labels" | tr ' ' '\n' | grep "^${p}:" | cut -d: -f2-)"
-         pending+=("${name:-$p}") ;;
+      done*|"dry-run"*) continue ;;                # done (or dry-run) counts as covered
     esac
+    case "$p" in
+      sensors) name="Linux/Windows sensors" ;;
+      vpb)     name="vPB adopted" ;;
+      mirror)  name="AWS mirror sessions" ;;
+      path)    name="vPB traffic path" ;;
+      *)       name="$p" ;;
+    esac
+    pending+=("$name")
   done
   (( ${#pending[@]} == 0 )) && return 0
   echo
-  warn "Not every phase finished. Outstanding: ${pending[*]}"
+  local joined; printf -v joined '%s, ' "${pending[@]}"; joined="${joined%, }"
+  warn "Not every phase finished. Outstanding: ${joined}"
   if [[ ! -f "$KEY_PEM" ]]; then
     note "The usual cause is the SSH key not being on this machine:"
     pem_help
