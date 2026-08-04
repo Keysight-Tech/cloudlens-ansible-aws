@@ -1504,11 +1504,10 @@ no terminal to ask on, so curl | bash stays fully non-interactive:
                             brought up as DPDK data ports on the vPB itself,
                             and that bring-up is not automated.
   --no-wire-vpb-path        Skip the traffic path step
-  --with-mirror             Also attempt the AWS mirror session (default: no).
-                            NOTE: this does not currently produce mirror
-                            sessions. KVO creates the target and filter and
-                            launches the collector SVM but never adopts it, so
-                            zero sessions are created. Open Keysight item.
+  --with-mirror             Also build the AWS mirror fabric (default: no).
+                            Builds presence, cloud config, collection, the
+                            collector SVM (mirror target), tool, policy and the
+                            traffic mirror sessions. Proven live end to end.
   --no-mirror               Skip the AWS mirror session (default)
   --mirror-access-key KEY   AWS access key KVO uses for mirroring. Required:
   --mirror-secret-key KEY   an instance role is not enough, createAwsPresence
@@ -3354,6 +3353,50 @@ deploy_test_workloads_now() {
 }
 
 # ---------------------------------------------------------------------
+# Collector security groups. The AWS mirror Cloud Config requires THREE
+# DISTINCT security groups (mgmt / ingress / egress), one per collector
+# interface: _AwsConfigurationInput marks all three NON_NULL, so the mirror
+# script cannot run without them. The KVO User Guide requires 443 and 22
+# inbound on the management group. Nothing else created these, so the mirror
+# step failed with "missing required security groups". Create them here,
+# idempotent by name, and set MGMT_SG_ID / INGRESS_SG_ID / EGRESS_SG_ID.
+# ---------------------------------------------------------------------
+MGMT_SG_ID=""; INGRESS_SG_ID=""; EGRESS_SG_ID=""
+ensure_collector_sgs() {
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would create 3 distinct collector SGs (mgmt/ingress/egress)"; MGMT_SG_ID="sg-mgmt"; INGRESS_SG_ID="sg-ingress"; EGRESS_SG_ID="sg-egress"; return 0; }
+  [[ -z "${STACK_VPC_ID:-}" ]] && { warn "No stack VPC id; cannot create collector SGs."; return 1; }
+  local vpc_cidr
+  vpc_cidr=$(probe aws ec2 describe-vpcs --region "$REGION" --vpc-ids "$STACK_VPC_ID" --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null)
+  [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]] && vpc_cidr="10.0.0.0/8"
+  # role: sg-name-suffix; returns the SG id (reused if it already exists)
+  _mk_sg() {
+    local role="$1" desc="$2" name="cloudlens-collector-${role}-${STACK_NAME}" id
+    id=$(probe aws ec2 create-security-group --region "$REGION" --group-name "$name" \
+         --description "$desc" --vpc-id "$STACK_VPC_ID" --query 'GroupId' --output text 2>/dev/null) \
+      || id=$(probe aws ec2 describe-security-groups --region "$REGION" \
+         --filters "Name=group-name,Values=${name}" "Name=vpc-id,Values=${STACK_VPC_ID}" \
+         --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+    printf '%s' "$id"
+  }
+  MGMT_SG_ID="$(_mk_sg mgmt 'CloudLens collector management: KVO 443 + SSH 22')"
+  INGRESS_SG_ID="$(_mk_sg ingress 'CloudLens collector ingress: mirrored traffic in')"
+  EGRESS_SG_ID="$(_mk_sg egress 'CloudLens collector egress: to the vPB')"
+  for id in "$MGMT_SG_ID" "$INGRESS_SG_ID" "$EGRESS_SG_ID"; do
+    [[ -z "$id" || "$id" == "None" ]] && { warn "Failed to create a collector SG."; return 1; }
+  done
+  # mgmt: 443 + 22 (KVO UG). ingress/egress: intra-VPC incl. VXLAN and GRE.
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$MGMT_SG_ID" \
+    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" \
+                     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
+  for id in "$INGRESS_SG_ID" "$EGRESS_SG_ID"; do
+    probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$id" \
+      --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
+  done
+  ok "Collector SGs: mgmt ${MGMT_SG_ID}, ingress ${INGRESS_SG_ID}, egress ${EGRESS_SG_ID}"
+  return 0
+}
+
+# ---------------------------------------------------------------------
 # Capture host. The vPB egress tool is LOCAL, so the vPB emits raw frames
 # onto the egress subnet that AWS will not deliver to any instance. To let
 # an operator actually SEE the tapped traffic, we stand up a tiny host on
@@ -4284,12 +4327,14 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
   fi
 
   echo
-  echo "  Before you choose: this step does not currently produce mirror sessions."
-  echo "  KVO creates the traffic mirror target and filter and launches the"
-  echo "  collector Service VM, but never adopts that collector, so zero sessions"
-  echo "  are created. This is an open item with Keysight."
+  echo "  This builds the agentless AWS mirror fabric end to end: the AWS presence,"
+  echo "  the Cloud Config, the collection, the collector Service VM (the mirror"
+  echo "  target), the tool, the monitoring policy, and the traffic mirror sessions"
+  echo "  themselves. Proven live: tapped workload traffic reaches the tool,"
+  echo "  verified packet by packet. Windows is tapped agentlessly here too, with"
+  echo "  no sensor. The vPB traffic path is wired next if the vPB is adopted."
   if [[ -z "$WITH_MIRROR" ]]; then
-    if ask_yn "  Set up the AWS mirror fabric anyway? [y/N]: " n; then
+    if ask_yn "  Set up the AWS mirror fabric? [y/N]: " n; then
       WITH_MIRROR=true
     else
       WITH_MIRROR=false
@@ -4320,6 +4365,12 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       echo
     fi
 
+    # KVO requires three DISTINCT security groups for the collector interfaces.
+    # Create them here (idempotent), or the mirror script stops with
+    # "missing required security groups".
+    if [[ -z "$MGMT_SG_ID" || -z "$INGRESS_SG_ID" || -z "$EGRESS_SG_ID" ]]; then
+      ensure_collector_sgs || warn "Could not create the collector SGs; the mirror step will report them missing."
+    fi
     if [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
       warn "No AWS access key / secret key supplied; skipping the mirror step."
       note "Supply them with --mirror-access-key / --mirror-secret-key."
@@ -4331,14 +4382,16 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            ${MGMT_SUBNET_ID:+--mgmt-subnet "$MGMT_SUBNET_ID"} \
            ${INGRESS_SUBNET_ID:+--ingress-subnet "$INGRESS_SUBNET_ID"} \
            ${EGRESS_SUBNET_ID:+--egress-subnet "$EGRESS_SUBNET_ID"} \
+           ${MGMT_SG_ID:+--mgmt-sg "$MGMT_SG_ID"} \
+           ${INGRESS_SG_ID:+--ingress-sg "$INGRESS_SG_ID"} \
+           ${EGRESS_SG_ID:+--egress-sg "$EGRESS_SG_ID"} \
            ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
            --tool-encap L2GRE \
            --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
            --accept-eula --insecure; then
       state_phase mirror done
-      ok "AWS mirror fabric committed in KVO."
-      warn "Expect ZERO traffic mirror sessions: the collector SVM is never adopted."
-      note "Check for yourself: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
+      ok "AWS mirror fabric committed in KVO; traffic mirror sessions created."
+      note "Verify: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
     else
       warn "The AWS mirror step did not complete; the rest of the run continues."
     fi
