@@ -116,7 +116,7 @@
               <span class="tier-num">1</span>
               <span class="tier-label">
                 <strong>Launch Stack</strong>
-                <small>CloudFormation, one click</small>
+                <small>Infrastructure only (stack)</small>
               </span>
             </a>
             <button class="btn btn-secondary tier" id="cloudshell-btn" type="button"
@@ -142,6 +142,9 @@
             <span class="badge win">Windows 2019/2022</span>
             <span class="badge ok">3/3 verified</span>
           </div>
+          <p style="margin:12px 0 0;font-size:0.85rem;color:#5a6675;">
+            <strong>Launch Stack</strong> creates the CloudFormation stack only (the vController, KVO and vPB appliances plus networking). For the full automated pipeline that also licenses, adopts, installs sensors, and builds the packet-verified AWS mirror, use <strong>Run in CloudShell</strong>.
+          </p>
           <div id="cloudshell-panel" class="cs-panel" hidden>
             <p class="cs-step"><span class="cs-n">1</span> Copy this command</p>
             <div class="cs-cmd">
