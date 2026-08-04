@@ -3393,10 +3393,16 @@ ensure_collector_sgs() {
     local name="cloudlens-collector-${role}-${STACK_NAME}"
     local id
     id=$(probe aws ec2 create-security-group --region "$REGION" --group-name "$name" \
-         --description "$desc" --vpc-id "$STACK_VPC_ID" --query 'GroupId' --output text 2>/dev/null) \
-      || id=$(probe aws ec2 describe-security-groups --region "$REGION" \
+         --description "$desc" --vpc-id "$STACK_VPC_ID" --query 'GroupId' --output text 2>/dev/null)
+    # probe ALWAYS exits 0, so `create || describe` never falls through: on a
+    # re-run create fails as a duplicate, id comes back empty, and the reuse
+    # lookup never ran, so the SGs "failed to create" the second time. Check the
+    # result explicitly and look up the existing SG by name when create gave nothing.
+    if [[ -z "$id" || "$id" == "None" ]]; then
+      id=$(probe aws ec2 describe-security-groups --region "$REGION" \
          --filters "Name=group-name,Values=${name}" "Name=vpc-id,Values=${STACK_VPC_ID}" \
          --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+    fi
     printf '%s' "$id"
   }
   MGMT_SG_ID="$(_mk_sg mgmt 'CloudLens collector management: KVO 443 + SSH 22')"
@@ -3456,9 +3462,14 @@ ensure_capture_host_now() {
   [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]] && vpc_cidr="10.0.0.0/8"
   sg=$(probe aws ec2 create-security-group --region "$REGION" --group-name "cloudlens-tool-receiver-${STACK_NAME}" \
        --description "CloudLens tool receiver: mirrored traffic from vPB egress" --vpc-id "$STACK_VPC_ID" \
-       --query 'GroupId' --output text 2>/dev/null) \
-    || sg=$(probe aws ec2 describe-security-groups --region "$REGION" \
-       --filters "Name=group-name,Values=cloudlens-tool-receiver-${STACK_NAME}" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+       --query 'GroupId' --output text 2>/dev/null)
+  # probe always exits 0, so the 'create || describe' fallback never fired on a
+  # re-run; check explicitly and look up the existing SG when create gave nothing.
+  if [[ -z "$sg" || "$sg" == "None" ]]; then
+    sg=$(probe aws ec2 describe-security-groups --region "$REGION" \
+       --filters "Name=group-name,Values=cloudlens-tool-receiver-${STACK_NAME}" "Name=vpc-id,Values=${STACK_VPC_ID}" \
+       --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+  fi
   [[ -z "$sg" || "$sg" == "None" ]] && { warn "Could not create the capture host security group."; return 1; }
   probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
     --ip-permissions "IpProtocol=47,IpRanges=[{CidrIp=${vpc_cidr},Description=L2GRE tap}]" >/dev/null 2>&1
