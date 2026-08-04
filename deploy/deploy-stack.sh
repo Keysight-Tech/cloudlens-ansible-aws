@@ -4472,13 +4472,31 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       echo
     fi
 
+    # The collector spec (awsConfiguration.availabilityZones) needs the zone AND
+    # all three subnets. If any is empty the mirror script builds a config with
+    # NO availabilityZones, KVO launches NO collector, and ZERO sessions are cut
+    # while every step still reports success. This bit us on a --only mirror run
+    # that reached here before detection had populated them. Re-derive now, and
+    # refuse to build a collector-less config rather than fail silently.
+    if [[ -z "$STACK_ZONE" || -z "$MGMT_SUBNET_ID" || -z "$INGRESS_SUBNET_ID" || -z "$EGRESS_SUBNET_ID" ]]; then
+      discover_stack_facts
+    fi
+    if [[ -z "$STACK_ZONE" || -z "$MGMT_SUBNET_ID" || -z "$INGRESS_SUBNET_ID" || -z "$EGRESS_SUBNET_ID" ]]; then
+      warn "Cannot build the collector spec: zone/subnets did not resolve."
+      warn "  zone='${STACK_ZONE}' mgmt='${MGMT_SUBNET_ID}' ingress='${INGRESS_SUBNET_ID}' egress='${EGRESS_SUBNET_ID}'"
+      warn "Without all four, KVO creates NO collector and NO sessions. Skipping the"
+      warn "mirror. Run a FULL deploy (not --only mirror) so stack detection fills these."
+      WITH_MIRROR=false
+    fi
     # KVO requires three DISTINCT security groups for the collector interfaces.
     # Create them here (idempotent), or the mirror script stops with
     # "missing required security groups".
-    if [[ -z "$MGMT_SG_ID" || -z "$INGRESS_SG_ID" || -z "$EGRESS_SG_ID" ]]; then
+    if [[ "$WITH_MIRROR" == "true" && ( -z "$MGMT_SG_ID" || -z "$INGRESS_SG_ID" || -z "$EGRESS_SG_ID" ) ]]; then
       ensure_collector_sgs || warn "Could not create the collector SGs; the mirror step will report them missing."
     fi
-    if [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
+    if [[ "$WITH_MIRROR" != "true" ]]; then
+      note "Mirror skipped (collector spec could not be resolved; see above)."
+    elif [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
       warn "No AWS access key / secret key supplied; skipping the mirror step."
       note "Supply them with --mirror-access-key / --mirror-secret-key."
     elif python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
