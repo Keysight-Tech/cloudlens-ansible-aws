@@ -52,12 +52,18 @@ def vpb_cli(host, port, user, key, command, timeout=60):
     except subprocess.TimeoutExpired:
         return False, "timeout"
 
-def vpb_wait_cli(host, port, user, key, tries=20, delay=20):
-    """After a reboot the KCOS pod takes minutes; wait until the CLI answers."""
+def vpb_wait_cli(host, port, user, key, tries=45, delay=20):
+    """After first boot the KCOS pod that serves the vPB CLI takes a while to come
+    up: 10-15 minutes is normal on a freshly deployed appliance, longer than a
+    human expects. The default here (45 x 20s = 15 min) covers that; the old 20 x
+    20s = ~6.7 min timed out on real first boots and reported the vPB as broken
+    when it was only still starting. Tunable via --cli-tries / --cli-delay."""
+    total = tries * delay
+    log(f"waiting for the vPB CLI (KCOS first boot can take 10-15 min; up to {total // 60} min here)")
     for i in range(tries):
         ok, out = vpb_cli(host, port, user, key, "show version")
         if ok and ("version" in out.lower() or "vpb" in out.lower() or "CloudLensVPB" in out):
-            log("vPB CLI is up"); return True
+            log(f"vPB CLI is up (after ~{i * delay // 60}m{i * delay % 60}s)"); return True
         log(f"  waiting for vPB CLI ({i+1}/{tries})...")
         time.sleep(delay)
     return False
@@ -173,6 +179,10 @@ def main():
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--wait-cli", action="store_true",
                     help="wait for the vPB CLI to come up first (use right after a reboot)")
+    ap.add_argument("--cli-tries", type=int, default=45,
+                    help="how many times to poll the vPB CLI (default 45; KCOS first boot is slow)")
+    ap.add_argument("--cli-delay", type=int, default=20,
+                    help="seconds between vPB CLI polls (default 20; 45x20s = 15 min total)")
     ap.add_argument("--accept-eula", action="store_true",
                     help="accept the vPB EULA if it blocks the CLI. This is a legal acceptance.")
     ap.add_argument("--insecure", action="store_true")
@@ -190,8 +200,15 @@ def main():
     before = {d["uid"] for d in kvo_devices(kvo, tok, verify)}
 
     # vPB side
-    if args.wait_cli and not vpb_wait_cli(args.vpb, args.vpb_port, args.vpb_user, args.key):
-        log("vPB CLI never came up"); return 2
+    if args.wait_cli and not vpb_wait_cli(args.vpb, args.vpb_port, args.vpb_user, args.key,
+                                          tries=args.cli_tries, delay=args.cli_delay):
+        log(f"vPB CLI never came up after {args.cli_tries * args.cli_delay // 60} min.")
+        log("The vPB is likely still starting KCOS, not broken. To finish:")
+        log(f"  1) ssh -i {args.key} -p {args.vpb_port} {args.vpb_user}@{args.vpb}")
+        log("     then: sudo vpb show system   (confirms KCOS is up), exit")
+        log("  2) re-run the deploy: it resumes and adoption succeeds once the CLI answers.")
+        log("Or raise the wait with --cli-tries (each try is --cli-delay seconds).")
+        return 2
     if args.accept_eula:
         vpb_accept_eula(args.vpb, args.vpb_port, args.vpb_user, args.key)
     # CRITICAL: `kvo` is an INTERACTIVE CONFIG CONTEXT, not a flat command. You

@@ -4361,8 +4361,13 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
       state_phase vpb done
     else
       warn "vPB adoption did not complete; the rest of the run continues."
+      note "Most often the vPB CLI (KCOS) was still starting: it can take 10-15 min"
+      note "on first boot. This step now waits up to 15 min, but if it still times"
+      note "out the vPB is starting, not broken. Confirm and finish with:"
+      note "  ssh -i ${KEY_PEM} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP} 'sudo vpb show system'"
+      note "  then re-run this script: it resumes and adoption succeeds once the CLI answers."
       ADOPT_VPB=false
-      state_phase vpb failed "vpb_kvo_adopt.py exited non-zero"
+      state_phase vpb failed "vPB CLI not up in time (KCOS first boot)"
     fi
   fi
 fi
