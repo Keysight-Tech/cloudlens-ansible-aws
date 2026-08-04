@@ -140,6 +140,8 @@ def commit_cr(base, token, cr_uid, verify, timeout=600):
             log("  waiting for the previous processing to finish..."); time.sleep(10); continue
         log(f"commit failed: {msg[:200]}"); return False
     deadline = time.time() + timeout
+    start = time.time()
+    ticks = 0
     while time.time() < deadline:
         q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
         mine = [r for r in (q.get("data", {}).get("changeRequests") or []) if r["uid"] == cr_uid]
@@ -147,6 +149,13 @@ def commit_cr(base, token, cr_uid, verify, timeout=600):
             log("change request committed"); return True
         if mine[0]["status"] in ("Failed", "Error"):
             log(f"commit ended in {mine[0]['status']}"); return False
+        # Heartbeat every ~30s so a long commit (the collector launch can take a
+        # few minutes) never looks frozen. Say what KVO is doing and how long.
+        ticks += 1
+        if ticks % 5 == 0:
+            elapsed = int(time.time() - start)
+            log(f"  still processing in KVO ({mine[0]['status']}, {elapsed}s so far; "
+                f"launching/scaling the collector can take a few minutes, this is normal)")
         time.sleep(6)
     log("timed out waiting for commit"); return False
 
