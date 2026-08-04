@@ -3324,16 +3324,28 @@ deploy_test_workloads_now() {
 # REMOTE tool at its IP to the same policy that feeds the vPB egress. Sets
 # CAPTURE_HOST_IP on success. Idempotent: reuses an existing one by tag.
 # ---------------------------------------------------------------------
+# CAPTURE_HOST_IP is the PRIVATE address, used for the REMOTE tool because the
+# vPB tunnels to it in-VPC. CAPTURE_HOST_PUBLIC_IP is what the operator SSHes to
+# from outside the VPC (a laptop or CloudShell), so the summary shows that one.
 CAPTURE_HOST_IP=""
+CAPTURE_HOST_PUBLIC_IP=""
 ensure_capture_host_now() {
   [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would launch a tcpdump capture host on the egress subnet and set CAPTURE_HOST_IP"; CAPTURE_HOST_IP="10.0.0.250"; return 0; }
   # reuse if one is already running
-  local existing
-  existing=$(probe aws ec2 describe-instances --region "$REGION" \
+  local existing_id
+  # Scope the reuse to THIS stack's VPC. Without the vpc-id filter the fixed
+  # cloudlens-role tag matches account-wide, so in a shared training account one
+  # trainee's run would reuse another trainee's capture host.
+  existing_id=$(probe aws ec2 describe-instances --region "$REGION" \
       --filters "Name=tag:cloudlens-role,Values=tool-receiver" "Name=instance-state-name,Values=running,pending" \
-      --query 'Reservations[].Instances[0].PrivateIpAddress' --output text 2>/dev/null | head -1)
-  if [[ -n "$existing" && "$existing" != "None" ]]; then
-    CAPTURE_HOST_IP="$existing"; ok "Reusing capture host at ${CAPTURE_HOST_IP}"; return 0
+                ${STACK_VPC_ID:+"Name=vpc-id,Values=${STACK_VPC_ID}"} \
+      --query 'Reservations[].Instances[0].InstanceId' --output text 2>/dev/null | head -1)
+  if [[ -n "$existing_id" && "$existing_id" != "None" ]]; then
+    CAPTURE_HOST_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$existing_id" \
+        --query 'Reservations[].Instances[].PrivateIpAddress' --output text 2>/dev/null)
+    CAPTURE_HOST_PUBLIC_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$existing_id" \
+        --query 'Reservations[].Instances[].PublicIpAddress' --output text 2>/dev/null)
+    ok "Reusing capture host ${existing_id} at ${CAPTURE_HOST_IP} (public ${CAPTURE_HOST_PUBLIC_IP:-none})"; return 0
   fi
   local egress_subnet="${EGRESS_SUBNET_ID:-}"
   [[ -z "$egress_subnet" || "$egress_subnet" == "None" ]] && { warn "No egress subnet id known; cannot place a capture host."; return 1; }
@@ -3400,7 +3412,9 @@ UD
       --region "$REGION" --network-interface-id "$eni" --no-source-dest-check >/dev/null 2>&1
   CAPTURE_HOST_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
       --query 'Reservations[].Instances[].PrivateIpAddress' --output text 2>/dev/null)
-  ok "Capture host ${iid} at ${CAPTURE_HOST_IP} (tcpdump on boot, pcaps in /var/log/cloudlens-tool)"
+  CAPTURE_HOST_PUBLIC_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+      --query 'Reservations[].Instances[].PublicIpAddress' --output text 2>/dev/null)
+  ok "Capture host ${iid} at ${CAPTURE_HOST_IP} (public ${CAPTURE_HOST_PUBLIC_IP:-none}, tcpdump on boot, pcaps in /var/log/cloudlens-tool)"
   return 0
 }
 
@@ -4356,9 +4370,10 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --ingress-ip "$VPB_INGRESS_IP" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
       if [[ -n "$CAPTURE_HOST_IP" ]]; then
-        ok "Capture host wired to the vPB egress: ${CAPTURE_HOST_IP}"
-        note "Watch live tapped traffic (decapsulated) on the capture host:"
-        note "  ssh ${KEY_NAME:+-i ~/.ssh/${KEY_NAME}.pem }ubuntu@${CAPTURE_HOST_IP}"
+        ok "Capture host (tool VM) wired to the vPB egress: ${CAPTURE_HOST_IP} (private)"
+        note "SSH to it from your laptop or CloudShell (public address, key-pair login):"
+        note "  ssh ${KEY_NAME:+-i ~/.ssh/${KEY_NAME}.pem }ubuntu@${CAPTURE_HOST_PUBLIC_IP:-$CAPTURE_HOST_IP}"
+        note "Then watch the live tapped traffic, decapsulated:"
         note "  sudo tcpdump -i any -nn 'proto 47' -v"
         note "  # or read the rolling pcaps in /var/log/cloudlens-tool/"
       fi
