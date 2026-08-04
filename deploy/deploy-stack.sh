@@ -4271,26 +4271,34 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
            --filters "Name=tag:os,Values=windows" "Name=instance-state-name,Values=running" \
            --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null | grep -q '^i-'; then
         ensure_ssm_bucket_now || true
-        # ensure_ssm_bucket_now only sets the shell var. The Windows play asserts
-        # on aws.ssm_bucket_name in the YAML, and the copy above was made BEFORE
-        # the bucket was resolved, so write the name into BOTH the working file
-        # and the QS_DIR copy now. Without this the bucket exists but the YAML
-        # the playbook reads is empty and Windows fails before it connects.
-        if [[ -n "${SSM_BUCKET_NAME:-}" ]] && command -v python3 >/dev/null 2>&1; then
+        # The Windows sensor also needs an installer URL. Auto-discover it from
+        # the CLMS if it was not already set.
+        discover_windows_installer_url || true
+        # Both ensure_ssm_bucket_now and discover_windows_installer_url only set
+        # SHELL VARS. The Windows play asserts on aws.ssm_bucket_name AND
+        # windows.installer_url in the YAML, and the copy above was made BEFORE
+        # either was resolved (and a resume merges the file without them). So
+        # write both into the working file and the QS_DIR copy now, or Windows
+        # fails its asserts even though the bucket exists and the URL is known.
+        if command -v python3 >/dev/null 2>&1; then
           for _cf in customer_input.yaml "$QS_DIR/customer_input.yaml"; do
             [[ -f "$_cf" ]] || continue
-            SSM_BKT="$SSM_BUCKET_NAME" python3 - "$_cf" <<'PY' 2>/dev/null || true
+            SSM_BKT="${SSM_BUCKET_NAME:-}" WIN_URL="${WINDOWS_INSTALLER_URL:-}" \
+            python3 - "$_cf" <<'PY' 2>/dev/null || true
 import os, sys, yaml
 f = sys.argv[1]
 try: d = yaml.safe_load(open(f)) or {}
 except Exception: sys.exit(0)
-d.setdefault("aws", {})
-d["aws"]["ssm_bucket_name"] = os.environ["SSM_BKT"]
+if os.environ.get("SSM_BKT"):
+    d.setdefault("aws", {})["ssm_bucket_name"] = os.environ["SSM_BKT"]
+if os.environ.get("WIN_URL"):
+    d.setdefault("windows", {})["installer_url"] = os.environ["WIN_URL"]
 yaml.safe_dump(d, open(f, "w"), default_flow_style=False, sort_keys=False)
 PY
             chmod 600 "$_cf" 2>/dev/null || true
           done
-          ok "Wrote ssm_bucket_name=${SSM_BUCKET_NAME} into customer_input.yaml"
+          [[ -n "${SSM_BUCKET_NAME:-}" ]] && ok "Wrote ssm_bucket_name into customer_input.yaml"
+          [[ -n "${WINDOWS_INSTALLER_URL:-}" ]] && ok "Wrote windows.installer_url into customer_input.yaml"
         fi
       fi
       ok "Launching quickstart.sh from $QS_DIR"
