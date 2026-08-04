@@ -307,6 +307,34 @@ def exists_named(base, token, collection, name, verify):
     d = gql(base, token, "{ %s { name } }" % collection, None, verify)
     return any(x.get("name") == name for x in (d.get("data", {}).get(collection) or []))
 
+def teardown_fabric(base, token, name, verify, include_presence=True):
+    """Delete the whole mirror fabric, in dependency order (policy -> tool ->
+    collection -> config -> presence).
+
+    The PRESENCE is included on purpose. Hard-won lesson: KVO launches the
+    collector as a side effect of the AwsPresence being (re)created WITH its AWS
+    key. Reusing an existing presence never re-fires that reconcile, so a fabric
+    rebuilt with the old presence sits forever with a complete config and NO
+    collector ASG (and no alert). Deleting the presence too forces the recreate
+    to make a fresh presence with the key, which is what actually relaunches the
+    collector. Only skip the presence when the caller has no keys to recreate it.
+    """
+    steps = [("deleteMonitoringPolicyByName", f"{name}-policy"),
+             ("deleteToolByName", f"{name}-tool"),
+             ("deleteCloudCollectionByName", f"{name}-collect"),
+             ("deleteCloudConfigByName", name)]
+    if include_presence:
+        steps.append(("deleteAwsPresenceByName", name))
+    for mut, nm in steps:
+        cr = open_cr(base, token, "teardown-fabric", verify)
+        if not cr:
+            continue
+        gql(base, token,
+            "mutation($n:String!,$c:String!){ %s(name:$n, changeID:$c){ uid } }" % mut,
+            {"n": nm, "c": cr}, verify)
+        commit_cr(base, token, cr, verify)
+    log(f"mirror fabric '{name}' torn down (presence {'included' if include_presence else 'kept'})")
+
 def main():
     ap = argparse.ArgumentParser(description="Automate KVO AWS Zone Tapping (VPC Traffic Mirroring).")
     ap.add_argument("--kvo", required=True, help="KVO IP or host")
@@ -356,6 +384,15 @@ def main():
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--accept-eula", action="store_true", help="accept KVO EULA if pending (legal acceptance)")
     ap.add_argument("--insecure", action="store_true", help="disable TLS verification")
+    # Recreating the whole fabric (presence INCLUDED) is the only reliable way to
+    # re-trigger a collector launch: reusing an existing AwsPresence does NOT make
+    # KVO relaunch the collector. --force-rebuild tears everything down first.
+    ap.add_argument("--force-rebuild", action="store_true",
+                    help="tear down the whole mirror fabric (presence, config, collection, "
+                         "tool, policy) before recreating. Needs --aws-access-key/--aws-secret-key.")
+    ap.add_argument("--verify-timeout", type=int, default=300,
+                    help="seconds to wait, after configuring, for KVO to create the collector "
+                         "ASG. If it never appears the run FAILS loudly instead of looking OK.")
     args = ap.parse_args()
     verify = not args.insecure
     if args.insecure:
@@ -385,6 +422,31 @@ def main():
     if not (args.aws_access_key and args.aws_secret_key):
         log("no AWS keys supplied; relying on KVO's instance-role credentials "
             "(EnableZoneTapping / kvo_enable_zonetap_iam.sh)")
+
+    have_keys = bool(args.aws_access_key and args.aws_secret_key)
+
+    # 0. Stuck-fabric guard. A fabric can exist (presence + config + ...) yet KVO
+    # never launched the collector: no ASG, and no alert. The ONLY reliable fix is
+    # to recreate the presence WITH the key - reusing the presence does not re-fire
+    # the collector launch. So if the fabric exists but its collector ASG does not,
+    # tear the WHOLE thing down (presence included) and rebuild from scratch.
+    fab = {n["name"] for n in (gql(kvo, tok, "{ cloudPresences { name } }", None, verify)
+                               .get("data", {}).get("cloudPresences") or [])}
+    fab |= {n["name"] for n in (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify)
+                                .get("data", {}).get("cloudConfigs") or [])}
+    fabric_exists = args.name in fab
+    stuck = fabric_exists and not collector_asg_exists(args.region, args.vpc_id)
+    if args.force_rebuild or stuck:
+        why = "forced" if args.force_rebuild else "exists but its collector ASG does not (KVO never launched it)"
+        if have_keys:
+            log(f"fabric '{args.name}' {why}: tearing the whole fabric down (presence "
+                "included) and rebuilding. Reusing the presence would NOT relaunch the collector.")
+            teardown_fabric(kvo, tok, args.name, verify, include_presence=True)
+        else:
+            log(f"WARNING: fabric '{args.name}' {why}, but no AWS keys were supplied. "
+                "The presence must be RE-CREATED with the key to relaunch the collector; "
+                "reusing it will not. Re-run with --aws-access-key/--aws-secret-key (and "
+                "--force-rebuild). Continuing, but the collector will likely NOT launch.")
 
     # 1. AWS presence (idempotent on name)
     existing = gql(kvo, tok, "{ cloudPresences { name } }", None, verify)
@@ -450,24 +512,10 @@ def main():
     aws_cfg["tags"] = []  # required list of {key,value}; empty = no extra tags
     have_cfg = any(c.get("name") == args.name for c in
                    (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify).get("data", {}).get("cloudConfigs") or []))
-    # Never reuse an INCOMPLETE config. If the config exists but KVO never
-    # created its collector ASG, it was built before its SGs/zone were ready and
-    # will never cut sessions. Tear the half-built fabric down and rebuild it,
-    # rather than silently reusing a config that produces zero sessions.
-    if have_cfg and not collector_asg_exists(args.region, args.vpc_id):
-        log(f"AWS cloud config '{args.name}' exists but its collector ASG does not: "
-            "it is incomplete. Deleting the half-built mirror fabric and rebuilding.")
-        for mut, nm in [("deleteMonitoringPolicyByName", f"{args.name}-policy"),
-                        ("deleteToolByName", f"{args.name}-tool"),
-                        ("deleteCloudCollectionByName", f"{args.name}-collect"),
-                        ("deleteCloudConfigByName", args.name)]:
-            cr = open_cr(kvo, tok, "rebuild-incomplete", verify)
-            if cr:
-                gql(kvo, tok,
-                    "mutation($n:String!,$c:String!){ %s(name:$n, changeID:$c){ uid } }" % mut,
-                    {"n": nm, "c": cr}, verify)
-                commit_cr(kvo, tok, cr, verify)
-        have_cfg = False
+    # The stuck-fabric guard (step 0) already tore everything down and rebuilds
+    # the presence WITH the key when the collector ASG was missing - which is the
+    # only thing that relaunches the collector. So if a config still exists here,
+    # its collector ASG is present (not stuck) and reusing it is safe.
     if have_cfg:
         log(f"AWS cloud config '{args.name}' already exists; reusing")
     else:
@@ -549,6 +597,31 @@ def main():
         log(f"capture receiver wired: {coll_name} -> {args.tool_receiver_ip} ({args.tool_encap})")
         log(f"   verify on the receiver with:  sudo tcpdump -i any -nn "
             f"'proto 47 or udp port 4789 or udp portrange 10800-10801'")
+
+    # 7. VERIFY the collector actually launches. Configuring KVO is not the same
+    # as KVO launching the collector: with a reused/stale presence the config is
+    # complete yet no ASG ever appears, no alert fires, and zero sessions are cut.
+    # Poll for the collector ASG so that failure is LOUD and actionable instead of
+    # a green run that silently produced nothing.
+    if args.tool_remote_ip:
+        log("")
+        log(f"verifying KVO launches the collector (waiting up to {args.verify_timeout}s for the ASG)...")
+        deadline = time.time() + args.verify_timeout
+        launched = False
+        while time.time() < deadline:
+            if collector_asg_exists(args.region, args.vpc_id):
+                launched = True
+                break
+            time.sleep(15)
+        if launched:
+            log("OK: collector ASG present - KVO is launching the collector. Sessions are cut "
+                "once it boots (~10-15 min, heavy vpb-svm image) and discovers the tagged ENIs.")
+        else:
+            log("!! FAILED: no collector ASG appeared. KVO has the config but did NOT launch the collector.")
+            log("   Most common cause: the AwsPresence was REUSED instead of recreated with the key.")
+            log("   Fix: re-run with  --force-rebuild --aws-access-key <AK> --aws-secret-key <SK>")
+            log("   (that recreates the presence with the key, which is what relaunches the collector).")
+            return 12
 
     log("")
     log("=====================================================================")

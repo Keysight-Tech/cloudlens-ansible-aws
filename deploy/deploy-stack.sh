@@ -4521,7 +4521,8 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
            --accept-eula --insecure; then
       state_phase mirror done
-      ok "AWS mirror fabric committed in KVO; traffic mirror sessions created."
+      ok "AWS mirror fabric committed and the collector is launching in KVO."
+      note "Sessions are cut after the collector boots (~10-15 min) and discovers the tagged ENIs."
       note "Verify: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
     else
       warn "The AWS mirror step did not complete; the rest of the run continues."
