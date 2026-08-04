@@ -628,6 +628,19 @@ state_phase() {
   state_set "PHASE_$(upper "$1")" "${outcome} at $(date -u +%FT%TZ)${3:+ (${3})}"
 }
 
+# Printed whenever an SSH step cannot find its private key. Every SSH-based
+# phase (vPB bootstrap, sensor install, vPB adoption) needs the .pem ON THIS
+# machine; AWS never returns it. Give the exact fix and remind them re-running
+# resumes and retries the step, so a missing key is recoverable, not fatal.
+pem_help() {
+  note "SSH steps need ${KEY_NAME}.pem on THIS machine (AWS never returns a private key)."
+  note "Fix it, then re-run this script from here: it resumes and retries this step."
+  note "  1) put the file here  (CloudShell: Actions > Upload file drops it in ~/)"
+  note "  2) mkdir -p ~/.ssh && mv ~/${KEY_NAME}.pem ~/.ssh/ && chmod 400 ~/.ssh/${KEY_NAME}.pem"
+  note "  3) re-run:  bash <(curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh)"
+  note "Or start a fresh run and pick a NEW key pair, so the .pem is written locally."
+}
+
 # ---------------------------------------------------------------------
 # Detection: read-only, side-effect free, and it runs even under --dry-run.
 #
@@ -3044,7 +3057,8 @@ if [[ "$DEPLOY_VPB" == "true" ]]; then
   elif [[ "$DRY_RUN" == "true" ]]; then
     dryrun_say "ssh -i ${KEY_PEM} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP} 'curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash'"
   elif [[ ! -f "$KEY_PEM" ]]; then
-    warn "Private key ${KEY_PEM} not found, so the bootstrap cannot run from here."
+    warn "Private key ${KEY_PEM} not found, so the vPB bootstrap cannot run from here."
+    pem_help
     vpb_bootstrap_manual_note
     BOOTSTRAP_VPB=false
   elif [[ -z "$VPB_PUBLIC_IP" || "$VPB_PUBLIC_IP" == "None" ]]; then
@@ -4237,8 +4251,14 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
         ensure_ssm_bucket_now || true
       fi
       ok "Launching quickstart.sh from $QS_DIR"
-      ( cd "$QS_DIR" && bash quickstart.sh ) \
-        || warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
+      if ( cd "$QS_DIR" && bash quickstart.sh ); then
+        state_phase sensors done
+      else
+        warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
+        # By far the most common cause is the SSH private key not being here:
+        # the sensor install connects to each workload over SSH.
+        [[ ! -f "$KEY_PEM" ]] && { warn "The likely cause: the SSH key is not on this machine."; pem_help; }
+      fi
     fi
   fi
   state_phase sensors done
@@ -4289,6 +4309,7 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
     ADOPT_VPB=false
   elif [[ ! -f "$KEY_PEM" ]]; then
     warn "Private key ${KEY_PEM} not found; the vPB adoption needs it for SSH. Skipping."
+    pem_help
     ADOPT_VPB=false
   elif [[ -z "$KVO_PRIVATE_IP" ]]; then
     warn "Could not resolve the KVO private IP, which the vPB needs for licensing. Skipping."
@@ -4590,12 +4611,40 @@ secure_run_file "$SUMMARY_FILE"
 write_summary | tee "$SUMMARY_FILE" >/dev/null
 secure_run_file "$SUMMARY_FILE"
 
+# Honest completion: "Done" must not imply every phase succeeded. Read the phase
+# states and, if any post-stack phase is not 'done', list what is outstanding and
+# the one command that finishes it. A run where SSH steps were skipped for a
+# missing .pem used to end with a cheerful "Done" and no hint it was incomplete.
+completion_report() {
+  local labels="sensors:Linux/Windows sensors vpb:vPB adopted mirror:AWS mirror sessions path:vPB traffic path"
+  local pending=() p name val
+  for p in sensors vpb mirror path; do
+    val="$(state_get "PHASE_$(upper "$p")" 2>/dev/null || echo '')"
+    case "$val" in
+      done*|"dry-run"*) : ;;                       # done (or dry-run) counts as covered
+      *) name="$(printf '%s' "$labels" | tr ' ' '\n' | grep "^${p}:" | cut -d: -f2-)"
+         pending+=("${name:-$p}") ;;
+    esac
+  done
+  (( ${#pending[@]} == 0 )) && return 0
+  echo
+  warn "Not every phase finished. Outstanding: ${pending[*]}"
+  if [[ ! -f "$KEY_PEM" ]]; then
+    note "The usual cause is the SSH key not being on this machine:"
+    pem_help
+  else
+    note "Re-run to retry the outstanding phases (it resumes and skips finished work):"
+    note "  bash <(curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh)"
+  fi
+}
+
 banner "Stack deployment complete"
 echo
 echo "Summary saved to:    ${SUMMARY_FILE}   (mode 600, contains credentials)"
 echo "Log saved to:        ${LOG_FILE}   (mode 600, contains credentials)"
 echo
 login_block
+completion_report
 echo
 ok "Done."
 SCRIPT_DONE=true
