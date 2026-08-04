@@ -1843,11 +1843,22 @@ on_exit() {
   (( code == 0 )) && return 0
   echo
   echo -e "${C_RED}[x] Stopped in phase: ${PHASE_NAME} (exit ${code})${C_RESET}" >&2
-  echo "    Nothing above explained this, which means a command failed inside a" >&2
-  echo "    function under 'set -e'. The usual cause is an AWS call: expired or" >&2
-  echo "    invalid credentials, no network, or a missing permission." >&2
-  echo "    Check with: aws sts get-caller-identity" >&2
+  if (( code == 130 )); then
+    echo "    Interrupted (Ctrl-C). Nothing is lost: finished phases are recorded." >&2
+  else
+    echo "    Nothing above explained this, which means a command failed inside a" >&2
+    echo "    function under 'set -e'. The usual cause is an AWS call: expired or" >&2
+    echo "    invalid credentials, no network, or a missing permission." >&2
+    echo "    Check with: aws sts get-caller-identity" >&2
+  fi
   echo "    Full log:   ${LOG_FILE}" >&2
+  echo >&2
+  echo "    TO RESUME: re-run the same command from THIS directory. It reads the" >&2
+  echo "    state file and skips every phase already done, continuing from here:" >&2
+  echo "      bash <(curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh)" >&2
+  if [[ -n "${STATE_FILE:-}" ]]; then
+    echo "    (progress is in ${STATE_FILE}; run from the directory that holds it)" >&2
+  fi
   state_set LAST_FAILURE "${PHASE_NAME} (exit ${code}, unexplained) at $(date -u +%FT%TZ)" 2>/dev/null || true
 }
 trap on_exit EXIT
