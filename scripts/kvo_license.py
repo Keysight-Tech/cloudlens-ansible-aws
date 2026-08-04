@@ -184,6 +184,24 @@ def ask_quantity(product, avail):
         return q
 
 
+# The three entitlements a full deployment draws on. KVO is the licence
+# authority: the vPB and the sensors pull from its pool, so all three arrive as
+# separate activation codes but land in one place. Keywords match the product
+# names the KSM backend returns. Used both live (to tell the operator what is
+# still missing while they still have codes to hand) and in the final summary.
+COVERAGE_CHECKS = [
+    ("KVO device licence", ("kvo-device", "visionorchestrator", "kvo device")),
+    ("vPB feature licence", ("vpb", "advperm")),
+    ("CloudLens sensor credits", ("cloudlens", "credit", "cl-credit")),
+]
+
+
+def coverage_missing(products_text):
+    """Return the list of entitlement names not present in products_text (lowercased)."""
+    p = (products_text or "").lower()
+    return [name for name, keys in COVERAGE_CHECKS if not any(k in p for k in keys)]
+
+
 def prompt_plan(kvo, base, tok, verify):
     """Interactive prompt: codes, then a quantity per entitlement the code unlocks.
 
@@ -208,6 +226,16 @@ def prompt_plan(kvo, base, tok, verify):
             # summary that said "nothing yet" right after a successful activation.
             have = ", ".join(sorted({prod for e in plan for prod, _q in e.get("picks", [])}))
             print(f"  Licensed so far: {have or 'nothing yet'}")
+            # Guide, do not label the prompt: a code only reveals its entitlement
+            # after the KSM lookup, so we cannot ask for "the CloudLens code"
+            # specifically. Instead, say which of the three a full deployment
+            # still needs, so the operator enters those before finishing.
+            still = coverage_missing(have)
+            if still:
+                print(f"  Still needed for a full deployment: {', '.join(still)}")
+                print("  Enter the activation code for one of those next.")
+            else:
+                print("  All three entitlements are covered. You can finish here.")
             more = input("  Add another activation code? [y/N]: ").strip().lower()
             if more not in ("y", "yes"):
                 return plan
