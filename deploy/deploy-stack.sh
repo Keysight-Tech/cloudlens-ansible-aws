@@ -1615,6 +1615,7 @@ while [[ $# -gt 0 ]]; do
     --no-bootstrap-vpb) BOOTSTRAP_VPB=false; shift ;;
     --adopt-vpb) ADOPT_VPB=true; shift ;;
     --no-adopt-vpb) ADOPT_VPB=false; shift ;;
+    --no-adopt-vpb) ADOPT_VPB=false; shift ;;
     --wire-vpb-path) WIRE_VPB_PATH=true; shift ;;
     --no-wire-vpb-path) WIRE_VPB_PATH=false; shift ;;
     --with-mirror) WITH_MIRROR=true; shift ;;
@@ -4330,10 +4331,19 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
   fi
 
   if [[ -z "$ADOPT_VPB" ]]; then
-    if ask_yn "Adopt the vPB into KVO now (accepts the vPB EULA)? [Y/n]: " y; then
-      ADOPT_VPB=true
-    else
+    # Match the KVO EULA flow above: accept on the operator's behalf with a
+    # note, not a separate y/n. The vPB CLI, like a fresh KVO, is unusable until
+    # its EULA is signed, and running this deploy is the opt-in. This keeps the
+    # two EULAs consistent (KVO auto-accepts, so the vPB does too). Opt out of
+    # adoption entirely with CLOUDLENS_ADOPT_VPB=no or --no-adopt-vpb.
+    if [[ "${CLOUDLENS_ADOPT_VPB:-yes}" == "no" ]]; then
       ADOPT_VPB=false
+      note "Skipping vPB adoption (CLOUDLENS_ADOPT_VPB=no)."
+    else
+      note "This adopts the vPB into KVO and accepts the vPB EULA on your behalf,"
+      note "the same way the KVO EULA is accepted above. The vPB CLI stays locked"
+      note "until signed. Skip with CLOUDLENS_ADOPT_VPB=no."
+      ADOPT_VPB=true
     fi
   fi
   ok "Adopt vPB: ${ADOPT_VPB}"
