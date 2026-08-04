@@ -198,8 +198,15 @@ def create_aws_presence(base, token, cr, name, clm_uid, region, vpc_id, ak, sk, 
     rows = d.get("data", {}).get("createAwsPresence") or []
     return rows[0] if rows else None
 
-def create_aws_cloud_config(base, token, cr, name, cluster, aws_cfg, verify):
+def create_aws_cloud_config(base, token, cr, name, cluster, aws_cfg, verify, device_links=None):
+    # deviceLinks attach the Cloud-to-Device Link (C2DL) to the config's "Connect
+    # To Device" - the collector -> vPB path. It is REQUIRED: without it the
+    # monitoring-policy commit fails and NO mirror sessions are cut. The C2DL
+    # itself is created + port-bound by vpb_wire_path.py; here we only re-attach
+    # it so a config rebuild never drops the link (which silently breaks the path).
     settings = {"cloudConfigType": "Aws", "cloudPresence": {"name": name}, "awsConfiguration": aws_cfg}
+    if device_links:
+        settings["deviceLinks"] = [{"name": d} for d in device_links]
     q = ("mutation($n:String!,$c:String!,$cl:String!,$s:_CloudConfigInput!){ "
          "createCloudConfig(name:$n, changeID:$c, clusterID:$cl, settings:$s){ uid name cloudConfigType } }")
     d = gql(base, token, q, {"n": name, "c": cr, "cl": cluster, "s": settings}, verify)
@@ -378,6 +385,13 @@ def main():
                     help="encapsulation from collector to the tool (L2GRE or VXLAN)")
     ap.add_argument("--gre-key", type=int, default=64, help="L2GRE key (when --tool-encap L2GRE)")
     ap.add_argument("--vni", type=int, default=4096, help="VXLAN VNI (when --tool-encap VXLAN)")
+    ap.add_argument("--device-link", default="",
+                    help="comma-separated Cloud-to-Device Link (C2DL) name(s) to attach to the "
+                         "config's deviceLinks (the collector->vPB 'Connect To Device' path). "
+                         "The C2DL is created+port-bound by vpb_wire_path.py; naming it here "
+                         "re-attaches it whenever the config is rebuilt so the link is never "
+                         "dropped (a dropped link fails the policy commit -> zero sessions). "
+                         "Only names that already exist in KVO are attached.")
     ap.add_argument("--aws-access-key", help="AWS access key for KVO (omit to use KVO's instance role)")
     ap.add_argument("--aws-secret-key", help="AWS secret key for KVO (omit to use KVO's instance role)")
     ap.add_argument("--kvo-admin-user", default="admin")
@@ -512,20 +526,58 @@ def main():
     aws_cfg["tags"] = []  # required list of {key,value}; empty = no extra tags
     have_cfg = any(c.get("name") == args.name for c in
                    (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify).get("data", {}).get("cloudConfigs") or []))
+    # Resolve device links (C2DLs) to attach to the config's "Connect To Device".
+    # Only attach names that ALREADY exist in KVO: on a first deploy the vPB C2DL
+    # is created later by vpb_wire_path.py, so there is nothing to attach yet; on a
+    # rebuild it exists, and attaching it here keeps the collector->vPB path wired.
+    want_links = [d.strip() for d in (args.device_link or "").split(",") if d.strip()]
+    if want_links:
+        have_c2dl = {c["name"] for c in (gql(kvo, tok, "{ c2DLinks { name } }", None, verify)
+                                         .get("data", {}).get("c2DLinks") or [])}
+        missing = [d for d in want_links if d not in have_c2dl]
+        want_links = [d for d in want_links if d in have_c2dl]
+        if missing:
+            log(f"device link(s) {missing} not in KVO yet (vpb_wire_path.py attaches them "
+                "in its own phase); not attaching here.")
+
     # The stuck-fabric guard (step 0) already tore everything down and rebuilds
     # the presence WITH the key when the collector ASG was missing - which is the
     # only thing that relaunches the collector. So if a config still exists here,
     # its collector ASG is present (not stuck) and reusing it is safe.
     if have_cfg:
         log(f"AWS cloud config '{args.name}' already exists; reusing")
+        # A reused config can be MISSING its deviceLinks (e.g. after a rebuild that
+        # dropped them). Re-attach any requested links it lacks, or the monitoring
+        # policy commit fails and no sessions are cut. updateCloudConfig reads the
+        # awsConfiguration (it references sshKeyPair), so round-trip the full one.
+        if want_links:
+            cfgs = gql(kvo, tok, "{ cloudConfigs { name settingsFromChange { deviceLinks { name } } } }",
+                       None, verify).get("data", {}).get("cloudConfigs") or []
+            cur = next(({l["name"] for l in (c["settingsFromChange"]["deviceLinks"] or [])}
+                        for c in cfgs if c["name"] == args.name), set())
+            if not set(want_links) <= cur:
+                cr = open_cr(kvo, tok, "attach-c2dl", verify)
+                if cr:
+                    upd = {"cloudPresence": {"name": args.name}, "awsConfiguration": aws_cfg,
+                           "deviceLinks": [{"name": d} for d in sorted(cur | set(want_links))]}
+                    r = gql(kvo, tok,
+                            "mutation($n:String!,$c:String!,$s:_CloudConfigUpdateInput!){ "
+                            "updateCloudConfig(name:$n, changeID:$c, settings:$s){ uid } }",
+                            {"n": args.name, "c": cr, "s": upd}, verify)
+                    if "errors" in r:
+                        log(f"attach device link failed: {r['errors'][0]['message'][:180]}")
+                    elif commit_cr(kvo, tok, cr, verify):
+                        log(f"attached device link(s) {sorted(set(want_links) - cur)} to reused config")
     else:
         cr = open_cr(kvo, tok, "aws-cloud-config", verify)
         if not cr: return 6
-        cfg = create_aws_cloud_config(kvo, tok, cr, args.name, cluster, aws_cfg, verify)
+        cfg = create_aws_cloud_config(kvo, tok, cr, args.name, cluster, aws_cfg, verify,
+                                      device_links=want_links)
         if not cfg:
             return 6
         if not commit_cr(kvo, tok, cr, verify): return 6
-        log(f"AWS cloud config '{args.name}' live")
+        log(f"AWS cloud config '{args.name}' live" +
+            (f" (device link(s): {', '.join(want_links)})" if want_links else ""))
 
     # 3. Cloud collection (tag selector) -> KVO creates AWS mirror sessions
     if "=" in args.source_tag:

@@ -4518,6 +4518,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            ${EGRESS_SG_ID:+--egress-sg "$EGRESS_SG_ID"} \
            ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
            --tool-encap L2GRE \
+           --device-link vpb-c2dl \
            --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
            --accept-eula --insecure; then
       state_phase mirror done
