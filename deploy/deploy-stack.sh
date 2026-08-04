@@ -3564,7 +3564,17 @@ try: d=yaml.safe_load(open("customer_input.yaml")) or {}
 except Exception: sys.exit(0)
 print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)"
   fi
-  [[ -n "$have" ]] && { SSM_BUCKET_NAME="$have"; return 0; }
+  # Trust the name in customer_input.yaml ONLY if the bucket really exists in
+  # AWS. A resume carries the name forward, but the bucket may have been deleted
+  # since (teardown, another account, a stale file). If we trust a dead name the
+  # Windows SSM plugin fails later with 'HeadBucket 404 Not Found'. Verify, and
+  # fall through to (re)create when it is gone.
+  if [[ -n "$have" ]]; then
+    if [[ "$DRY_RUN" == "true" ]] || probe aws s3api head-bucket --bucket "$have" --region "$REGION" >/dev/null 2>&1; then
+      SSM_BUCKET_NAME="$have"; return 0
+    fi
+    note "customer_input.yaml names SSM bucket '${have}', but it does not exist in ${REGION}; recreating."
+  fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
     dryrun_say "would create a private S3 bucket for Windows SSM file transfer and grant the Windows instance role access"
