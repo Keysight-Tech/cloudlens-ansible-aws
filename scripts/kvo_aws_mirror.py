@@ -316,6 +316,9 @@ def main():
     # Required to actually create mirror sessions (KVO needs a complete path).
     ap.add_argument("--tool-remote-ip", help="IP of the destination analyzer/vPB that receives "
                     "the tapped traffic (reachable from the collector egress). Required to create sessions.")
+    ap.add_argument("--tool-receiver-ip", default="",
+                    help="optional second REMOTE tool: a capture host that also receives the "
+                         "collection, so tapped traffic is visible to tcpdump. Off by default.")
     ap.add_argument("--tool-encap", default="L2GRE", choices=["L2GRE", "VXLAN"],
                     help="encapsulation from collector to the tool (L2GRE or VXLAN)")
     ap.add_argument("--gre-key", type=int, default=64, help="L2GRE key (when --tool-encap L2GRE)")
