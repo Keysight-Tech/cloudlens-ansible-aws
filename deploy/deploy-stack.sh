@@ -2327,6 +2327,31 @@ select_key_pair() {
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
     KEY_NAME="${existing[$((pick-1))]}"
+    # An existing key pair is only usable from here if its .pem is ALSO on this
+    # machine: AWS never returns a private key, and every SSH step (the vPB
+    # bootstrap and the Linux sensor install) needs it. Check NOW, before the
+    # stack is built, instead of discovering it at phase 8 with the stack already
+    # tied to a key whose .pem lives on a different machine (a common CloudShell
+    # trap: you pick a key from a past session whose .pem is on your laptop).
+    local found=""
+    for cand in "$HOME/.ssh/${KEY_NAME}.pem" "$HOME/Downloads/${KEY_NAME}.pem" \
+                "$PWD/${KEY_NAME}.pem" "$HOME/${KEY_NAME}.pem"; do
+      [[ -f "$cand" ]] && { found="$cand"; break; }
+    done
+    if [[ -n "$found" ]]; then
+      ok "Using existing key pair '${KEY_NAME}' (private key found: ${found})"
+      return 0
+    fi
+    warn "Key pair '${KEY_NAME}' exists in AWS, but its .pem is NOT on this machine."
+    note "AWS cannot hand back a private key, and the vPB bootstrap and Linux"
+    note "sensor install both need it. If you continue, those SSH steps fail here"
+    note "until you upload ${KEY_NAME}.pem to ~/.ssh/ yourself."
+    if ask_yn "  Create a NEW key pair instead, so the .pem is written here? [Y/n]: " "y"; then
+      read -rp "Name for the new key pair [${default_new}]: " pick || true
+      pick="${pick:-$default_new}"
+      KEY_NAME="$pick"; ensure_key_pair "$KEY_NAME"; return 0
+    fi
+    warn "Continuing with '${KEY_NAME}'. Upload its .pem to ~/.ssh/ before the SSH steps."
     ok "Using existing key pair '${KEY_NAME}'"
     return 0
   fi
