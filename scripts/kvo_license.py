@@ -214,6 +214,7 @@ def prompt_plan(kvo, base, tok, verify):
             code = input("  Activation code: ").strip()
         if not code:
             return plan
+        print("    checking this code against the KSM licensing backend, one moment...", flush=True)
         ents, info = lookup_code(kvo, base, tok, code, verify)
         if not ents:
             state = info.get("state") if isinstance(info, dict) else info
