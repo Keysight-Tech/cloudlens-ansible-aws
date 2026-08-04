@@ -67,6 +67,24 @@ def resolve_collector_ami(region):
     except Exception as e:
         log(f"collector AMI resolution failed ({e}); pass --image-id explicitly"); return None
 
+def collector_asg_exists(region, vpc_id):
+    """A COMPLETE AWS cloud config makes KVO create a collector ASG named
+    cloudlens.collector.<vpc-id>.<zone>. If the config exists but this ASG does
+    not, the config is incomplete (created in an earlier run before its SGs or
+    zone were set) and must be rebuilt, or the collector never launches and zero
+    sessions are cut. This is the completeness signal for 'is it safe to reuse'."""
+    if not vpc_id:
+        return True  # cannot tell; do not force a rebuild
+    try:
+        out = subprocess.run(
+            ["aws", "autoscaling", "describe-auto-scaling-groups", "--region", region,
+             "--query", f"length(AutoScalingGroups[?contains(AutoScalingGroupName, `{vpc_id}`)])",
+             "--output", "text"],
+            capture_output=True, text=True, timeout=40)
+        return out.returncode == 0 and out.stdout.strip() not in ("", "0", "None")
+    except Exception:
+        return True  # on error, do not destroy a possibly-good config
+
 # ----- KVO auth (Keycloak) ----------------------------------------------
 def kvo_token(base, user, password, verify):
     r = requests.post(f"{base}/auth/realms/keysight/protocol/openid-connect/token",
@@ -432,6 +450,24 @@ def main():
     aws_cfg["tags"] = []  # required list of {key,value}; empty = no extra tags
     have_cfg = any(c.get("name") == args.name for c in
                    (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify).get("data", {}).get("cloudConfigs") or []))
+    # Never reuse an INCOMPLETE config. If the config exists but KVO never
+    # created its collector ASG, it was built before its SGs/zone were ready and
+    # will never cut sessions. Tear the half-built fabric down and rebuild it,
+    # rather than silently reusing a config that produces zero sessions.
+    if have_cfg and not collector_asg_exists(args.region, args.vpc_id):
+        log(f"AWS cloud config '{args.name}' exists but its collector ASG does not: "
+            "it is incomplete. Deleting the half-built mirror fabric and rebuilding.")
+        for mut, nm in [("deleteMonitoringPolicyByName", f"{args.name}-policy"),
+                        ("deleteToolByName", f"{args.name}-tool"),
+                        ("deleteCloudCollectionByName", f"{args.name}-collect"),
+                        ("deleteCloudConfigByName", args.name)]:
+            cr = open_cr(kvo, tok, "rebuild-incomplete", verify)
+            if cr:
+                gql(kvo, tok,
+                    "mutation($n:String!,$c:String!){ %s(name:$n, changeID:$c){ uid } }" % mut,
+                    {"n": nm, "c": cr}, verify)
+                commit_cr(kvo, tok, cr, verify)
+        have_cfg = False
     if have_cfg:
         log(f"AWS cloud config '{args.name}' already exists; reusing")
     else:
