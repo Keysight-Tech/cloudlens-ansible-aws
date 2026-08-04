@@ -62,7 +62,16 @@ def vpb_wait_cli(host, port, user, key, tries=45, delay=20):
     log(f"waiting for the vPB CLI (KCOS first boot can take 10-15 min; up to {total // 60} min here)")
     for i in range(tries):
         ok, out = vpb_cli(host, port, user, key, "show version")
-        if ok and ("version" in out.lower() or "vpb" in out.lower() or "CloudLensVPB" in out):
+        low = out.lower()
+        # The CLI is UP in two cases, and the second one is what a fresh appliance
+        # actually shows: xf-client answers `show version`, OR it blocks on the
+        # EULA gate. That gate ("YOU MUST ACCEPT THE IXIA SOFTWARE EULA") only
+        # appears once xf-client is running and attached, so seeing it means the
+        # CLI is alive and just needs the EULA accepted (which vpb_accept_eula
+        # does next). Treating the EULA prompt as "not up" was the deadlock: the
+        # wait needed the EULA accepted, but the accept ran only after the wait.
+        if (ok and ("version" in low or "vpb" in low or "cloudlensvpb" in out)) \
+           or "accept the ixia software" in low or "end user license" in low or "eula" in low:
             log(f"vPB CLI is up (after ~{i * delay // 60}m{i * delay % 60}s)"); return True
         log(f"  waiting for vPB CLI ({i+1}/{tries})...")
         time.sleep(delay)

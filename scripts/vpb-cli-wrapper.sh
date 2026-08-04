@@ -86,22 +86,26 @@ if [[ "${1:-}" == "-c" ]] && [[ -n "${2:-}" ]]; then
   exit 0
 fi
 
-# Pre-flight: probe the management plane BEFORE dropping into the CLI.
-# On a fresh, not-yet-adopted appliance the mgmt-plane socket does not
-# exist and xf-client retries forever with Python tracebacks. Catch that
-# state here and explain it instead.
-if ! $KUBECTL --kubeconfig="$KCFG" exec -n "$NAMESPACE" "$POD" -c "$CONTAINER" \
-     -- bash -c "mkdir -p /data/xfilter/logs; echo | timeout 10 $CLI" >/dev/null 2>&1; then
-  echo "vpb: the vPB management plane is not up yet, so the CLI cannot attach." >&2
-  echo "" >&2
-  echo "  This is normal for a freshly deployed appliance. The management plane" >&2
-  echo "  starts after the vPB is adopted and configured in KVO:" >&2
-  echo "    1. Open the KVO web UI:  https://<kvo-ip>" >&2
-  echo "    2. Add/adopt this vPB (management IP of this instance)" >&2
-  echo "    3. Re-run: sudo vpb" >&2
-  echo "" >&2
-  echo "  Meanwhile the cluster itself is healthy if pods are Running:" >&2
-  echo "    sudo kubectl get pods -A" >&2
+# Pre-flight: probe the CLI BEFORE dropping into it. The usual reason a fresh
+# appliance's `show version` "fails" is NOT that the management plane is down:
+# it is the one-time EULA gate. xf-client prints "YOU MUST ACCEPT THE IXIA
+# SOFTWARE EULA" and blocks for a y/n, so a plain `echo | xf-client` returns
+# non-zero with the EULA text. Detect that and tell the operator to accept it,
+# rather than sending them to KVO for an adoption that cannot happen until the
+# EULA is accepted anyway.
+_probe="$($KUBECTL --kubeconfig="$KCFG" exec -n "$NAMESPACE" "$POD" -c "$CONTAINER" \
+     -- bash -c "mkdir -p /data/xfilter/logs; echo | timeout 10 $CLI" 2>&1)"
+if [[ $? -ne 0 ]]; then
+  if printf '%s' "$_probe" | grep -qiE "accept the ixia software|end user license|eula"; then
+    echo "vpb: the CLI is up but the one-time EULA has not been accepted yet." >&2
+    echo "     Accept it (this is a legal acceptance), then the CLI is usable:" >&2
+    echo "       sudo vpb -c 'n\\ny\\nshow version'" >&2
+    echo "     After that, 'sudo vpb' works and KVO adoption can proceed." >&2
+  else
+    echo "vpb: the vPB management plane is not answering yet." >&2
+    echo "     Cluster health: sudo kubectl get pods -A   (vpbsystem should be Running)" >&2
+    echo "     If pods are Running, retry in a minute; the app may still be starting." >&2
+  fi
   exit 1
 fi
 exec $KUBECTL --kubeconfig="$KCFG" exec -it -n "$NAMESPACE" "$POD" \
