@@ -4464,6 +4464,12 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     if [[ -z "$MIRROR_ACCESS_KEY" && "$INTERACTIVE" == "true" ]]; then
       echo "  KVO needs an AWS access key of its own for this (an instance role is"
       echo "  not enough: createAwsPresence fails with 'accessKeyId cannot be empty')."
+      echo "  IMPORTANT: the key must have the CloudLens Zone Tapping permissions"
+      echo "  (EC2 traffic mirroring + RunInstances, autoscaling, iam:PassRole). A"
+      echo "  key with NO policy still creates the presence, but then KVO cannot"
+      echo "  launch the collector and ZERO sessions appear, with only a KVO alert"
+      echo "  'Error getting information from AWS ... check credentials'. Use a key"
+      echo "  from an IAM user carrying the CloudLensZoneTap policy."
       MIRROR_ACCESS_KEY="$(ask "  AWS access key id: " "")"
     fi
     if [[ -z "$MIRROR_SECRET_KEY" && "$INTERACTIVE" == "true" && -n "$MIRROR_ACCESS_KEY" ]]; then
