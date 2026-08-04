@@ -51,6 +51,7 @@
   <div class="brand">CLOUDLENS  ·  NETWORK VISIBILITY</div>
   <h1>CloudLens on AWS<br>Full-Stack Visibility, End to End</h1>
   <div class="sub">From CloudFormation stack creation to a proven,<br>packet-verified VPC Traffic Mirroring pipeline</div>
+  <div style="margin-top:8mm;font-size:12pt;color:#0b63ce;font-weight:600;">One command. A few basic prompts.<br>Everything else automated, start to finish.</div>
   <div class="meta">
     A complete, explainable runbook of everything built and verified<br>
     on AWS account 466778915280, region us-east-1.<br><br>
@@ -78,10 +79,26 @@
 </ol>
 
 <h2 id="s1">1. Executive summary</h2>
-<p class="lead">This document records the complete build of a Keysight CloudLens network-visibility
-pipeline on AWS, from an empty account to a running system where production workload
-traffic is copied, brokered, and delivered to tools without any agent in the data path,
-and where every hop is verified with real packets rather than configuration alone.</p>
+<p class="lead">The headline is the automation. A complete Keysight CloudLens network-visibility
+pipeline stands itself up on AWS from a single command, asking only a few basic prompts along
+the way. From an empty account to production workload traffic copied, brokered, and delivered to
+tools with no agent in the data path, every hop verified with real packets, the operator types one
+line and answers a handful of questions. Nothing is clicked by hand in the AWS console, and nothing
+is wired by hand in the CloudLens APIs.</p>
+
+<div class="box info"><b class="h" style="color:#0b63ce">One command. Basic prompts. Everything else automated.</b>
+<pre style="margin:2mm 0 3mm;background:#0b1f3a;">curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash</pre>
+That one line runs all seventeen phases below. The only things it asks a human for are the activation
+codes at licensing and a few yes/no choices (deploy KVO or not, create test workloads or bring your own,
+add the mirror session). It creates the stack, waits for the appliances to initialise, licenses and adopts
+them, installs the Linux and Windows sensors, builds the agentless AWS mirror fabric, wires the vPB traffic
+path, and stands up a capture host, then hands back the logins so the operator can watch. It is resumable:
+stop it anywhere and re-run, and it continues from where it left off. It runs the same in a laptop shell or
+in AWS CloudShell, from a clean account or a partial one.</div>
+
+<p class="lead">Everything after this point is the detail behind that one command: what each phase does,
+what objects it builds, the bugs that were found and fixed to make it reliable, and the live evidence
+that the tapped traffic actually arrives.</p>
 
 <div class="box ok"><b class="h">Proven end to end</b>
 Workload traffic is mirrored agentlessly from the source ENIs, aggregated by a CloudLens
@@ -166,9 +183,11 @@ encapsulate copies to the vPB. The vPB is never inline: if it fails, the applica
 </figure>
 
 <h2 id="s3">3. The deployment sequence, phase by phase</h2>
-<p>A single orchestrator, <code>deploy/deploy-stack.sh</code>, runs the whole pipeline. It is resumable:
-each phase detects whether its work already exists and skips it, so a run that stops can be
-re-run and picks up where it left off. The phases, in order:</p>
+<p>This is what the one command does for the operator, unattended, in order. A single orchestrator,
+<code>deploy/deploy-stack.sh</code>, runs all seventeen phases. It is resumable: each phase detects whether
+its work already exists and skips it, so a run that stops can be re-run and picks up where it left off.
+Only the phases marked <span class="pill">prompt</span> ever stop for input, and even those accept
+defaults or command-line flags for a fully unattended run.</p>
 
 <table>
 <tr><th>#</th><th>Phase</th><th>What it does</th><th>Why it matters</th></tr>
@@ -177,7 +196,7 @@ re-run and picks up where it left off. The phases, in order:</p>
 <tr><td>7</td><td>Wait for vController</td><td>Polls the real login route until the appliance answers</td><td>The appliance needs ~15 min to initialise</td></tr>
 <tr><td>8</td><td>vPB bootstrap</td><td>Waits for KCOS, drives the vPB CLI (EULA, context)</td><td>The vPB must accept its EULA before adoption</td></tr>
 <tr><td>9</td><td>Project key + login</td><td>Rotates the default password, provisions the working UI login</td><td>Returns credentials so the operator can watch</td></tr>
-<tr><td>10-11</td><td>Sensor mode + licensing</td><td>Accepts the KVO EULA, activates licences via REST</td><td>KVO is the licence authority for the whole fabric</td></tr>
+<tr><td>10-11</td><td>Sensor mode + licensing <span class="pill">prompt</span></td><td>Accepts the KVO EULA, activates licences via REST. Asks for the activation codes and how many to apply.</td><td>KVO is the licence authority for the whole fabric</td></tr>
 <tr><td>12</td><td>CLMS adoption + Cloud Config</td><td>Adopts the manager into KVO; the Cloud Config provisions the project and its key</td><td>One manager owns both agent and agentless visibility</td></tr>
 <tr><td>13</td><td>Sensors</td><td>Installs and registers Linux (docker/podman) and Windows sensors</td><td>In-guest, pre-encryption visibility</td></tr>
 <tr><td>14</td><td>Adopt the vPB</td><td>Brings the vPB into KVO as a managed device</td><td>The broker becomes orchestrable</td></tr>
