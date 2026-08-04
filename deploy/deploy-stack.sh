@@ -3314,8 +3314,9 @@ deploy_test_workloads_now() {
   [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would deploy Ubuntu + RHEL test workloads tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"; return 0; }
   echo
   echo "  There is nothing tagged ${DISCOVERY_DESC} to install a sensor on."
-  echo "  Two small throwaway EC2s (Ubuntu + RHEL, t3.small) can be created now,"
-  echo "  tagged so the sensor step finds them. They cost about \$0.04/hour."
+  echo "  Three throwaway EC2s (Ubuntu + RHEL t3.small, Windows t3.medium) can be"
+  echo "  created now, tagged so the sensor and mirror steps find them. They cost"
+  echo "  about \$0.06/hour together and are yours to terminate afterward."
   ask_yn "  Create them? [y/N]: " "n" || return 1
   local wl_subnet="${EXISTING_SUBNET_ID:-}"
   if [[ -z "$wl_subnet" ]]; then
