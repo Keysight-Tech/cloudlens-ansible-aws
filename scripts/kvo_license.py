@@ -103,8 +103,14 @@ def token(kvo, user, pw, verify):
         return json.loads(resp.read().decode())["access_token"]
 
 
-def poll_op(kvo, tok, first, verify, want_result=True, timeout=120):
-    """Drive an async licensing op. `first` is the POST response ({"url": ...})."""
+def poll_op(kvo, tok, first, verify, want_result=True, timeout=120, label=None):
+    """Drive an async licensing op. `first` is the POST response ({"url": ...}).
+
+    `label` prints a live heartbeat while the op runs. These calls go out to the
+    KSM backend and can sit silent for tens of seconds; with no output the
+    operator cannot tell activation from a hang, and reads a working deploy as
+    stuck. Say what is being waited on, and keep ticking.
+    """
     url = first.get("url") if isinstance(first, dict) else None
     if not url:
         return first  # already synchronous
@@ -112,12 +118,22 @@ def poll_op(kvo, tok, first, verify, want_result=True, timeout=120):
         url = f"https://{kvo}{url}"
     deadline = time.time() + timeout
     state = "IN_PROGRESS"
+    if label:
+        print(f"    {label}", end="", flush=True)
+    ticks = 0
     while time.time() < deadline:
         _, body = _req("GET", url, tok, verify=verify)
         state = (body or {}).get("state", "") if isinstance(body, dict) else ""
         if state and state != "IN_PROGRESS":
             break
+        if label:
+            ticks += 1
+            # a dot every 2s, and the elapsed seconds every 10, so a long wait
+            # still visibly advances instead of looking frozen
+            print("." if ticks % 5 else f" {ticks*2}s", end="", flush=True)
         time.sleep(2)
+    if label:
+        print(f" {state or 'timed out'}", flush=True)
     if want_result:
         _, res = _req("GET", url.rstrip("/") + "/result", tok, verify=verify)
         return {"state": state, "result": res}
@@ -326,7 +342,17 @@ def main():
         if not plan:
             print("[license] no activation codes entered; nothing to do", file=sys.stderr)
             return 5
-        print(f"  Activating {len(plan)} code{'' if len(plan) == 1 else 's'}...")
+        # Say what happens next and roughly how long. Answering "n" used to drop
+        # straight into a silent backend round-trip, so a deploy that was working
+        # normally read as hung right at the point the operator stopped typing.
+        n_codes = len(plan)
+        print()
+        print(f"  Done collecting codes. Activating {n_codes} code"
+              f"{'' if n_codes == 1 else 's'} on KVO now.")
+        print("  Each one is sent to the KSM licensing backend and can take up to")
+        print("  a minute. Progress is printed per code; nothing is stuck.")
+        print("  After this the deploy continues to adoption (Phase 12).")
+        print()
 
     activated = 0
     for item in plan:
@@ -357,7 +383,8 @@ def main():
             body = [{"activationCode": code, "product": p, "quantity": q} for p, q in picks]
         st, resp = _req("POST", f"{base}/api/v2/licensing/operations/activate",
                         tok, body, verify)
-        act = poll_op(a.kvo, tok, resp, verify)
+        act = poll_op(a.kvo, tok, resp, verify,
+                      label=f"activating {code[:14]}... against the KSM backend ")
         state = act.get("state") if isinstance(act, dict) else act
         print(f"[license]   activate -> {state}")
         if state and "FAIL" not in str(state).upper() and "ERROR" not in str(state).upper():

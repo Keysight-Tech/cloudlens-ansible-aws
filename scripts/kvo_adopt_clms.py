@@ -79,11 +79,34 @@ def gql(base, token, query, verify):
     except ValueError: body = {"errors": [{"message": r.text[:200]}]}
     return body
 
-def kvo_is_licensed(base, token, verify):
-    d = gql(base, token, "{ availableLicenses { name installed } }", verify)
-    if "errors" in d: return False
-    lic = d.get("data", {}).get("availableLicenses", [])
-    return any((l.get("installed") or 0) > 0 for l in lic)
+def kvo_is_licensed(base, token, verify, wait=180):
+    """True once KVO's own licence view shows an installed entitlement.
+
+    This must POLL, not ask once. The licensing phase activates over REST
+    (/api/v2/licensing/licenses), but this gate reads the GraphQL view
+    (availableLicenses), and KVO populates that view a little AFTER the REST
+    activation returns. Asking once, seconds after licensing "completed",
+    reported "no installed licence" and stopped the adoption on a stack whose
+    licences were in fact fine: REST listed 3, and availableLicenses showed
+    KVO-DEVICE installed=5 barely a moment later. The deploy then fell through
+    to asking the operator to paste a project key that no longer existed.
+    """
+    deadline = time.time() + wait
+    announced = False
+    while True:
+        d = gql(base, token, "{ availableLicenses { name installed } }", verify)
+        lic = d.get("data", {}).get("availableLicenses", []) if "errors" not in d else []
+        if any((l.get("installed") or 0) > 0 for l in lic):
+            if announced:
+                log("licence is now visible to KVO; continuing")
+            return True
+        if time.time() >= deadline:
+            return False
+        if not announced:
+            log(f"licence activated but not yet visible in KVO's licence view; "
+                f"waiting up to {wait}s for it to register...")
+            announced = True
+        time.sleep(5)
 
 def _q(s):  # escape a value for inline GraphQL
     return json.dumps(s)
