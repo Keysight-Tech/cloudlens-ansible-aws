@@ -1074,19 +1074,60 @@ print("YES" if os.environ["DEV"] in names else "NO")' 2>/dev/null)" || found=""
 
 # Phase 16. Plain EC2 reads: targets, filters, sessions. Any answer that is not
 # three plain integers is "unknown", never zero.
+#
+# Scoped to THIS stack's VPC, not the region. Traffic mirror resources are
+# region-wide, so a second stack deployed alongside a first one counted the
+# FIRST stack's fabric, reported "the mirror fabric already exists: 2 target(s),
+# 1 filter(s), 3 session(s)" and skipped Phase 15 entirely, leaving the new
+# stack with no mirror at all. Sessions are the decisive signal, and a session
+# belongs to a stack through its source ENI. STACK_VPC_ID is not populated until
+# well after detection runs, so resolve the VPC by the stack's own name tag.
 detect_mirror() {
   DET_MIRROR="unknown"; DET_MIRROR_OK=false
-  local t f s_
+  local t f s_ vpc enis scope
   if [[ "$AWS_USABLE" != "true" ]]; then
     DET_MIRROR="unknown (could not check: ${AWS_UNUSABLE_WHY:-AWS is not reachable})"
     return 0
   fi
-  t="$(ro_aws ec2 describe-traffic-mirror-targets  --query 'length(TrafficMirrorTargets)'  --output text)"
-  f="$(ro_aws ec2 describe-traffic-mirror-filters  --query 'length(TrafficMirrorFilters)'  --output text)"
-  s_="$(ro_aws ec2 describe-traffic-mirror-sessions --query 'length(TrafficMirrorSessions)' --output text)"
+
+  vpc="${STACK_VPC_ID:-}"
+  if [[ -z "$vpc" && -n "${STACK_NAME:-}" ]]; then
+    vpc="$(ro_aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${STACK_NAME}-vpc" \
+             --query 'Vpcs[0].VpcId' --output text)"
+    [[ "$vpc" == "None" ]] && vpc=""
+  fi
+
+  enis=""
+  if [[ -n "$vpc" ]]; then
+    enis="$(ro_aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=${vpc}" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)"
+  fi
+
+  if [[ -n "$enis" ]]; then
+    scope="this stack"
+    local eni_csv; eni_csv="$(printf '%s' "$enis" | tr '[:space:]' ',' | sed 's/,$//')"
+    t="$(ro_aws ec2 describe-traffic-mirror-targets \
+           --filters "Name=network-interface-id,Values=${eni_csv}" \
+           --query 'length(TrafficMirrorTargets)' --output text)"
+    s_="$(ro_aws ec2 describe-traffic-mirror-sessions \
+           --filters "Name=network-interface-id,Values=${eni_csv}" \
+           --query 'length(TrafficMirrorSessions)' --output text)"
+    # Filters carry no VPC association, so this one stays region-wide by nature.
+    f="$(ro_aws ec2 describe-traffic-mirror-filters --query 'length(TrafficMirrorFilters)' --output text)"
+  else
+    # No VPC yet (nothing deployed, or the name tag did not resolve). Region-wide
+    # is the only read available; say so rather than implying it is this stack.
+    scope="region-wide"
+    t="$(ro_aws ec2 describe-traffic-mirror-targets  --query 'length(TrafficMirrorTargets)'  --output text)"
+    f="$(ro_aws ec2 describe-traffic-mirror-filters  --query 'length(TrafficMirrorFilters)'  --output text)"
+    s_="$(ro_aws ec2 describe-traffic-mirror-sessions --query 'length(TrafficMirrorSessions)' --output text)"
+  fi
+
   if [[ "$t" =~ ^[0-9]+$ && "$f" =~ ^[0-9]+$ && "$s_" =~ ^[0-9]+$ ]]; then
-    DET_MIRROR="${t} target(s), ${f} filter(s), ${s_} session(s)"
-    [[ "$s_" != "0" ]] && DET_MIRROR_OK=true
+    DET_MIRROR="${t} target(s), ${f} filter(s), ${s_} session(s) [${scope}]"
+    # Only a session in THIS stack counts as "already built". A region-wide read
+    # must never satisfy the skip, or a second stack silently gets no mirror.
+    [[ "$s_" != "0" && "$scope" == "this stack" ]] && DET_MIRROR_OK=true
   else
     DET_MIRROR="unknown (could not read the traffic mirror resources)"
   fi
