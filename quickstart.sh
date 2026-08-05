@@ -200,6 +200,37 @@ ok "boto3 $(python3 -c 'import boto3; print(boto3.__version__)' 2>/dev/null)"
 echo ""
 echo "→ Installing required Ansible collections..."
 ansible-galaxy collection install -r requirements.yml --force >/dev/null 2>&1
+
+# Fix the community.aws aws_ssm str/bytes crash on Windows-over-SSM. Some builds
+# pass a BYTES marker to str.find()/str.rfind() in the SSM session reader, which
+# aborts the Windows play at "Gathering Facts" with:
+#   Task failed: find() argument 1 must be str, not bytes
+# The collection is git-ignored and reinstalled from Galaxy on every run, so the
+# fix cannot be vendored -- patch whatever version just got installed. The change
+# only coerces a .find()/.rfind() argument to str when it is bytes; a no-op on
+# already-fixed builds. Windows still works agentlessly via the mirror regardless.
+python3 - <<'PYEOF' >/dev/null 2>&1 || true
+import glob, os, re
+bases = [os.path.expanduser("~/.ansible/collections"),
+         os.path.join(os.getcwd(), "collections")]
+pat = re.compile(r'\b([A-Za-z_]\w*)\.(r?find)\((\w+)\)')
+def fix(m):
+    obj, fn, arg = m.groups()
+    return f'{obj}.{fn}({arg}.decode("surrogateescape") if isinstance({arg},(bytes,bytearray)) else {arg})'
+n = 0
+for base in bases:
+    if not os.path.isdir(base):
+        continue
+    for p in glob.glob(os.path.join(base, "ansible_collections/community/aws/plugins/**/*.py"), recursive=True):
+        try:
+            src = open(p, encoding="utf-8").read()
+        except Exception:
+            continue
+        new = pat.sub(fix, src)
+        if new != src:
+            open(p, "w", encoding="utf-8").write(new); n += 1
+print("aws_ssm str/bytes patch applied to %d file(s)" % n)
+PYEOF
 ok "Collections installed (amazon.aws, community.aws, ansible.windows)"
 
 # === Verify AWS auth works ===
