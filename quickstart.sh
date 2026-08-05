@@ -297,6 +297,51 @@ fi
 # render_inventory.py merges customer_input.yaml onto the checked-in
 # inventory/aws_ec2.yaml and writes inventory/generated.aws_ec2.yaml. Nobody
 # hand-edits a file a script also writes, which is how the mismatch happened.
+# === The CloudLens manager address must be LIVE before any play runs ===
+#
+# cloudlens.manager_ip_or_fqdn is both the registration target and the Docker
+# registry the sensor image is pulled from. deploy-stack.sh only rewrites it
+# when it has a live address, so a rolled-back or replaced stack leaves the OLD
+# address sitting in the file and every later run silently uses it. What that
+# looks like is not "wrong address": it is a 60 second docker timeout deep
+# inside the Ubuntu play, reported as
+#   docker pull "<dead-ip>/sensor" ... dial tcp <dead-ip>:80: i/o timeout
+# after the play has already installed and restarted Docker on the host.
+#
+# One HTTPS call up front turns that into an immediate, obvious message.
+CL_MGR="$(python3 - <<'PYEOF' 2>/dev/null || true
+import sys
+try:
+    import yaml
+    d = yaml.safe_load(open("customer_input.yaml")) or {}
+    print(((d.get("cloudlens") or {}).get("manager_ip_or_fqdn") or "").strip())
+except Exception:
+    pass
+PYEOF
+)"
+if [ -n "$CL_MGR" ]; then
+  echo ""
+  echo "→ Checking the CloudLens manager in customer_input.yaml is live..."
+  if curl -skf --max-time 12 -o /dev/null "https://${CL_MGR}/health" 2>/dev/null \
+     || curl -sk --max-time 12 -o /dev/null -w '%{http_code}' "https://${CL_MGR}/" 2>/dev/null | grep -qE '^(200|301|302|401|403)$'; then
+    ok "CloudLens manager ${CL_MGR} is reachable"
+  else
+    fail "The CloudLens manager in customer_input.yaml is NOT reachable:
+        manager_ip_or_fqdn: ${CL_MGR}
+
+    Sensors register against this address AND pull their image from it, so
+    every host would fail on 'docker pull ${CL_MGR}/sensor' after a long
+    timeout. This is almost always a stale address left behind by a replaced
+    or rolled-back stack.
+
+    Fix it with the vController address from the deploy summary:
+      sed -i 's|^\( *manager_ip_or_fqdn: *\).*|\1\"<VCONTROLLER_IP>\"|' customer_input.yaml
+
+    Then re-run this script. If the address IS correct, check the vController
+    is running and that its security group allows 443 from here."
+  fi
+fi
+
 echo ""
 echo "→ Building inventory from customer_input.yaml..."
 [ -f scripts/render_inventory.py ] \
