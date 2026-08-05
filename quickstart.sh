@@ -201,35 +201,77 @@ echo ""
 echo "→ Installing required Ansible collections..."
 ansible-galaxy collection install -r requirements.yml --force >/dev/null 2>&1
 
-# Fix the community.aws aws_ssm str/bytes crash on Windows-over-SSM. Some builds
-# pass a BYTES marker to str.find()/str.rfind() in the SSM session reader, which
-# aborts the Windows play at "Gathering Facts" with:
+# Fix the community.aws aws_ssm str/bytes crash on Windows-over-SSM, which aborts
+# the Windows play at "Gathering Facts" with:
 #   Task failed: find() argument 1 must be str, not bytes
-# The collection is git-ignored and reinstalled from Galaxy on every run, so the
-# fix cannot be vendored -- patch whatever version just got installed. The change
-# only coerces a .find()/.rfind() argument to str when it is bytes; a no-op on
-# already-fixed builds. Windows still works agentlessly via the mirror regardless.
-python3 - <<'PYEOF' >/dev/null 2>&1 || true
+# while the Linux hosts in the same run succeed.
+#
+# That asymmetry is the tell. The crash is in the connection plugin's
+# _post_process(), whose mark_begin lookups sit AFTER an early return for
+# non-Windows hosts, so only Windows ever reaches them:
+#     if not self.is_windows:
+#         ...
+#         return (returncode, stdout)
+#     trailer = stdout[stdout.rfind(mark_begin):]     <-- Windows only
+#     stdout  = stdout[:stdout.rfind(mark_begin)]     <-- Windows only
+# When stdout and mark_begin disagree on str vs bytes, those raise. Some builds
+# guard the similar wait_for_match() in sessionmanager.py but never these.
+#
+# The collection is git-ignored and reinstalled from Galaxy on every run, so this
+# cannot be vendored: patch whatever version just landed. Normalising both values
+# at the top of _post_process fixes both call sites at once and is version
+# independent, since the signature is stable. The .find()/.rfind() sweep stays as
+# a backstop for builds that crash somewhere else. Both are no-ops once correct.
+# Output is deliberately NOT silenced: a silent patch cannot be confirmed, and a
+# previous run left it unclear whether the fix had applied at all.
+python3 - <<'PYEOF' || true
 import glob, os, re
 bases = [os.path.expanduser("~/.ansible/collections"),
          os.path.join(os.getcwd(), "collections")]
-pat = re.compile(r'\b([A-Za-z_]\w*)\.(r?find)\((\w+)\)')
-def fix(m):
+COERCE = (
+    '        if isinstance(stdout, (bytes, bytearray)):\n'
+    '            stdout = stdout.decode("utf-8", "surrogateescape")\n'
+    '        if isinstance(mark_begin, (bytes, bytearray)):\n'
+    '            mark_begin = mark_begin.decode("utf-8", "surrogateescape")\n'
+)
+# match to end of line: the signature ends "-> Tuple[str, str]:", so anchoring on
+# a literal "):" silently never matches and the coercion is never inserted
+defpat = re.compile(r'^([ \t]*)def _post_process\(self, stdout[^\n]*:[ \t]*\n', re.M)
+findpat = re.compile(r'\b([A-Za-z_]\w*)\.(r?find)\((\w+)\)')
+def findfix(m):
     obj, fn, arg = m.groups()
-    return f'{obj}.{fn}({arg}.decode("surrogateescape") if isinstance({arg},(bytes,bytearray)) else {arg})'
-n = 0
+    return (f'{obj}.{fn}({arg}.decode("utf-8","surrogateescape") '
+            f'if isinstance({arg},(bytes,bytearray)) else {arg})')
+touched, seen = [], 0
 for base in bases:
     if not os.path.isdir(base):
         continue
-    for p in glob.glob(os.path.join(base, "ansible_collections/community/aws/plugins/**/*.py"), recursive=True):
+    for p in glob.glob(os.path.join(base,
+            "ansible_collections/community/aws/plugins/**/*.py"), recursive=True):
         try:
             src = open(p, encoding="utf-8").read()
         except Exception:
             continue
-        new = pat.sub(fix, src)
+        seen += 1
+        new = src
+        m = defpat.search(new)
+        if m and "mark_begin.decode" not in new:
+            new = new[:m.end()] + COERCE + new[m.end():]
+        new = findpat.sub(findfix, new)
         if new != src:
-            open(p, "w", encoding="utf-8").write(new); n += 1
-print("aws_ssm str/bytes patch applied to %d file(s)" % n)
+            try:
+                compile(new, p, "exec")          # never write a file that will not import
+            except SyntaxError as e:
+                print("  [skip] %s: patch would break syntax (%s)" % (os.path.basename(p), e))
+                continue
+            open(p, "w", encoding="utf-8").write(new)
+            touched.append(os.path.basename(p))
+if not seen:
+    print("  [warn] community.aws not found; aws_ssm patch skipped (Windows over SSM may fail)")
+elif touched:
+    print("  aws_ssm str/bytes patch applied to: %s" % ", ".join(sorted(set(touched))))
+else:
+    print("  aws_ssm str/bytes patch: not needed, this build is already correct")
 PYEOF
 ok "Collections installed (amazon.aws, community.aws, ansible.windows)"
 
