@@ -199,7 +199,22 @@ ok "boto3 $(python3 -c 'import boto3; print(boto3.__version__)' 2>/dev/null)"
 # === Install required Ansible collections ===
 echo ""
 echo "→ Installing required Ansible collections..."
-ansible-galaxy collection install -r requirements.yml --force >/dev/null 2>&1
+# -p ./collections is REQUIRED, not a preference: ansible.cfg pins
+# collections_path = ./collections, so that is the ONLY place Ansible loads
+# from. Installing without -p wrote the pinned versions to ~/.ansible/collections
+# where nothing ever read them, and Ansible silently used whatever community.aws
+# ships inside the pip 'ansible' bundle in site-packages instead. The version
+# ranges in requirements.yml were therefore never actually in force, and the
+# aws_ssm patch below spent several runs patching a copy that was not loaded.
+_gal_log="$(mktemp 2>/dev/null || echo /tmp/cl-galaxy.$$)"
+if ! ansible-galaxy collection install -r requirements.yml -p ./collections --force >"$_gal_log" 2>&1; then
+  echo ""
+  sed -n '1,12p' "$_gal_log" | sed 's/^/      /'
+  rm -f "$_gal_log"
+  fail "ansible-galaxy could not install the required collections (output above).
+    Usually a proxy, an expired certificate, or no route to galaxy.ansible.com."
+fi
+rm -f "$_gal_log"
 
 # Fix the community.aws aws_ssm str/bytes crash on Windows-over-SSM, which aborts
 # the Windows play at "Gathering Facts" with:
@@ -225,9 +240,34 @@ ansible-galaxy collection install -r requirements.yml --force >/dev/null 2>&1
 # Output is deliberately NOT silenced: a silent patch cannot be confirmed, and a
 # previous run left it unclear whether the fix had applied at all.
 python3 - <<'PYEOF' || true
-import glob, os, re
-bases = [os.path.expanduser("~/.ansible/collections"),
-         os.path.join(os.getcwd(), "collections")]
+import glob, os, re, site, sys
+# EVERY root that could hold community.aws, not just the two obvious ones.
+# Patching only ~/.ansible/collections and ./collections left the copy bundled
+# in the pip 'ansible' package (site-packages/ansible_collections) untouched,
+# and that was the copy Ansible actually loaded: the run printed "patch
+# applied" and then failed with the exact error the patch removes.
+raw = [os.path.join(os.getcwd(), "collections"),
+       os.path.expanduser("~/.ansible/collections"),
+       "/usr/share/ansible/collections"]
+try:
+    raw += list(site.getsitepackages())
+except Exception:
+    pass
+try:
+    raw.append(site.getusersitepackages())
+except Exception:
+    pass
+raw += [p for p in sys.path if p.endswith(("site-packages", "dist-packages"))]
+try:                      # wherever Ansible itself was imported from
+    import ansible
+    raw.append(os.path.dirname(os.path.dirname(ansible.__file__)))
+except Exception:
+    pass
+bases, _seen = [], set()
+for b in raw:
+    if b and b not in _seen:
+        _seen.add(b)
+        bases.append(b)
 COERCE = (
     '        if isinstance(stdout, (bytes, bytearray)):\n'
     '            stdout = stdout.decode("utf-8", "surrogateescape")\n'
@@ -265,13 +305,18 @@ for base in bases:
                 print("  [skip] %s: patch would break syntax (%s)" % (os.path.basename(p), e))
                 continue
             open(p, "w", encoding="utf-8").write(new)
-            touched.append(os.path.basename(p))
+            touched.append(p)
 if not seen:
     print("  [warn] community.aws not found; aws_ssm patch skipped (Windows over SSM may fail)")
 elif touched:
-    print("  aws_ssm str/bytes patch applied to: %s" % ", ".join(sorted(set(touched))))
+    # Print the PATHS, not just basenames. Bare filenames made a patch applied to
+    # an unused copy look identical to one applied to the copy Ansible loads.
+    print("  aws_ssm str/bytes patch applied to:")
+    for f in sorted(set(touched)):
+        print("    %s" % f)
 else:
-    print("  aws_ssm str/bytes patch: not needed, this build is already correct")
+    print("  aws_ssm str/bytes patch: not needed, every copy found is already correct")
+print("  (checked %d community.aws file(s) across %d root(s))" % (seen, len(bases)))
 PYEOF
 ok "Collections installed (amazon.aws, community.aws, ansible.windows)"
 
