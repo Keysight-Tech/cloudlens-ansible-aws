@@ -4329,8 +4329,22 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
       # Windows needs the SSM transfer bucket before the playbook runs, or its
       # play asserts and takes the whole run's exit code with it even when
       # Linux succeeded.
-      if probe aws ec2 describe-instances --region "$REGION" \
+      #
+      # Only prepared when the Windows SENSOR was actually asked for. It is
+      # off by default because Windows is already tapped agentlessly by AWS VPC
+      # Traffic Mirroring, so this whole chain (bucket, IAM, installer URL,
+      # aws_ssm connection plugin) is additive and used to fail runs in which
+      # every Linux sensor installed correctly. quickstart.sh applies the same
+      # default and is passed the flag below.
+      #
+      # The instance lookup is scoped to THIS stack's VPC. Unscoped, it returned
+      # the first Windows host anywhere in the region, so with two stacks up the
+      # second one prepared the bucket and IAM role against the FIRST stack's
+      # instance and left its own without them.
+      if [[ "${CLOUDLENS_WINDOWS_SENSOR:-false}" == "true" ]] \
+         && probe aws ec2 describe-instances --region "$REGION" \
            --filters "Name=tag:os,Values=windows" "Name=instance-state-name,Values=running" \
+                     ${STACK_VPC_ID:+"Name=vpc-id,Values=${STACK_VPC_ID}"} \
            --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null | grep -q '^i-'; then
         ensure_ssm_bucket_now || true
         # The Windows sensor also needs an installer URL. Auto-discover it from
@@ -4363,8 +4377,12 @@ PY
           [[ -n "${WINDOWS_INSTALLER_URL:-}" ]] && ok "Wrote windows.installer_url into customer_input.yaml"
         fi
       fi
+      if [[ "${CLOUDLENS_WINDOWS_SENSOR:-false}" != "true" ]]; then
+        note "Windows sensor: skipped (Windows is tapped agentlessly by traffic"
+        note "  mirroring). To install it: CLOUDLENS_WINDOWS_SENSOR=true re-run."
+      fi
       ok "Launching quickstart.sh from $QS_DIR"
-      if ( cd "$QS_DIR" && bash quickstart.sh ); then
+      if ( cd "$QS_DIR" && CLOUDLENS_WINDOWS_SENSOR="${CLOUDLENS_WINDOWS_SENSOR:-false}" bash quickstart.sh ); then
         state_phase sensors done
       else
         warn "quickstart.sh exited non-zero (see $QS_DIR for logs)"
