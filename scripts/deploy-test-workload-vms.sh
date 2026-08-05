@@ -34,9 +34,12 @@ ASSUME_YES=false
 LINUX_TYPE="${TESTVMS_LINUX_TYPE:-t3.small}"
 WIN_TYPE="${TESTVMS_WIN_TYPE:-t3.medium}"
 
-UBUNTU_NAME="test-ubuntu-1"
-RHEL_NAME="test-rhel-1"
-WIN_NAME="test-windows-1"
+# The prefix exists so two stacks can coexist. The names used to be fixed, so a
+# second stack's workloads were called test-ubuntu-1 exactly like the first's.
+# The aws_ec2 inventory keys hosts by their Name tag, so the duplicates collapse
+# onto one another and a sensor run aimed at one stack lands on the other
+# stack's machines. Seen live with two stacks in one region.
+NAME_PREFIX="${TESTVMS_NAME_PREFIX:-test}"
 
 # ---- args ----
 while [[ $# -gt 0 ]]; do
@@ -48,12 +51,18 @@ while [[ $# -gt 0 ]]; do
     --env)        ENV_TAG="$2"; shift 2 ;;
     --vpc-id)     VPC_ID="$2"; shift 2 ;;
     --subnet-id)  SUBNET_ID="$2"; shift 2 ;;
+    --name-prefix) NAME_PREFIX="$2"; shift 2 ;;
     -y|--yes)     ASSUME_YES=true; shift ;;
     -h|--help)
       sed -n '1,/^set -e/p' "$0" | head -n -1 | tail -n +2; exit 0 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+# Resolved after parsing so --name-prefix applies.
+UBUNTU_NAME="${NAME_PREFIX}-ubuntu-1"
+RHEL_NAME="${NAME_PREFIX}-rhel-1"
+WIN_NAME="${NAME_PREFIX}-windows-1"
 
 AWS=(aws --region "$REGION")
 

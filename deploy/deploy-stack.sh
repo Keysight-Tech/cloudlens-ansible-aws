@@ -3397,12 +3397,19 @@ deploy_test_workloads_now() {
   local wl_script; wl_script="$(find_repo_script scripts/deploy-test-workload-vms.sh || true)"
   [[ -n "$wl_script" ]] || { warn "Could not locate deploy-test-workload-vms.sh."; return 1; }
   step "Creating test workloads in ${wl_subnet}"
+  # Named after the stack. Fixed names meant a second stack's workloads were
+  # called test-ubuntu-1 exactly like the first stack's, and the aws_ec2
+  # inventory keys hosts by their Name tag, so the duplicates collapsed onto one
+  # another and a sensor run aimed at one stack reached the other's machines.
   bash "$wl_script" --region "$REGION" --key-name "$KEY_NAME" --subnet-id "$wl_subnet" \
-       --tag-key "$DISCOVERY_TAG_KEY" --tag-value "$DISCOVERY_TAG_VALUE" --yes \
+       --tag-key "$DISCOVERY_TAG_KEY" --tag-value "$DISCOVERY_TAG_VALUE" \
+       --name-prefix "$STACK_NAME" --yes \
     || { warn "Test workload creation failed."; return 1; }
+  # Re-counted inside this stack's VPC, for the same reason the first count is.
   TAGGED_COUNT=$(probe aws ec2 describe-instances --region "$REGION" \
       --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" \
                 "Name=instance-state-name,Values=running,pending" \
+                ${STACK_VPC_ID:+"Name=vpc-id,Values=${STACK_VPC_ID}"} \
       --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo 0)
   ok "Workloads created. Matching instances now: ${TAGGED_COUNT:-0}"
   return 0
@@ -3719,9 +3726,20 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
     echo "  Discovery source: ${DISCOVERY_DESC} (from customer_input.yaml)."
     echo "  AWS discovery is skipped entirely, so there is nothing to count here."
   else
+    # Counted inside THIS stack's VPC. This single unscoped count was the root
+    # of an entire failed second deployment: it found the FIRST stack's three
+    # tagged workloads, concluded there was nothing to create, and never offered
+    # to build any for the new stack. Everything downstream then aimed at the
+    # wrong machines: the sensor run installed onto the first stack's hosts and
+    # repointed them at the new manager, the Windows installer URL had to cross
+    # two VPCs with identical CIDRs, and the new stack's mirror had no source
+    # ENI in its own VPC so it could never cut a single session. The stack
+    # looked deployed and tapped nothing.
     TAGGED_COUNT=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
       --filters "${DISCOVERY_FILTER_ARGS[@]}" "Name=instance-state-name,Values=running" \
+                ${STACK_VPC_ID:+"Name=vpc-id,Values=${STACK_VPC_ID}"} \
       --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo "?")
+    [[ -n "${STACK_VPC_ID:-}" ]] && echo "  Counting only inside this stack's VPC (${STACK_VPC_ID})."
     case "$DISCOVERY_MODE" in
       tags)         echo "  Discovery (from customer_input.yaml, ALL must match): ${DISCOVERY_DESC}" ;;
       instance-ids) echo "  Discovery (from customer_input.yaml): ${DISCOVERY_DESC}" ;;
