@@ -295,12 +295,36 @@ def main():
                             {"n": a.capture_tool, "c": cluster, "s": cap}): return 5
             policy_tools.append({"name": a.capture_tool})
 
+        # The traffic source is a cloud COLLECTION. The deploy passes the sensor
+        # cloud CONFIG name for --collection, and the two are different objects,
+        # so KVO rejected the last step with:
+        #   Invalid names provided for entity type(s) [ 'TrafficSource' ]: [ 'cloudlens-aws' ]
+        # after steps 1 to 6b had all committed: a whole wired path undone by a
+        # name. Resolve against what KVO actually has rather than trusting the
+        # argument, the same way step 6 picks the AWS config by type.
+        src = a.collection
+        q = gql(base, tok, "{ cloudCollections { name } }", None, verify)
+        names = [c["name"] for c in (q.get("data", {}).get("cloudCollections") or [])]
+        if src not in names:
+            aws_like = [n for n in names if "aws" in n.lower() or "mirror" in n.lower()]
+            pick = aws_like[0] if len(aws_like) == 1 else (names[0] if len(names) == 1 else None)
+            if not pick:
+                log(f"   no usable cloud collection for the traffic source: "
+                    f"--collection was '{a.collection}', KVO has {names or 'none'}.")
+                log("   Create the AWS mirror fabric first (scripts/kvo_aws_mirror.py), "
+                    "then re-run this script.")
+                return 5
+            log(f"   cloud collection '{src}' does not exist in KVO; "
+                f"using the real traffic source '{pick}'")
+            src = pick
+
         log("7/7 createMonitoringPolicy")
         if not step(base, tok, verify, "create monitoring policy",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.policy, "c": cluster,
-                     "s": {"source": {"name": a.collection}, "tools": policy_tools,
+                     "s": {"source": {"name": src}, "tools": policy_tools,
                            "runMode": "CONTINUOUSLY", "type": "REGULAR"}}): return 5
+        a.collection = src   # so the summary below names what was actually used
 
     v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)
     dd = v.get("data", {})
