@@ -29,6 +29,17 @@
   vars:
     target_group: redhat_prod_vms
 
+# The Windows SENSOR is off by default. Windows traffic is already captured
+# agentlessly by AWS VPC Traffic Mirroring, verified packet by packet, so the
+# sensor is additive rather than required. Left on, its prerequisites (an S3
+# bucket for SSM file transfer, an installer URL, a working aws_ssm connection
+# plugin) turned a run whose Linux sensors had all succeeded into a red failed=1
+# recap, which reads as "the deployment failed" when nothing of substance did.
+#
+# Turn it on deliberately with either:
+#   CLOUDLENS_WINDOWS_SENSOR=true bash quickstart.sh
+#   windows: {enabled: true}      in customer_input.yaml
 - import_playbook: playbooks/windows.yaml
   vars:
     target_group: windows_prod_vms
+  when: (cloudlens_windows_sensor | default(false)) | bool

@@ -555,10 +555,37 @@ if [ "$DISCOVERED" = "0" ]; then
   fail "Nothing to deploy. Fix the discovery above and re-run."
 fi
 
+# === Windows sensor: opt-in ===
+# Off unless asked for. Windows is already tapped agentlessly by AWS VPC Traffic
+# Mirroring, so the sensor adds nothing that visibility depends on, while its
+# prerequisite chain is long enough to fail a run in which every Linux sensor
+# installed correctly.
+WIN_SENSOR="${CLOUDLENS_WINDOWS_SENSOR:-}"
+if [ -z "$WIN_SENSOR" ]; then
+  WIN_SENSOR="$(python3 - <<'PYEOF' 2>/dev/null || true
+try:
+    import yaml
+    d = yaml.safe_load(open("customer_input.yaml")) or {}
+    print("true" if (d.get("windows") or {}).get("enabled") else "false")
+except Exception:
+    print("false")
+PYEOF
+)"
+fi
+case "$WIN_SENSOR" in [Tt]rue|[Yy]es|1) WIN_SENSOR=true ;; *) WIN_SENSOR=false ;; esac
+
 # === Run the deploy ===
 echo ""
-echo "→ Running deploy.yaml against $DISCOVERED instance(s)..."
-if ansible-playbook deploy.yaml -i "$INVENTORY" --extra-vars "@customer_input.yaml"; then
+if [ "$WIN_SENSOR" = "true" ]; then
+  echo "→ Running deploy.yaml against $DISCOVERED instance(s) (Windows sensor ENABLED)..."
+else
+  echo "→ Running deploy.yaml against $DISCOVERED instance(s)..."
+  echo "  Windows sensor: skipped. Windows traffic is captured agentlessly by AWS"
+  echo "  VPC Traffic Mirroring, so no agent is needed for visibility. To install"
+  echo "  it anyway: CLOUDLENS_WINDOWS_SENSOR=true bash quickstart.sh"
+fi
+if ansible-playbook deploy.yaml -i "$INVENTORY" --extra-vars "@customer_input.yaml" \
+     -e "cloudlens_windows_sensor=${WIN_SENSOR}"; then
   ok "Deploy complete on $DISCOVERED instance(s). Verify in the vController UI: https://$(grep manager_ip_or_fqdn customer_input.yaml | awk '{print $2}' | tr -d '\"')/"
 else
   fail "ansible-playbook failed. The output above shows which task and host failed."
