@@ -236,38 +236,39 @@ def main():
                 tags { key value }
                 availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
               None, verify)
-    cc = next((c for c in q["data"]["cloudConfigs"] if c["name"] == a.cloud_config), None)
+    # The deviceLink MUST land on the AWS-type cloud config (the one
+    # kvo_aws_mirror.py creates, e.g. "aws-mirror"), NOT on --cloud-config, which
+    # the deploy sets to the sensor CustomCloud ("cloudlens-aws"). A CustomCloud
+    # has no awsConfiguration, so attaching there was silently skipped and the AWS
+    # config never got its deviceLink -> KVO's mirror monitoring-policy commit had
+    # an incomplete path and ZERO mirror sessions were cut. So pick the AWS config
+    # by the presence of awsConfiguration, not by the passed name.
+    configs = q["data"]["cloudConfigs"]
+    aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
+    cc = aws_configs[0] if aws_configs else None
     if not cc:
-        log(f"cloud config '{a.cloud_config}' not found"); return 4
+        # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
+        # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
+        # there is simply no AWS cloud config to attach the C2DL to.
+        log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
+        log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
+        return 0
+    target = cc["name"]
     st = cc["settings"] or {}
     links = {l["name"] for l in (st.get("deviceLinks") or [])}
     if a.c2dl in links:
-        log(f"  '{a.c2dl}' already linked to {a.cloud_config}")
+        log(f"  '{a.c2dl}' already linked to {target}")
     else:
-        aws = st.get("awsConfiguration")
-        if not aws:
-            # Only an AWS-type cloud config carries awsConfiguration. A Custom
-            # Cloud, which is what kvo_adopt_clms.py creates for sensors, has no
-            # such block: on KVO 2.13.0 the field is not even on the CloudConfig
-            # type, so querying it fails schema validation. Everything the vPB
-            # itself needs is already committed by this point (ports synced,
-            # C2DL created, ingress and egress bound, tool created). Linking the
-            # C2DL to a cloud config is what ties the vPB to an AWS mirroring
-            # fabric, and there is no such fabric here.
-            log(f"cloud config '{a.cloud_config}' is not an AWS cloud config, so there is")
-            log("  no awsConfiguration to round-trip and no deviceLinks step to do.")
-            log("  The vPB path itself is complete: ports are bound and the tool exists.")
-            log("  This step applies when the vPB fronts an AWS mirroring cloud config,")
-            log("  which scripts/kvo_aws_mirror.py creates.")
-            return 0
-        aws = {k: v for k, v in aws.items() if v is not None}
+        aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
         for az in aws.get("availabilityZones", []):
             for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
-        settings = {"awsConfiguration": aws, "deviceLinks": {"name": a.c2dl}}
+        # deviceLinks is a LIST of name refs, not a single object.
+        settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
         if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
         if not step(base, tok, verify, "link C2DL to cloud config",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
-                    {"n": a.cloud_config, "c": cluster, "s": settings}): return 5
+                    {"n": target, "c": cluster, "s": settings}): return 5
+        log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
 
     # 7. monitoring policy
     if a.policy in existing("monitoringPolicies"):

@@ -4600,6 +4600,30 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
         note "  sudo tcpdump -i any -nn 'proto 47' -v"
         note "  # or read the rolling pcaps in /var/log/cloudlens-tool/"
       fi
+      # --- Force a fresh collector boot against the now-complete config --------
+      # The collector reads its cloud config ONCE at boot and never retries. It
+      # launched earlier, when the AWS presence was created, BEFORE this step
+      # attached the C2DL deviceLink to the AWS cloud config -- so it booted
+      # against an incomplete config and would never cut mirror sessions. A reboot
+      # keeps the stale state; only a FRESH instance re-reads the config. Terminate
+      # it so the ASG relaunches a clean collector. Verified live 2026-08-05:
+      # sessions appear ~30 min after the fresh collector re-registers.
+      if [[ "$WITH_MIRROR" == "true" && -n "$REGION" && -n "$STACK_VPC_ID" ]]; then
+        COLLECTOR_IDS="$(aws ec2 describe-instances --region "$REGION" \
+          --filters "Name=tag:cloudlens:collector,Values=true" \
+                    "Name=vpc-id,Values=$STACK_VPC_ID" \
+                    "Name=instance-state-name,Values=running,pending" \
+          --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null || true)"
+        if [[ -n "$COLLECTOR_IDS" ]]; then
+          note "Relaunching the collector so it boots against the completed config"
+          note "(it launched before the C2DL deviceLink was attached; a reboot will"
+          note "not do -- it must be a fresh instance). The ASG will replace it."
+          aws ec2 terminate-instances --region "$REGION" --instance-ids $COLLECTOR_IDS \
+            --query 'TerminatingInstances[].InstanceId' --output text 2>/dev/null || true
+          ok "Collector relaunching. Mirror sessions appear ~30 min after it re-registers."
+          note "Verify: aws ec2 describe-traffic-mirror-sessions --region $REGION"
+        fi
+      fi
       state_phase path done
     else
       warn "The vPB traffic path did not finish every step."
