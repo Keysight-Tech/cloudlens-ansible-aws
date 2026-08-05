@@ -286,8 +286,17 @@ touched, seen = [], 0
 for base in bases:
     if not os.path.isdir(base):
         continue
-    for p in glob.glob(os.path.join(base,
-            "ansible_collections/community/aws/plugins/**/*.py"), recursive=True):
+    # BOTH collections. The aws_ssm connection plugin MOVED from community.aws
+    # to amazon.aws: community.aws/meta/runtime.yml carries
+    #   aws_ssm: {redirect: amazon.aws.aws_ssm}
+    # so on a current install the code that actually runs lives in amazon.aws
+    # and community.aws only forwards to it. Globbing community/aws alone meant
+    # every run truthfully reported "patch applied" while the file Ansible
+    # executed was never touched, and the Windows play kept failing with the
+    # exact error the patch removes.
+    pats = ["ansible_collections/amazon/aws/plugins/**/*.py",
+            "ansible_collections/community/aws/plugins/**/*.py"]
+    for p in [q for pat in pats for q in glob.glob(os.path.join(base, pat), recursive=True)]:
         try:
             src = open(p, encoding="utf-8").read()
         except Exception:
@@ -307,7 +316,7 @@ for base in bases:
             open(p, "w", encoding="utf-8").write(new)
             touched.append(p)
 if not seen:
-    print("  [warn] community.aws not found; aws_ssm patch skipped (Windows over SSM may fail)")
+    print("  [warn] amazon.aws/community.aws not found; aws_ssm patch skipped (Windows over SSM may fail)")
 elif touched:
     # Print the PATHS, not just basenames. Bare filenames made a patch applied to
     # an unused copy look identical to one applied to the copy Ansible loads.
@@ -316,7 +325,7 @@ elif touched:
         print("    %s" % f)
 else:
     print("  aws_ssm str/bytes patch: not needed, every copy found is already correct")
-print("  (checked %d community.aws file(s) across %d root(s))" % (seen, len(bases)))
+print("  (checked %d amazon.aws/community.aws file(s) across %d root(s))" % (seen, len(bases)))
 PYEOF
 ok "Collections installed (amazon.aws, community.aws, ansible.windows)"
 
