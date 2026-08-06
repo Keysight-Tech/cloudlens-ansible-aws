@@ -109,43 +109,6 @@ def session_count(region, vpc_id):
         return -1
 
 
-def bounce_collection_selector(base, token, coll_name, cfg_name, tag_key, tag_val, verify):
-    """Clear the workload selector, commit, restore it, commit.
-
-    KVO cuts the mirror sessions when a committed change request actually CHANGES
-    something. Once the collector is registered and the tagged sources exist, the
-    fabric can sit at zero sessions indefinitely with nothing wrong and no alert:
-    all three stacks built here needed a real edit before KVO would act, and one
-    of them sat for over half an hour first.
-
-    Re-committing the SAME settings does not work: measured on a live stack, an
-    identical update committed at 01:39:39 produced nothing for the next five and
-    a half minutes, while removing the selector and putting it back committed at
-    01:44:38 cut all three sessions 44 seconds later. KVO diffs the change, and
-    an identical write has no diff to recompute.
-
-    So this reproduces the manual fix exactly: two commits, ending in precisely
-    the configuration it started with. The window in between has no selector, but
-    nothing is lost because there are no sessions to lose.
-    """
-    sel = [{"field": tag_key, "tag": tag_key, "regex": tag_val}]
-    q = ("mutation($n:String!,$cr:String!,$s:_CloudCollectionUpdateInput!){ "
-         "updateCloudCollection(name:$n, changeID:$cr, settings:$s){ uid name } }")
-    for phase, selector in (("clearing", []), ("restoring", sel)):
-        cr = open_cr(base, token, f"{phase} workload selector", verify)
-        if not cr:
-            log(f"   could not open a change request for {phase} the selector"); return False
-        settings = {"cloudConfig": {"name": cfg_name}, "tapType": "RAW",
-                    "resourceSelector": selector}
-        d = gql(base, token, q, {"n": coll_name, "cr": cr, "s": settings}, verify)
-        if "errors" in d:
-            log(f"   {phase} the selector failed: {d['errors'][0]['message'][:180]}")
-            return False
-        if not commit_cr(base, token, cr, verify):
-            log(f"   commit failed while {phase} the selector"); return False
-    return True
-
-
 def collector_asg_exists(region, vpc_id):
     """A COMPLETE AWS cloud config makes KVO create a collector ASG named
     cloudlens.collector.<vpc-id>.<zone>. If the config exists but this ASG does
@@ -772,21 +735,22 @@ def main():
                 if n > 0:
                     log(f"OK: {n} traffic mirror session(s) already present.")
                 else:
-                    log("nudging KVO: clearing the workload selector and putting it back, so the")
-                    log("  committed change has a real diff to recompute (an identical re-commit")
-                    log("  does nothing - measured live).")
-                    if bounce_collection_selector(kvo, tok, coll_name, args.name,
-                                                  tag_key, tag_val, verify):
-                        for _ in range(12):          # ~3 min; it took 44s live
-                            time.sleep(15)
-                            n = session_count(args.region, args.vpc_id)
-                            if n > 0:
-                                log(f"OK: {n} traffic mirror session(s) created. The tap is live.")
-                                break
-                        else:
-                            log("sessions have not appeared yet. They usually follow within a")
-                            log("  minute of the selector being restored; check with:")
-                            log(f"  aws ec2 describe-traffic-mirror-sessions --region {args.region}")
+                    # DO NOT clear the workload selector to force a diff.
+                    # Tried and reverted: clearing it empties the collection, and
+                    # the monitoring policy that references that collection then
+                    # fails validation with "Monitoring policy aws-mirror-policy
+                    # has an empty cloud collection". The change request sticks at
+                    # InProgress and blocks every later commit, so the deploy loops
+                    # on "still processing" forever. The manual fix that works is a
+                    # SINGLE change request that ends in a valid state; splitting it
+                    # into clear-then-restore is invalid at the halfway point.
+                    log("sessions not cut yet. KVO cuts them after a change request that")
+                    log("  actually changes something. Nothing here is broken:")
+                    log("  in KVO open Visibility Fabric > Cloud Collections >")
+                    log(f"  {coll_name}, remove the workload selector and add it back")
+                    log(f"  ({tag_key} = {tag_val}), then commit that ONE change request.")
+                    log("  Sessions appear about a minute later. Verify with:")
+                    log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
         else:
             log("!! FAILED: no collector ASG appeared. KVO has the config but did NOT launch the collector.")
             log("   Most common cause: the AwsPresence was REUSED instead of recreated with the key.")
