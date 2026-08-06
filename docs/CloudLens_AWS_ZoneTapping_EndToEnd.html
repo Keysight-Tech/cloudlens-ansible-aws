@@ -409,6 +409,81 @@ present is the normal failure, and it almost always means one of three things: t
 before the configuration was complete, there are no tagged machines in this VPC, or the IAM key in
 the presence has no permissions.</p>
 
+<h3>The three security groups, the port roles, and the termination IP</h3>
+
+<p>Three details in this build reject the configuration outright if they are wrong, and none of
+them explain themselves: why the collector needs three separate security groups, what "ingress" and
+"egress" mean on a vPB port, and what a termination IP is for. The rules below are from the
+<em>Keysight Vision Orchestrator 3.0.1 User Guide</em>, AWS Cloud Configs and Cloud to Device
+Links.</p>
+
+<h4>Why three security groups, not one</h4>
+<p>The collector (the vHub) is built with three network interfaces, each doing a different job, so
+each gets its own security group:</p>
+<table>
+<tr><th>Group</th><th>Interface job</th><th>What must be open</th></tr>
+<tr><td>Management</td><td>How the collector talks to the CloudLens vController and KVO. This is
+also the group that decides which VPC the deployment belongs to.</td>
+<td><code>443</code> for vController to KVO and vController to vHub, and <code>22</code> for
+SSH.</td></tr>
+<tr><td>Ingress</td><td>Where mirrored traffic arrives from the tapped machines.</td>
+<td>The GRE tunnel traffic from the mirror sources.</td></tr>
+<tr><td>Egress</td><td>Where the collector sends traffic onward, to the vPB or another tool.</td>
+<td>The outbound tunnel to the tool address.</td></tr>
+</table>
+<p class="note">The guide is explicit and this is the part most often got wrong: the Management,
+Ingress and Egress security groups <strong>have to be in separate subnets, with separate IPs, for
+the vHub to work properly</strong>. Three groups pointing into one subnet is not a valid
+deployment. The schema also marks all three as required, so there is no single-group shortcut:
+sending them as optional is rejected before anything is created.</p>
+<p>Keeping them apart is not bureaucracy. Mirrored traffic can be a large multiple of normal
+traffic, and if it shared the management interface it would compete with the very control channel
+KVO uses to manage the collector. Separating them means a flood of tapped traffic cannot cost you
+control of the appliance.</p>
+
+<h4>Ingress and egress on the vPB: which port does what</h4>
+<p>The same two words appear again on the vPB itself, meaning something related but distinct. The
+vPB has three interfaces and the roles are fixed by convention in this build:</p>
+<table>
+<tr><th>Port</th><th>Role</th><th>Carries</th></tr>
+<tr><td><code>eth0</code></td><td>Management</td><td>SSH and the KVO management channel. Never
+carries tapped traffic.</td></tr>
+<tr><td><code>eth1</code></td><td><strong>Ingress</strong>, bound to the C2DL</td><td>Mirrored
+traffic arriving from the collector, still wrapped in GRE.</td></tr>
+<tr><td><code>eth2</code></td><td><strong>Egress</strong>, bound to the LOCAL tool</td><td>Traffic
+leaving the vPB towards the monitoring tool, after any processing.</td></tr>
+</table>
+<p>Read in one direction it is simple: traffic comes <em>in</em> on eth1 and goes <em>out</em> on
+eth2. The binding is what makes it real. eth1 is bound to the Cloud to Device Link, which is the
+cloud side arriving. eth2 is bound to a Tool, which is the destination leaving. A REMOTE tool
+cannot be bound to a device port at all, which is why the egress tool has to be LOCAL.</p>
+<p class="note">These data ports must already be up as DPDK data ports on the vPB. That bring-up
+is not automated, so on a brand new vPB the device configuration has no ports and there is nothing
+for the bind step to attach to. If the port-bind steps themselves fail, this is why.</p>
+
+<h4>The termination IP: the address the tunnel actually ends at</h4>
+<p>Mirrored traffic does not arrive as bare packets. It arrives wrapped in a GRE tunnel, addressed
+to something. The termination IP is that address: the IP on the vPB's ingress interface where the
+tunnel ends and the outer wrapper is removed, so the original packet can be read. In this build it
+is the vPB's ingress address, and it is the same value the collector's tool points at.</p>
+<p>It is not optional. The guide states that a remote collection point can be bound to ports
+according to the number of configured termination IPs, and that <strong>if no termination IP is
+configured the collection point cannot be bound to any port at all</strong>, with an error saying a
+termination IP must be configured first. Without it the path has no endpoint and the bind is
+refused.</p>
+<p>Two constraints apply specifically to the Cloud to Device Link, and both are fixed rather than
+chosen:</p>
+<ul>
+<li><strong>GRE only.</strong> It is the only protocol a Cloud to Device Link supports.</li>
+<li><strong>A 4 byte key.</strong> The only key size supported for a Cloud to Device Link. Where
+remote collection points and Cloud to Device Links are bound to the same device, both the protocol
+and the key size have to match.</li>
+</ul>
+<p>This is why the L2GRE key appears in the packet capture, and why seeing
+<code>GREv0, key=0x40</code> on the capture host is meaningful: it is the tunnel arriving at its
+termination address with the key the fabric was configured with, carrying the original packet
+inside.</p>
+
 <h3>The objects, and why each one mattered</h3>
 <table>
 <tr><th>Object</th><th>What it is</th><th>Note</th></tr>
