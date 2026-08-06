@@ -4817,12 +4817,16 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
           aws ec2 terminate-instances --region "$REGION" --instance-ids $COLLECTOR_IDS \
             --query 'TerminatingInstances[].InstanceId' --output text 2>/dev/null || true
           ok "Collector relaunching. It takes 10-15 min to boot (heavy vpb-svm image)."
-  note "Sessions do NOT then appear on their own. Measured on three stacks: KVO"
-  note "cuts them only after a change request that CHANGES something. Once the"
-  note "collector has registered its mirror target, open KVO > Visibility Fabric"
-  note "> Cloud Collections > aws-mirror-collect, remove the workload selector,"
-  note "add it back, and commit that ONE change request. Sessions follow in about"
-  note "a minute. Do not do it before the target exists."
+  note "The fresh instance is the point: a collector only reads its configuration"
+  note "at boot, so one that came up before the C2DL deviceLink was attached will"
+  note "never cut sessions, and rebooting it keeps that stale state."
+  note "Sessions then appear on their own, about 10 minutes after it boots,"
+  note "measured on a clean run: collector up, mirror target registered 64s later,"
+  note "sessions cut unaided. Nothing to do in KVO."
+  note "If they have NOT appeared 20 min after the fresh collector registered its"
+  note "mirror target, that is a real fault worth reporting, not something to nudge"
+  note "past: clearing the workload selector empties the collection and wedges the"
+  note "change request behind a failed policy validation."
           note "Verify: aws ec2 describe-traffic-mirror-sessions --region $REGION"
         fi
       fi
