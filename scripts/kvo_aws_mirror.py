@@ -67,6 +67,85 @@ def resolve_collector_ami(region):
     except Exception as e:
         log(f"collector AMI resolution failed ({e}); pass --image-id explicitly"); return None
 
+def mirror_target_exists(region, vpc_id):
+    """True once the collector has registered its AWS mirror target.
+
+    Creating the target is the collector's FIRST AWS write, so seeing one proves
+    the collector booted, its IAM key really has permissions, and KVO is driving
+    it. Sessions are the step after. Waiting on the ASG alone says only that KVO
+    asked for an instance.
+    """
+    if not vpc_id:
+        return False
+    try:
+        out = subprocess.run(
+            ["aws", "ec2", "describe-traffic-mirror-targets", "--region", region,
+             "--query", "TrafficMirrorTargets[?contains(Tags[?Key=='Name'].Value | [0], "
+                        "'%s')].TrafficMirrorTargetId" % vpc_id, "--output", "text"],
+            capture_output=True, text=True, timeout=60)
+        return out.returncode == 0 and out.stdout.strip() not in ("", "None")
+    except Exception:
+        return False
+
+
+def session_count(region, vpc_id):
+    """Mirror sessions whose source ENI lives in this VPC. -1 means 'could not ask'."""
+    try:
+        enis = subprocess.run(
+            ["aws", "ec2", "describe-network-interfaces", "--region", region,
+             "--filters", f"Name=vpc-id,Values={vpc_id}",
+             "--query", "NetworkInterfaces[].NetworkInterfaceId", "--output", "text"],
+            capture_output=True, text=True, timeout=60)
+        ids = ",".join(enis.stdout.split())
+        if not ids:
+            return 0
+        out = subprocess.run(
+            ["aws", "ec2", "describe-traffic-mirror-sessions", "--region", region,
+             "--filters", f"Name=network-interface-id,Values={ids}",
+             "--query", "length(TrafficMirrorSessions)", "--output", "text"],
+            capture_output=True, text=True, timeout=60)
+        return int(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip().isdigit() else -1
+    except Exception:
+        return -1
+
+
+def bounce_collection_selector(base, token, coll_name, cfg_name, tag_key, tag_val, verify):
+    """Clear the workload selector, commit, restore it, commit.
+
+    KVO cuts the mirror sessions when a committed change request actually CHANGES
+    something. Once the collector is registered and the tagged sources exist, the
+    fabric can sit at zero sessions indefinitely with nothing wrong and no alert:
+    all three stacks built here needed a real edit before KVO would act, and one
+    of them sat for over half an hour first.
+
+    Re-committing the SAME settings does not work: measured on a live stack, an
+    identical update committed at 01:39:39 produced nothing for the next five and
+    a half minutes, while removing the selector and putting it back committed at
+    01:44:38 cut all three sessions 44 seconds later. KVO diffs the change, and
+    an identical write has no diff to recompute.
+
+    So this reproduces the manual fix exactly: two commits, ending in precisely
+    the configuration it started with. The window in between has no selector, but
+    nothing is lost because there are no sessions to lose.
+    """
+    sel = [{"field": tag_key, "tag": tag_key, "regex": tag_val}]
+    q = ("mutation($n:String!,$cr:String!,$s:_CloudCollectionUpdateInput!){ "
+         "updateCloudCollection(name:$n, changeID:$cr, settings:$s){ uid name } }")
+    for phase, selector in (("clearing", []), ("restoring", sel)):
+        cr = open_cr(base, token, f"{phase} workload selector", verify)
+        if not cr:
+            log(f"   could not open a change request for {phase} the selector"); return False
+        settings = {"cloudConfig": {"name": cfg_name}, "tapType": "RAW",
+                    "resourceSelector": selector}
+        d = gql(base, token, q, {"n": coll_name, "cr": cr, "s": settings}, verify)
+        if "errors" in d:
+            log(f"   {phase} the selector failed: {d['errors'][0]['message'][:180]}")
+            return False
+        if not commit_cr(base, token, cr, verify):
+            log(f"   commit failed while {phase} the selector"); return False
+    return True
+
+
 def collector_asg_exists(region, vpc_id):
     """A COMPLETE AWS cloud config makes KVO create a collector ASG named
     cloudlens.collector.<vpc-id>.<zone>. If the config exists but this ASG does
@@ -666,8 +745,48 @@ def main():
                 break
             time.sleep(15)
         if launched:
-            log("OK: collector ASG present - KVO is launching the collector. Sessions are cut "
-                "once it boots (~10-15 min, heavy vpb-svm image) and discovers the tagged ENIs.")
+            log("OK: collector ASG present - KVO is launching the collector.")
+            # Wait for the collector's own first AWS write, then make KVO act.
+            #
+            # The ASG existing only means KVO asked for an instance. The target
+            # appearing means the collector is up and has working credentials.
+            # After that the sessions still do not come on their own: every stack
+            # built here needed a real configuration change first, one of them
+            # after sitting at zero for over half an hour with nothing wrong.
+            log(f"waiting for the collector to register its mirror target "
+                f"(up to {args.verify_timeout}s; the vpb-svm image is heavy, ~10-15 min)...")
+            deadline = time.time() + max(args.verify_timeout, 900)
+            registered = False
+            while time.time() < deadline:
+                if mirror_target_exists(args.region, args.vpc_id):
+                    registered = True
+                    break
+                time.sleep(20)
+            if not registered:
+                log("!! the collector has not registered a mirror target yet. It may still be")
+                log("   booting. Sessions cannot be cut until it does. Re-run this script later;")
+                log("   it is idempotent and will pick up from here.")
+            else:
+                log("OK: collector registered its mirror target (so it booted and its key works).")
+                n = session_count(args.region, args.vpc_id)
+                if n > 0:
+                    log(f"OK: {n} traffic mirror session(s) already present.")
+                else:
+                    log("nudging KVO: clearing the workload selector and putting it back, so the")
+                    log("  committed change has a real diff to recompute (an identical re-commit")
+                    log("  does nothing - measured live).")
+                    if bounce_collection_selector(kvo, tok, coll_name, args.name,
+                                                  tag_key, tag_val, verify):
+                        for _ in range(12):          # ~3 min; it took 44s live
+                            time.sleep(15)
+                            n = session_count(args.region, args.vpc_id)
+                            if n > 0:
+                                log(f"OK: {n} traffic mirror session(s) created. The tap is live.")
+                                break
+                        else:
+                            log("sessions have not appeared yet. They usually follow within a")
+                            log("  minute of the selector being restored; check with:")
+                            log(f"  aws ec2 describe-traffic-mirror-sessions --region {args.region}")
         else:
             log("!! FAILED: no collector ASG appeared. KVO has the config but did NOT launch the collector.")
             log("   Most common cause: the AwsPresence was REUSED instead of recreated with the key.")
