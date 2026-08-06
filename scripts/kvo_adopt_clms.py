@@ -72,12 +72,36 @@ def kvo_token(base, user, password, verify):
         log(f"KVO auth failed (HTTP {r.status_code}): {r.text[:160]}"); return None
     return r.json()["access_token"]
 
-def gql(base, token, query, verify):
-    r = requests.post(f"{base}/public/graphql", headers={"Authorization": f"Bearer {token}"},
-                      json={"query": query}, verify=verify, timeout=30)
-    try: body = r.json()
-    except ValueError: body = {"errors": [{"message": r.text[:200]}]}
-    return body
+def gql(base, token, query, verify, timeout=120, retries=2):
+    """POST a GraphQL document, tolerating a slow KVO.
+
+    The 30s timeout this used to carry was too short for the write that matters:
+    createCloudLensManager makes KVO reach out to the CloudLens Manager and
+    verify the credentials before answering, and on a freshly booted pair that
+    took longer than 30s. requests then raised ReadTimeout, which nothing
+    caught, so the deploy printed a Python traceback, reported "Adoption or
+    Cloud Config creation did not return a project key" and dropped to asking
+    the operator to paste a key that had never been created.
+
+    A read timeout also says nothing about whether the server did the work, so
+    the retry is safe by construction: every caller here is idempotent and
+    treats "already exists" as success.
+    """
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            r = requests.post(f"{base}/public/graphql",
+                              headers={"Authorization": f"Bearer {token}"},
+                              json={"query": query}, verify=verify, timeout=timeout)
+            try: return r.json()
+            except ValueError: return {"errors": [{"message": r.text[:200]}]}
+        except requests.exceptions.RequestException as e:
+            last = e
+            if attempt < retries:
+                log(f"KVO did not answer within {timeout}s ({type(e).__name__}); "
+                    f"retrying ({attempt + 1}/{retries})")
+                time.sleep(10)
+    return {"errors": [{"message": f"KVO unreachable after {retries + 1} attempts: {last}"}]}
 
 def kvo_is_licensed(base, token, verify, wait=180):
     """True once KVO's own licence view shows an installed entitlement.
@@ -390,4 +414,18 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # A network wobble must not surface as a Python traceback. Several calls
+    # here (CLMS login, KVO user creation, the EULA endpoints, the token
+    # endpoint) still carry short timeouts, and an uncaught ReadTimeout printed
+    # sixty lines of urllib3 stack in the middle of a deploy: it read as a
+    # broken script rather than "the appliance was slow, run it again".
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log("interrupted"); sys.exit(130)
+    except requests.exceptions.RequestException as e:
+        log(f"KVO or CLMS did not respond: {type(e).__name__}: {e}")
+        log("Nothing was left half-done that a re-run cannot repeat: every step "
+            "here is idempotent and treats 'already exists' as success.")
+        log("Re-run the deploy to retry this phase.")
+        sys.exit(7)
