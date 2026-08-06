@@ -4144,6 +4144,7 @@ merge_customer_input() {
   CL_ADDR="$CLMS_PUBLIC_IP" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
   CL_TAG_K="$DISCOVERY_TAG_KEY" CL_TAG_V="$DISCOVERY_TAG_VALUE" \
   CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" CL_SSM_BUCKET="${SSM_BUCKET_NAME:-}" \
+  CL_VPC_ID="${STACK_VPC_ID:-}" \
     python3 - customer_input.yaml <<'PY'
 import os, sys
 try:
@@ -4188,6 +4189,19 @@ if _ssm:
     if not isinstance(aws_blk, dict):
         aws_blk = {}
     aws_blk["ssm_bucket_name"] = _ssm
+    doc["aws"] = aws_blk
+
+# Confine sensor discovery to the VPC this stack built. Tag discovery is
+# region-wide and every stack tags its workloads the same way by default, so a
+# second stack's sensor run found the FIRST stack's workloads and re-registered
+# them against the new manager. render_inventory.py turns this into a vpc-id
+# filter; without it the default "cloudlens=yes" reaches every stack at once.
+_vpc = os.environ.get("CL_VPC_ID", "")
+if _vpc:
+    aws_blk = doc.get("aws")
+    if not isinstance(aws_blk, dict):
+        aws_blk = {}
+    aws_blk["vpc_id"] = _vpc
     doc["aws"] = aws_blk
 
 if os.environ.get("CL_TAG_EXPLICIT") == "true":

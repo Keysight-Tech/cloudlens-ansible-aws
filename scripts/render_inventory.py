@@ -192,6 +192,22 @@ def main():
             "%s=%s" % (k, tag_value(v)) for k, v in base_filters.items() if k.startswith("tag:")
         )
 
+    # Confine discovery to one VPC when the deploy knows which one it built.
+    #
+    # Tag discovery is region-wide, and every stack tags its workloads the same
+    # way by default (cloudlens=yes). With two stacks in one region that means a
+    # sensor run for the second stack also finds the FIRST stack's workloads,
+    # installs onto them, and re-registers them against the second stack's
+    # manager. That happened live, and the identical default Name tags then
+    # collapsed the duplicate hosts onto each other in this very inventory.
+    #
+    # aws.vpc_id is written by deploy-stack.sh. Absent (hand-written config, or
+    # workloads deliberately spread across VPCs) nothing changes.
+    vpc_id = aws.get("vpc_id")
+    if vpc_id and mode != "instance-ids":
+        filters["vpc-id"] = vpc_id
+        described += " vpc-id=%s" % vpc_id
+
     base["filters"] = filters
 
     regions = as_list(aws.get("regions"))
