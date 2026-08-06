@@ -458,9 +458,19 @@ login_block() {
     echo "                                      # easy to pick out of everything else"
     echo "  Then on the capture host you should see that size arriving inside GRE."
   else
-    echo "No capture host was created in this run, so there is nowhere to watch"
-    echo "packets land. Re-run and accept the vPB traffic path step to get one,"
-    echo "or point a tool of your own at the vPB egress."
+    echo "No capture host in this run, so there is nowhere to watch packets land."
+    if [[ "${WIRE_VPB_PATH:-false}" == "true" ]]; then
+      echo "The vPB path WAS wired, so its launch failed rather than being skipped."
+      echo "It is non-fatal by design: the path is wired either way. The reason is"
+      echo "in the log above, search it with:"
+      echo "  grep -i -B2 -A6 'capture host' cloudlens-deploy-stack.log"
+      echo "Common causes: no public subnet in this stack's VPC, the key pair"
+      echo "${KEY_NAME} missing, or the Ubuntu AMI lookup failing."
+    else
+      echo "The vPB traffic path step was declined, and the capture host comes"
+      echo "with it. Re-run and accept that step to get one."
+    fi
+    echo "Either way you can point a tool of your own at the vPB egress instead."
   fi
   echo
   echo "  Is the tap actually live? These two are the honest check:"
@@ -4535,6 +4545,20 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
       ok "vPB adopted into KVO as '${VPB_DEVICE_NAME}'."
       VPB_IN_KVO=true
       state_phase vpb done
+    elif kvo_auth "$KVO_PUBLIC_IP" \
+         && kvo_gql "$KVO_PUBLIC_IP" '{ devices { name } }' 2>/dev/null \
+            | grep -q "\"${VPB_DEVICE_NAME}\""; then
+      # The adopt script's exit code is not the same question as "is the vPB in
+      # KVO". A re-run whose SSH step times out returns non-zero for a device
+      # that was adopted perfectly well earlier, and the run then ends with
+      # "Outstanding: vPB adopted" while the vPB is Online with its ports bound
+      # and its C2DL attached. A finished deploy reporting itself unfinished is
+      # exactly the false signal that sends someone debugging a working stack.
+      # So ask KVO directly before believing the exit code.
+      ok "vPB is already adopted in KVO as '${VPB_DEVICE_NAME}' (adoption step "
+      ok "  returned non-zero, but KVO has the device; treating as done)."
+      VPB_IN_KVO=true
+      state_phase vpb done
     else
       warn "vPB adoption did not complete; the rest of the run continues."
       note "Most often the vPB CLI (KCOS) was still starting: it can take 10-15 min"
@@ -4751,7 +4775,13 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
           note "not do -- it must be a fresh instance). The ASG will replace it."
           aws ec2 terminate-instances --region "$REGION" --instance-ids $COLLECTOR_IDS \
             --query 'TerminatingInstances[].InstanceId' --output text 2>/dev/null || true
-          ok "Collector relaunching. Mirror sessions appear ~30 min after it re-registers."
+          ok "Collector relaunching. It takes 10-15 min to boot (heavy vpb-svm image)."
+  note "Sessions do NOT then appear on their own. Measured on three stacks: KVO"
+  note "cuts them only after a change request that CHANGES something. Once the"
+  note "collector has registered its mirror target, open KVO > Visibility Fabric"
+  note "> Cloud Collections > aws-mirror-collect, remove the workload selector,"
+  note "add it back, and commit that ONE change request. Sessions follow in about"
+  note "a minute. Do not do it before the target exists."
           note "Verify: aws ec2 describe-traffic-mirror-sessions --region $REGION"
         fi
       fi
