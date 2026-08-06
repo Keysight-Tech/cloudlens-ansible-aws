@@ -11,6 +11,9 @@
   h1 { font-size: 20pt; color: #0b1f3a; margin: 0 0 2mm; }
   h2 { font-size: 14pt; color: #0b63ce; border-bottom: 2px solid #e3392e; padding-bottom: 1.5mm; margin: 9mm 0 3mm; page-break-after: avoid; }
   h3 { font-size: 11.5pt; color: #0b1f3a; margin: 5mm 0 2mm; page-break-after: avoid; }
+h4 { font-size: 10.5pt; color: #0b63ce; margin: 4.5mm 0 1.5mm; page-break-after: avoid; }
+p.note { background: #f6f8fb; border-left: 3px solid #e0a04a; padding: 2mm 3mm;
+         margin: 2mm 0; font-size: 9.5pt; color: #333c47; page-break-inside: avoid; }
   p { margin: 0 0 2.5mm; }
   code, .mono { font-family: "SF Mono", "Consolas", monospace; font-size: 8.8pt; }
   .lead { color: #33475b; font-size: 10.6pt; }
@@ -317,6 +320,94 @@ matching the Monitoring Policies and Visibility Fabric views in the KVO console.
 </svg>
 <figcaption>The live KVO fabric: one source, two policies, three destinations. This mirrors the console's Monitoring Policies view.</figcaption>
 </figure>
+
+<h3>Every step explained, for a first reader</h3>
+
+<p>The deploy prints a list of seven things it is about to build: the AWS presence, the Cloud
+Config, the collection, the collector Service VM, the tool, the monitoring policy, and the traffic
+mirror sessions. Those are KVO's own words, and none of them mean anything on first reading. This
+section explains each one in plain terms, in the order the deploy creates them, because the order
+is the reason the whole thing works.</p>
+
+<p>The goal in one sentence: <strong>copy the network traffic of ordinary EC2 machines and deliver
+that copy to a monitoring tool, without installing anything on those machines.</strong> That is
+what "agentless" means here. AWS itself can duplicate an instance's traffic, a feature called VPC
+Traffic Mirroring. Everything below exists to tell AWS which machines to copy and where to send
+the copy, and to give the copy somewhere to land.</p>
+
+<h4>1. The AWS presence: giving KVO the keys</h4>
+<p>KVO is the orchestrator, but it lives outside your AWS account and has no rights in it. The AWS
+presence is where you hand KVO an AWS access key so it can act for you: create mirror sessions,
+launch instances, and so on. Think of it as the login KVO uses to talk to AWS.</p>
+<p class="note">The key must carry the CloudLens Zone Tapping permissions. A key with no policy
+still creates the presence successfully, and then nothing else works: no collector appears, no
+sessions are cut, and the only clue is a KVO alert about checking credentials. A silent, valid
+looking presence with a powerless key is the single most confusing failure in this build.</p>
+
+<h4>2. The Cloud Config: describing the AWS environment</h4>
+<p>The Cloud Config tells KVO the shape of the network it is working in: which region and
+availability zone, which three subnets and three security groups the collector's interfaces will
+use, which SSH key pair, and where the CloudLens Manager is. KVO needs this because it is about to
+launch a machine into your VPC and must know exactly where to put it.</p>
+<p>The three security groups are separate on purpose, one per collector interface: management,
+ingress, egress. The schema requires all three; there is no single-group shortcut.</p>
+
+<h4>3. The Cloud Collection: choosing what to tap</h4>
+<p>The collection answers "which machines do we want to watch?" You express it as a tag rule, for
+example <code>cloudlens = yes</code>. Any instance in this VPC carrying that tag becomes a source.
+In the KVO console this is the Workload Selector, and the console lists the matched network
+interfaces so you can confirm it found what you expected.</p>
+<p>This is the <em>source</em> half of the picture. Nothing here says where the traffic goes.</p>
+
+<h4>4. The collector Service VM: where the copies are sent</h4>
+<p>AWS traffic mirroring needs a destination inside the VPC, called a mirror target. That target
+is the collector: a CloudLens appliance KVO launches for you into the subnets from step 2, behind
+an auto scaling group. Every mirrored packet from every tapped machine arrives here first.</p>
+<p class="note">The collector reads its configuration once, when it boots, and does not go back for
+it. If it starts before the configuration is finished, it runs with an incomplete picture forever
+and quietly creates nothing. Rebooting does not help, because the machine keeps its state. Only a
+brand new instance re-reads the configuration, which is why the automation deliberately terminates
+the collector after the fabric is complete and lets the scaling group replace it. It is also why
+the collector can do nothing at all until tagged machines exist in its own VPC: with no sources, a
+perfectly healthy collector sits idle and produces zero sessions.</p>
+
+<h4>5. The Tool: where the traffic finally goes</h4>
+<p>A Tool is a destination for the collected traffic, and it is the <em>other</em> half of the
+picture. Here the traffic is sent onward to the virtual Packet Broker over an L2GRE tunnel, which
+wraps each mirrored packet inside another packet so it can cross the network intact. A second Tool
+can point at a plain capture host, which is how the traffic is proved with tcpdump.</p>
+<p>Tools come in two kinds, and mixing them up stops the build. A <strong>REMOTE</strong> tool is
+an address somewhere on the network. A <strong>LOCAL</strong> tool is a physical port on a device
+KVO manages. Only a LOCAL tool can be bound to a vPB port.</p>
+
+<h4>6. The Monitoring Policy: connecting source to destination</h4>
+<p>Nothing so far links the two halves. The collection knows what to tap; the tool knows where
+traffic should land; the policy is the sentence that joins them: <em>send this source to that
+destination</em>. Committing the policy is the moment KVO has a complete instruction and can act.</p>
+<p>One policy can have several destinations, which is how the same tapped traffic reaches both the
+vPB and a capture host at once.</p>
+
+<h4>7. The traffic mirror sessions: the actual tap</h4>
+<p>A session is the real AWS object that copies one network interface's traffic to the target. One
+session per tapped interface. These are not created by the deploy script: the collector creates
+them, once it can see a complete policy and the tagged interfaces. That is why they appear minutes
+after the deploy says it has finished, and why counting them is the only honest proof that the
+pipeline works. Everything before this point is configuration; this is traffic.</p>
+
+<h4>And the C2DL, if a vPB is involved</h4>
+<p>The Cloud to Device Link, shown in the console as "Connect To Device", attaches the cloud side
+of the fabric to a physical port on the vPB. Without it the path has a gap: the policy commits
+against an incomplete route and no sessions are cut. It has to be attached to the AWS Cloud Config
+before the collector boots, or the collector must be replaced afterwards.</p>
+
+<h4>Reading the result</h4>
+<p>Two commands tell you whether it worked, and they are worth more than any status message:</p>
+<pre><code>aws ec2 describe-traffic-mirror-sessions --region us-east-1
+aws ec2 describe-traffic-mirror-targets  --region us-east-1</code></pre>
+<p>One session per tagged machine means the tap is live. Zero sessions with everything else
+present is the normal failure, and it almost always means one of three things: the collector booted
+before the configuration was complete, there are no tagged machines in this VPC, or the IAM key in
+the presence has no permissions.</p>
 
 <h3>The objects, and why each one mattered</h3>
 <table>
