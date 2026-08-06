@@ -3624,6 +3624,34 @@ UD
       --query 'Reservations[].Instances[].PrivateIpAddress' --output text 2>/dev/null)
   CAPTURE_HOST_PUBLIC_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
       --query 'Reservations[].Instances[].PublicIpAddress' --output text 2>/dev/null)
+  # The private IP is not cosmetic: it becomes --capture-ip, and without it the
+  # wire phase silently omits the REMOTE capture tool. That is how a stack ended
+  # up with a running, correctly tagged capture host, a wired vPB path, and no
+  # tool pointing at the host: nothing reached it, and the traffic proof that had
+  # worked on an earlier stack could not be reproduced. Every AWS call here goes
+  # through probe, which swallows failures, so an empty answer looked like
+  # success. Retry the lookup, and if it still comes back empty say so loudly
+  # rather than continuing without the one thing that makes traffic visible.
+  local _try
+  for _try in 1 2 3 4 5; do
+    [[ -n "$CAPTURE_HOST_IP" && "$CAPTURE_HOST_IP" != "None" ]] && break
+    sleep 5
+    CAPTURE_HOST_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+        --query 'Reservations[].Instances[].PrivateIpAddress' --output text 2>/dev/null)
+    CAPTURE_HOST_PUBLIC_IP=$(probe aws ec2 describe-instances --region "$REGION" --instance-ids "$iid" \
+        --query 'Reservations[].Instances[].PublicIpAddress' --output text 2>/dev/null)
+  done
+  if [[ -z "$CAPTURE_HOST_IP" || "$CAPTURE_HOST_IP" == "None" ]]; then
+    CAPTURE_HOST_IP=""
+    warn "Capture host ${iid} launched but its private IP could not be read."
+    note "Without it the wire phase omits the REMOTE capture tool, so no traffic"
+    note "reaches the capture host and there is nothing to tcpdump. Re-run, or"
+    note "wire it by hand once the address is known:"
+    note "  python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} \\"
+    note "    --collection aws-mirror-collect --cloud-config aws-mirror \\"
+    note "    --ingress-ip ${VPB_INGRESS_IP} --capture-ip <PRIVATE_IP> --insecure"
+    return 1
+  fi
   ok "Capture host ${iid} at ${CAPTURE_HOST_IP} (public ${CAPTURE_HOST_PUBLIC_IP:-none}, tcpdump on boot, pcaps in /var/log/cloudlens-tool)"
   return 0
 }
@@ -4732,7 +4760,20 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   if [[ "$WIRE_VPB_PATH" == "true" && "${CLOUDLENS_CAPTURE_HOST:-yes}" != "no" && -z "$CAPTURE_HOST_IP" ]]; then
     ensure_capture_host_now || note "Continuing without a capture host; the vPB path is still wired."
   fi
-  CAPTURE_ARG=(); [[ -n "$CAPTURE_HOST_IP" ]] && CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
+  # Say out loud whether the capture tool is going to be built. Without
+  # --capture-ip the wire phase quietly skips step 6b, so the run reports a
+  # wired path with no way to see a single packet, and the difference from a
+  # working stack is one missing line in a tool list nobody reads.
+  CAPTURE_ARG=()
+  if [[ -n "$CAPTURE_HOST_IP" ]]; then
+    CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
+    ok "Capture tool will be wired to ${CAPTURE_HOST_IP} (this is what makes traffic visible)"
+  elif [[ "$WIRE_VPB_PATH" == "true" ]]; then
+    warn "No capture host address, so NO capture tool will be created."
+    note "The vPB path still gets wired, but nothing will point at a host you can"
+    note "tcpdump, so there will be no way to prove traffic is flowing. The reason"
+    note "is above; re-running usually fixes it."
+  fi
   if [[ "$WIRE_VPB_PATH" != "true" ]]; then
     note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
   elif [[ "$DRY_RUN" == "true" ]]; then
