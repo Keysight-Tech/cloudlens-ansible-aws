@@ -293,6 +293,15 @@ Resources:
         - Description: L2GRE tunnel from CloudLens collector (IP protocol 47, no ports)
           IpProtocol: "47"
           CidrIp: !Ref AdminIngressCidr
+        # KVO pings a tunnel destination to test reachability. Without ICMP it
+        # reports "Tunnel of type GRE: Remote destination <ip> not reachable"
+        # while the GRE path carries traffic normally, and that false alert was
+        # twice misread as the vPB data ports being down.
+        - Description: ICMP so KVO's tunnel reachability probe can answer
+          IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref AdminIngressCidr
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb-sg"

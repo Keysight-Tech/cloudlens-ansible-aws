@@ -3578,6 +3578,15 @@ ensure_capture_host_now() {
   # SSH from the same admin CIDR the rest of the stack uses, so the operator can log in and watch
   probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
     --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
+  # ICMP from inside the VPC, so KVO's tunnel reachability probe can answer.
+  # Without it KVO raises "Tunnel of type GRE: Remote destination <ip> not
+  # reachable" against a destination that is receiving traffic perfectly well:
+  # measured with the alert active, this host took 312,049 packets under load
+  # against ~30 idle. The GRE data path (protocol 47) was never affected; only
+  # the ping used to test it was blocked. The false alert cost real debugging
+  # time and was twice misread as the vPB data ports being down.
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$sg" \
+    --ip-permissions "IpProtocol=icmp,FromPort=-1,ToPort=-1,IpRanges=[{CidrIp=${vpc_cidr},Description=KVO tunnel reachability probe}]" >/dev/null 2>&1
   # Ubuntu 22.04 AMI + tcpdump-on-boot user-data
   local ami
   ami=$(probe aws ssm get-parameter --region "$REGION" \
