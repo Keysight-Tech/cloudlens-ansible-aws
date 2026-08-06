@@ -437,6 +437,46 @@ login_block() {
   echo "Credentials file:   ${VC_CREDS_FILE} (mode 600)"
   echo "Sensor config:      customer_input.yaml (mode 600, holds the project key)"
   echo
+  # Where to actually WATCH the traffic. The summary listed every appliance
+  # login and then stopped, so the one machine the whole deployment exists to
+  # feed - the tool the tapped traffic lands on - had no entry, no address and
+  # no command. "It is deployed" and "I can see packets" are different claims,
+  # and only the second one convinces anyone.
+  echo "--- Watch the tapped traffic (this is the proof it works) ---"
+  if [[ -n "${CAPTURE_HOST_PUBLIC_IP:-}" ]]; then
+    echo "Capture host (tool):  ${CAPTURE_HOST_IP:-unknown} private"
+    echo "  SSH:              ssh -i ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem} ubuntu@${CAPTURE_HOST_PUBLIC_IP}"
+    echo "  user:             ubuntu   (EC2 key pair ${KEY_NAME}, no password)"
+    echo "  live view:        sudo tcpdump -i any -nn 'proto 47' -v"
+    echo "                    # 'proto 47' is GRE: the tunnel the mirrored copy arrives in."
+    echo "                    # Each line wraps an original packet from a tapped host."
+    echo "  saved captures:   ls -lh /var/log/cloudlens-tool/    (tcpdump runs from boot)"
+    echo "  read one back:    sudo tcpdump -r /var/log/cloudlens-tool/<file>.pcap -nn | head"
+    echo
+    echo "  Make traffic to look at, from any tapped workload:"
+    echo "    ping -c 100 -s 1337 8.8.8.8      # -s 1337 is a distinctive size,"
+    echo "                                      # easy to pick out of everything else"
+    echo "  Then on the capture host you should see that size arriving inside GRE."
+  else
+    echo "No capture host was created in this run, so there is nowhere to watch"
+    echo "packets land. Re-run and accept the vPB traffic path step to get one,"
+    echo "or point a tool of your own at the vPB egress."
+  fi
+  echo
+  echo "  Is the tap actually live? These two are the honest check:"
+  echo "    aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
+  echo "    aws ec2 describe-traffic-mirror-targets  --region ${REGION}"
+  echo "  One session per tagged workload means AWS is copying traffic. Zero"
+  echo "  sessions with everything else present is the normal failure."
+  echo
+  if [[ "$DEPLOY_VPB" == "true" ]]; then
+    echo "  If sessions exist but no packets reach the tool, check KVO > Alerts."
+    echo "  'Tunnel of type GRE: Remote destination <ip> not reachable' means the"
+    echo "  vPB data ports (eth1/eth2) are not up as DPDK ports. That bring-up is"
+    echo "  NOT automated: the interfaces exist in AWS but nothing is listening on"
+    echo "  them until you configure them on the vPB itself."
+    echo
+  fi
   # Learned the expensive way: three activation codes worth 500 counts each
   # came back availableQuantity=0 because the KVO they were activated on had
   # been deleted. Activation binds the quantity to a host, and deleting the
