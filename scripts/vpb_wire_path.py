@@ -144,14 +144,14 @@ def main():
     # The capture host key must ALSO match, or the same stream is fine at the
     # capture host and dropped at the vPB. tcpdump does not enforce GRE keys,
     # which is exactly why a mismatch stayed hidden for so long.
-    ap.add_argument("--capture-gre-key", type=int, default=100)
+    ap.add_argument("--capture-gre-key", type=int, default=64)
     ap.add_argument("--capture-vni", type=int, default=4096)
     ap.add_argument("--ingress-port", default="eth1")
     ap.add_argument("--egress-port", default="eth2")
     ap.add_argument("--ingress-ip", required=True, help="vPB ingress IP for the C2DL")
     ap.add_argument("--netmask", default="255.255.255.0")
     ap.add_argument("--gateway", help="ingress subnet default gateway")
-    ap.add_argument("--gre-key", default="100")
+    ap.add_argument("--gre-key", default="64")
     ap.add_argument("--kvo-admin-user", default="admin")
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true")

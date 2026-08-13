@@ -178,7 +178,7 @@ ADMIN_CIDR="${CLOUDLENS_ADMIN_CIDR:-0.0.0.0/0}"
 # 100% of 1.24M packets on two independent stacks. The capture host hid the bug
 # because tcpdump does not enforce GRE keys, so the identical stream looked
 # perfect there while the one device that checks the key dropped everything.
-CLOUDLENS_GRE_KEY="${CLOUDLENS_GRE_KEY:-100}"
+CLOUDLENS_GRE_KEY="${CLOUDLENS_GRE_KEY:-64}"
 DISCOVERY_TAG_KEY="${CLOUDLENS_DISCOVERY_TAG_KEY:-cloudlens}"
 DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 

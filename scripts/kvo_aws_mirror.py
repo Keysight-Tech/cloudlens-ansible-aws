@@ -429,7 +429,7 @@ def main():
     # here. These two defaults silently diverged (64 vs 100), nothing overrode them,
     # and the vPB denied 100%% of 1.24M packets on two stacks: it was told to strip a
     # key the collector never sent. Change one, change both.
-    ap.add_argument("--gre-key", type=int, default=100, help="L2GRE key (when --tool-encap L2GRE). Must equal the vPB C2DL termination key.")
+    ap.add_argument("--gre-key", type=int, default=64, help="L2GRE key (when --tool-encap L2GRE). Must equal the vPB C2DL termination key.")
     ap.add_argument("--vni", type=int, default=4096, help="VXLAN VNI (when --tool-encap VXLAN)")
     ap.add_argument("--device-link", default="",
                     help="comma-separated Cloud-to-Device Link (C2DL) name(s) to attach to the "
