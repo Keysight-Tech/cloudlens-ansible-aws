@@ -4797,6 +4797,63 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
          --ingress-ip "$VPB_INGRESS_IP" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
+
+      # Ask the vPB itself what it holds and what it is doing with the traffic.
+      #
+      # Everything else in this deploy reports KVO's INTENTION. Only the device
+      # reports reality, and the two disagreed for an entire night of debugging:
+      # KVO showed the device Online, Control Mode, policy committed, 0 open
+      # change requests, while the vPB received 1.75 million packets and denied
+      # every one of them. The KVO alert that looked like the answer, "Tunnel of
+      # type GRE: Remote destination not reachable", is a FALSE ALARM: the
+      # security group permits GRE but not ICMP, so the reachability probe fails
+      # while the data path carries traffic normally (measured: 312,049 packets
+      # arriving at a destination the dashboard called unreachable).
+      #
+      # These three commands settle in seconds what the dashboard cannot:
+      #   show license-status              what the DEVICE holds, not KVO's pool
+      #   show interface-status            are the data ports up
+      #   show traffic-rule-packet-counters  inspected vs passed vs denied
+      #
+      # Note "show license" is NOT a command. It returns empty, and that silence
+      # was once read as "unlicensed" and sent the diagnosis down a dead end.
+      if [[ -n "${VPB_PUBLIC_IP:-}" && -f "${KEY_PEM:-}" ]]; then
+        echo
+        step "Asking the vPB what it actually has (device truth, not KVO's view)"
+        _vpb_cli() {
+          ssh -i "$KEY_PEM" -p "${VPB_SSH_PORT:-9022}" \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=20 -o BatchMode=yes \
+              "${ADMIN_USERNAME:-admin}@${VPB_PUBLIC_IP}" "sudo vpb -c '$1'" 2>/dev/null \
+            | grep -v "^Warning: Permanently\|^Debian GNU\|^CloudLensVPB#$"
+        }
+        _lic="$(_vpb_cli 'show license-status' || true)"
+        if [[ -n "$_lic" ]]; then
+          echo "$_lic" | sed 's/^/    /'
+          if printf '%s' "$_lic" | grep -qi "license.*:.*vPB"; then
+            ok "vPB is licensed for KVO management (device confirms, not just KVO)"
+          fi
+        else
+          warn "The vPB did not answer 'show license-status'. It may still be booting."
+        fi
+        _cnt="$(_vpb_cli 'show traffic-rule-packet-counters' || true)"
+        if [[ -n "$_cnt" ]]; then
+          echo "$_cnt" | sed 's/^/    /'
+          if printf '%s' "$_cnt" | grep -qi "No traffic rules found"; then
+            note "No traffic rules on the device yet. Expected before traffic arrives;"
+            note "  re-check after the mirror sessions are cut and traffic is flowing."
+          elif printf '%s' "$_cnt" | awk '/[0-9]/ {p=$0} END{exit 0}' \
+               && printf '%s' "$_cnt" | grep -qE "[|][[:space:]]*0[[:space:]]*[|]"; then
+            warn "The vPB is INSPECTING traffic but PASSING none. Read the Passed column."
+            note "This is not a DPDK problem and not a reachability problem: the packets"
+            note "are arriving. Nothing has programmed a forwarding rule on the device."
+          fi
+        fi
+        note "Re-run these any time to see device truth:"
+        note "  ssh -i ${KEY_PEM} -p ${VPB_SSH_PORT:-9022} ${ADMIN_USERNAME:-admin}@${VPB_PUBLIC_IP}"
+        note "  sudo vpb -c 'show license-status'"
+        note "  sudo vpb -c 'show traffic-rule-packet-counters'"
+      fi
       if [[ -n "$CAPTURE_HOST_IP" ]]; then
         ok "Capture host (tool VM) wired to the vPB egress: ${CAPTURE_HOST_IP} (private)"
         note "SSH to it from your laptop or CloudShell (public address, key-pair login):"
