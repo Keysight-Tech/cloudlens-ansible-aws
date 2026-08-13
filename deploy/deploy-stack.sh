@@ -171,6 +171,14 @@ ADMIN_CIDR="${CLOUDLENS_ADMIN_CIDR:-0.0.0.0/0}"
 
 # Workload discovery tag: which AWS tag marks EC2s that should get the
 # CloudLens sensor. Default cloudlens=yes (the canonical convention).
+# ONE L2GRE key for the whole fabric. The collector encapsulates with it and the
+# vPB terminates on it, so the two MUST be identical or the vPB strips nothing and
+# denies every packet. They were not: kvo_aws_mirror.py defaulted to 64 and
+# vpb_wire_path.py to 100, neither call site passed the flag, and the vPB denied
+# 100% of 1.24M packets on two independent stacks. The capture host hid the bug
+# because tcpdump does not enforce GRE keys, so the identical stream looked
+# perfect there while the one device that checks the key dropped everything.
+CLOUDLENS_GRE_KEY="${CLOUDLENS_GRE_KEY:-100}"
 DISCOVERY_TAG_KEY="${CLOUDLENS_DISCOVERY_TAG_KEY:-cloudlens}"
 DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 
@@ -4645,7 +4653,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
   if [[ "$WITH_MIRROR" != "true" ]]; then
     note "Skipped. Run scripts/kvo_aws_mirror.py later if you want the fabric anyway."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/kvo_aws_mirror.py --kvo ${KVO_PUBLIC_IP} --clm-name ${CLM_NAME_IN_KVO} --region ${REGION} --vpc-id ${STACK_VPC_ID} --source-tag ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} --ssh-key ${KEY_NAME} --cloudlens-ip ${CLMS_PRIVATE_IP} --zone ${STACK_ZONE} --mgmt-subnet ${MGMT_SUBNET_ID} --ingress-subnet ${INGRESS_SUBNET_ID} --egress-subnet ${EGRESS_SUBNET_ID} --tool-remote-ip ${VPB_INGRESS_IP} --tool-encap L2GRE --aws-access-key <hidden> --aws-secret-key <hidden> --accept-eula --insecure"
+    dryrun_say "python3 scripts/kvo_aws_mirror.py --kvo ${KVO_PUBLIC_IP} --clm-name ${CLM_NAME_IN_KVO} --region ${REGION} --vpc-id ${STACK_VPC_ID} --source-tag ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} --ssh-key ${KEY_NAME} --cloudlens-ip ${CLMS_PRIVATE_IP} --zone ${STACK_ZONE} --mgmt-subnet ${MGMT_SUBNET_ID} --ingress-subnet ${INGRESS_SUBNET_ID} --egress-subnet ${EGRESS_SUBNET_ID} --tool-remote-ip ${VPB_INGRESS_IP} --tool-encap L2GRE --gre-key ${CLOUDLENS_GRE_KEY} --aws-access-key <hidden> --aws-secret-key <hidden> --accept-eula --insecure"
   elif [[ "$KVO_CHAIN_OK" != "true" ]]; then
     warn "KVO is not licensed/adopted, so the mirror fabric would fail. Skipping."
   elif [[ -z "$MIRROR_SCRIPT" ]] || ! python_chain_ready; then
@@ -4709,6 +4717,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            ${INGRESS_SG_ID:+--ingress-sg "$INGRESS_SG_ID"} \
            ${EGRESS_SG_ID:+--egress-sg "$EGRESS_SG_ID"} \
            ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
+           --gre-key "$CLOUDLENS_GRE_KEY" \
            --tool-encap L2GRE \
            --device-link vpb-c2dl \
            --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
@@ -4786,7 +4795,7 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   if [[ "$WIRE_VPB_PATH" != "true" ]]; then
     note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} ${CAPTURE_ARG[*]} --insecure"
+    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --gre-key ${CLOUDLENS_GRE_KEY} --capture-gre-key ${CLOUDLENS_GRE_KEY} ${CAPTURE_ARG[*]} --insecure"
     dryrun_say "would report the port bind honestly: no ports found is NOT a success"
   elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
     warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
@@ -4795,7 +4804,8 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   else
     if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
          --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
-         --ingress-ip "$VPB_INGRESS_IP" "${CAPTURE_ARG[@]}" --insecure; then
+         --ingress-ip "$VPB_INGRESS_IP" --gre-key "$CLOUDLENS_GRE_KEY" \
+         --capture-gre-key "$CLOUDLENS_GRE_KEY" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
 
       # Ask the vPB itself what it holds and what it is doing with the traffic.

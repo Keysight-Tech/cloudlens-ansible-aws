@@ -141,7 +141,10 @@ def main():
                          "(adds a REMOTE tool to the same monitoring policy)")
     ap.add_argument("--capture-tool", default="vpb-capture-tool")
     ap.add_argument("--capture-encap", default="L2GRE", choices=["L2GRE", "VXLAN"])
-    ap.add_argument("--capture-gre-key", type=int, default=64)
+    # The capture host key must ALSO match, or the same stream is fine at the
+    # capture host and dropped at the vPB. tcpdump does not enforce GRE keys,
+    # which is exactly why a mismatch stayed hidden for so long.
+    ap.add_argument("--capture-gre-key", type=int, default=100)
     ap.add_argument("--capture-vni", type=int, default=4096)
     ap.add_argument("--ingress-port", default="eth1")
     ap.add_argument("--egress-port", default="eth2")
