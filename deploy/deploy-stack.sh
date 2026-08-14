@@ -179,6 +179,10 @@ ADMIN_CIDR="${CLOUDLENS_ADMIN_CIDR:-0.0.0.0/0}"
 # because tcpdump does not enforce GRE keys, so the identical stream looked
 # perfect there while the one device that checks the key dropped everything.
 CLOUDLENS_GRE_KEY="${CLOUDLENS_GRE_KEY:-64}"
+# Deliberately different from the collector's key. Both tunnels land on the same
+# capture host, so the key is what tells you which path a packet took: the
+# collector's mirror arrives with key 64, the vPB's processed output with 200.
+CLOUDLENS_EGRESS_GRE_KEY="${CLOUDLENS_EGRESS_GRE_KEY:-200}"
 DISCOVERY_TAG_KEY="${CLOUDLENS_DISCOVERY_TAG_KEY:-cloudlens}"
 DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 
@@ -299,6 +303,9 @@ STACK_VPC_ID=""
 MGMT_SUBNET_ID=""
 INGRESS_SUBNET_ID=""
 EGRESS_SUBNET_ID=""
+VPB_EGRESS_IP=""
+VPB_EGRESS_NETMASK=""
+VPB_EGRESS_GATEWAY=""
 STACK_ZONE=""
 VC_PROJECT_KEY=""             # minted directly on the vController (Phase 9)
 KVO_PROJECT_KEY=""            # provisioned by the KVO Cloud Config (Phase 12)
@@ -2995,6 +3002,7 @@ discover_stack_facts() {
     STACK_VPC_ID="vpc-dryrun";   STACK_ZONE="${REGION}a"
     MGMT_SUBNET_ID="subnet-mgmt"; INGRESS_SUBNET_ID="subnet-ingress"
     EGRESS_SUBNET_ID="subnet-egress"
+    VPB_EGRESS_IP="10.0.2.12"; VPB_EGRESS_NETMASK="255.255.255.0"; VPB_EGRESS_GATEWAY="10.0.2.1"
     dryrun_say "would read private IPs, VPC and subnets from the deployed stack"
     return 0
   fi
@@ -3022,6 +3030,23 @@ discover_stack_facts() {
     VPB_INGRESS_IP="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`1\`].PrivateIpAddress | [0]")"
     INGRESS_SUBNET_ID="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`1\`].SubnetId | [0]")"
     EGRESS_SUBNET_ID="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`${egress_idx}\`].SubnetId | [0]")"
+    # The egress ENI's own address, plus the netmask and gateway of its subnet.
+    #
+    # KVO does not configure this for us. Without an IP on the egress port the
+    # vPB has no source address to originate a tunnel from, and it forwards
+    # nothing: measured live as Inspected 1,750,000 / Passed 0 with eth2 bare.
+    # Giving eth2 the ENI's address took the same device to Passed 145,037.
+    VPB_EGRESS_IP="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`${egress_idx}\`].PrivateIpAddress | [0]")"
+    if [[ -n "$EGRESS_SUBNET_ID" && "$EGRESS_SUBNET_ID" != "None" ]]; then
+      local egress_cidr
+      egress_cidr="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-subnets --subnet-ids "$EGRESS_SUBNET_ID" \
+                       --query 'Subnets[0].CidrBlock' --output text 2>/dev/null || echo "")"
+      if [[ -n "$egress_cidr" && "$egress_cidr" != "None" ]]; then
+        # AWS reserves the first usable address of every subnet as the router.
+        VPB_EGRESS_GATEWAY="$(python3 -c "import ipaddress,sys; n=ipaddress.ip_network(sys.argv[1]); print(n.network_address+1)" "$egress_cidr" 2>/dev/null || echo "")"
+        VPB_EGRESS_NETMASK="$(python3 -c "import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1]).netmask)" "$egress_cidr" 2>/dev/null || echo "")"
+      fi
+    fi
   fi
   # Collectors can share the management subnet when there is no vPB data plane.
   [[ -z "$INGRESS_SUBNET_ID" ]] && INGRESS_SUBNET_ID="$MGMT_SUBNET_ID"
@@ -4792,10 +4817,24 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
     note "tcpdump, so there will be no way to prove traffic is flowing. The reason"
     note "is above; re-running usually fixes it."
   fi
+  # The egress port's address. The vPB tunnels its OUTPUT to the same host the
+  # collector mirrors to, so one tcpdump sees both paths; the different GRE keys
+  # tell them apart (collector CLOUDLENS_GRE_KEY, vPB CLOUDLENS_EGRESS_GRE_KEY).
+  EGRESS_ARG=()
+  if [[ -n "$VPB_EGRESS_IP" && "$VPB_EGRESS_IP" != "None" ]]; then
+    EGRESS_ARG=(--egress-ip "$VPB_EGRESS_IP")
+    [[ -n "$VPB_EGRESS_NETMASK" ]] && EGRESS_ARG+=(--egress-netmask "$VPB_EGRESS_NETMASK")
+    [[ -n "$VPB_EGRESS_GATEWAY" ]] && EGRESS_ARG+=(--egress-gateway "$VPB_EGRESS_GATEWAY")
+  else
+    warn "No egress ENI address found for the vPB."
+    note "eth2 will be bound with no IP, and a vPB with no address on its egress"
+    note "port forwards nothing at all: the counters read Inspected N / Passed 0."
+  fi
+
   if [[ "$WIRE_VPB_PATH" != "true" ]]; then
     note "Skipped. Bring eth1/eth2 up on the vPB first, then run scripts/vpb_wire_path.py."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --gre-key ${CLOUDLENS_GRE_KEY} --capture-gre-key ${CLOUDLENS_GRE_KEY} ${CAPTURE_ARG[*]} --insecure"
+    dryrun_say "python3 scripts/vpb_wire_path.py --kvo ${KVO_PUBLIC_IP} --device ${VPB_DEVICE_NAME} --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --gre-key ${CLOUDLENS_GRE_KEY} --capture-gre-key ${CLOUDLENS_GRE_KEY} --egress-gre-key ${CLOUDLENS_EGRESS_GRE_KEY} ${EGRESS_ARG[*]} ${CAPTURE_ARG[*]} --insecure"
     dryrun_say "would report the port bind honestly: no ports found is NOT a success"
   elif [[ -z "$WIRE_SCRIPT" ]] || ! python_chain_ready; then
     warn "scripts/vpb_wire_path.py or python3 is unavailable; skipping the traffic path."
@@ -4805,7 +4844,9 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
     if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$VPB_DEVICE_NAME" \
          --collection "$WIRE_COLLECTION" --cloud-config "$CLOUD_CONFIG_NAME" \
          --ingress-ip "$VPB_INGRESS_IP" --gre-key "$CLOUDLENS_GRE_KEY" \
-         --capture-gre-key "$CLOUDLENS_GRE_KEY" "${CAPTURE_ARG[@]}" --insecure; then
+         --capture-gre-key "$CLOUDLENS_GRE_KEY" \
+         --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
+         "${EGRESS_ARG[@]}" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
 
       # Ask the vPB itself what it holds and what it is doing with the traffic.

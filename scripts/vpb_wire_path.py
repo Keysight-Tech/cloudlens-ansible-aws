@@ -9,13 +9,25 @@ Sequence (each gotcha below cost a debugging cycle, do not reorder):
   1. syncDeviceConfigPorts(forceSync)      pulls eth1/eth2 into the Device Config
   2. createC2DLink                          the Cloud-to-Device Link
   3. bindDeviceConfigPorts eth1             INGRESS -> C2DL
-  4. createTool type=LOCAL                  a REMOTE/cloud tool CANNOT bind to a
-                                            device port. Do NOT send vlanStripping/
-                                            encapsulation/tunnelOrigRemoteIP: KVO
-                                            rejects them on LOCAL tools
-  5. bindDeviceConfigPorts eth2             EGRESS -> tool. Bind ingress and
+  4. createTool type=REMOTE                 reachableFrom DEVICE_CONFIG, so the vPB
+     reachableFrom DEVICE_CONFIG            ORIGINATES an L2GRE tunnel out of eth2
+                                            to the tool. This was type=LOCAL and the
+                                            vPB forwarded NOTHING: a LOCAL tool is
+                                            the bare port, so the vPB put raw frames
+                                            on an AWS subnet and AWS dropped every
+                                            one. Inspected climbed into the millions
+                                            while Passed stayed at 0
+  5. bindDeviceConfigPorts eth2             EGRESS -> tool, WITH ip/netmask/gateway.
+                                            _ToolBindInput carries them and we sent
+                                            none, so eth2 had no address and could
+                                            not be a tunnel source. Bind ingress and
                                             egress in SEPARATE calls: a failing
-                                            egress bind rolls back the whole call
+                                            egress bind rolls back the whole call.
+                                            Order matters too: a policy cannot
+                                            reference a tool that is not bound to a
+                                            port, and a port cannot drop a tool the
+                                            policy still references, so releasing
+                                            the old tool from the policy comes first
   6. updateCloudConfig deviceLinks          REQUIRED or the policy commit fails
                                             with "does not have a device link
                                             associated to it". Pass the FULL
@@ -110,6 +122,23 @@ def commit_cr(base, token, cr_uid, verify, timeout=600):
     log("  commit without ever changing the status.")
     return False
 
+def _egress_bind(a):
+    """The egress port binding, WITH its IP.
+
+    _ToolBindInput carries ip / netmask / defaultGateway, and omitting them is
+    what left eth2 with no address. The UI exposes the same fields as the tool's
+    "Port Configuration" tab. With no address the vPB cannot be the source of a
+    tunnel, so nothing it forwards ever leaves the box.
+    """
+    b = {"tool": {"name": a.tool}}
+    if a.egress_ip:
+        b["ip"] = a.egress_ip
+        b["netmask"] = a.egress_netmask
+        if a.egress_gateway:
+            b["defaultGateway"] = a.egress_gateway
+    return b
+
+
 def step(base, token, verify, label, mutation, variables):
     """One mutation inside its own committed change request."""
     cr = open_cr(base, token, label, verify)
@@ -148,10 +177,22 @@ def main():
     ap.add_argument("--capture-vni", type=int, default=4096)
     ap.add_argument("--ingress-port", default="eth1")
     ap.add_argument("--egress-port", default="eth2")
+    # The egress port needs its OWN IP. Without one the vPB has no source address
+    # to originate a tunnel from, so a LOCAL tool there emits raw frames that AWS
+    # silently discards: the device passed 0 packets for an entire debugging
+    # session while eth2 sat with no address at all.
+    ap.add_argument("--egress-ip", help="vPB egress port IP, e.g. 10.99.12.35")
+    ap.add_argument("--egress-netmask", default="255.255.255.0")
+    ap.add_argument("--egress-gateway", help="egress subnet default gateway")
     ap.add_argument("--ingress-ip", required=True, help="vPB ingress IP for the C2DL")
     ap.add_argument("--netmask", default="255.255.255.0")
     ap.add_argument("--gateway", help="ingress subnet default gateway")
     ap.add_argument("--gre-key", default="64")
+    # Deliberately DIFFERENT from the collector's key: the tool then receives two
+    # distinguishable streams, the collector's direct copy and the vPB's processed
+    # output, and one tcpdump tells you which path delivered which packet.
+    ap.add_argument("--egress-gre-key", type=int, default=200,
+                    help="L2GRE key the vPB uses on its egress tunnel to the tool")
     ap.add_argument("--kvo-admin-user", default="admin")
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true")
@@ -212,22 +253,57 @@ def main():
                                             "connectedC2DLink": {"c2dLink": {"name": a.c2dl}, "ip": a.ingress_ip}}]}}):
         return 5
 
-    # 4. LOCAL tool
-    if a.tool in existing("tools"):
-        log(f"4/7 tool '{a.tool}' already exists")
+    # 4. Egress tool: REMOTE, reachable FROM THE DEVICE.
+    #
+    # This was a LOCAL tool, and that is why the vPB forwarded nothing for an
+    # entire session. A LOCAL tool is just the port itself, so the vPB emitted
+    # raw frames onto an AWS subnet, and AWS drops frames not addressed to an
+    # ENI. The counters said it plainly: Inspected in the millions, Passed 0.
+    #
+    # A REMOTE tool with reachableFrom DEVICE_CONFIG makes the vPB ORIGINATE an
+    # L2GRE tunnel out of eth2 to a real destination, which AWS routes normally.
+    # Proven live: Passed went 0 -> 145,037, and the tool captured the tapped
+    # payload with the vPB egress IP as the outer source.
+    if not a.capture_ip:
+        log("4/7 no --capture-ip given, so the vPB has nowhere to send.")
+        log("    Skipping the egress tool rather than forwarding into a black hole.")
+    elif a.tool in existing("tools"):
+        # An existing tool is not automatically a WORKING tool. Earlier releases
+        # created this as LOCAL, which forwards nothing, and simply reusing it by
+        # name would keep a broken path broken while reporting success.
+        stale = [t for t in (gql(base, tok, "{ tools { name type } }", None, verify)
+                             .get("data", {}).get("tools") or [])
+                 if t["name"] == a.tool and t.get("type") == "LOCAL"]
+        if stale:
+            log(f"4/7 tool '{a.tool}' exists but is type LOCAL, which forwards NOTHING.")
+            log("    A LOCAL tool is the bare port, so the vPB puts raw frames on an AWS")
+            log("    subnet and AWS drops them all. Converting it needs three committed")
+            log("    changes in this order, because a policy cannot reference an unbound")
+            log("    tool and a port cannot drop a tool the policy still references:")
+            log(f"      1. edit the monitoring policy to send to the capture tool only")
+            log(f"      2. delete '{a.tool}', recreate it as REMOTE / reachableFrom")
+            log(f"         DEVICE_CONFIG with tunnelOrigRemoteIP {a.capture_ip}, then")
+            log(f"         rebind {a.egress_port} to it with ip {a.egress_ip or '<egress ENI IP>'}")
+            log("      3. add the tool back to the monitoring policy")
+            log("    Leaving it as it is: this script will not delete a tool your policy uses.")
+        else:
+            log(f"4/7 tool '{a.tool}' already exists")
     else:
-        log("4/7 createTool (LOCAL, reachableFrom DEVICE_CONFIG)")
-        if not step(base, tok, verify, "create local tool",
+        log(f"4/7 createTool (REMOTE from device -> {a.capture_ip}, L2GRE key {a.egress_gre_key})")
+        if not step(base, tok, verify, "create egress tool",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_ToolInput!){ createTool(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.tool, "c": cluster,
-                     "s": {"type": "LOCAL", "reachableFrom": "DEVICE_CONFIG"}}): return 5
+                     "s": {"type": "REMOTE", "reachableFrom": "DEVICE_CONFIG",
+                           "vlanStripping": False,
+                           "tunnelOrigRemoteIP": a.capture_ip,
+                           "l2greEncapsulation": {"key": str(a.egress_gre_key)}}}): return 5
 
     # 5. egress -> tool  (separate call from the ingress bind on purpose)
     log(f"5/7 bind {a.egress_port} (egress) -> tool")
     if not step(base, tok, verify, "bind egress",
                 "mutation($u:ID!,$cr:String!,$s:_BindPortsInput!){ bindDeviceConfigPorts(uid:$u,changeID:$cr,settings:$s){ uid } }",
                 {"u": uid, "s": {"ports": [{"portId": a.egress_port,
-                                            "connectedTools": [{"tool": {"name": a.tool}}]}]}}):
+                                            "connectedTools": [_egress_bind(a)]}]}}):
         return 5
 
     # 6. associate the C2DL to the cloud config (FULL awsConfiguration round-trip)
@@ -337,7 +413,7 @@ def main():
     log(" vPB traffic path wired")
     log(f"   source      {a.collection}")
     log(f"   C2DL        {a.c2dl}  -> {a.device} {a.ingress_port} ({a.ingress_ip})")
-    log(f"   tool        {a.tool} (LOCAL) <- {a.device} {a.egress_port}")
+    log(f"   tool        {a.tool} (REMOTE from device) <- {a.device} {a.egress_port} {a.egress_ip or 'NO IP'} -> {a.capture_ip or '-'} key {a.egress_gre_key}")
     log(f"   policy      {a.policy}")
     log(f"   c2DLinks    {[c['name'] for c in dd.get('c2DLinks') or []]}")
     log(f"   tools       {[(t['name'], t['type']) for t in dd.get('tools') or []]}")
