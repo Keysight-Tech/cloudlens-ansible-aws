@@ -168,65 +168,63 @@ aws ec2 describe-traffic-mirror-targets  --region <region>
 and in KVO: **Visibility Fabric > Cloud Configs** shows the Aws config, and the
 Global Dashboard shows the collectors. A session per tagged source ENI = working.
 
-## If you are sending through the vPB: the same re-commit applies
+## If you are sending through the vPB: the same re-commit fixes it
 
-The vPB path has the same shape of problem, and the same likely remedy.
+**Confirmed on a live stack: re-committing the Cloud Collection also makes the
+vPB forward traffic.** One action fixes both symptoms. You do not need to
+re-create the C2DL, rebuild the monitoring policy, or configure anything on the
+vPB by hand.
 
-**Symptom:** the vPB receives the mirrored traffic and forwards none of it.
+Before the re-commit the vPB receives everything and forwards nothing:
 
 ```bash
 sudo vpb -c 'show traffic-rule-packet-counters'
 TR1 | 9998 | Inspected 1,756,817 | Passed 0 | Denied 1,756,817
 ```
 
-**What the device is actually doing** - this is the command that explains it, and
-counters alone never will:
+After it, measured under generated load:
 
 ```bash
-sudo vpb -c 'show traffic-rule-status'
-Traffic Rule TR1
-  Operation: PASS
-  Ingress Interface: eth1
-  Filter Configuration:
-    L2 Filter:
-      VLAN ID: 1          <-- the rule only matches VLAN 1
-  Egress Configuration:
-    Interface: eth2
+sudo vpb -c 'show traffic-rule-packet-counters'
+T0   Inspected 25,059   Passed 12,526   Denied 12,533
+T1   Inspected 31,426   Passed 15,709   Denied 15,717
+
+sudo vpb -c 'show interface-pkt-counters'
+eth1   RX 33,237 pkts / 36.3 MB    mirrored traffic arriving
+eth2   TX 16,542 pkts / 17.4 MB    traffic leaving toward the tool
 ```
 
-KVO **does** program a correct PASS rule from ingress to egress. It just filters
-on VLAN 1, and mirrored L2GRE traffic from the collector carries no such tag, so
-nothing matches.
+`Passed` climbing and `eth2 TX` climbing together mean traffic is flowing through
+the broker end to end.
 
-**The likely cause is ordering, exactly as with the Cloud Collection.** The C2DL,
-the tools and the monitoring policy are all created *before* the collection has
-live sources and before the collector is registered. KVO computes the device rule
-against that incomplete picture. Re-committing the collection is what makes KVO
-recompute for the mirror sessions; the same recompute is what the device rule
-needs.
+**Why it works:** ordering. The C2DL, the tools and the monitoring policy are all
+created before the Cloud Collection has live sources and before the collector has
+registered, so KVO computes the device rule against an incomplete picture.
+Re-committing the collection makes KVO recompute everything downstream, the
+device rule included.
 
-**So when you do the manual re-commit above, check the vPB immediately after:**
+**Two things worth knowing:**
+
+The rule still reads `L2 Filter: VLAN ID: 1` while passing traffic, so that
+filter is not itself a fault, and roughly half the packets are still denied in a
+near-exact 50/50 split. That is worth understanding but it does not block
+anything: traffic flows.
+
+The KVO alert *"Tunnel of type GRE: Remote destination not reachable"* is a
+**false alarm**. The security group permits GRE but not ICMP, so KVO's
+reachability probe fails while the data path carries traffic normally. Check the
+counters, never the alert.
+
+**Diagnosing a vPB that is not forwarding, in order:**
 
 ```bash
-sudo vpb -c 'show traffic-rule-status'          # has the VLAN 1 filter changed?
-sudo vpb -c 'show traffic-rule-packet-counters' # is Passed above zero?
+sudo vpb -c 'show traffic-rule-packet-counters'   # Inspected vs Passed vs Denied
+sudo vpb -c 'show traffic-rule-status'            # WHY: the filter and egress
+sudo vpb -c 'show interface-pkt-counters'         # is eth2 transmitting
+sudo vpb -c 'show license-status'                 # expect CL.vPB.ADVKVO, Server State up
 ```
 
-`Passed` climbing is the only acceptable proof. If the filter still reads
-VLAN ID 1 after the re-commit, re-create the **C2DL and the monitoring policy**
-last, after the collection has live sources, and check again.
-
-**Ruled out already, each by measurement, so do not spend time on them:** the
-data ports are up and eth1 holds an IP; the tunnel reaches the device (over a
-million packets arrived); the licence is present (`show license-status` reports
-`CL.vPB.ADVKVO`, Server State up); the device is in Control Mode with a
-DeviceConfig binding; and the KVO alert *"Tunnel of type GRE: Remote destination
-not reachable"* is a **false alarm** caused by the security group permitting GRE
-but not ICMP, so the reachability probe fails while traffic flows normally.
-
-**The capture path does not depend on any of this.** The collector tunnels
-straight to the capture host, which is why packet-level proof is obtainable even
-while the vPB forwards nothing.
+Counters tell you traffic is denied. Only `show traffic-rule-status` tells you why.
 
 ## How this relates to the sensor path
 
