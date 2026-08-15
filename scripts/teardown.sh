@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -z "$STACK_NAME" ]] && { usage; exit 1; }
+[[ -z "$STACK_NAME" && -z "$VPC_ID" ]] && { usage; exit 1; }
 
 AWSQ=(aws --region "$REGION")
 "${AWSQ[@]}" sts get-caller-identity >/dev/null 2>&1 \
@@ -77,9 +77,18 @@ $ASSUME_YES || say "DRY RUN. Nothing will be deleted. Add --yes to act."
 say ""
 
 # Resolve the VPC from the stack when not given, so nothing is guessed.
-if [[ -z "$VPC_ID" ]]; then
+if [[ -z "$VPC_ID" && -n "$STACK_NAME" ]]; then
   VPC_ID="$("${AWSQ[@]}" cloudformation describe-stacks --stack-name "$STACK_NAME" \
     --query "Stacks[0].Outputs[?OutputKey=='SharedVpcId'].OutputValue|[0]" --output text 2>/dev/null)"
+  # The stack is very often ALREADY deleted, leaving the KVO-launched collectors
+  # behind. That is the whole reason this script exists, so treat it as normal
+  # and fall back to finding the VPC by its leftovers.
+  if [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]]; then
+    say "stack ${STACK_NAME} no longer exists; looking for leftovers by VPC instead"
+    VPC_ID="$("${AWSQ[@]}" ec2 describe-instances \
+      --filters "Name=tag:Name,Values=*collector*" "Name=instance-state-name,Values=running,stopped" \
+      --query 'Reservations[0].Instances[0].VpcId' --output text 2>/dev/null)"
+  fi
 fi
 [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]] && die "could not resolve the VPC for ${STACK_NAME}; pass --vpc-id"
 say "stack ${STACK_NAME}   vpc ${VPC_ID}   region ${REGION}"
@@ -144,6 +153,35 @@ TARGETS="$("${AWSQ[@]}" ec2 describe-traffic-mirror-targets \
   | awk 'NR==FNR{e[$1];next} ($2 in e){print $1}' "$ENI_FILE" -)"
 for T in $TARGETS; do run "${AWSQ[@]}" ec2 delete-traffic-mirror-target --traffic-mirror-target-id "$T"; done
 
+# ORPHANED targets and filters: once the instances are gone so are their ENIs,
+# and a target whose ENI no longer resolves can never be matched to a VPC again.
+# Measured: a first pass left 4 targets and 2 filters behind for exactly this
+# reason, invisible to any VPC-scoped query. A target pointing at a
+# non-existent interface belongs to nobody, so removing it is safe.
+LIVE_ENI_FILE="$(mktemp)"
+"${AWSQ[@]}" ec2 describe-network-interfaces --query 'NetworkInterfaces[].NetworkInterfaceId' \
+  --output text 2>/dev/null | tr '\t' '\n' | sed '/^$/d' | sort -u > "$LIVE_ENI_FILE"
+ORPHANED="$("${AWSQ[@]}" ec2 describe-traffic-mirror-targets \
+  --query 'TrafficMirrorTargets[].[TrafficMirrorTargetId,NetworkInterfaceId]' --output text 2>/dev/null \
+  | awk 'NR==FNR{e[$1];next} !($2 in e){print $1}' "$LIVE_ENI_FILE" -)"
+for T in $ORPHANED; do
+  say "    orphaned target ${T} (its interface no longer exists)"
+  run "${AWSQ[@]}" ec2 delete-traffic-mirror-target --traffic-mirror-target-id "$T"
+done
+rm -f "$LIVE_ENI_FILE"
+
+# Filters are referenced by sessions, so once every session is gone any filter
+# still carrying our naming is dead weight. Only touch ones with no session.
+USED_FILTERS="$("${AWSQ[@]}" ec2 describe-traffic-mirror-sessions \
+  --query 'TrafficMirrorSessions[].TrafficMirrorFilterId' --output text 2>/dev/null | tr '\t' '\n' | sort -u)"
+for F in $("${AWSQ[@]}" ec2 describe-traffic-mirror-filters \
+             --query 'TrafficMirrorFilters[].TrafficMirrorFilterId' --output text 2>/dev/null | tr '\t' '\n'); do
+  if ! printf '%s\n' "$USED_FILTERS" | grep -qx "$F"; then
+    say "    unused filter ${F}"
+    run "${AWSQ[@]}" ec2 delete-traffic-mirror-filter --traffic-mirror-filter-id "$F"
+  fi
+done
+
 # --- 2. ASGs BEFORE instances, or the ASG rebuilds what you terminate --------
 say "2. Collector auto scaling groups"
 ASGS="$("${AWSQ[@]}" autoscaling describe-auto-scaling-groups \
@@ -171,6 +209,10 @@ fi
 
 # --- 4. The stack itself ----------------------------------------------------
 say "4. CloudFormation stack"
+if [[ -z "$STACK_NAME" ]] || ! "${AWSQ[@]}" cloudformation describe-stacks \
+     --stack-name "$STACK_NAME" >/dev/null 2>&1; then
+  ok "no such stack (already deleted, or none given): nothing to do here"
+else
 run "${AWSQ[@]}" cloudformation delete-stack --stack-name "$STACK_NAME"
 if $ASSUME_YES; then
   say "    waiting for delete to complete (this is where DELETE_FAILED shows up)"
@@ -180,6 +222,7 @@ if $ASSUME_YES; then
     warn "  aws ec2 describe-network-interfaces --region ${REGION} --filters Name=vpc-id,Values=${VPC_ID}"
     warn "  aws ec2 describe-security-groups --region ${REGION} --filters Name=vpc-id,Values=${VPC_ID}"
   fi
+fi
 fi
 
 # --- 5. The bill nobody watches --------------------------------------------
