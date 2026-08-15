@@ -2992,7 +2992,10 @@ state_phase stack done
 # publishes some of that as outputs; Terraform does not, so both paths fall
 # back to reading the instance by its Name tag.
 # ---------------------------------------------------------------------
-KEY_PEM="$HOME/.ssh/${KEY_NAME}.pem"
+# Default location, overridable. Not everyone keeps the .pem in ~/.ssh: on this
+# machine the lab key lives in ~/Documents, and with no override the SSH steps
+# silently skip on a key that is present but elsewhere.
+KEY_PEM="${CLOUDLENS_KEY_PEM:-$HOME/.ssh/${KEY_NAME}.pem}"
 
 # Locate a repo script wherever this run is executing from (checkout, clone,
 # or cwd). Echoes the path, returns 1 when it is nowhere to be found.
