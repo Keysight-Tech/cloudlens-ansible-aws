@@ -27,6 +27,10 @@ VPC_ID=""; STACK_NAME=""; KEY_PEM=""; DURATION=25
 GRE_KEY_COLLECTOR="${CLOUDLENS_GRE_KEY:-64}"
 GRE_KEY_VPB="${CLOUDLENS_EGRESS_GRE_KEY:-200}"
 PING_SIZE=1337   # distinctive on purpose: easy to pick out of real traffic
+# 0 = measure once and report. Give it seconds to keep retrying while the
+# collector registers and KVO pushes the device rule: a fresh deploy typically
+# needs several minutes before the broker leg carries anything.
+WAIT_SECONDS="${CLOUDLENS_PROVE_WAIT:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --stack-name)  STACK_NAME="$2"; shift 2 ;;
     --key)         KEY_PEM="$2"; shift 2 ;;
     --duration)    DURATION="$2"; shift 2 ;;
+    --wait)        WAIT_SECONDS="$2"; shift 2 ;;
     --gre-key)     GRE_KEY_COLLECTOR="$2"; shift 2 ;;
     --egress-gre-key) GRE_KEY_VPB="$2"; shift 2 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
@@ -180,73 +185,100 @@ vpb_counters() {
 }
 BEFORE="$(vpb_counters)"
 
-# --- generate traffic, capture at the tool, at the same time -----------------
-head2 "generating traffic for ${DURATION}s"
+# --- nothing is instant. Wait for the fabric before calling it a failure -----
+# Sessions get cut, the collector boots and registers, and KVO pushes the device
+# rule, all at their own pace. Measuring the instant a deploy finishes reports a
+# healthy build as broken. --wait retries the whole measurement instead of
+# guessing a sleep, and reports what it is still waiting for.
+WAIT_UNTIL=$(( $(date +%s) + WAIT_SECONDS ))
 
-# The capture must be running BEFORE the traffic starts, or the first packets
-# are missed and a working path looks half broken.
-"${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
-  "sudo rm -f /tmp/prove.pcap; nohup sudo timeout $((DURATION+5)) tcpdump -i any -nn 'proto 47' -w /tmp/prove.pcap >/dev/null 2>&1 &" \
-  || { fail "could not start tcpdump on the tool"; exit 4; }
-sleep 3
+measure_once() {
+  # --- generate traffic, capture at the tool, at the same time -----------------
+  head2 "generating traffic for ${DURATION}s"
 
-GEN=0
-for w in "${WORKLOADS[@]}"; do
-  read -r priv pub name platform <<<"$w"
-  [[ -z "$pub" || "$pub" == "None" ]] && continue
-  # Windows is tapped agentlessly and has no SSH, so it cannot be driven from
-  # here. Its traffic still appears if the instance is doing anything at all.
-  if [[ "$platform" == "windows" ]]; then
-    say "  $name ($priv) windows: tapped agentlessly, not driven from here"
-    continue
-  fi
-  for u in ubuntu ec2-user rhel admin; do
-    if "${SSH[@]}" -i "$KEY_PEM" "${u}@${pub}" true 2>/dev/null; then
-      "${SSH[@]}" -i "$KEY_PEM" "${u}@${pub}" \
-        "nohup sh -c 'ping -c ${DURATION} -s ${PING_SIZE} 8.8.8.8; for i in \$(seq 1 20); do curl -s -o /dev/null https://aws.amazon.com; done' >/dev/null 2>&1 &" 2>/dev/null
-      say "  $name ($priv) as $u: ping -s ${PING_SIZE} + https"
-      GEN=$((GEN+1)); break
+  # The capture must be running BEFORE the traffic starts, or the first packets
+  # are missed and a working path looks half broken.
+  "${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
+    "sudo rm -f /tmp/prove.pcap; nohup sudo timeout $((DURATION+5)) tcpdump -i any -nn 'proto 47' -w /tmp/prove.pcap >/dev/null 2>&1 &" \
+    || { fail "could not start tcpdump on the tool"; exit 4; }
+  sleep 3
+
+  GEN=0
+  for w in "${WORKLOADS[@]}"; do
+    read -r priv pub name platform <<<"$w"
+    [[ -z "$pub" || "$pub" == "None" ]] && continue
+    # Windows is tapped agentlessly and has no SSH, so it cannot be driven from
+    # here. Its traffic still appears if the instance is doing anything at all.
+    if [[ "$platform" == "windows" ]]; then
+      say "  $name ($priv) windows: tapped agentlessly, not driven from here"
+      continue
     fi
+    for u in ubuntu ec2-user rhel admin; do
+      if "${SSH[@]}" -i "$KEY_PEM" "${u}@${pub}" true 2>/dev/null; then
+        "${SSH[@]}" -i "$KEY_PEM" "${u}@${pub}" \
+          "nohup sh -c 'ping -c ${DURATION} -s ${PING_SIZE} 8.8.8.8; for i in \$(seq 1 20); do curl -s -o /dev/null https://aws.amazon.com; done' >/dev/null 2>&1 &" 2>/dev/null
+        say "  $name ($priv) as $u: ping -s ${PING_SIZE} + https"
+        GEN=$((GEN+1)); break
+      fi
+    done
   done
+  [[ $GEN -eq 0 ]] && say "  (drove no workload directly; measuring whatever traffic exists)"
+
+  sleep "$((DURATION+4))"
+
+  # --- what arrived ------------------------------------------------------------
+  # The GRE key sits at ip[24:4] once the key-present flag is set. It is the only
+  # field distinguishing the collector's copy from the vPB's output here.
+  read -r N_COLL N_VPB N_TOTAL <<<"$("${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" "
+    c=\$(sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_COLLECTOR}' 2>/dev/null | wc -l)
+    v=\$(sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' 2>/dev/null | wc -l)
+    t=\$(sudo tcpdump -r /tmp/prove.pcap -nn 2>/dev/null | wc -l)
+    echo \$c \$v \$t" 2>/dev/null)"
+
+  head2 "what arrived at the tool ${TOOL_PRIV}"
+  say "  total GRE packets              ${N_TOTAL:-0}"
+  say "  collector mirror  (key ${GRE_KEY_COLLECTOR})       ${N_COLL:-0}"
+  say "  vPB egress        (key ${GRE_KEY_VPB})      ${N_VPB:-0}"
+
+  say ""
+  say "  tapped sources seen inside the vPB stream:"
+  "${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
+    "sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' 2>/dev/null \
+       | grep -oE ': IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print \$3}' | sort | uniq -c | sort -rn | head" 2>/dev/null \
+    | sed 's/^/    /'
+
+  say ""
+  say "  one decapsulated sample (outer = vPB -> tool, inner = the tapped packet):"
+  "${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
+    "sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' -c 1 2>/dev/null" 2>/dev/null | sed 's/^/    /'
+
+  # --- vPB counters AFTER ------------------------------------------------------
+  AFTER="$(vpb_counters)"
+  if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
+    read -r i0 p0 <<<"$BEFORE"; read -r i1 p1 <<<"$AFTER"
+    head2 "vPB traffic rule (the device's own count, not KVO's opinion)"
+    say "  inspected  ${i0} -> ${i1}   (+$((i1-i0)))"
+    say "  passed     ${p0} -> ${p1}   (+$((p1-p0)))"
+  fi
+
+}
+
+# Measure, and retry while there is still wait budget. A failure on the first
+# pass right after a deploy usually means the collector has not registered yet,
+# not that anything is wrong: retrying is the honest way to tell those apart.
+ATTEMPT=0
+while :; do
+  ATTEMPT=$((ATTEMPT+1))
+  measure_once
+  if [[ "${N_COLL:-0}" -gt 0 && "${N_VPB:-0}" -gt 0 ]]; then break; fi
+  now=$(date +%s)
+  if (( now >= WAIT_UNTIL )); then break; fi
+  left=$(( WAIT_UNTIL - now ))
+  head2 "attempt ${ATTEMPT}: not both paths yet, ${left}s of wait budget left"
+  [[ "${N_COLL:-0}" -eq 0 ]] && say "  waiting on: mirror sessions / collector registering"
+  [[ "${N_VPB:-0}"  -eq 0 ]] && say "  waiting on: the vPB to receive and forward (KVO pushes the rule)"
+  sleep 30
 done
-[[ $GEN -eq 0 ]] && say "  (drove no workload directly; measuring whatever traffic exists)"
-
-sleep "$((DURATION+4))"
-
-# --- what arrived ------------------------------------------------------------
-# The GRE key sits at ip[24:4] once the key-present flag is set. It is the only
-# field distinguishing the collector's copy from the vPB's output here.
-read -r N_COLL N_VPB N_TOTAL <<<"$("${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" "
-  c=\$(sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_COLLECTOR}' 2>/dev/null | wc -l)
-  v=\$(sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' 2>/dev/null | wc -l)
-  t=\$(sudo tcpdump -r /tmp/prove.pcap -nn 2>/dev/null | wc -l)
-  echo \$c \$v \$t" 2>/dev/null)"
-
-head2 "what arrived at the tool ${TOOL_PRIV}"
-say "  total GRE packets              ${N_TOTAL:-0}"
-say "  collector mirror  (key ${GRE_KEY_COLLECTOR})       ${N_COLL:-0}"
-say "  vPB egress        (key ${GRE_KEY_VPB})      ${N_VPB:-0}"
-
-say ""
-say "  tapped sources seen inside the vPB stream:"
-"${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
-  "sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' 2>/dev/null \
-     | grep -oE ': IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print \$3}' | sort | uniq -c | sort -rn | head" 2>/dev/null \
-  | sed 's/^/    /'
-
-say ""
-say "  one decapsulated sample (outer = vPB -> tool, inner = the tapped packet):"
-"${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
-  "sudo tcpdump -r /tmp/prove.pcap -nn 'ip[24:4] = ${GRE_KEY_VPB}' -c 1 2>/dev/null" 2>/dev/null | sed 's/^/    /'
-
-# --- vPB counters AFTER ------------------------------------------------------
-AFTER="$(vpb_counters)"
-if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
-  read -r i0 p0 <<<"$BEFORE"; read -r i1 p1 <<<"$AFTER"
-  head2 "vPB traffic rule (the device's own count, not KVO's opinion)"
-  say "  inspected  ${i0} -> ${i1}   (+$((i1-i0)))"
-  say "  passed     ${p0} -> ${p1}   (+$((p1-p0)))"
-fi
 
 # --- verdict -----------------------------------------------------------------
 head2 "verdict"

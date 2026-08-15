@@ -5081,11 +5081,16 @@ if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
   else
     echo
     echo "  Generating traffic on the tapped workloads and measuring what lands"
-    echo "  on the tool. This takes about 40 seconds and changes no config."
+    echo "  on the tool. It retries for up to 10 minutes while the collector"
+    echo "  registers, and changes no configuration. Ctrl-C is safe."
     echo
+    # Wait, do not judge immediately. Right after a deploy the sessions have just
+    # been cut, the collector is still registering, and KVO has yet to push the
+    # device rule. Measuring at t=0 reports a healthy build as broken.
     if bash "$PROVE_SCRIPT" --region "$REGION" --vpc-id "$STACK_VPC_ID" \
          --key "${KEY_PEM:-$HOME/.ssh/${KEY_NAME}.pem}" \
-         --gre-key "$CLOUDLENS_GRE_KEY" --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY"; then
+         --gre-key "$CLOUDLENS_GRE_KEY" --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
+         --wait "${CLOUDLENS_PROVE_WAIT:-600}"; then
       ok "Traffic proven end to end."
       state_phase prove done
     else
