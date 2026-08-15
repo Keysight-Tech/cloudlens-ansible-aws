@@ -267,6 +267,7 @@ SKIP_SENSORS=false; REASON_SENSORS=""
 SKIP_VPB=false;     REASON_VPB=""
 SKIP_PATH=false;    REASON_PATH=""
 SKIP_MIRROR=false;  REASON_MIRROR=""
+SKIP_PROVE=false;   REASON_PROVE=""
 
 # Post-deploy orchestration (phases 10-16). Blank = prompt, and every prompt
 # falls back to the documented default when there is no terminal to ask on.
@@ -472,6 +473,18 @@ login_block() {
     echo "    ping -c 100 -s 1337 8.8.8.8      # -s 1337 is a distinctive size,"
     echo "                                      # easy to pick out of everything else"
     echo "  Then on the capture host you should see that size arriving inside GRE."
+    echo
+    echo "  Or let the repo do all of that and score it for you. This generates the"
+    echo "  traffic, captures at the tool, and reports both paths separately. It"
+    echo "  changes NO configuration, so run it as often as you like:"
+    echo "    scripts/prove_traffic.sh --vpc-id ${STACK_VPC_ID} --key ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem}"
+    echo
+    echo "  Reading the result: both tunnels land on THIS one host, and the GRE key"
+    echo "  is the only thing separating them."
+    echo "    key ${CLOUDLENS_GRE_KEY} = the collector's raw mirror     (the agentless path)"
+    echo "    key ${CLOUDLENS_EGRESS_GRE_KEY} = the vPB's processed output    (the broker path)"
+    echo "  Watch just the vPB's output with:"
+    echo "    sudo tcpdump -i any -nn -v 'proto 47 and ip[24:4] = ${CLOUDLENS_EGRESS_GRE_KEY}'"
   else
     echo "No capture host in this run, so there is nowhere to watch packets land."
     if [[ "${WIRE_VPB_PATH:-false}" == "true" ]]; then
@@ -556,7 +569,7 @@ ask_yn() {
 #   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
 #   vpb=14  path=15  mirror=16
 # ---------------------------------------------------------------------
-PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb mirror path"
+PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb mirror path prove"
 
 phase_index() {
   local want="$1" i=1 p
@@ -1518,6 +1531,7 @@ Re-running a deploy (resume):
                               vpb      adopt the vPB into KVO      (phase 14)
                               path     vPB traffic path            (phase 15)
                               mirror   AWS mirror session          (phase 16)
+                              prove    generate traffic + measure  (phase 17)
                             Names, not numbers: numbers shift when phases are
                             added, these do not.
 
@@ -4973,9 +4987,96 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
 fi
 
 # =====================================================================
-# Phase 17: Final summary
+# Phase 17: Prove it. Generate traffic and measure what reaches the tool.
 # =====================================================================
-step "Phase 17: Final summary"
+# Every phase before this reports that something was CONFIGURED. None of them
+# report that a packet moved. That gap is where this deploy has been wrong
+# before: KVO showed the device Online with a committed policy and 0 open
+# change requests while the vPB denied 100% of 1.75M packets.
+#
+# So the deploy now finishes by making traffic and counting what arrives.
+# Read-only apart from the traffic itself, and non-fatal: a failure here means
+# "built but not delivering", which is worth knowing and is not worth
+# discarding a working deployment over.
+if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
+   && [[ -n "${CAPTURE_HOST_PUBLIC_IP:-}" ]]; then
+  step "Phase 17: Prove the traffic path end to end"
+
+  PROVE_SCRIPT="$(find_repo_script scripts/prove_traffic.sh || true)"
+
+  # ORDERING, and it is not optional: AWS cuts no mirror session until the Cloud
+  # Collection is (re)committed in KVO AFTER the collector has registered its
+  # mirror target. Everything upstream can be perfect and the session count still
+  # be zero. Proving before that step has happened measures a path that does not
+  # exist yet and reports a working deployment as broken, so ask AWS how many
+  # sessions exist and say plainly what to do when the answer is none.
+  if [[ "$DRY_RUN" != "true" ]]; then
+    SESSION_COUNT="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
+      --query 'length(TrafficMirrorSessions)' --output text 2>/dev/null || echo 0)"
+    if [[ "${SESSION_COUNT:-0}" == "0" ]]; then
+      warn "AWS has 0 traffic mirror sessions, so nothing is being copied yet."
+      echo
+      echo "  This is the ONE step the automation cannot do for you, and it is"
+      echo "  expected at this point in a fresh deploy. Do it now:"
+      echo
+      echo "    1. open KVO:  https://${KVO_PUBLIC_IP:-<kvo>}"
+      echo "    2. Cloud Configs > ${CLOUD_CONFIG_NAME:-<your cloud config>} > Cloud Collections"
+      echo "    3. edit the collection and re-commit it as ONE change request"
+      echo
+      echo "  AWS cuts one session per tagged workload within about a minute."
+      echo "  Watch for them with:"
+      echo "    aws ec2 describe-traffic-mirror-sessions --region ${REGION} --query 'length(TrafficMirrorSessions)'"
+      echo
+      if ask_yn "  Re-commit it now, then press y to run the proof [y/N]: " n; then
+        SESSION_COUNT="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
+          --query 'length(TrafficMirrorSessions)' --output text 2>/dev/null || echo 0)"
+        ok "AWS now reports ${SESSION_COUNT} mirror session(s)."
+      else
+        note "Skipping the proof. Nothing is lost: run it whenever the sessions exist,"
+        note "it changes no configuration and can be repeated freely:"
+        note "  scripts/prove_traffic.sh --vpc-id ${STACK_VPC_ID} --key ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem}"
+        state_phase prove skipped "no mirror sessions yet"
+        PROVE_SCRIPT=""
+      fi
+    else
+      ok "AWS reports ${SESSION_COUNT} traffic mirror session(s)."
+    fi
+  fi
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would generate traffic on the tapped workloads and count what"
+    dryrun_say "reaches ${CAPTURE_HOST_IP:-the tool}, by GRE key: ${CLOUDLENS_GRE_KEY} collector, ${CLOUDLENS_EGRESS_GRE_KEY} vPB"
+    state_phase prove done
+  elif [[ -z "$PROVE_SCRIPT" ]]; then
+    note "scripts/prove_traffic.sh not found; skipping the proof."
+    state_phase prove skipped "script not found"
+  elif ! run_phase prove; then
+    skip_note "the end-to-end proof"
+    note "Run it yourself whenever you want, it changes no configuration:"
+    note "  scripts/prove_traffic.sh --vpc-id ${STACK_VPC_ID} --key ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem}"
+  else
+    echo
+    echo "  Generating traffic on the tapped workloads and measuring what lands"
+    echo "  on the tool. This takes about 40 seconds and changes no config."
+    echo
+    if bash "$PROVE_SCRIPT" --region "$REGION" --vpc-id "$STACK_VPC_ID" \
+         --key "${KEY_PEM:-$HOME/.ssh/${KEY_NAME}.pem}" \
+         --gre-key "$CLOUDLENS_GRE_KEY" --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY"; then
+      ok "Traffic proven end to end."
+      state_phase prove done
+    else
+      state_phase prove failed "traffic not arriving on every path"
+      warn "The deployment is built but traffic is NOT arriving on every path."
+      note "The verdict above says which leg failed and what to check. This does"
+      note "not undo anything: re-run the proof any time with"
+      note "  scripts/prove_traffic.sh --vpc-id ${STACK_VPC_ID} --key ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem}"
+    fi
+  fi
+fi
+
+# =====================================================================
+# Phase 18: Final summary
+# =====================================================================
+step "Phase 18: Final summary"
 
 write_summary() {
   cat <<SUMMARY
@@ -5059,7 +5160,7 @@ Safe to re-run at any time. Each phase is checked against the real system
 first and skipped when it is already done:
   bash deploy/deploy-stack.sh --region ${REGION} --stack-name ${STACK_NAME} --resume
   --fresh          run every phase again (still deletes nothing)
-  --from PHASE     start at stack|wait|bootstrap|key|license|adopt|sensors|vpb|path|mirror
+  --from PHASE     start at stack|wait|bootstrap|key|license|adopt|sensors|vpb|path|mirror|prove
   --only PHASE     run exactly one phase
 State file (inputs only, no secrets): ${STATE_FILE:-none}
 
@@ -5084,7 +5185,7 @@ secure_run_file "$SUMMARY_FILE"
 # missing .pem used to end with a cheerful "Done" and no hint it was incomplete.
 completion_report() {
   local pending=() p name val
-  for p in sensors vpb mirror path; do
+  for p in sensors vpb mirror path prove; do
     val="$(state_get "PHASE_$(upper "$p")" 2>/dev/null || echo '')"
     case "$val" in
       done*|"dry-run"*) continue ;;                # done (or dry-run) counts as covered
@@ -5094,6 +5195,7 @@ completion_report() {
       vpb)     name="vPB adopted" ;;
       mirror)  name="AWS mirror sessions" ;;
       path)    name="vPB traffic path" ;;
+      prove)   name="end-to-end traffic proof" ;;
       *)       name="$p" ;;
     esac
     pending+=("$name")
