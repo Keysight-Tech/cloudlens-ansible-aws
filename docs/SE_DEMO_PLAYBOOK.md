@@ -73,7 +73,7 @@ the shape you fill in.
 | KVO | `<eip>` | `10.99.1.x` | EULA accepted, admin user set |
 | vController | `<eip>` | `10.99.1.x` | Project `cloudlens-demo` active |
 | vPB | `<eip>` | `10.99.1.x` (mgmt) | SSH + CLI on port 9022, adopted into KVO |
-| Tool receiver | `<eip>` | `10.99.12.x` | nginx + tcpdump ready for UDP/4789 |
+| Tool receiver | `<eip>` | `10.99.12.x` | nginx + tcpdump ready for GRE (proto 47) |
 | app01-ubuntu | `<eip>` | `10.99.1.x` | Sensor running, registered |
 | app02-ubuntu | `<eip>` | `10.99.1.x` | Sensor running, registered |
 | win01 | `<eip>` | `10.99.1.x` | Sensor running, registered |
@@ -118,12 +118,26 @@ carry to a demo.
    green agents are visible the moment you screen-share.
 
 5. **Start tcpdump on the tool receiver** in a background terminal so packets
-   are pre-buffered:
+   are pre-buffered. **Capture GRE, not VXLAN.** This deployment tunnels with
+   L2GRE (IP protocol 47), so a `udp port 4789` filter captures nothing at all
+   and the demo dies in front of the customer:
 
    ```bash
    ssh -i ~/.ssh/<demo-key>.pem ubuntu@<tool-eip> \
-     'sudo nohup timeout 1800 tcpdump -i any -nn -w /tmp/vxlan-capture.pcap udp port 4789 > /tmp/tcpdump.log 2>&1 &'
+     'sudo nohup timeout 1800 tcpdump -i any -nn -w /tmp/gre-capture.pcap proto 47 > /tmp/tcpdump.log 2>&1 &'
    ```
+
+6. **Rehearse the proof once, the morning of.** One command generates traffic on
+   the tapped workloads and scores both paths. It changes no configuration, so
+   run it as often as you like:
+
+   ```bash
+   scripts/prove_traffic.sh --vpc-id <vpc-id> --key ~/.ssh/<demo-key>.pem
+   ```
+
+   You want `PASS` on both lines. If the mirror path fails with 0 sessions, the
+   fix is in KVO: re-commit the Cloud Collection as ONE change request, wait a
+   minute, run it again. **Do this before the call, never during it.**
 
 ---
 
@@ -198,12 +212,27 @@ CloudLensVPB# show statistics
 Switch to a terminal that is SSHed to the tool receiver. Run:
 
 ```bash
-sudo wc -c /tmp/vxlan-capture.pcap        # file growing
-sudo tcpdump -nn -r /tmp/vxlan-capture.pcap -c 5
+sudo wc -c /tmp/gre-capture.pcap          # file growing
+sudo tcpdump -nn -v -r /tmp/gre-capture.pcap -c 5
 ```
 
-Expected output: VXLAN UDP/4789 packets with an inner IP layer. Decode shows the
-original L2 frames carrying the workload traffic.
+Expected output: `GREv0` packets with an inner IP layer. The decode shows the
+original frames carrying the workload traffic.
+
+**Two streams land on this one host, and the GRE key is what separates them.**
+Show both, because together they are the whole story:
+
+```bash
+sudo tcpdump -i any -nn -v 'proto 47 and ip[24:4] = 64'    # collector's raw mirror
+sudo tcpdump -i any -nn -v 'proto 47 and ip[24:4] = 200'   # the vPB's processed output
+```
+
+Key 64 is the agentless mirror arriving straight from the collector. Key 200 is
+the same traffic after the vPB has processed it. `ip[24:4]` is where the GRE key
+sits once the key-present flag is set.
+
+The line worth pausing on: pick out the **Windows** workload's address in either
+stream. Nothing was installed on it. It is tapped entirely from the AWS side.
 
 Say: **"Real packets, real-time. No inline appliance. The workload instances do
 not know they are being mirrored."**
@@ -249,7 +278,7 @@ PRs welcome.
 
 **Q: "What if we already own ExtraHop / Corelight / Darktrace?"**
 A: Anything that accepts VXLAN or GRE works. The tool receiver in our demo is
-just tcpdump on port 4789; your tool is the same shape with a real NDR engine
+just tcpdump on GRE proto 47; your tool is the same shape with a real NDR engine
 behind it.
 
 **Q: "SSM is disabled in our account. Does this still work?"**
@@ -268,7 +297,7 @@ The lab is idempotent. After a demo:
 ssh -i ~/.ssh/<demo-key>.pem ubuntu@<app01-eip> 'pkill -f "while true; do curl"' || true
 
 # Clear the tcpdump capture so the next demo starts at 0 bytes
-ssh -i ~/.ssh/<demo-key>.pem ubuntu@<tool-eip> 'sudo truncate -s 0 /tmp/vxlan-capture.pcap'
+ssh -i ~/.ssh/<demo-key>.pem ubuntu@<tool-eip> 'sudo truncate -s 0 /tmp/gre-capture.pcap'
 
 # In KVO: leave the Cloud Config committed, or un-commit it so the next demo
 # starts dark and you can show the commit live again.
