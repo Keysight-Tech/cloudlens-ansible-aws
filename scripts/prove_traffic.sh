@@ -131,12 +131,30 @@ fi
 # is not a broken deployment: AWS cuts no session until the Cloud Collection is
 # re-committed in KVO after the collector registers its mirror target. Saying
 # "no traffic" without saying that sends people debugging the wrong thing.
-SESSIONS="$("${AWSQ[@]}" ec2 describe-traffic-mirror-sessions \
-  --query 'length(TrafficMirrorSessions)' --output text 2>/dev/null || echo 0)"
+# SCOPE THIS TO THE VPC. describe-traffic-mirror-sessions is REGION-wide, and a
+# bare count happily returns a SIBLING stack's sessions. Measured live: one stack
+# had zero of its own while another in the same region had three, so the guard
+# reported a false pass and the proof measured a path that had never been cut.
+# Sessions carry no VpcId, so resolve THIS VPC's interfaces and count only
+# sessions whose SOURCE interface is one of them. Nothing is hardcoded: the
+# interface list is derived from --vpc-id at runtime, so a brand new stack works
+# with no edits.
+VPC_ENI_FILE="$(mktemp)"; trap 'rm -f "$VPC_ENI_FILE"' EXIT
+"${AWSQ[@]}" ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null \
+  | tr '\t' '\n' | sed '/^$/d' | sort -u > "$VPC_ENI_FILE"
+SESSIONS=0
+if [[ -s "$VPC_ENI_FILE" ]]; then
+  SESSIONS="$("${AWSQ[@]}" ec2 describe-traffic-mirror-sessions \
+    --query 'TrafficMirrorSessions[].NetworkInterfaceId' --output text 2>/dev/null \
+    | tr '\t' '\n' | sed '/^$/d' | grep -c -F -x -f "$VPC_ENI_FILE" || true)"
+fi
 say "  mirror sessions ${SESSIONS:-0}"
 if [[ "${SESSIONS:-0}" == "0" ]]; then
   head2 "nothing to measure yet"
-  fail "AWS has 0 traffic mirror sessions: no traffic is being copied."
+  fail "This VPC has 0 traffic mirror sessions: no traffic is being copied."
+  say "  (Counted per-VPC on purpose. Another stack in ${REGION} may have sessions"
+  say "   of its own, and those copy nothing to THIS tool.)"
   say ""
   say "  This is expected right after a deploy, and it is the one step that is"
   say "  manual. In KVO, edit the Cloud Collection and re-commit it as ONE change"
@@ -237,10 +255,14 @@ if [[ "${N_COLL:-0}" -gt 0 ]]; then
   pass "mirror path: workload -> mirror session -> collector -> tool"
 else
   fail "mirror path: NO packets with key ${GRE_KEY_COLLECTOR} arrived"
-  say "       Usually zero mirror sessions. Check with:"
-  say "         aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
-  say "       One session per tagged workload is what you want. If there are none,"
-  say "       re-commit the Cloud Collection in KVO: that is what cuts them."
+  say "       This VPC has ${SESSIONS} session(s), so AWS IS copying traffic and the"
+  say "       break is downstream of the mirror. In order of likelihood:"
+  say "         1. the collector only just launched. It needs a few minutes to"
+  say "            register with the vController before it forwards anything."
+  say "         2. the tool's security group does not permit IP protocol 47 (GRE)."
+  say "         3. no collector is running in this VPC at all:"
+  say "            aws ec2 describe-instances --region ${REGION} \\"
+  say "              --filters Name=vpc-id,Values=${VPC_ID} 'Name=tag:Name,Values=*collector*'"
   RC=1
 fi
 if [[ "${N_VPB:-0}" -gt 0 ]]; then

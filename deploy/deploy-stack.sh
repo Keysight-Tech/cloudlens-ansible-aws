@@ -508,11 +508,15 @@ login_block() {
   echo "  sessions with everything else present is the normal failure."
   echo
   if [[ "$DEPLOY_VPB" == "true" ]]; then
-    echo "  If sessions exist but no packets reach the tool, check KVO > Alerts."
-    echo "  'Tunnel of type GRE: Remote destination <ip> not reachable' means the"
-    echo "  vPB data ports (eth1/eth2) are not up as DPDK ports. That bring-up is"
-    echo "  NOT automated: the interfaces exist in AWS but nothing is listening on"
-    echo "  them until you configure them on the vPB itself."
+    echo "  A KVO alert reading 'Tunnel of type GRE: Remote destination <ip> not"
+    echo "  reachable' is a FALSE ALARM. Do NOT debug the data path from it."
+    echo "  KVO probes reachability with ICMP, the security groups permit GRE"
+    echo "  (protocol 47) but not ICMP, so the probe fails while traffic flows"
+    echo "  normally. Measured: 312,049 packets delivered through a tunnel the"
+    echo "  dashboard called unreachable."
+    echo "  Ask the device instead, never the dashboard:"
+    echo "    sudo vpb -c 'show traffic-rule-packet-counters'   Passed must exceed 0"
+    echo "    sudo vpb -c 'show tunnel-status'                  gre_eth2 UP, has an IP"
     echo
   fi
   # Learned the expensive way: three activation codes worth 500 counts each
@@ -3068,6 +3072,29 @@ discover_stack_facts() {
   return 0
 }
 
+# How many traffic mirror sessions belong to THIS stack's VPC.
+#
+# describe-traffic-mirror-sessions is REGION-wide and sessions carry no VpcId, so
+# a bare length(TrafficMirrorSessions) counts a SIBLING stack's sessions too.
+# Measured live: a second stack with zero sessions of its own reported three (its
+# neighbour's), the phase-17 guard passed, and the proof then measured a path
+# that had never been cut. Same region-vs-VPC class of bug as the workload
+# discovery count. Resolve this VPC's interfaces and match the session SOURCE.
+# Fully dynamic: everything derives from STACK_VPC_ID, so a fresh stack needs
+# no edits.
+vpc_mirror_session_count() {
+  [[ -z "${STACK_VPC_ID:-}" ]] && { echo 0; return; }
+  local enis
+  enis="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-network-interfaces \
+            --filters "Name=vpc-id,Values=${STACK_VPC_ID}" \
+            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null \
+          | tr '\t' '\n' | sed '/^$/d' | sort -u)"
+  [[ -z "$enis" ]] && { echo 0; return; }
+  aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
+      --query 'TrafficMirrorSessions[].NetworkInterfaceId' --output text 2>/dev/null \
+    | tr '\t' '\n' | sed '/^$/d' | grep -c -F -x -f <(printf '%s\n' "$enis") || true
+}
+
 # python3 + requests are what every scripts/*.py needs. Probe once, quietly.
 # Always call this as an `if` condition: it reports readiness by exit status.
 PY_CHAIN_OK=""
@@ -5011,10 +5038,9 @@ if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
   # exist yet and reports a working deployment as broken, so ask AWS how many
   # sessions exist and say plainly what to do when the answer is none.
   if [[ "$DRY_RUN" != "true" ]]; then
-    SESSION_COUNT="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
-      --query 'length(TrafficMirrorSessions)' --output text 2>/dev/null || echo 0)"
+    SESSION_COUNT="$(vpc_mirror_session_count)"
     if [[ "${SESSION_COUNT:-0}" == "0" ]]; then
-      warn "AWS has 0 traffic mirror sessions, so nothing is being copied yet."
+      warn "This VPC has 0 traffic mirror sessions, so nothing is being copied yet."
       echo
       echo "  This is the ONE step the automation cannot do for you, and it is"
       echo "  expected at this point in a fresh deploy. Do it now:"
@@ -5028,9 +5054,8 @@ if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
       echo "    aws ec2 describe-traffic-mirror-sessions --region ${REGION} --query 'length(TrafficMirrorSessions)'"
       echo
       if ask_yn "  Re-commit it now, then press y to run the proof [y/N]: " n; then
-        SESSION_COUNT="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
-          --query 'length(TrafficMirrorSessions)' --output text 2>/dev/null || echo 0)"
-        ok "AWS now reports ${SESSION_COUNT} mirror session(s)."
+        SESSION_COUNT="$(vpc_mirror_session_count)"
+        ok "This VPC now has ${SESSION_COUNT} mirror session(s)."
       else
         note "Skipping the proof. Nothing is lost: run it whenever the sessions exist,"
         note "it changes no configuration and can be repeated freely:"
@@ -5039,7 +5064,7 @@ if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
         PROVE_SCRIPT=""
       fi
     else
-      ok "AWS reports ${SESSION_COUNT} traffic mirror session(s)."
+      ok "This VPC has ${SESSION_COUNT} traffic mirror session(s)."
     fi
   fi
   if [[ "$DRY_RUN" == "true" ]]; then
