@@ -307,6 +307,11 @@ EGRESS_SUBNET_ID=""
 VPB_EGRESS_IP=""
 VPB_EGRESS_NETMASK=""
 VPB_EGRESS_GATEWAY=""
+VPB_MGMT_MAC=""
+VPB_INGRESS_MAC=""
+VPB_EGRESS_MAC=""
+VPB_INGRESS_PORT=""
+VPB_EGRESS_PORT=""
 STACK_ZONE=""
 VC_PROJECT_KEY=""             # minted directly on the vController (Phase 9)
 KVO_PROJECT_KEY=""            # provisioned by the KVO Cloud Config (Phase 12)
@@ -3055,6 +3060,15 @@ discover_stack_facts() {
     # nothing: measured live as Inspected 1,750,000 / Passed 0 with eth2 bare.
     # Giving eth2 the ENI's address took the same device to Passed 145,037.
     VPB_EGRESS_IP="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`${egress_idx}\`].PrivateIpAddress | [0]")"
+    # MACs, because the vPB does NOT have to enumerate its ports in AWS device
+    # index order. Measured on two stacks from the same template on the same day:
+    # one had vPB eth1 == device index 1, the other had vPB eth1 == device index
+    # 2. The swapped one forwarded NOTHING and said nothing about why: the
+    # mirrored traffic arrived on the port bound as egress, so the ingress rule
+    # never matched. eth1 sat at 471 packets while eth2 passed 700,000.
+    VPB_MGMT_MAC="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`0\`].MacAddress | [0]")"
+    VPB_INGRESS_MAC="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`1\`].MacAddress | [0]")"
+    VPB_EGRESS_MAC="$(ec2_fact "$vpb_tag" "NetworkInterfaces[?Attachment.DeviceIndex==\`${egress_idx}\`].MacAddress | [0]")"
     if [[ -n "$EGRESS_SUBNET_ID" && "$EGRESS_SUBNET_ID" != "None" ]]; then
       local egress_cidr
       egress_cidr="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-subnets --subnet-ids "$EGRESS_SUBNET_ID" \
@@ -4861,6 +4875,29 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   # The egress port's address. The vPB tunnels its OUTPUT to the same host the
   # collector mirrors to, so one tcpdump sees both paths; the different GRE keys
   # tell them apart (collector CLOUDLENS_GRE_KEY, vPB CLOUDLENS_EGRESS_GRE_KEY).
+  # Ask the DEVICE which port is which, by MAC. Never assume eth1 is ingress.
+  PORT_ARG=()
+  PORTMAP_SCRIPT="$(find_repo_script scripts/vpb_port_map.py || true)"
+  if [[ -n "$PORTMAP_SCRIPT" && -n "$VPB_INGRESS_MAC" && -n "$VPB_EGRESS_MAC" \
+        && -f "${KEY_PEM:-/nonexistent}" ]] && python_chain_ready; then
+    PORTMAP_OUT="$(python3 "$PORTMAP_SCRIPT" --vpb "$VPB_PUBLIC_IP" --key "$KEY_PEM" \
+                     --mgmt-mac "$VPB_MGMT_MAC" --ingress-mac "$VPB_INGRESS_MAC" \
+                     --egress-mac "$VPB_EGRESS_MAC" 2>&1 >/tmp/.portmap.$$ || true)"
+    [[ -n "$PORTMAP_OUT" ]] && printf '%s\n' "$PORTMAP_OUT" | sed 's/^/  /'
+    VPB_INGRESS_PORT="$(sed -n 's/^VPB_INGRESS_PORT=//p' /tmp/.portmap.$$ 2>/dev/null)"
+    VPB_EGRESS_PORT="$(sed -n 's/^VPB_EGRESS_PORT=//p' /tmp/.portmap.$$ 2>/dev/null)"
+    rm -f /tmp/.portmap.$$
+  fi
+  if [[ -n "$VPB_INGRESS_PORT" && -n "$VPB_EGRESS_PORT" ]]; then
+    PORT_ARG=(--ingress-port "$VPB_INGRESS_PORT" --egress-port "$VPB_EGRESS_PORT")
+    ok "vPB ports resolved by MAC: ingress=${VPB_INGRESS_PORT} egress=${VPB_EGRESS_PORT}"
+  else
+    warn "Could not resolve the vPB port names by MAC; falling back to eth1/eth2."
+    note "If the device enumerated its NICs in a different order, the path will"
+    note "wire to the wrong ports and forward nothing. Check with:"
+    note "  sudo vpb -c 'show interface-status'   and compare MACs to the ENIs."
+  fi
+
   EGRESS_ARG=()
   if [[ -n "$VPB_EGRESS_IP" && "$VPB_EGRESS_IP" != "None" ]]; then
     EGRESS_ARG=(--egress-ip "$VPB_EGRESS_IP")
@@ -4887,7 +4924,7 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --ingress-ip "$VPB_INGRESS_IP" --gre-key "$CLOUDLENS_GRE_KEY" \
          --capture-gre-key "$CLOUDLENS_GRE_KEY" \
          --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
-         "${EGRESS_ARG[@]}" "${CAPTURE_ARG[@]}" --insecure; then
+         "${PORT_ARG[@]}" "${EGRESS_ARG[@]}" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
 
       # Ask the vPB itself what it holds and what it is doing with the traffic.
