@@ -431,6 +431,24 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
             <a class="btn btn-primary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/raw/main/docs/CloudLens_Stack_Deployment_Runbook.pdf" target="_blank" rel="noopener">Download Runbook</a>
           </div>
         </div>
+
+        <h3 id="full-stack-teardown">One command back down</h3>
+        <p class="lede">Same discipline in reverse. It removes what this deployment created, and nothing else.</p>
+
+        <div class="full-stack-cmd-wrap">
+          <pre id="teardown-cmd"><code># See what is loose. Read-only, deletes nothing.
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION --orphans
+
+# Tear it down
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION</code></pre>
+          <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy teardown command">Copy</button>
+        </div>
+
+        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so root volumes survive as <code>available</code> and keep billing. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script deletes the stack and sweeps the volumes, security groups, scaling groups and launch templates it can attribute to it. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
+
+        <p class="full-stack-note"><strong>It only removes what your deployment built.</strong> Nothing is deleted unless AWS itself ties it to your stack, by stack membership, by living in the VPC that stack created, or by an owner tag naming it. Anything without that evidence is reported and left alone, because in a shared account "it was unattached" is not proof of ownership. Brownfield deploys into an existing VPC (<code>--existing-vpc-id</code>) switch the VPC rule off entirely: that network is the customer's, and its other contents are none of the script's business. Stack name and region are yours to pass, so the same command is safe in any account.</p>
+
+        <p class="full-stack-note">Add <code>--orphans</code> to audit without deleting, <code>--dry-run</code> to print every command it would run, or <code>--sweep-only</code> to clean up after a stack that is already gone. Nothing is removed without an explicit confirmation, or <code>--yes</code> in a pipeline.</p>
       </div>
     </section>
 
@@ -1102,14 +1120,11 @@ ansible-playbook cleanup.yaml -e @customer_input.yaml</code></pre>
             <p>Terraform path:</p>
             <pre data-lang="bash"><code>cd deploy/terraform
 terraform destroy</code></pre>
-            <p>CloudFormation path:</p>
-            <pre data-lang="bash"><code>aws cloudformation delete-stack \
-  --stack-name cloudlens-stack \
-  --region us-east-1
-
-aws cloudformation wait stack-delete-complete \
+            <p>CloudFormation path, use the teardown script rather than a bare delete-stack:</p>
+            <pre data-lang="bash"><code>bash deploy/teardown-stack.sh \
   --stack-name cloudlens-stack \
   --region us-east-1</code></pre>
+            <p class="muted">A bare <code>delete-stack</code> leaves the appliance root volumes billing, leaves the collector Auto Scaling group rebuilding itself, and can report <code>DELETE_COMPLETE</code> while the VPC is still standing. The script handles all three and verifies the result. See <a href="#full-stack-teardown">One command back down</a>.</p>
           </article>
         </div>
       </div>
