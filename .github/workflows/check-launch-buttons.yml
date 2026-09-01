@@ -17,22 +17,23 @@ name: Check Launch Buttons
 #
 # It cannot fix anything. It exists so we find out before an SE does.
 
+# Schedule and manual ONLY, deliberately.
+#
+# This watches production; it does not gate changes. The first version also ran
+# on template pushes and PRs, and both were wrong:
+#   push  - it started in the same second as Sync CFN Templates and read S3
+#           before the sync had rewritten it, so it failed on drift a sibling
+#           job was already fixing. Observed: run 33546060588, an 8s failure
+#           racing a 9s sync.
+#   PR    - a PR's template is SUPPOSED to differ from S3. S3 is only updated
+#           on merge, so every template PR would have failed by design.
+# Neither told anyone anything true, and a check that cries wolf gets muted,
+# which would leave the buttons unwatched again.
 on:
   schedule:
     # 07:00 UTC daily, before the working day in EMEA and the Americas.
     - cron: '0 7 * * *'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'deploy/cloudformation/**.yaml'
-      - 'deploy/scripts/check-launch-buttons.sh'
-      - 'deploy/scripts/sync-cfn-templates-to-s3.sh'
-      - '.github/workflows/check-launch-buttons.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'deploy/cloudformation/**.yaml'
-      - 'deploy/scripts/sync-cfn-templates-to-s3.sh'
 
 permissions:
   contents: read
