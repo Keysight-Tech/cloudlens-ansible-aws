@@ -1,15 +1,24 @@
 ---
 # CloudLens Ansible for AWS - master cleanup playbook
-# Removes CloudLens sensors from every tagged EC2 instance
+# Removes CloudLens sensors from every discovered EC2 instance.
+#
+# Targets the same os_* groups deploy.yaml installs to. It used to target the
+# *_prod_vms groups, which require an os tag AND env == prod: on a customer
+# fleet that matched nothing, so sensors could be installed and then not
+# removed. Uninstall must reach exactly what install reached.
+
+# Same probe as the deploy path, for the same reason: a host AWS cannot
+# identify still has a sensor on it and still needs it taken off.
+- import_playbook: playbooks/classify.yaml
 
 - import_playbook: playbooks/ubuntu_cleanup.yaml
   vars:
-    target_group: ubuntu_prod_vms
+    target_group: os_ubuntu
 
 - import_playbook: playbooks/redhat_cleanup.yaml
   vars:
-    target_group: redhat_prod_vms
+    target_group: os_rhel
 
 - import_playbook: playbooks/windows_cleanup.yaml
   vars:
-    target_group: windows_prod_vms
+    target_group: os_windows

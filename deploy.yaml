@@ -21,13 +21,26 @@
     - debug:
         msg: "CLMS {{ customer.cloudlens.manager_ip_or_fqdn }} - {{ 'reachable' if clms_check is success else 'NOT reachable (check SG + DNS)' }}"
 
+# Resolve Linux hosts AWS could not identify BEFORE anything targets them.
+# A customer fleet has no os tag, so without this those hosts sit in a group
+# nothing installs to, and the run reports success having done nothing.
+- import_playbook: playbooks/classify.yaml
+
+# Target the os_* groups, not the *_prod_vms ones.
+#
+# The old targets required BOTH an os tag and env == prod. That is a lab
+# convention, not something a customer fleet has: discovery would find two
+# hundred instances, match none of them, and report success. The os_* groups
+# are populated three ways, in order of authority: an explicit os tag, what AWS
+# itself reports (platform / platform_details), and failing both, the probe in
+# classify.yaml. Tagged fleets keep working exactly as before.
 - import_playbook: playbooks/ubuntu.yaml
   vars:
-    target_group: ubuntu_prod_vms
+    target_group: os_ubuntu
 
 - import_playbook: playbooks/redhat.yaml
   vars:
-    target_group: redhat_prod_vms
+    target_group: os_rhel
 
 # The Windows SENSOR is off by default. Windows traffic is already captured
 # agentlessly by AWS VPC Traffic Mirroring, verified packet by packet, so the
@@ -41,5 +54,5 @@
 #   windows: {enabled: true}      in customer_input.yaml
 - import_playbook: playbooks/windows.yaml
   vars:
-    target_group: windows_prod_vms
+    target_group: os_windows
   when: (cloudlens_windows_sensor | default(false)) | bool

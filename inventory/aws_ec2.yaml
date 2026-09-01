@@ -50,6 +50,45 @@ keyed_groups:
 # created, deploy.yaml matched zero hosts, and the sensor run reported success
 # having installed nothing.
 groups:
+  # ---- OS classification that does NOT depend on customer tags ----------
+  #
+  # The tag-based groups below still work and still win when present, but a real
+  # customer fleet has no os tag and no env tag. Before this, such a fleet was
+  # discovered correctly and then matched none of the playbook targets: the run
+  # reported success having installed nothing.
+  #
+  # What AWS can tell us on its own, verified against live instances:
+  #   platform == 'windows'                  -> Windows. AWS sets this itself.
+  #   platform_details "Red Hat Enterprise.."-> RHEL.
+  #   platform_details "Linux/UNIX"          -> Ubuntu, Amazon Linux, Debian,
+  #                                             Rocky ... indistinguishable.
+  # So Windows and RHEL are decidable here; everything else Linux is not, and
+  # guessing the SSH user from it would just fail to connect. Those hosts go to
+  # cloudlens_linux_unknown and are resolved by playbooks/classify.yaml, which
+  # probes them and assigns the right group and user.
+  #
+  # These deliberately reuse the os_* group NAMES created by keyed_groups above,
+  # so an AWS-classified host lands in the same group as a tag-classified one
+  # and inherits the connection vars already in inventory/group_vars/os_*.yaml.
+  # Ansible merges membership, so tagged and untagged hosts coexist.
+  os_windows: >-
+    platform | default('') == 'windows'
+    or tags.os | default('') == 'windows'
+  os_rhel: >-
+    'Red Hat' in (platform_details | default(''))
+    or tags.os | default('') in ['rhel', 'redhat']
+  os_ubuntu: >-
+    'Ubuntu' in (platform_details | default(''))
+    or tags.os | default('') == 'ubuntu'
+  # Linux we could not name. Not empty in the normal customer case: it is the
+  # normal case. classify.yaml probes these and adds them to os_ubuntu/os_rhel.
+  cloudlens_linux_unknown: >-
+    platform | default('') != 'windows'
+    and 'Red Hat' not in (platform_details | default(''))
+    and 'Ubuntu' not in (platform_details | default(''))
+    and tags.os | default('') not in ['ubuntu', 'rhel', 'redhat', 'windows']
+
+  # ---- Legacy tag-driven groups (kept: existing labs rely on them) -------
   ubuntu_prod_vms: "tags.os | default('') == 'ubuntu' and tags.env | default('') == 'prod'"
   redhat_prod_vms: "tags.os | default('') == 'rhel' and tags.env | default('') == 'prod'"
   windows_prod_vms: "tags.os | default('') == 'windows' and tags.env | default('') == 'prod'"

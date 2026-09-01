@@ -1,0 +1,142 @@
+---
+# Resolve Linux hosts whose distribution AWS cannot tell us.
+#
+# Why this exists:
+#   A customer fleet has no os tag and no env tag. Verified against live
+#   instances, this is what AWS actually reports:
+#     platform == 'windows'                     -> Windows. Decidable.
+#     platform_details "Red Hat Enterprise ..." -> RHEL.   Decidable.
+#     platform_details "Linux/UNIX"             -> Ubuntu, Amazon Linux,
+#                                                  Debian, Rocky, ... identical.
+#   So for most Linux we cannot name the distribution before connecting, and we
+#   cannot connect without knowing the login user (ubuntu vs ec2-user vs ...).
+#   That is the chicken and egg this play breaks: probe the host, learn both
+#   facts at once, then put it in the right group with the right user.
+#
+#   Before this, such a host landed in a group with no group_vars, so the run
+#   discovered it, failed to connect, and reported success having installed
+#   nothing.
+#
+# What it does NOT do:
+#   It does not guess. A host it cannot log into, or whose /etc/os-release it
+#   cannot read, is reported by name and left unclassified rather than being
+#   assigned a distribution it might not be.
+#
+# Run automatically by deploy.yaml. Standalone:
+#   ansible-playbook -i inventory/generated.aws_ec2.yaml playbooks/classify.yaml
+
+- name: Classify Linux hosts AWS could not identify
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../customer_input.yaml
+  vars:
+    # Ordered by how often they appear on AWS. The first that authenticates
+    # wins, so cheap and common first.
+    candidate_users:
+      - ubuntu
+      - ec2-user
+      - rocky
+      - almalinux
+      - centos
+      - debian
+      - admin
+      - fedora
+    ssh_key: "{{ aws.ssh_key_path | default('~/.ssh/cloudlens-key.pem') | expanduser }}"
+    unknown_hosts: "{{ groups['cloudlens_linux_unknown'] | default([]) }}"
+
+  tasks:
+    - name: Report what needs classifying
+      ansible.builtin.debug:
+        msg: >-
+          {{ unknown_hosts | length }} Linux host(s) AWS could not identify.
+          Probing to find the login user and distribution.
+      when: unknown_hosts | length > 0
+
+    - name: Probe each host for its login user and distribution
+      # One SSH attempt per candidate user, stopping at the first that works.
+      # BatchMode means a host that needs a password fails fast instead of
+      # hanging the run waiting on a prompt.
+      ansible.builtin.shell: |
+        set -u
+        host="{{ hostvars[item].ansible_host | default(item) }}"
+        key="{{ ssh_key }}"
+        for u in {{ candidate_users | join(' ') }}; do
+          out="$(ssh -i "$key" \
+                  -o BatchMode=yes \
+                  -o StrictHostKeyChecking=no \
+                  -o UserKnownHostsFile=/dev/null \
+                  -o ConnectTimeout=8 \
+                  -o LogLevel=ERROR \
+                  "$u@$host" \
+                  '. /etc/os-release 2>/dev/null && echo "$ID"' 2>/dev/null)" || continue
+          if [ -n "$out" ]; then
+            echo "$u $out"
+            exit 0
+          fi
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      loop: "{{ unknown_hosts }}"
+      register: probe
+      changed_when: false
+      failed_when: false
+      when: unknown_hosts | length > 0
+
+    - name: Put each identified host in the right group, with the right user
+      # ansible_user is set HERE rather than in group_vars, because it was
+      # discovered per host: two hosts in the same group can legitimately have
+      # different login users.
+      ansible.builtin.add_host:
+        name: "{{ item.item }}"
+        groups: >-
+          {{ 'os_ubuntu'
+             if (item.stdout.split()[1] | default('')) in ['ubuntu', 'debian']
+             else 'os_rhel' }}
+        ansible_user: "{{ item.stdout.split()[0] }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "{{ ssh_key }}"
+        ansible_become: true
+        ansible_become_method: sudo
+        cloudlens_detected_distro: "{{ item.stdout.split()[1] }}"
+      loop: "{{ probe.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.rc is defined
+        - item.rc == 0
+        - item.stdout | default('') | trim | length > 0
+        # rhel, centos, rocky, almalinux and fedora all use the RHEL path;
+        # ubuntu and debian use the Ubuntu path. Anything else is reported
+        # below rather than forced into one of them.
+        - (item.stdout.split()[1] | default('')) in
+          ['ubuntu', 'debian', 'rhel', 'centos', 'rocky', 'almalinux', 'fedora']
+
+    - name: Say what was classified
+      ansible.builtin.debug:
+        msg: "{{ item.item }} -> {{ item.stdout.split()[1] }} (login: {{ item.stdout.split()[0] }})"
+      loop: "{{ probe.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.rc is defined
+        - item.rc == 0
+        - item.stdout | default('') | trim | length > 0
+
+    - name: Report hosts that could not be classified
+      # Named individually and deliberately not failed on: one unreachable host
+      # in a fleet of two hundred must not stop the other one hundred and
+      # ninety nine from getting a sensor.
+      ansible.builtin.debug:
+        msg: >-
+          NOT classified: {{ item.item }}. No candidate user could log in, or
+          /etc/os-release was unreadable. It will be skipped. Check the SSH key
+          ({{ ssh_key }}), the security group, and that the host is reachable
+          from here. To handle it explicitly, tag it os=ubuntu or os=rhel.
+      loop: "{{ probe.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.rc is defined
+        - (item.rc != 0) or (item.stdout | default('') | trim | length == 0)
