@@ -153,6 +153,31 @@ EXISTING_TOOL_SUBNET_ID="${CLOUDLENS_EXISTING_TOOL_SUBNET_ID:-}"
 EXISTING_SG_ID="${CLOUDLENS_EXISTING_SG_ID:-}"
 ASSIGN_PUBLIC_IP="${CLOUDLENS_ASSIGN_PUBLIC_IP:-yes}"   # yes | no
 
+# Agentless mirroring in an EXISTING VPC: where the collector Service VMs live.
+# The lab derives these from its own appliances (the vController's subnet, the
+# vPB's data ENIs). A customer VPC has neither, so these are the explicit
+# inputs; when set they always win over anything derived. KVO requires the
+# three subnets to be THREE DISTINCT subnets in ONE availability zone.
+COLLECTOR_ZONE="${CLOUDLENS_COLLECTOR_ZONE:-}"
+COLLECTOR_MGMT_SUBNET="${CLOUDLENS_COLLECTOR_MGMT_SUBNET:-}"
+COLLECTOR_INGRESS_SUBNET="${CLOUDLENS_COLLECTOR_INGRESS_SUBNET:-}"
+COLLECTOR_EGRESS_SUBNET="${CLOUDLENS_COLLECTOR_EGRESS_SUBNET:-}"
+# Customer-supplied collector security groups (comma lists NOT supported here:
+# one SG per role). When all three are given, ensure_collector_sgs is skipped
+# entirely, so no ec2:CreateSecurityGroup rights are needed.
+COLLECTOR_MGMT_SG="${CLOUDLENS_COLLECTOR_MGMT_SG:-}"
+COLLECTOR_INGRESS_SG="${CLOUDLENS_COLLECTOR_INGRESS_SG:-}"
+COLLECTOR_EGRESS_SG="${CLOUDLENS_COLLECTOR_EGRESS_SG:-}"
+# no = never create collector SGs; missing ones become a clear input error
+# instead of a downstream "missing required security groups".
+CREATE_COLLECTOR_SGS="${CLOUDLENS_CREATE_COLLECTOR_SGS:-yes}"
+# Collector fleet ceiling. Empty = let the mirror script derive it from the
+# matched interface count (10 tapped interfaces per Service VM, +1 spare).
+COLLECTOR_MAX="${CLOUDLENS_COLLECTOR_MAX:-}"
+# Attach the Zone Tapping IAM instance profile to KVO at deploy time (both IaC
+# engines already carry the machinery; this finally passes the switch through).
+ENABLE_ZONE_TAPPING="${CLOUDLENS_ENABLE_ZONE_TAPPING:-no}"
+
 # Optional test workloads deployed INTO the stack's own subnet, so sensors reach
 # vController privately and traffic mirroring between them and the vPB is
 # possible. Comma list: ubuntu,rhel,windows (or "none").
@@ -206,6 +231,9 @@ IAC="cfn"                 # cfn | terraform
 DEPLOY_KVO=""
 DEPLOY_VPB=""
 CHAIN_SENSORS=""
+# One input for the tapping method: sensors | mirror | both | none. Sets
+# CHAIN_SENSORS and WITH_MIRROR together; the specific flags still win.
+TAPPING_MODE="${CLOUDLENS_TAPPING:-}"
 ARG_REGION=""
 ARG_STACK=""
 
@@ -692,6 +720,10 @@ state_get() {
 state_set() {
   local k="$1" v="${2:-}" tmp
   [[ -n "$STATE_FILE" ]] || return 0
+  # A dry run must not mutate ANYTHING, this file included. Before this guard,
+  # a dry run with placeholder inputs persisted them, and resume_load_inputs
+  # silently fed the placeholders into the next REAL run of that stack name.
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
   # Secrets do not live here. The project key stays in the mode-600 creds file
   # and is referenced, never copied. This guard is the backstop for that rule.
   case "$k" in
@@ -1466,7 +1498,10 @@ resume_load_inputs() {
   # Restore the network choice before any phase can act on it. A flag on the
   # command line still wins: these only fill what the operator did not pass.
   for _k in EXISTING_VPC_ID EXISTING_SUBNET_ID EXISTING_DATA_SUBNET_ID \
-            EXISTING_TOOL_SUBNET_ID EXISTING_SG_ID; do
+            EXISTING_TOOL_SUBNET_ID EXISTING_SG_ID \
+            COLLECTOR_ZONE COLLECTOR_MGMT_SUBNET COLLECTOR_INGRESS_SUBNET \
+            COLLECTOR_EGRESS_SUBNET COLLECTOR_MGMT_SG COLLECTOR_INGRESS_SG \
+            COLLECTOR_EGRESS_SG; do
     if [[ -z "${!_k}" ]] && v="$(state_get "$_k")" && [[ -n "$v" ]]; then
       printf -v "$_k" '%s' "$v"
       note "${_k} from the previous run: ${v}"
@@ -1627,6 +1662,10 @@ Toggles:
   --with-kvo                Deploy KVO (skip interactive prompt)
   --with-vpb                Deploy vPB (skip interactive prompt)
   --no-vpb                  Skip vPB deployment
+  --tapping MODE            How workloads are tapped: sensors (agent per VM),
+                            mirror (agentless VPC Traffic Mirroring, Nitro
+                            only), both, or none. One answer instead of
+                            --no-sensors plus the separate mirror question.
   --no-sensors              Skip sensor playbook chain at the end
   --rollback                On any failure, delete the stack we created
                             (never touches a pre-existing stack).
@@ -1670,6 +1709,25 @@ no terminal to ask on, so curl | bash stays fully non-interactive:
   --mirror-access-key KEY   AWS access key KVO uses for mirroring. Required:
   --mirror-secret-key KEY   an instance role is not enough, createAwsPresence
                             fails with "accessKeyId cannot be empty".
+  --enable-zone-tapping     Attach the Zone Tapping IAM instance profile to KVO
+                            at deploy time (needs IAM-create rights; default no).
+
+Agentless mirroring in an EXISTING VPC (collector placement):
+  The lab derives the collector's home from its own appliances. A customer VPC
+  has none, so name it explicitly. KVO requires THREE DISTINCT subnets in ONE
+  availability zone, one per collector interface role (KVO UG, AWS Cloud
+  Configs), or the fabric commits cleanly and cuts ZERO sessions.
+  --collector-zone AZ            AZ the collectors launch in (e.g. us-east-1a)
+  --collector-mgmt-subnet ID     collector management subnet (reaches CLMS/KVO)
+  --collector-ingress-subnet ID  receives the mirrored traffic (VXLAN 4789)
+  --collector-egress-subnet ID   originates the tunnel to the tool
+  --collector-mgmt-sg ID         pre-approved SGs, one per role. All three
+  --collector-ingress-sg ID      supplied = nothing is created, so no
+  --collector-egress-sg ID       ec2:CreateSecurityGroup rights are needed.
+  --no-create-collector-sgs      never create SGs; missing ones are an input
+                                 error instead of a silent downstream failure
+  --collector-max N              collector fleet ceiling (default: derived at
+                                 10 tapped interfaces per Service VM, +1 spare)
 
 Multi-region: CloudFormation ships AMIs for us-east-1, us-east-2, us-west-1,
   us-west-2, ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
@@ -1690,7 +1748,12 @@ Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_DISCOVERY_TAG_KEY, CLOUDLENS_DISCOVERY_TAG_VALUE,
   CLOUDLENS_CLOUD_CONFIG, CLOUDLENS_CLM_NAME, CLOUDLENS_VPB_DEVICE_NAME,
   CLOUDLENS_VPB_COLLECTION,
-  CLOUDLENS_MIRROR_ACCESS_KEY, CLOUDLENS_MIRROR_SECRET_KEY
+  CLOUDLENS_MIRROR_ACCESS_KEY, CLOUDLENS_MIRROR_SECRET_KEY,
+  CLOUDLENS_COLLECTOR_ZONE, CLOUDLENS_COLLECTOR_MGMT_SUBNET,
+  CLOUDLENS_COLLECTOR_INGRESS_SUBNET, CLOUDLENS_COLLECTOR_EGRESS_SUBNET,
+  CLOUDLENS_COLLECTOR_MGMT_SG, CLOUDLENS_COLLECTOR_INGRESS_SG,
+  CLOUDLENS_COLLECTOR_EGRESS_SG, CLOUDLENS_CREATE_COLLECTOR_SGS,
+  CLOUDLENS_COLLECTOR_MAX, CLOUDLENS_ENABLE_ZONE_TAPPING, CLOUDLENS_TAPPING
 
 Example (full prod-style invocation):
   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
@@ -1750,6 +1813,7 @@ while [[ $# -gt 0 ]]; do
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
     --no-sensors) CHAIN_SENSORS=false; shift ;;
+    --tapping) TAPPING_MODE="$(to_lower "$2")"; shift 2 ;;
 
     --sensor-mode) SENSOR_MODE="$(to_lower "$2")"; shift 2 ;;
     --kvo-codes) KVO_CODES+=("$2"); shift 2 ;;
@@ -1768,6 +1832,17 @@ while [[ $# -gt 0 ]]; do
     --no-mirror) WITH_MIRROR=false; shift ;;
     --mirror-access-key) MIRROR_ACCESS_KEY="$2"; shift 2 ;;
     --mirror-secret-key) MIRROR_SECRET_KEY="$2"; shift 2 ;;
+    --collector-zone) COLLECTOR_ZONE="$2"; shift 2 ;;
+    --collector-mgmt-subnet) COLLECTOR_MGMT_SUBNET="$2"; shift 2 ;;
+    --collector-ingress-subnet) COLLECTOR_INGRESS_SUBNET="$2"; shift 2 ;;
+    --collector-egress-subnet) COLLECTOR_EGRESS_SUBNET="$2"; shift 2 ;;
+    --collector-mgmt-sg) COLLECTOR_MGMT_SG="$2"; shift 2 ;;
+    --collector-ingress-sg) COLLECTOR_INGRESS_SG="$2"; shift 2 ;;
+    --collector-egress-sg) COLLECTOR_EGRESS_SG="$2"; shift 2 ;;
+    --no-create-collector-sgs) CREATE_COLLECTOR_SGS="no"; shift ;;
+    --collector-max) COLLECTOR_MAX="$2"; shift 2 ;;
+    --enable-zone-tapping) ENABLE_ZONE_TAPPING="yes"; shift ;;
+    --no-zone-tapping) ENABLE_ZONE_TAPPING="no"; shift ;;
 
     --rollback) ROLLBACK_ON_FAIL=true; shift ;;
     --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
@@ -1840,6 +1915,18 @@ esac
 [[ "$SENSOR_MODE" == "none" ]] && CHAIN_SENSORS=false
 [[ "$SENSOR_MODE" == "standalone" || "$SENSOR_MODE" == "kvo" ]] \
   && [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true
+
+# --tapping: one answer instead of three scattered gates (--no-sensors here,
+# the mirror question in Phase 15, --sensor-mode none). It only fills what the
+# specific flags left empty, so --no-mirror --tapping both still means no mirror.
+case "$TAPPING_MODE" in
+  "") ;;
+  sensors) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=false ;;
+  mirror)  [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
+  both)    [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
+  none)    [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=false ;;
+  *) fail "--tapping must be 'sensors', 'mirror', 'both', or 'none' (got '$TAPPING_MODE')." ;;
+esac
 
 # Validate NIC count bounds
 for v in VPB_INGRESS_NICS:1:3 VPB_EGRESS_NICS:1:3; do
@@ -2590,13 +2677,35 @@ if [[ -z "$DEPLOY_VPB" ]]; then
 fi
 ok "Deploy vPB: ${DEPLOY_VPB}"
 
-# Chain to sensor deployment?
-if [[ -z "$CHAIN_SENSORS" ]]; then
-  read -rp "Chain to sensor deployment after stack is up? [y/N]: " yn || true
-  yn_lc=$(to_lower "$yn")
-  [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && CHAIN_SENSORS=true || CHAIN_SENSORS=false
+# How should the workloads be tapped? ONE question that decides both paths.
+# It replaces the old pair of gates (a sensor yes/no here and a mirror yes/no
+# buried in Phase 15) that made an operator answer the same architectural
+# question twice, mid-run, in different vocabulary.
+if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
+  if [[ "$INTERACTIVE" == "true" ]]; then
+    echo
+    echo "How should the workloads be tapped?"
+    echo "  1) sensors    an agent inside each VM. Works on any instance type,"
+    echo "                Linux and Windows. This is the default."
+    echo "  2) mirroring  agentless AWS VPC Traffic Mirroring. Nitro instances"
+    echo "                only; needs KVO and an AWS access key for it."
+    echo "  3) both       sensors where possible plus the mirror fabric."
+    echo "  4) none       infrastructure only, no tapping."
+    read -rp "Choose 1-4 [1]: " tap_choice || true
+    case "${tap_choice:-1}" in
+      2) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
+      3) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
+      4) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=false ;;
+      *) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=false ;;
+    esac
+  else
+    # Non-interactive keeps the old defaults: nothing runs that was not asked
+    # for with --tapping / --with-mirror / --sensor-mode.
+    [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false
+    [[ -z "$WITH_MIRROR" ]]   && WITH_MIRROR=false
+  fi
 fi
-ok "Chain sensors: ${CHAIN_SENSORS}"
+ok "Tapping: sensors=${CHAIN_SENSORS}, mirroring=${WITH_MIRROR}"
 ok "Discovery tag: ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 
 echo
@@ -2622,6 +2731,11 @@ else
   printf "  %-22s %s\n" "Network:" "new VPC (greenfield)"
 fi
 [[ -n "$EXISTING_SG_ID" ]] && printf "  %-22s %s\n" "Existing SG:" "$EXISTING_SG_ID"
+[[ -n "$COLLECTOR_ZONE$COLLECTOR_MGMT_SUBNET$COLLECTOR_INGRESS_SUBNET$COLLECTOR_EGRESS_SUBNET" ]] && \
+  printf "  %-22s %s\n" "Collector placement:" "${COLLECTOR_ZONE:-<derived>}: mgmt=${COLLECTOR_MGMT_SUBNET:-<derived>} ingress=${COLLECTOR_INGRESS_SUBNET:-<derived>} egress=${COLLECTOR_EGRESS_SUBNET:-<derived>}"
+[[ -n "$COLLECTOR_MGMT_SG$COLLECTOR_INGRESS_SG$COLLECTOR_EGRESS_SG" ]] && \
+  printf "  %-22s %s\n" "Collector SGs:" "mgmt=${COLLECTOR_MGMT_SG:-<create>} ingress=${COLLECTOR_INGRESS_SG:-<create>} egress=${COLLECTOR_EGRESS_SG:-<create>}"
+[[ "$ENABLE_ZONE_TAPPING" == "yes" ]] && printf "  %-22s %s\n" "Zone tapping IAM:" "yes (KVO instance profile)"
 printf "  %-22s %s\n" "Rollback on failure:" "$ROLLBACK_ON_FAIL"
 echo
 
@@ -2647,6 +2761,13 @@ state_set EXISTING_DATA_SUBNET_ID "$EXISTING_DATA_SUBNET_ID"
 state_set EXISTING_TOOL_SUBNET_ID "$EXISTING_TOOL_SUBNET_ID"
 state_set EXISTING_SG_ID "$EXISTING_SG_ID"
 state_set ASSIGN_PUBLIC_IP "$ASSIGN_PUBLIC_IP"
+state_set COLLECTOR_ZONE "$COLLECTOR_ZONE"
+state_set COLLECTOR_MGMT_SUBNET "$COLLECTOR_MGMT_SUBNET"
+state_set COLLECTOR_INGRESS_SUBNET "$COLLECTOR_INGRESS_SUBNET"
+state_set COLLECTOR_EGRESS_SUBNET "$COLLECTOR_EGRESS_SUBNET"
+state_set COLLECTOR_MGMT_SG "$COLLECTOR_MGMT_SG"
+state_set COLLECTOR_INGRESS_SG "$COLLECTOR_INGRESS_SG"
+state_set COLLECTOR_EGRESS_SG "$COLLECTOR_EGRESS_SG"
 state_set DISCOVERY_TAG "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 state_set LAST_RUN "$(date -u +%FT%TZ)"
 
@@ -2936,6 +3057,7 @@ deploy_cfn() {
     "VcontrollerInstanceType=$CLMS_TYPE"
     "KvoInstanceType=$KVO_TYPE"
     "VpbInstanceType=$VPB_TYPE"
+    "EnableZoneTapping=$ENABLE_ZONE_TAPPING"
   )
   [[ -n "$VCONTROLLER_NAME" ]]        && params+=("VcontrollerName=$VCONTROLLER_NAME")
   [[ -n "$KVO_NAME" ]]                && params+=("KvoName=$KVO_NAME")
@@ -2993,7 +3115,8 @@ deploy_terraform() {
       -var "kvo_ami=$KVO_AMI" -var "kvo_type=$KVO_TYPE" \
       -var "vpb_ami=$VPB_AMI" -var "vpb_type=$VPB_TYPE" -var "vpb_ssh_port=$VPB_SSH_PORT" \
       -var "vpb_ingress_nics=$VPB_INGRESS_NICS" -var "vpb_egress_nics=$VPB_EGRESS_NICS" \
-      -var "admin_cidr=$ADMIN_CIDR" )
+      -var "admin_cidr=$ADMIN_CIDR" \
+      -var "enable_zone_tapping=$([[ "$ENABLE_ZONE_TAPPING" == "yes" ]] && echo true || echo false)" )
   CREATED_STACK=true
 }
 
@@ -3082,9 +3205,11 @@ discover_stack_facts() {
   if [[ "$DRY_RUN" == "true" ]]; then
     CLMS_PRIVATE_IP="10.0.0.10"; KVO_PRIVATE_IP="10.0.0.11"
     VPB_PRIVATE_IP="10.0.0.12";  VPB_INGRESS_IP="10.0.1.12"
-    STACK_VPC_ID="vpc-dryrun";   STACK_ZONE="${REGION}a"
-    MGMT_SUBNET_ID="subnet-mgmt"; INGRESS_SUBNET_ID="subnet-ingress"
-    EGRESS_SUBNET_ID="subnet-egress"
+    STACK_VPC_ID="vpc-dryrun"
+    STACK_ZONE="${COLLECTOR_ZONE:-${REGION}a}"
+    MGMT_SUBNET_ID="${COLLECTOR_MGMT_SUBNET:-subnet-mgmt}"
+    INGRESS_SUBNET_ID="${COLLECTOR_INGRESS_SUBNET:-subnet-ingress}"
+    EGRESS_SUBNET_ID="${COLLECTOR_EGRESS_SUBNET:-subnet-egress}"
     VPB_EGRESS_IP="10.0.2.12"; VPB_EGRESS_NETMASK="255.255.255.0"; VPB_EGRESS_GATEWAY="10.0.2.1"
     dryrun_say "would read private IPs, VPC and subnets from the deployed stack"
     return 0
@@ -3140,9 +3265,20 @@ discover_stack_facts() {
       fi
     fi
   fi
-  # Collectors can share the management subnet when there is no vPB data plane.
-  [[ -z "$INGRESS_SUBNET_ID" ]] && INGRESS_SUBNET_ID="$MGMT_SUBNET_ID"
-  [[ -z "$EGRESS_SUBNET_ID" ]]  && EGRESS_SUBNET_ID="$MGMT_SUBNET_ID"
+  # Explicit collector placement (existing-VPC customers) wins over everything
+  # derived from our own appliances. Applied AFTER the vPB egress math above,
+  # which must keep using the vPB's real subnet.
+  [[ -n "$COLLECTOR_ZONE"           ]] && STACK_ZONE="$COLLECTOR_ZONE"
+  [[ -n "$COLLECTOR_MGMT_SUBNET"    ]] && MGMT_SUBNET_ID="$COLLECTOR_MGMT_SUBNET"
+  [[ -n "$COLLECTOR_INGRESS_SUBNET" ]] && INGRESS_SUBNET_ID="$COLLECTOR_INGRESS_SUBNET"
+  [[ -n "$COLLECTOR_EGRESS_SUBNET"  ]] && EGRESS_SUBNET_ID="$COLLECTOR_EGRESS_SUBNET"
+  # There used to be a fallback here that collapsed a missing ingress/egress
+  # subnet onto the management subnet. Deleted deliberately: KVO requires the
+  # three collector subnets to be THREE DISTINCT subnets (KVO UG, AWS Cloud
+  # Configs, "have to be in separate subnets ... for the vHub to work
+  # properly"), and the collapse produced a fabric that committed cleanly and
+  # then cut zero sessions with no alert. The mirror phase now names the
+  # missing --collector-* flags instead.
   return 0
 }
 
@@ -3657,14 +3793,24 @@ ensure_collector_sgs() {
   for id in "$MGMT_SG_ID" "$INGRESS_SG_ID" "$EGRESS_SG_ID"; do
     [[ -z "$id" || "$id" == "None" ]] && { warn "Failed to create a collector SG."; return 1; }
   done
-  # mgmt: 443 + 22 (KVO UG). ingress/egress: intra-VPC incl. VXLAN and GRE.
+  # mgmt: 443 from the VPC (CLMS/KVO drive the collector from inside), 22 and
+  # 9022 from the admin only (both are documented troubleshooting SSH ports).
+  # 443 used to be open to ADMIN_CIDR, whose default is 0.0.0.0/0: the control
+  # plane is in-VPC, so the VPC CIDR is both sufficient and far tighter.
   probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$MGMT_SG_ID" \
-    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" \
-                     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
-  for id in "$INGRESS_SG_ID" "$EGRESS_SG_ID"; do
-    probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$id" \
-      --ip-permissions "IpProtocol=-1,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
-  done
+    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=${vpc_cidr}}]" \
+                     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" \
+                     "IpProtocol=tcp,FromPort=9022,ToPort=9022,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
+  # ingress: only what actually arrives there: the mirrored traffic (AWS VPC
+  # Traffic Mirroring is VXLAN, UDP 4789) from source ENIs inside the VPC.
+  # egress: the tunnel return path (GRE proto 47, VXLAN 4789) from the VPC.
+  # Both used to be intra-VPC allow-all.
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$INGRESS_SG_ID" \
+    --ip-permissions "IpProtocol=udp,FromPort=4789,ToPort=4789,IpRanges=[{CidrIp=${vpc_cidr}}]" \
+                     "IpProtocol=47,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
+  probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$EGRESS_SG_ID" \
+    --ip-permissions "IpProtocol=udp,FromPort=4789,ToPort=4789,IpRanges=[{CidrIp=${vpc_cidr}}]" \
+                     "IpProtocol=47,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
   ok "Collector SGs: mgmt ${MGMT_SG_ID}, ingress ${INGRESS_SG_ID}, egress ${EGRESS_SG_ID}"
   return 0
 }
@@ -4804,12 +4950,15 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     if [[ -z "$MIRROR_ACCESS_KEY" && "$INTERACTIVE" == "true" ]]; then
       echo "  KVO needs an AWS access key of its own for this (an instance role is"
       echo "  not enough: createAwsPresence fails with 'accessKeyId cannot be empty')."
-      echo "  IMPORTANT: the key must have the CloudLens Zone Tapping permissions"
-      echo "  (EC2 traffic mirroring + RunInstances, autoscaling, iam:PassRole). A"
-      echo "  key with NO policy still creates the presence, but then KVO cannot"
+      echo "  IMPORTANT: the key must belong to an IAM user carrying the policy in"
+      echo "  deploy/iam/cloudlens-zonetap-policy.json (the KVO User Guide's own"
+      echo "  zone-tapping policy). Create and attach it with:"
+      echo "    aws iam create-policy --policy-name CloudLensZoneTap \\"
+      echo "      --policy-document file://deploy/iam/cloudlens-zonetap-policy.json"
+      echo "    aws iam attach-user-policy --user-name <user> --policy-arn <arn>"
+      echo "  A key with NO policy still creates the presence, but then KVO cannot"
       echo "  launch the collector and ZERO sessions appear, with only a KVO alert"
-      echo "  'Error getting information from AWS ... check credentials'. Use a key"
-      echo "  from an IAM user carrying the CloudLensZoneTap policy."
+      echo "  'Error getting information from AWS ... check credentials'."
       MIRROR_ACCESS_KEY="$(ask "  AWS access key id: " "")"
     fi
     if [[ -z "$MIRROR_SECRET_KEY" && "$INTERACTIVE" == "true" && -n "$MIRROR_ACCESS_KEY" ]]; then
@@ -4831,14 +4980,39 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       warn "Cannot build the collector spec: zone/subnets did not resolve."
       warn "  zone='${STACK_ZONE}' mgmt='${MGMT_SUBNET_ID}' ingress='${INGRESS_SUBNET_ID}' egress='${EGRESS_SUBNET_ID}'"
       warn "Without all four, KVO creates NO collector and NO sessions. Skipping the"
-      warn "mirror. Run a FULL deploy (not --only mirror) so stack detection fills these."
+      warn "mirror. In an existing VPC (or with --no-vpb) name the placement:"
+      warn "  --collector-zone AZ --collector-mgmt-subnet ID \\"
+      warn "  --collector-ingress-subnet ID --collector-egress-subnet ID"
+      warn "In the lab, run a FULL deploy (not --only mirror) so detection fills these."
+      WITH_MIRROR=false
+    elif [[ "$MGMT_SUBNET_ID" == "$INGRESS_SUBNET_ID" || "$MGMT_SUBNET_ID" == "$EGRESS_SUBNET_ID" || "$INGRESS_SUBNET_ID" == "$EGRESS_SUBNET_ID" ]]; then
+      # KVO UG, AWS Cloud Configs: the three groups "have to be in separate
+      # subnets, with separate IPs for the vHub to work properly." A collapsed
+      # trio commits cleanly and cuts ZERO sessions, with no alert anywhere.
+      warn "The collector subnets are not THREE DISTINCT subnets:"
+      warn "  mgmt='${MGMT_SUBNET_ID}' ingress='${INGRESS_SUBNET_ID}' egress='${EGRESS_SUBNET_ID}'"
+      warn "KVO requires one subnet per collector interface role (KVO UG, AWS Cloud"
+      warn "Configs). Pass three different subnets in the SAME AZ with"
+      warn "  --collector-mgmt-subnet / --collector-ingress-subnet / --collector-egress-subnet"
+      warn "Skipping the mirror rather than building a fabric that cannot work."
       WITH_MIRROR=false
     fi
     # KVO requires three DISTINCT security groups for the collector interfaces.
-    # Create them here (idempotent), or the mirror script stops with
-    # "missing required security groups".
+    # Customer-supplied SGs always win; only what is still missing gets created,
+    # and --no-create-collector-sgs turns a gap into an input error instead.
+    [[ -n "$COLLECTOR_MGMT_SG"    ]] && MGMT_SG_ID="$COLLECTOR_MGMT_SG"
+    [[ -n "$COLLECTOR_INGRESS_SG" ]] && INGRESS_SG_ID="$COLLECTOR_INGRESS_SG"
+    [[ -n "$COLLECTOR_EGRESS_SG"  ]] && EGRESS_SG_ID="$COLLECTOR_EGRESS_SG"
     if [[ "$WITH_MIRROR" == "true" && ( -z "$MGMT_SG_ID" || -z "$INGRESS_SG_ID" || -z "$EGRESS_SG_ID" ) ]]; then
-      ensure_collector_sgs || warn "Could not create the collector SGs; the mirror step will report them missing."
+      if [[ "$CREATE_COLLECTOR_SGS" == "no" ]]; then
+        warn "--no-create-collector-sgs is set but not all three collector SGs were"
+        warn "supplied (mgmt='${MGMT_SG_ID}' ingress='${INGRESS_SG_ID}' egress='${EGRESS_SG_ID}')."
+        warn "Pass all of --collector-mgmt-sg / --collector-ingress-sg / --collector-egress-sg."
+        warn "Skipping the mirror step."
+        WITH_MIRROR=false
+      else
+        ensure_collector_sgs || warn "Could not create the collector SGs; the mirror step will report them missing."
+      fi
     fi
     if [[ "$WITH_MIRROR" != "true" ]]; then
       note "Mirror skipped (collector spec could not be resolved; see above)."
@@ -4857,6 +5031,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
            ${INGRESS_SG_ID:+--ingress-sg "$INGRESS_SG_ID"} \
            ${EGRESS_SG_ID:+--egress-sg "$EGRESS_SG_ID"} \
            ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
+           ${COLLECTOR_MAX:+--max-size "$COLLECTOR_MAX"} \
            --gre-key "$CLOUDLENS_GRE_KEY" \
            --tool-encap L2GRE \
            --device-link vpb-c2dl \

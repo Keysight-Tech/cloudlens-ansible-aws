@@ -50,25 +50,25 @@ launches with the profile already attached, so every deployment is ready.
 Leave it off and the base suite still deploys with **no IAM required** - important
 for SEs whose principal cannot create IAM roles.
 
-### Collector security group MUST allow KVO on 8443 (easy to miss)
-
-KVO deploys each collector Service VM, then configures and registers it by
-calling the collector's **management plane on TCP 8443**. If the collector's
-security group does not allow 8443 from KVO, the collector boots healthy but
-never registers, KVO never creates the Traffic Mirror **sessions**, and the
-Cloud Collection change request hangs `InProgress` with no error. Symptom: ASG +
-collector + target + filter all exist, `describe-traffic-mirror-sessions` stays
-empty, and CloudTrail shows zero `CreateTrafficMirrorSession` attempts.
+### Collector security group ports (the documented set)
 
 The collector security group(s) you pass (`--mgmt-sg` etc.) must allow, inbound:
 
-- **TCP 8443 from KVO** (mgmt/registration) - a self-referencing rule works when
-  KVO shares the SG, else allow KVO's SG or private IP.
-- **UDP 4789 from the sources** (VXLAN - the mirrored traffic itself).
-- plus the usual 22/9022/443.
+- **mgmt: TCP 443 from the control plane** (CLMS/KVO drive the collector; KVO
+  UG, AWS Cloud Configs) plus **TCP 22 and 9022 from the admin** for
+  troubleshooting SSH.
+- **ingress: UDP 4789 from the sources** (AWS VPC Traffic Mirroring is VXLAN;
+  the mirrored traffic itself).
+- **egress: GRE (IP protocol 47) or UDP 4789**, matching `--tool-encap`, for
+  the tunnel toward the tool.
 
-If you reuse a generic stack SG, add 8443 explicitly:
-`aws ec2 authorize-security-group-ingress --group-id <sg> --protocol tcp --port 8443 --source-group <kvo-sg>`
+`ensure_collector_sgs` in deploy-stack.sh creates exactly this set. Field note:
+TCP 8443 was once suspected in a zero-sessions case, but no Keysight document
+requires it for the collector (a KB scan of all 108 indexed documents finds
+8443 only in the physical Vision E10S/E40 guides), and both proven causes of
+that symptom were elsewhere: an incomplete cloud config (no availabilityZones),
+and a presence reused without its key so the collector never relaunched. Chase
+those first, not a firewall.
 
 **B. Brownfield - KVO already running.** Attach the profile in place:
 
@@ -94,13 +94,29 @@ scripts/kvo_aws_mirror.py \
   --region <region> --vpc-id <source-vpc> \
   --source-tag cloudlens=yes \
   --ssh-key <keypair> --cloudlens-ip <clms-ip> \
-  --availability-zones us-east-1a,us-east-1b \
+  --mgmt-sg <sg> --ingress-sg <sg> --egress-sg <sg> \
+  --zone us-east-1a --mgmt-subnet <id> --ingress-subnet <id> --egress-subnet <id> \
+  --tool-remote-ip <tool-ip> \
   --accept-eula --insecure
+# multi-AZ: replace the --zone/--*-subnet quartet with one --zone-spec per AZ:
+#   --zone-spec us-east-1a:subnet-m1:subnet-i1:subnet-e1 \
+#   --zone-spec us-east-1b:subnet-m2:subnet-i2:subnet-e2
 ```
 
 `--source-tag cloudlens=yes` mirrors every ENI on instances carrying that tag -
-the same convention the sensor path uses, so one tag drives both models. Omit
-`--aws-access-key/--aws-secret-key` to use KVO's instance role (option A/B).
+the same convention the sensor path uses, so one tag drives both models.
+The three SG flags and `--tool-remote-ip` are required in practice: the SGs are
+non-null in the KVO schema, and without a tool and monitoring policy KVO never
+creates sessions (KVO UG: the tapping infrastructure is created "only after a
+monitoring policy is created").
+
+Credentials: pass `--aws-access-key/--aws-secret-key` for an IAM user carrying
+the zone-tapping policy. That is the model Keysight documents (the KVO Cloud
+Config dialog has exactly two credential fields, Access Key ID and Secret
+Access Key), and the live failure `createAwsPresence: accessKeyId cannot be
+empty` is server-side input validation, so KVO's instance profile (options A/B)
+does NOT satisfy the Cloud Config on its own. Until a live run proves
+otherwise, treat A/B as supplementary and the access key as required.
 
 The script runs the three-object KVO chain (AWS presence -> Aws Cloud Config ->
 Cloud Collection), each in a committed change request.

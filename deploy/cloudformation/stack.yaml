@@ -687,6 +687,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - ec2:DescribeInstances
+                  # DescribeTags is a deliberate addition beyond the KVO UG
+                  # Ch.10 policy (tag-key enumeration for the collection
+                  # selector); keep in sync with
+                  # deploy/iam/cloudlens-zonetap-policy.json.
+                  - ec2:DescribeTags
                   - ec2:DescribeTrafficMirrorSessions
                   - ec2:DescribeTrafficMirrorTargets
                   - ec2:DescribeTrafficMirrorFilters

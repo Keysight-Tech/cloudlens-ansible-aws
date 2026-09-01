@@ -127,6 +127,133 @@ def collector_asg_exists(region, vpc_id):
     except Exception:
         return True  # on error, do not destroy a possibly-good config
 
+
+def _aws_json(args_list, timeout=60):
+    """Run an aws CLI read and return parsed JSON, or None if it could not run."""
+    try:
+        out = subprocess.run(["aws"] + args_list + ["--output", "json"],
+                             capture_output=True, text=True, timeout=timeout)
+        if out.returncode != 0:
+            return None
+        return json.loads(out.stdout or "null")
+    except Exception:
+        return None
+
+
+def validate_collector_subnets(region, vpc_id, specs):
+    """Pre-flight the collector placement BEFORE any KVO write.
+
+    Every failure this catches otherwise surfaces as a green run with zero
+    sessions: the fabric commits, the ASG is created against subnets that do
+    not match its AZ (or sit in the wrong VPC), and no collector ever launches.
+
+    Checks, per zone spec:
+      - the three subnets are THREE DISTINCT ids. KVO UG (AWS Cloud Configs):
+        the management, egress and ingress groups "have to be in separate
+        subnets, with separate IPs for the vHub to work properly."
+      - all three resolve, all three belong to vpc_id (the QSG scopes each
+        subnet list to the tapped VPC), and all three sit in the spec's AZ
+        (an ASG cannot launch into a subnet outside its own zone).
+
+    Returns [] when clean, else a list of human-readable failures.
+    """
+    errs = []
+    all_ids = sorted({sid for sp in specs
+                      for sid in [sp["mgmt"], sp["egress"]] + sp["ingress"]})
+    d = _aws_json(["ec2", "describe-subnets", "--region", region,
+                   "--subnet-ids"] + all_ids)
+    if d is None:
+        # Fail OPEN on the lookup itself: the operator may run this from a host
+        # with no AWS credentials while KVO holds its own. Say so and move on.
+        log("NOTE: could not describe the collector subnets from here (no AWS "
+            "CLI access?); skipping placement validation. KVO will hit any "
+            "placement error at collector-launch time instead.")
+        return []
+    facts = {sn["SubnetId"]: sn for sn in d.get("Subnets", [])}
+    for sp in specs:
+        three = [sp["mgmt"]] + sp["ingress"] + [sp["egress"]]
+        if len(set(three)) < 3:
+            errs.append(f"zone {sp['zone']}: mgmt/ingress/egress must be THREE "
+                        f"DISTINCT subnets (KVO UG, AWS Cloud Configs); got {three}")
+        for sid in three:
+            sn = facts.get(sid)
+            if not sn:
+                errs.append(f"zone {sp['zone']}: subnet {sid} does not exist in {region}")
+                continue
+            if sn["VpcId"] != vpc_id:
+                errs.append(f"zone {sp['zone']}: subnet {sid} is in {sn['VpcId']}, "
+                            f"not the tapped VPC {vpc_id}")
+            if sn["AvailabilityZone"] != sp["zone"]:
+                errs.append(f"zone {sp['zone']}: subnet {sid} is in "
+                            f"{sn['AvailabilityZone']}; the ASG for this zone "
+                            f"cannot launch into it")
+    return errs
+
+
+def preflight_sources(region, vpc_id, tag_key, tag_val, zones):
+    """Classify what the selector will actually match, BEFORE building the fabric.
+
+    Three silent failure modes are detected here and stated up front:
+      - non-Nitro sources: AWS VPC Traffic Mirroring requires Nitro instances,
+        so a xen-hypervisor source is silently skipped by AWS. Those hosts need
+        a SENSOR instead. Decided from describe-instance-types Hypervisor
+        (describe-INSTANCES reports the misleading legacy 'xen' for everything).
+      - AZ coverage: a collector only taps its own AZ. Matched interfaces in an
+        AZ with no collector are never tapped, with no error anywhere.
+      - sizing and licence demand: credits are consumed PER TAPPED INTERFACE
+        (QSG, License credit allocation), and one Service VM taps at most 10
+        interfaces, so the interface count drives --max-size and the licence.
+
+    Returns a dict (empty on lookup failure - fail open, same reason as above).
+    """
+    d = _aws_json(["ec2", "describe-instances", "--region", region,
+                   "--filters", f"Name=vpc-id,Values={vpc_id}",
+                   "Name=instance-state-name,Values=running",
+                   f"Name=tag:{tag_key},Values={tag_val}",
+                   "--query", "Reservations[].Instances[].{Id:InstanceId,"
+                   "Type:InstanceType,Az:Placement.AvailabilityZone,"
+                   "Enis:length(NetworkInterfaces)}"])
+    if d is None:
+        log("NOTE: could not enumerate the mirror sources from here; skipping "
+            "the eligibility/coverage preflight.")
+        return {}
+    if not d:
+        log(f"WARNING: tag {tag_key}={tag_val} matches ZERO running instances in "
+            f"{vpc_id}. The fabric will build but no sessions can ever be cut.")
+        return {"matched": 0}
+    types = sorted({i["Type"] for i in d})
+    hyp = {}
+    # describe-instance-types errors the WHOLE call on one unknown type: chunk,
+    # and treat a failed chunk as unknown rather than ineligible.
+    for i in range(0, len(types), 100):
+        td = _aws_json(["ec2", "describe-instance-types", "--region", region,
+                        "--instance-types"] + types[i:i+100],
+                       timeout=120) or {}
+        for t in td.get("InstanceTypes", []):
+            hyp[t["InstanceType"]] = t.get("Hypervisor", "")
+    mirrorable = [i for i in d if hyp.get(i["Type"]) == "nitro"]
+    sensors    = [i for i in d if hyp.get(i["Type"], "nitro") != "nitro"]
+    eni_count  = sum(i["Enis"] for i in mirrorable)
+    log(f"preflight: {len(d)} instance(s) match {tag_key}={tag_val}: "
+        f"{len(mirrorable)} mirrorable (Nitro, {eni_count} interfaces), "
+        f"{len(sensors)} NOT mirrorable")
+    if sensors:
+        log("  NOT mirrorable (non-Nitro; AWS never creates a session for these, "
+            "with no error). Deploy the CloudLens SENSOR on them instead:")
+        for i in sensors:
+            log(f"    {i['Id']} ({i['Type']})")
+    uncovered = sorted({i["Az"] for i in mirrorable} - set(zones))
+    if uncovered:
+        n = sum(i["Enis"] for i in mirrorable if i["Az"] in uncovered)
+        log(f"  WARNING: {n} mirrorable interface(s) sit in AZ(s) with no "
+            f"collector ({', '.join(uncovered)}) and will NOT be tapped. Add a "
+            f"--zone-spec for each of those AZs (three subnets per AZ).")
+    log(f"  licence demand: {eni_count} credit(s) - CloudLens credits are "
+        f"consumed per TAPPED INTERFACE on AWS (QSG, License credit allocation). "
+        f"Check Settings > Licensing > License Statistics in KVO for remaining.")
+    return {"matched": len(d), "mirrorable": len(mirrorable),
+            "eni_count": eni_count, "uncovered_azs": uncovered}
+
 # ----- KVO auth (Keycloak) ----------------------------------------------
 def kvo_token(base, user, password, verify):
     r = requests.post(f"{base}/auth/realms/keysight/protocol/openid-connect/token",
@@ -401,10 +528,16 @@ def main():
     ap.add_argument("--egress-sg", help="collector egress security group id")
     ap.add_argument("--cloudlens-ip", help="CLMS IP the collectors register to")
     ap.add_argument("--scale-cooldown", type=int, default=300)
-    # Collector autoscaling group placement, per AZ. One --zone with its three
-    # subnet roles (like a mini-vPB). Repeat the flag set for multi-AZ is not yet
-    # supported here; extend availability_zones() for that.
-    ap.add_argument("--zone", help="AZ for the collectors, e.g. us-east-1a")
+    # Collector autoscaling group placement, per AZ. Single-AZ: one --zone with
+    # its three subnet roles. Multi-AZ: repeat --zone-spec once per AZ.
+    ap.add_argument("--zone", help="AZ for the collectors, e.g. us-east-1a "
+                    "(single-AZ shorthand; see --zone-spec for multi-AZ)")
+    ap.add_argument("--zone-spec", action="append", default=[],
+                    help="repeatable collector placement, one per AZ: "
+                    "az:mgmt-subnet:ingress-subnet[,ingress2...]:egress-subnet "
+                    "(e.g. us-east-1b:subnet-a:subnet-b:subnet-c). Each AZ needs "
+                    "its own THREE DISTINCT subnets. When given, overrides "
+                    "--zone/--mgmt-subnet/--ingress-subnet/--egress-subnet.")
     ap.add_argument("--collector-type", default="t3.xlarge", help="collector SVM instance type")
     ap.add_argument("--mgmt-subnet", help="collector mgmt subnet id (registers to CLMS)")
     ap.add_argument("--ingress-subnet", help="collector ingress subnet id (receives mirrored traffic)")
@@ -415,7 +548,12 @@ def main():
     # availability zone <az> is greater than the maximum size" as soon as it
     # wants more than one collector, even though tapping still works on the one
     # it has. Leave the floor at 1 for cost and give it room to scale up.
-    ap.add_argument("--max-size", type=int, default=4, help="collector ASG max size")
+    ap.add_argument("--max-size", type=int, default=None,
+                    help="collector ASG max size. Default: derived from the matched "
+                    "interface count at 10 tapped interfaces per Service VM plus one "
+                    "spare (QSG: 'The tapping functionality limits 10 tapped "
+                    "interfaces to one Service VM'), falling back to 4 when the "
+                    "sources cannot be enumerated.")
     # Destination tool: the analyzer/NPB IP that receives the tapped traffic.
     # Required to actually create mirror sessions (KVO needs a complete path).
     ap.add_argument("--tool-remote-ip", help="IP of the destination analyzer/vPB that receives "
@@ -553,22 +691,60 @@ def main():
         log(f"      --filters Name=vpc-id,Values={args.vpc_id} --query 'SecurityGroups[].[GroupId,GroupName]' --output text")
         return 2
     if len({args.mgmt_sg, args.ingress_sg, args.egress_sg}) < 3:
-        log("WARNING: mgmt/ingress/egress security groups must be THREE DISTINCT SGs "
-            "(KVO UG requirement); using the same SG can break vHub bring-up.")
+        log("mgmt/ingress/egress security groups must be THREE DISTINCT SGs, one per "
+            "interface role (KVO UG, AWS Cloud Configs). Reusing one SG breaks vHub "
+            "bring-up LATER, as a fabric with zero sessions, not here. Refusing.")
+        return 2
     if args.mgmt_sg:             aws_cfg["mgmtSecurityGroupIds"] = [args.mgmt_sg]
     if args.ingress_sg:          aws_cfg["ingressSecurityGroupIds"] = [args.ingress_sg]
     if args.egress_sg:           aws_cfg["egressSecurityGroupIds"] = [args.egress_sg]
     if args.cloudlens_ip:        aws_cfg["cloudlensIp"] = args.cloudlens_ip
-    if args.zone and args.mgmt_subnet and args.ingress_subnet and args.egress_subnet:
+    # Collector placement: one spec per AZ. --zone-spec wins; the four single
+    # flags are the one-AZ shorthand.
+    specs = []
+    for zs in args.zone_spec:
+        parts = zs.split(":")
+        if len(parts) != 4 or not all(parts):
+            log(f"bad --zone-spec '{zs}': want az:mgmt-subnet:ingress-subnet[,more]:egress-subnet")
+            return 2
+        specs.append({"zone": parts[0], "mgmt": parts[1],
+                      "ingress": [x for x in parts[2].split(",") if x],
+                      "egress": parts[3]})
+    if not specs and args.zone and args.mgmt_subnet and args.ingress_subnet and args.egress_subnet:
+        specs.append({"zone": args.zone, "mgmt": args.mgmt_subnet,
+                      "ingress": [args.ingress_subnet], "egress": args.egress_subnet})
+    if specs:
+        errs = validate_collector_subnets(args.region, args.vpc_id, specs)
+        if errs:
+            for e in errs:
+                log("placement error: " + e)
+            log("Refusing to build the collector spec: every one of these commits "
+                "cleanly in KVO and then launches NO collector and cuts ZERO "
+                "sessions, with no alert.")
+            return 2
+        tk, _, tv = args.source_tag.partition("=")
+        pf = preflight_sources(args.region, args.vpc_id, tk, tv or "*",
+                               [sp["zone"] for sp in specs])
+        max_size = args.max_size
+        if max_size is None:
+            enis = pf.get("eni_count", 0)
+            max_size = max(1, (enis + 9) // 10 + 1) if enis else 4
+            log(f"collector fleet max-size: {max_size} "
+                f"({'derived from ' + str(enis) + ' interface(s) at 10 per Service VM, +1 spare' if enis else 'default; sources not enumerable'})")
+        elif pf.get("eni_count", 0) > max_size * 10:
+            log(f"WARNING: --max-size {max_size} caps tapping at {max_size * 10} "
+                f"interfaces but the selector matches {pf['eni_count']}; the "
+                f"overflow stays UNTAPPED and KVO raises a capacity alert. "
+                f"Pass --max-size {(pf['eni_count'] + 9) // 10 + 1}.")
         aws_cfg["availabilityZones"] = [{
-            "zone": args.zone,
+            "zone": sp["zone"],
             "instanceType": args.collector_type,
-            "mgmtSubnetId": args.mgmt_subnet,
-            "ingressSubnetIds": [args.ingress_subnet],
-            "egressSubnetId": args.egress_subnet,
+            "mgmtSubnetId": sp["mgmt"],
+            "ingressSubnetIds": sp["ingress"],
+            "egressSubnetId": sp["egress"],
             "minSize": args.min_size,
-            "maxSize": args.max_size,
-        }]
+            "maxSize": max_size,
+        } for sp in specs]
     aws_cfg["tags"] = []  # required list of {key,value}; empty = no extra tags
     have_cfg = any(c.get("name") == args.name for c in
                    (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify).get("data", {}).get("cloudConfigs") or []))
