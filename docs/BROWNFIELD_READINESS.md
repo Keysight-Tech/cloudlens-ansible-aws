@@ -1,6 +1,9 @@
 # Brownfield readiness: deploying into a customer's existing environment
 
-Status: **plan, not yet implemented.** Written 2026-09-01 from a full audit of
+Status: **stages 1-4 implemented** (data plane + flags, OS discovery,
+collector placement/SG inputs, selector unification + `source_vpc_ids`
+multi-VPC mirroring); stage 5 (sensor TLS with a customer certificate) still
+needs a lab proof. Originally written 2026-09-01 from a full audit of
 `deploy/deploy-stack.sh`, `deploy/cloudformation/stack.yaml`,
 `scripts/render_inventory.py`, `scripts/kvo_aws_mirror.py`, `quickstart.sh`, the
 playbooks and group_vars, cross-read against the CloudLens vController User Guide
@@ -184,6 +187,11 @@ thing to add.
 
 ### 5.2 Source selection is one tag, and it disagrees with the sensor side
 
+> **DONE.** `scripts/workload_selection.py` is now the one implementation both
+> paths import; `scripts/resolve_workloads.py` resolves it into the shared
+> manifest (`inventory/generated.workloads.json`) the mirror consumes via
+> `--selection`. The rest of this section describes the state it replaced.
+
 Mirroring forwards a single `--source-tag KEY=VALUE` built from the command line.
 KVO itself supports four selectors, all regex-capable: **Instance Name, Instance
 ID, Interface ID, Subnet ID** (QSG p.72).
@@ -301,10 +309,11 @@ a real listing. This is what makes a customer deployment possible at all.
 **Stage 3, the tapping question.** DONE: `--tapping sensors|mirror|both|none`
 (env `CLOUDLENS_TAPPING`) sets both paths from one answer; interactively it is
 a single question replacing the sensor gate and the Phase 15 mirror gate. The
-specific flags still win. Selector unification (5.2) remains open: mirror still
-takes one `--source-tag` while sensors use the full `customer_input.yaml`
-filters. The mirror preflight now reports the Nitro/sensor split, so the gap is
-at least stated per run instead of silent.
+specific flags still win. Selector unification (5.2) is DONE: both paths
+resolve the selection through `scripts/workload_selection.py`, and the mirror
+consumes the resolved per-VPC manifest via `--selection` (ANDed tags, explicit
+ids and exclusions become a literal instance-id selector; the proven single-tag
+form is kept where exactly equivalent).
 
 **Stage 4, mirroring for existing environments.** CORE DONE:
 `--collector-zone/-mgmt-subnet/-ingress-subnet/-egress-subnet` and the three
@@ -315,9 +324,12 @@ input error. kvo_aws_mirror.py validates the trio (exists, tapped VPC, AZ
 match, pairwise distinct) before any KVO write, refuses a shared SG, supports
 multi-AZ via repeatable `--zone-spec`, derives `--max-size` from the matched
 interface count, and reports Nitro eligibility, AZ coverage and licence demand
-up front. The silent mgmt-subnet collapse is deleted. Open: per-VPC config
-loops for tapping a VPC other than the stack's own (`source_vpc_ids`), and the
-instance-id selector form for ANDed tag filters.
+up front. The silent mgmt-subnet collapse is deleted. The per-VPC loop is
+DONE too: `--source-vpc-id` / `--source-vpc vpc:az:mgmt:ingress:egress[:sgs]`
+(or `aws.source_vpc_ids` in customer_input.yaml) build one fabric per tapped
+VPC (`aws-mirror-<vpcid>`; the stack VPC keeps `aws-mirror`), each with its own
+placement and VPC-local SGs, and `vpb_wire_path.py` links the C2DL to every
+AWS config. The instance-id selector form ships with the resolver.
 
 **Stage 5, the certificate path.** PLUMBING DONE, still gated on lab proof:
 `--secure-sensors` / `--ca-cert` write the TLS choice into customer_input.yaml

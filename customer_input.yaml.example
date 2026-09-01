@@ -39,6 +39,24 @@ aws:
   #   - i-0123456789abcdef0
   #   - i-0fedcba9876543210
 
+  # The VPC(s) your workloads live in. Both tapping paths follow this list:
+  # sensor discovery is confined to it, and the agentless mirror builds one
+  # KVO fabric per VPC in it. Leave it out to tap the VPC the deploy built
+  # (deploy-stack.sh writes vpc_id here for that). Set it when CloudLens
+  # sits in its own VPC and the workloads sit in yours; each VPC beyond the
+  # deploy's own also needs collector placement, three distinct subnets in
+  # that VPC, given with --source-vpc vpc:az:mgmt:ingress:egress or the
+  # --collector-* flags.
+  # source_vpc_ids:
+  #   - vpc-0abc1234def567890
+
+  # Fine-tuning for both tapping paths.
+  # tapping:
+  #   # Never touch these instances: no sensor is installed on them and no
+  #   # mirror session is created for them, whatever the filters match.
+  #   exclude_instance_ids:
+  #     - i-0aaaabbbbccccdddd
+
   # Bring your own hosts: point at an Ansible inventory you already have
   # and AWS discovery is skipped completely. Use this for static hosts,
   # instances in another account, or machines that are not EC2 at all.

@@ -177,6 +177,17 @@ COLLECTOR_MAX="${CLOUDLENS_COLLECTOR_MAX:-}"
 # Attach the Zone Tapping IAM instance profile to KVO at deploy time (both IaC
 # engines already carry the machinery; this finally passes the switch through).
 ENABLE_ZONE_TAPPING="${CLOUDLENS_ENABLE_ZONE_TAPPING:-no}"
+# Which VPC(s) the mirror taps: the customer's workloads do not have to live in
+# the CloudLens VPC. Each entry is either a bare vpc id (placement from the
+# --collector-* flags or, for the stack's own VPC, derived) or a full spec
+#   vpc-id:az:mgmt-subnet:ingress-subnet:egress-subnet[:mgmt-sg:ingress-sg:egress-sg]
+# One KVO fabric (presence, config, collection, tool, policy) is built PER VPC,
+# named aws-mirror-<vpcid>, because a KVO cloud config is strictly one VPC and
+# editing one destroys its vHub (KVO UG): adding a VPC must be a NEW config.
+SOURCE_VPC_SPECS=()
+if [[ -n "${CLOUDLENS_SOURCE_VPCS:-}" ]]; then
+  for _sv in ${CLOUDLENS_SOURCE_VPCS//,/ }; do SOURCE_VPC_SPECS+=("$_sv"); done
+fi
 
 # Optional test workloads deployed INTO the stack's own subnet, so sensors reach
 # vController privately and traffic mirroring between them and the vPB is
@@ -1516,6 +1527,10 @@ resume_load_inputs() {
       note "${_k} from the previous run: ${v}"
     fi
   done
+  if [[ ${#SOURCE_VPC_SPECS[@]} -eq 0 ]] && v="$(state_get SOURCE_VPC_SPECS)" && [[ -n "$v" ]]; then
+    for _sv in $v; do SOURCE_VPC_SPECS+=("$_sv"); done
+    note "Tapped VPC(s) from the previous run: ${v}"
+  fi
   if [[ -z "$SENSOR_MODE" ]] && v="$(state_get SENSOR_MODE)" && [[ -n "$v" ]]; then
     case "$v" in standalone|kvo|none) SENSOR_MODE="$v"; note "Sensor mode from the previous run: ${SENSOR_MODE}" ;; esac
   fi
@@ -1744,6 +1759,15 @@ Agentless mirroring in an EXISTING VPC (collector placement):
                                  error instead of a silent downstream failure
   --collector-max N              collector fleet ceiling (default: derived at
                                  10 tapped interfaces per Service VM, +1 spare)
+  --source-vpc-id ID             tap THIS VPC instead of the stack's own; the
+                                 workloads do not have to share a VPC with
+                                 CloudLens. Repeatable: one KVO fabric per VPC
+                                 (a cloud config is strictly one VPC). Each
+                                 non-stack VPC needs its own collector
+                                 placement, in that VPC.
+  --source-vpc SPEC              same, with placement inline:
+                                 vpc:az:mgmt-subnet:ingress-subnet:egress-subnet
+                                 [:mgmt-sg:ingress-sg:egress-sg]
 
 Multi-region: CloudFormation ships AMIs for us-east-1, us-east-2, us-west-1,
   us-west-2, ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
@@ -1769,7 +1793,8 @@ Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_COLLECTOR_INGRESS_SUBNET, CLOUDLENS_COLLECTOR_EGRESS_SUBNET,
   CLOUDLENS_COLLECTOR_MGMT_SG, CLOUDLENS_COLLECTOR_INGRESS_SG,
   CLOUDLENS_COLLECTOR_EGRESS_SG, CLOUDLENS_CREATE_COLLECTOR_SGS,
-  CLOUDLENS_COLLECTOR_MAX, CLOUDLENS_ENABLE_ZONE_TAPPING, CLOUDLENS_TAPPING
+  CLOUDLENS_COLLECTOR_MAX, CLOUDLENS_ENABLE_ZONE_TAPPING, CLOUDLENS_TAPPING,
+  CLOUDLENS_SOURCE_VPCS (comma/space list of --source-vpc specs)
 
 Example (full prod-style invocation):
   curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh \
@@ -1861,6 +1886,8 @@ while [[ $# -gt 0 ]]; do
     --collector-max) COLLECTOR_MAX="$2"; shift 2 ;;
     --enable-zone-tapping) ENABLE_ZONE_TAPPING="yes"; shift ;;
     --no-zone-tapping) ENABLE_ZONE_TAPPING="no"; shift ;;
+    --source-vpc) SOURCE_VPC_SPECS+=("$2"); shift 2 ;;
+    --source-vpc-id) SOURCE_VPC_SPECS+=("$2"); shift 2 ;;
 
     --rollback) ROLLBACK_ON_FAIL=true; shift ;;
     --no-rollback) ROLLBACK_ON_FAIL=false; shift ;;
@@ -2786,6 +2813,7 @@ state_set COLLECTOR_EGRESS_SUBNET "$COLLECTOR_EGRESS_SUBNET"
 state_set COLLECTOR_MGMT_SG "$COLLECTOR_MGMT_SG"
 state_set COLLECTOR_INGRESS_SG "$COLLECTOR_INGRESS_SG"
 state_set COLLECTOR_EGRESS_SG "$COLLECTOR_EGRESS_SG"
+state_set SOURCE_VPC_SPECS "${SOURCE_VPC_SPECS[*]+${SOURCE_VPC_SPECS[*]}}"
 state_set DISCOVERY_TAG "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 state_set LAST_RUN "$(date -u +%FT%TZ)"
 
@@ -3670,6 +3698,38 @@ PY
   return 0
 }
 
+# Which VPC(s) the mirror taps, resolved once: the --source-vpc flags win,
+# else aws.source_vpc_ids from customer_input.yaml (a file-driven or resumed
+# run must not silently fall back to the stack VPC when the file says
+# otherwise), else the stack's own VPC. Sets SOURCE_VPC_RESOLVED.
+resolve_source_vpc_specs() {
+  SOURCE_VPC_RESOLVED=("${SOURCE_VPC_SPECS[@]+"${SOURCE_VPC_SPECS[@]}"}")
+  if [[ ${#SOURCE_VPC_RESOLVED[@]} -eq 0 && -f customer_input.yaml ]]; then
+    local _fv
+    while IFS= read -r _fv; do
+      [[ -n "$_fv" ]] && SOURCE_VPC_RESOLVED+=("$_fv")
+    done < <(python3 - customer_input.yaml <<'PYVPC' 2>/dev/null
+import sys, yaml
+try:
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+    for v in (doc.get("aws", {}) or {}).get("source_vpc_ids", []) or []:
+        print(v)
+except Exception:
+    pass
+PYVPC
+)
+    [[ ${#SOURCE_VPC_RESOLVED[@]} -gt 0 ]] && note "Tapped VPC(s) from customer_input.yaml: ${SOURCE_VPC_RESOLVED[*]}"
+  fi
+  if [[ ${#SOURCE_VPC_RESOLVED[@]} -eq 0 ]] && grep -q 'source_vpc_ids' customer_input.yaml 2>/dev/null \
+     && ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    warn "customer_input.yaml names source_vpc_ids but python3/PyYAML cannot read"
+    warn "it here; falling back to the stack VPC would tap the WRONG VPC. Pass"
+    warn "the VPC(s) explicitly with --source-vpc-id, or pip install pyyaml."
+  fi
+  [[ ${#SOURCE_VPC_RESOLVED[@]} -eq 0 ]] && SOURCE_VPC_RESOLVED=("${STACK_VPC_ID:-}")
+  return 0
+}
+
 # Pre-flight: count the EC2s the sensor step will actually discover.
 
 # ---------------------------------------------------------------------
@@ -3778,10 +3838,14 @@ deploy_test_workloads_now() {
 # ---------------------------------------------------------------------
 MGMT_SG_ID=""; INGRESS_SG_ID=""; EGRESS_SG_ID=""
 ensure_collector_sgs() {
-  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would create 3 distinct collector SGs (mgmt/ingress/egress)"; MGMT_SG_ID="sg-mgmt"; INGRESS_SG_ID="sg-ingress"; EGRESS_SG_ID="sg-egress"; return 0; }
-  [[ -z "${STACK_VPC_ID:-}" ]] && { warn "No stack VPC id; cannot create collector SGs."; return 1; }
+  # $1: the VPC the collector lives in; defaults to the stack's own. SG names
+  # are unique PER VPC in AWS, so the same name in a second VPC is a new SG and
+  # the reuse lookup (filtered by vpc-id) stays correct.
+  local sg_vpc="${1:-${STACK_VPC_ID:-}}"
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would create 3 distinct collector SGs (mgmt/ingress/egress) in ${sg_vpc:-<vpc>}"; MGMT_SG_ID="sg-mgmt"; INGRESS_SG_ID="sg-ingress"; EGRESS_SG_ID="sg-egress"; return 0; }
+  [[ -z "$sg_vpc" ]] && { warn "No VPC id; cannot create collector SGs."; return 1; }
   local vpc_cidr
-  vpc_cidr=$(probe aws ec2 describe-vpcs --region "$REGION" --vpc-ids "$STACK_VPC_ID" --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null)
+  vpc_cidr=$(probe aws ec2 describe-vpcs --region "$REGION" --vpc-ids "$sg_vpc" --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null)
   [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]] && vpc_cidr="10.0.0.0/8"
   # role: sg-name-suffix; returns the SG id (reused if it already exists)
   _mk_sg() {
@@ -3793,14 +3857,14 @@ ensure_collector_sgs() {
     local name="cloudlens-collector-${role}-${STACK_NAME}"
     local id
     id=$(probe aws ec2 create-security-group --region "$REGION" --group-name "$name" \
-         --description "$desc" --vpc-id "$STACK_VPC_ID" --query 'GroupId' --output text 2>/dev/null)
+         --description "$desc" --vpc-id "$sg_vpc" --query 'GroupId' --output text 2>/dev/null)
     # probe ALWAYS exits 0, so `create || describe` never falls through: on a
     # re-run create fails as a duplicate, id comes back empty, and the reuse
     # lookup never ran, so the SGs "failed to create" the second time. Check the
     # result explicitly and look up the existing SG by name when create gave nothing.
     if [[ -z "$id" || "$id" == "None" ]]; then
       id=$(probe aws ec2 describe-security-groups --region "$REGION" \
-         --filters "Name=group-name,Values=${name}" "Name=vpc-id,Values=${STACK_VPC_ID}" \
+         --filters "Name=group-name,Values=${name}" "Name=vpc-id,Values=${sg_vpc}" \
          --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
     fi
     printf '%s' "$id"
@@ -3829,7 +3893,7 @@ ensure_collector_sgs() {
   probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$EGRESS_SG_ID" \
     --ip-permissions "IpProtocol=udp,FromPort=4789,ToPort=4789,IpRanges=[{CidrIp=${vpc_cidr}}]" \
                      "IpProtocol=47,IpRanges=[{CidrIp=${vpc_cidr}}]" >/dev/null 2>&1
-  ok "Collector SGs: mgmt ${MGMT_SG_ID}, ingress ${INGRESS_SG_ID}, egress ${EGRESS_SG_ID}"
+  ok "Collector SGs in ${sg_vpc}: mgmt ${MGMT_SG_ID}, ingress ${INGRESS_SG_ID}, egress ${EGRESS_SG_ID}"
   return 0
 }
 
@@ -4540,6 +4604,7 @@ aws:
     - ${REGION}
   tag_filters:
     ${DISCOVERY_TAG_KEY}: "${DISCOVERY_TAG_VALUE}"
+  ${SOURCE_VPC_YAML_LINE:-}
   windows_connection: "ssm"
   linux_connection:   "ssh"
   ${SSH_KEY_LINE}
@@ -4583,6 +4648,7 @@ merge_customer_input() {
   CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" CL_SSM_BUCKET="${SSM_BUCKET_NAME:-}" \
   CL_VPC_ID="${STACK_VPC_ID:-}" \
   CL_SECURE="${SECURE_SENSORS:-no}" CL_CA_PATH="${SENSOR_CA_CERT:-}" \
+  CL_SOURCE_VPCS="${SOURCE_VPC_SPECS[*]+$(IFS=' '; echo "${SOURCE_VPC_SPECS[*]%%:*}")}" \
     python3 - customer_input.yaml <<'PY'
 import os, sys
 try:
@@ -4626,6 +4692,18 @@ doc["cloudlens"] = cl
 # filters, even though the file is otherwise the operator's to keep. Leaving
 # a stale file to win made the flags do nothing at all, silently: a run asking
 # for monitoring=enabled searched for cloudlens=yes and found no hosts.
+# The VPC(s) being tapped, typed on THIS command line: written into
+# aws.source_vpc_ids so sensor discovery follows the same VPCs the mirror
+# taps. The whole point of the shared selection is that the two paths can
+# no longer target different hosts.
+_svpcs = [v for v in os.environ.get("CL_SOURCE_VPCS", "").split() if v]
+if _svpcs:
+    aws_blk = doc.get("aws")
+    if not isinstance(aws_blk, dict):
+        aws_blk = {}
+    aws_blk["source_vpc_ids"] = _svpcs
+    doc["aws"] = aws_blk
+
 # The SSM bucket the Windows play needs. Written here so the operator never
 # has to hand-edit this file between phases.
 _ssm = os.environ.get("CL_SSM_BUCKET", "")
@@ -4731,6 +4809,14 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
     # if it fails the playbook still asserts with the manual fix.
     if [[ "$TEST_WINDOWS" == "yes" ]]; then
       discover_windows_installer_url || true
+    fi
+
+    # The tapped VPC list, for the fresh-write path (the merge path reads
+    # CL_SOURCE_VPCS). Rendered as one flow-style YAML list line.
+    SOURCE_VPC_YAML_LINE="# source_vpc_ids:  (defaults to vpc_id; set with --source-vpc-id)"
+    if [[ ${#SOURCE_VPC_SPECS[@]} -gt 0 ]]; then
+      _sv_list="$(IFS=' '; echo "${SOURCE_VPC_SPECS[*]%%:*}")"
+      SOURCE_VPC_YAML_LINE="source_vpc_ids: [$(echo "$_sv_list" | tr ' ' ',')]"
     fi
 
     # Sensor-to-manager TLS inputs -> what the YAML carries. The CA path is
@@ -5021,7 +5107,21 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
   if [[ "$WITH_MIRROR" != "true" ]]; then
     note "Skipped. Run scripts/kvo_aws_mirror.py later if you want the fabric anyway."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/kvo_aws_mirror.py --kvo ${KVO_PUBLIC_IP} --clm-name ${CLM_NAME_IN_KVO} --region ${REGION} --vpc-id ${STACK_VPC_ID} --source-tag ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} --ssh-key ${KEY_NAME} --cloudlens-ip ${CLMS_PRIVATE_IP} --zone ${STACK_ZONE} --mgmt-subnet ${MGMT_SUBNET_ID} --ingress-subnet ${INGRESS_SUBNET_ID} --egress-subnet ${EGRESS_SUBNET_ID} --tool-remote-ip ${VPB_INGRESS_IP} --tool-encap L2GRE --gre-key ${CLOUDLENS_GRE_KEY} --aws-access-key <hidden> --aws-secret-key <hidden> --accept-eula --insecure"
+    resolve_source_vpc_specs
+    _dr_specs=("${SOURCE_VPC_RESOLVED[@]}")
+    dryrun_say "python3 scripts/resolve_workloads.py --region ${REGION} $(for v in "${_dr_specs[@]}"; do printf -- '--source-vpc-id %s ' "${v%%:*}"; done)--fallback-tag ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+    for _dr in "${_dr_specs[@]}"; do
+      IFS=':' read -r _drv _drz _drm _dri _dre _drx <<< "$_dr"
+      _drn="aws-mirror"; [[ "$_drv" != "$STACK_VPC_ID" ]] && _drn="aws-mirror-${_drv}"
+      if [[ "$_drv" == "$STACK_VPC_ID" ]]; then
+        _drz="${_drz:-$STACK_ZONE}"; _drm="${_drm:-$MGMT_SUBNET_ID}"
+        _dri="${_dri:-$INGRESS_SUBNET_ID}"; _dre="${_dre:-$EGRESS_SUBNET_ID}"
+      else
+        _drz="${_drz:-$COLLECTOR_ZONE}"; _drm="${_drm:-$COLLECTOR_MGMT_SUBNET}"
+        _dri="${_dri:-$COLLECTOR_INGRESS_SUBNET}"; _dre="${_dre:-$COLLECTOR_EGRESS_SUBNET}"
+      fi
+      dryrun_say "python3 scripts/kvo_aws_mirror.py --kvo ${KVO_PUBLIC_IP} --clm-name ${CLM_NAME_IN_KVO} --region ${REGION} --vpc-id ${_drv} --name ${_drn} --selection inventory/generated.workloads.json --ssh-key ${KEY_NAME} --cloudlens-ip ${CLMS_PRIVATE_IP} --zone ${_drz} --mgmt-subnet ${_drm} --ingress-subnet ${_dri} --egress-subnet ${_dre} --tool-remote-ip ${VPB_INGRESS_IP} --tool-encap L2GRE --gre-key ${CLOUDLENS_GRE_KEY} --aws-access-key <hidden> --aws-secret-key <hidden> --accept-eula --insecure"
+    done
   elif [[ "$KVO_CHAIN_OK" != "true" ]]; then
     warn "KVO is not licensed/adopted, so the mirror fabric would fail. Skipping."
   elif [[ -z "$MIRROR_SCRIPT" ]] || ! python_chain_ready; then
@@ -5058,73 +5158,200 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     if [[ -z "$STACK_ZONE" || -z "$MGMT_SUBNET_ID" || -z "$INGRESS_SUBNET_ID" || -z "$EGRESS_SUBNET_ID" ]]; then
       discover_stack_facts
     fi
-    if [[ -z "$STACK_ZONE" || -z "$MGMT_SUBNET_ID" || -z "$INGRESS_SUBNET_ID" || -z "$EGRESS_SUBNET_ID" ]]; then
-      warn "Cannot build the collector spec: zone/subnets did not resolve."
-      warn "  zone='${STACK_ZONE}' mgmt='${MGMT_SUBNET_ID}' ingress='${INGRESS_SUBNET_ID}' egress='${EGRESS_SUBNET_ID}'"
-      warn "Without all four, KVO creates NO collector and NO sessions. Skipping the"
-      warn "mirror. In an existing VPC (or with --no-vpb) name the placement:"
-      warn "  --collector-zone AZ --collector-mgmt-subnet ID \\"
-      warn "  --collector-ingress-subnet ID --collector-egress-subnet ID"
-      warn "In the lab, run a FULL deploy (not --only mirror) so detection fills these."
-      WITH_MIRROR=false
-    elif [[ "$MGMT_SUBNET_ID" == "$INGRESS_SUBNET_ID" || "$MGMT_SUBNET_ID" == "$EGRESS_SUBNET_ID" || "$INGRESS_SUBNET_ID" == "$EGRESS_SUBNET_ID" ]]; then
-      # KVO UG, AWS Cloud Configs: the three groups "have to be in separate
-      # subnets, with separate IPs for the vHub to work properly." A collapsed
-      # trio commits cleanly and cuts ZERO sessions, with no alert anywhere.
-      warn "The collector subnets are not THREE DISTINCT subnets:"
-      warn "  mgmt='${MGMT_SUBNET_ID}' ingress='${INGRESS_SUBNET_ID}' egress='${EGRESS_SUBNET_ID}'"
-      warn "KVO requires one subnet per collector interface role (KVO UG, AWS Cloud"
-      warn "Configs). Pass three different subnets in the SAME AZ with"
-      warn "  --collector-mgmt-subnet / --collector-ingress-subnet / --collector-egress-subnet"
-      warn "Skipping the mirror rather than building a fabric that cannot work."
-      WITH_MIRROR=false
-    fi
-    # KVO requires three DISTINCT security groups for the collector interfaces.
-    # Customer-supplied SGs always win; only what is still missing gets created,
-    # and --no-create-collector-sgs turns a gap into an input error instead.
+    # Per tapped VPC below: placement + SGs are validated per entry, because a
+    # run tapping only a customer VPC with a full --source-vpc spec must not be
+    # blocked by the LAB placement failing to derive.
     [[ -n "$COLLECTOR_MGMT_SG"    ]] && MGMT_SG_ID="$COLLECTOR_MGMT_SG"
     [[ -n "$COLLECTOR_INGRESS_SG" ]] && INGRESS_SG_ID="$COLLECTOR_INGRESS_SG"
     [[ -n "$COLLECTOR_EGRESS_SG"  ]] && EGRESS_SG_ID="$COLLECTOR_EGRESS_SG"
-    if [[ "$WITH_MIRROR" == "true" && ( -z "$MGMT_SG_ID" || -z "$INGRESS_SG_ID" || -z "$EGRESS_SG_ID" ) ]]; then
-      if [[ "$CREATE_COLLECTOR_SGS" == "no" ]]; then
-        warn "--no-create-collector-sgs is set but not all three collector SGs were"
-        warn "supplied (mgmt='${MGMT_SG_ID}' ingress='${INGRESS_SG_ID}' egress='${EGRESS_SG_ID}')."
-        warn "Pass all of --collector-mgmt-sg / --collector-ingress-sg / --collector-egress-sg."
-        warn "Skipping the mirror step."
-        WITH_MIRROR=false
-      else
-        ensure_collector_sgs || warn "Could not create the collector SGs; the mirror step will report them missing."
-      fi
-    fi
-    if [[ "$WITH_MIRROR" != "true" ]]; then
-      note "Mirror skipped (collector spec could not be resolved; see above)."
-    elif [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
+    if [[ -z "$MIRROR_ACCESS_KEY" || -z "$MIRROR_SECRET_KEY" ]]; then
       warn "No AWS access key / secret key supplied; skipping the mirror step."
       note "Supply them with --mirror-access-key / --mirror-secret-key."
-    elif python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
-           --region "$REGION" --vpc-id "$STACK_VPC_ID" \
-           --source-tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
-           --ssh-key "$KEY_NAME" --cloudlens-ip "$CLMS_PRIVATE_IP" \
-           ${STACK_ZONE:+--zone "$STACK_ZONE"} \
-           ${MGMT_SUBNET_ID:+--mgmt-subnet "$MGMT_SUBNET_ID"} \
-           ${INGRESS_SUBNET_ID:+--ingress-subnet "$INGRESS_SUBNET_ID"} \
-           ${EGRESS_SUBNET_ID:+--egress-subnet "$EGRESS_SUBNET_ID"} \
-           ${MGMT_SG_ID:+--mgmt-sg "$MGMT_SG_ID"} \
-           ${INGRESS_SG_ID:+--ingress-sg "$INGRESS_SG_ID"} \
-           ${EGRESS_SG_ID:+--egress-sg "$EGRESS_SG_ID"} \
-           ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
-           ${COLLECTOR_MAX:+--max-size "$COLLECTOR_MAX"} \
-           --gre-key "$CLOUDLENS_GRE_KEY" \
-           --tool-encap L2GRE \
-           --device-link vpb-c2dl \
-           --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
-           --accept-eula --insecure; then
-      state_phase mirror done
-      ok "AWS mirror fabric committed and the collector is launching in KVO."
-      note "Sessions are cut after the collector boots (~10-15 min) and discovers the tagged ENIs."
-      note "Verify: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
     else
-      warn "The AWS mirror step did not complete; the rest of the run continues."
+      # Which VPC(s) get a fabric: flags > customer_input.yaml > stack VPC.
+      resolve_source_vpc_specs
+      _specs=("${SOURCE_VPC_RESOLVED[@]}")
+
+      # Resolve the customer's FULL selection (ANDed tags, explicit ids,
+      # exclusions) once, across every tapped VPC, into the manifest both
+      # paths share. Without it the mirror falls back to the single-tag shim
+      # and can diverge from what the sensor path targets.
+      RESOLVER_SCRIPT="$(find_repo_script scripts/resolve_workloads.py || true)"
+      WL_MANIFEST=""
+      MIRROR_RESOLVE_FAILED=false
+      if [[ -n "$RESOLVER_SCRIPT" ]]; then
+        _res_args=(--region "$REGION" --stamp "$(date -u +%FT%TZ)" \
+                   --input "${PWD}/customer_input.yaml" \
+                   --fallback-tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}")
+        for _sv in "${_specs[@]}"; do _res_args+=(--source-vpc-id "${_sv%%:*}"); done
+        if _res_out="$(python3 "$RESOLVER_SCRIPT" "${_res_args[@]}")"; then
+          while IFS='=' read -r _k _v; do
+            [[ "$_k" == "CL_WL_PATH" ]] && WL_MANIFEST="$_v"
+          done <<< "$_res_out"
+        fi
+        if [[ -z "$WL_MANIFEST" ]]; then
+          # A failed resolution is an INPUT problem (static inventory, bad
+          # filters, AWS unreachable). Committing a fabric against a guessed
+          # tag instead would tap the wrong hosts or none, silently: the
+          # exact failure class this resolver exists to kill. Stop instead.
+          warn "The workload selection could not be resolved (resolve_workloads.py"
+          warn "output above says why). Not building the mirror fabric against a"
+          warn "guessed tag. Fix the selection in customer_input.yaml (or pass"
+          warn "--discovery-tag-key/-value) and re-run with --only mirror."
+          MIRROR_RESOLVE_FAILED=true
+        fi
+      else
+        warn "scripts/resolve_workloads.py not found; using the single-tag selector."
+      fi
+
+      # The flag-seeded SG trio, snapshotted BEFORE the loop: ensure_collector_sgs
+      # mutates the MGMT_SG_ID/... globals per call, and a later iteration must
+      # never inherit SGs created in a DIFFERENT VPC (SG ids are VPC-scoped; a
+      # cross-VPC id commits cleanly and the collector then cannot launch).
+      _flag_sgm="$MGMT_SG_ID"; _flag_sgi="$INGRESS_SG_ID"; _flag_sge="$EGRESS_SG_ID"
+      MIRROR_ALL_OK=true
+      MIRROR_ANY_DONE=false
+      [[ "$MIRROR_RESOLVE_FAILED" == "true" ]] && _specs=()
+      for _spec in "${_specs[@]+"${_specs[@]}"}"; do
+        IFS=':' read -r m_vpc m_zone m_mgmt m_ing m_egr m_sgm m_sgi m_sge _extra <<< "$_spec"
+        # Placement: the spec's own fields win; the stack's VPC falls back to
+        # the derived/collector-flag values; any other VPC falls back to the
+        # bare --collector-* flags (validated against THAT vpc downstream).
+        if [[ "$m_vpc" == "$STACK_VPC_ID" ]]; then
+          m_zone="${m_zone:-$STACK_ZONE}"; m_mgmt="${m_mgmt:-$MGMT_SUBNET_ID}"
+          m_ing="${m_ing:-$INGRESS_SUBNET_ID}"; m_egr="${m_egr:-$EGRESS_SUBNET_ID}"
+        else
+          m_zone="${m_zone:-$COLLECTOR_ZONE}"; m_mgmt="${m_mgmt:-$COLLECTOR_MGMT_SUBNET}"
+          m_ing="${m_ing:-$COLLECTOR_INGRESS_SUBNET}"; m_egr="${m_egr:-$COLLECTOR_EGRESS_SUBNET}"
+        fi
+        if [[ -z "$m_vpc" || -z "$m_zone" || -z "$m_mgmt" || -z "$m_ing" || -z "$m_egr" ]]; then
+          warn "Skipping ${m_vpc:-<vpc>}: its collector placement is incomplete"
+          warn "  (zone='${m_zone}' mgmt='${m_mgmt}' ingress='${m_ing}' egress='${m_egr}')."
+          warn "Without all four, KVO commits a config with NO collector and cuts ZERO"
+          warn "sessions. Name the placement, either with the collector flags or inline:"
+          warn "  --source-vpc ${m_vpc:-vpc-...}:AZ:mgmt-subnet:ingress-subnet:egress-subnet"
+          MIRROR_ALL_OK=false
+          continue
+        fi
+        if [[ "$m_mgmt" == "$m_ing" || "$m_mgmt" == "$m_egr" || "$m_ing" == "$m_egr" ]]; then
+          # KVO UG, AWS Cloud Configs: the three groups "have to be in separate
+          # subnets, with separate IPs for the vHub to work properly."
+          warn "Skipping ${m_vpc}: mgmt/ingress/egress must be THREE DISTINCT subnets"
+          warn "  (got mgmt='${m_mgmt}' ingress='${m_ing}' egress='${m_egr}'; KVO UG,"
+          warn "  AWS Cloud Configs). A collapsed trio commits cleanly and cuts ZERO"
+          warn "  sessions, with no alert anywhere."
+          MIRROR_ALL_OK=false
+          continue
+        fi
+        # SGs: the spec's own, else the --collector-*-sg flags (they place the
+        # collector wherever it is tapped, same contract as the subnet flags),
+        # else create in THIS vpc. Never a previous iteration's globals.
+        local_sgm="$m_sgm"; local_sgi="$m_sgi"; local_sge="$m_sge"
+        if [[ -z "$local_sgm$local_sgi$local_sge" ]]; then
+          local_sgm="$_flag_sgm"; local_sgi="$_flag_sgi"; local_sge="$_flag_sge"
+        fi
+        if [[ -z "$local_sgm" || -z "$local_sgi" || -z "$local_sge" ]]; then
+          if [[ "$CREATE_COLLECTOR_SGS" == "no" ]]; then
+            warn "Skipping ${m_vpc}: --no-create-collector-sgs is set but its three"
+            warn "collector SGs were not all supplied (mgmt='${local_sgm}'"
+            warn "ingress='${local_sgi}' egress='${local_sge}'). Pass them inline:"
+            warn "  --source-vpc ${m_vpc}:...:mgmt-sg:ingress-sg:egress-sg"
+            MIRROR_ALL_OK=false
+            continue
+          fi
+          if ensure_collector_sgs "$m_vpc"; then
+            [[ -z "$local_sgm" ]] && local_sgm="$MGMT_SG_ID"
+            [[ -z "$local_sgi" ]] && local_sgi="$INGRESS_SG_ID"
+            [[ -z "$local_sge" ]] && local_sge="$EGRESS_SG_ID"
+          else
+            warn "Skipping ${m_vpc}: could not create its collector SGs."
+            MIRROR_ALL_OK=false
+            continue
+          fi
+        fi
+        # A VPC whose matched hosts are all non-Nitro is the SENSOR path's job,
+        # already reported by name in the resolver output: skipping it is
+        # correct, not a failure. A VPC where NOTHING matched at all is a
+        # misconfiguration (wrong VPC or wrong tag) and does fail the phase.
+        if [[ -n "$WL_MANIFEST" ]]; then
+          _wl_stat="$(python3 - "$WL_MANIFEST" "$m_vpc" <<'PYWL' 2>/dev/null
+import json, sys
+m = json.load(open(sys.argv[1]))
+v = (m.get("mirror", {}).get("per_vpc", {}) or {}).get(sys.argv[2]) or {}
+print(len(v.get("selector") or []), len(v.get("instance_ids") or []),
+      len(v.get("not_mirrorable") or []))
+PYWL
+)" || _wl_stat=""
+          read -r _wl_sel _wl_mir _wl_nm <<< "${_wl_stat:-0 0 0}"
+          if [[ "$_wl_sel" == "0" && "$_wl_nm" != "0" ]]; then
+            note "Skipping ${m_vpc}: its matched instance(s) are all non-Nitro, so AWS"
+            note "cannot mirror them; the sensor path covers them (named above)."
+            continue
+          fi
+          if [[ "$_wl_sel" == "0" ]]; then
+            warn "Skipping ${m_vpc}: the selection matched NOTHING there. Check the"
+            warn "VPC id and the filters in customer_input.yaml."
+            MIRROR_ALL_OK=false
+            continue
+          fi
+        fi
+        # One fabric per VPC. The single-fabric name 'aws-mirror' is kept for
+        # the stack's own VPC, ALWAYS: renaming it when a second VPC is added
+        # would orphan the existing fabric and rebuild it under a new name.
+        # Every other VPC is aws-mirror-<vpcid>, because a KVO cloud config is
+        # strictly one VPC and EDITING one destroys its vHub (KVO UG): a new
+        # VPC must be a NEW config, never an edit.
+        m_name="aws-mirror"
+        [[ "$m_vpc" != "$STACK_VPC_ID" ]] && m_name="aws-mirror-${m_vpc}"
+        echo
+        note "Mirror fabric '${m_name}': tapping ${m_vpc}"
+        note "  collectors: ${m_zone}  mgmt=${m_mgmt} ingress=${m_ing} egress=${m_egr}"
+        note "  SGs: mgmt=${local_sgm} ingress=${local_sgi} egress=${local_sge}"
+        if [[ "$m_vpc" != "$STACK_VPC_ID" ]]; then
+          note "  ${m_vpc} is not the CloudLens VPC (${STACK_VPC_ID}). For sessions to"
+          note "  flow, that VPC must reach: the CLMS (${CLMS_PRIVATE_IP:-?}) and KVO on"
+          note "  443 from the collector mgmt subnet, and the tool (${VPB_INGRESS_IP:-?})"
+          note "  from the collector egress subnet: VPC peering or TGW, plus routes."
+          note "  The subnet checks below verify placement, not reachability."
+        fi
+        if python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
+             --region "$REGION" --vpc-id "$m_vpc" --name "$m_name" \
+             --source-tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+             ${WL_MANIFEST:+--selection "$WL_MANIFEST"} \
+             --ssh-key "$KEY_NAME" --cloudlens-ip "$CLMS_PRIVATE_IP" \
+             --zone "$m_zone" \
+             --mgmt-subnet "$m_mgmt" \
+             --ingress-subnet "$m_ing" \
+             --egress-subnet "$m_egr" \
+             --mgmt-sg "$local_sgm" \
+             --ingress-sg "$local_sgi" \
+             --egress-sg "$local_sge" \
+             ${VPB_INGRESS_IP:+--tool-remote-ip "$VPB_INGRESS_IP"} \
+             ${COLLECTOR_MAX:+--max-size "$COLLECTOR_MAX"} \
+             --gre-key "$CLOUDLENS_GRE_KEY" \
+             --tool-encap L2GRE \
+             --device-link vpb-c2dl \
+             --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
+             --accept-eula --insecure; then
+          MIRROR_ANY_DONE=true
+          ok "Mirror fabric '${m_name}' committed; the collector for ${m_vpc} is launching in KVO."
+        else
+          warn "Mirror fabric for ${m_vpc} did not complete; continuing with the rest."
+          MIRROR_ALL_OK=false
+        fi
+      done
+      [[ "$MIRROR_RESOLVE_FAILED" == "true" ]] && MIRROR_ALL_OK=false
+      if [[ "$MIRROR_ANY_DONE" == "true" && "$MIRROR_ALL_OK" == "true" ]]; then
+        state_phase mirror done
+        ok "AWS mirror fabric committed for every tapped VPC."
+        note "Sessions are cut after each collector boots (~10-15 min) and discovers its sources."
+        note "Verify: aws ec2 describe-traffic-mirror-sessions --region ${REGION}"
+      elif [[ "$MIRROR_ANY_DONE" == "true" ]]; then
+        warn "The mirror committed for some tapped VPC(s) but not all; see above."
+        state_phase mirror failed "some tapped VPCs did not commit"
+      else
+        warn "The AWS mirror step did not complete; the rest of the run continues."
+      fi
     fi
   fi
 fi

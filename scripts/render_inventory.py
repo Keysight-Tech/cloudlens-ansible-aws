@@ -35,6 +35,10 @@ What customer_input.yaml can set (all under "aws:"):
   inventory_file: path to an existing Ansible inventory. Skips AWS discovery
                   entirely, for static hosts, other accounts, or non-EC2 boxes.
 
+The selection itself (which tags, which ids, which VPC) is computed by
+scripts/workload_selection.py, the ONE implementation shared with the
+agentless-mirror path, so the two can no longer diverge.
+
 Usage:
   python3 scripts/render_inventory.py [--input customer_input.yaml]
                                       [--base inventory/aws_ec2.yaml]
@@ -140,12 +144,17 @@ def main():
     if not isinstance(aws, dict):
         aws = {}
 
-    # --- Escape hatch: an inventory the operator already has -------------
-    # Hosts that are not discoverable from EC2 at all: a static inventory, a
-    # different account, or machines that are not EC2 instances.
-    static = aws.get("inventory_file")
-    if static:
-        static = os.path.expanduser(str(static))
+    # The selection logic lives in workload_selection.py, shared with the
+    # mirror path. This script only translates its result into aws_ec2
+    # inventory filters.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from workload_selection import build_selection
+
+    base_filters = dict(base.get("filters") or {})
+    selection = build_selection(aws, base_filters)
+
+    if selection["mode"] == "static":
+        static = os.path.expanduser(selection["static_path"])
         if not os.path.isabs(static):
             static = os.path.join(REPO_ROOT, static)
         if not os.path.exists(static):
@@ -162,55 +171,24 @@ def main():
         ])
         return 0
 
-    base_filters = dict(base.get("filters") or {})
-    filters = {"instance-state-name": base_filters.get("instance-state-name", "running")}
-
-    instance_ids = as_list(aws.get("instance_ids"))
-    tag_filters = aws.get("tag_filters")
-    if not isinstance(tag_filters, dict):
-        tag_filters = {}
-
-    if instance_ids:
-        # Explicit ids win over tag discovery: "exactly these hosts".
-        mode = "instance-ids"
-        filters["instance-id"] = instance_ids
-        described = " ".join(instance_ids)
-    elif tag_filters:
-        mode = "tags"
-        described_parts = []
-        for key, value in tag_filters.items():
-            rendered = tag_value(value)
-            filters["tag:%s" % key] = rendered
-            described_parts.append("tag:%s=%s" % (key, rendered))
-        described = " ".join(described_parts)
-    else:
-        # No customer_input.yaml, or one with no aws filters: behave exactly
-        # like the checked-in default.
-        mode = "tags"
-        filters = dict(base_filters)
-        described = " ".join(
-            "%s=%s" % (k, tag_value(v)) for k, v in base_filters.items() if k.startswith("tag:")
-        )
-
-    # Confine discovery to one VPC when the deploy knows which one it built.
-    #
-    # Tag discovery is region-wide, and every stack tags its workloads the same
-    # way by default (cloudlens=yes). With two stacks in one region that means a
-    # sensor run for the second stack also finds the FIRST stack's workloads,
-    # installs onto them, and re-registers them against the second stack's
-    # manager. That happened live, and the identical default Name tags then
-    # collapsed the duplicate hosts onto each other in this very inventory.
-    #
-    # aws.vpc_id is written by deploy-stack.sh. Absent (hand-written config, or
-    # workloads deliberately spread across VPCs) nothing changes.
-    vpc_id = aws.get("vpc_id")
-    if vpc_id and mode != "instance-ids":
-        filters["vpc-id"] = vpc_id
-        described += " vpc-id=%s" % vpc_id
+    # 'default' still reports as mode 'tags' on stdout: the consumers of
+    # CL_INV_MODE predate the distinction and treat both the same way.
+    mode = "tags" if selection["mode"] == "default" else selection["mode"]
+    filters = selection["filters"]
+    described = selection["described"]
 
     base["filters"] = filters
 
-    regions = as_list(aws.get("regions"))
+    # Exclusions are documented as applying to BOTH paths. The aws_ec2 plugin
+    # has first-class support: exclude_filters drops matching hosts AFTER the
+    # include filters ran. Without this the excluded hosts were discovered,
+    # got sensors installed, and the printed summary still claimed otherwise.
+    if selection["exclude_ids"]:
+        base["exclude_filters"] = [{"instance-id": list(selection["exclude_ids"])}]
+    else:
+        base.pop("exclude_filters", None)
+
+    regions = selection["regions"]
     if regions:
         base["regions"] = regions
     else:

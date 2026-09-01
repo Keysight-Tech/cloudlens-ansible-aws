@@ -384,16 +384,20 @@ def create_aws_cloud_config(base, token, cr, name, cluster, aws_cfg, verify, dev
     rows = d.get("data", {}).get("createCloudConfig") or []
     return rows[0] if rows else None
 
-def create_collection(base, token, cr, name, cluster, cfg_name, tag_key, tag_val, verify):
-    # `field` is the TAG KEY itself, not the literal string "tag". The KVO UI's
+def create_collection(base, token, cr, name, cluster, cfg_name, selector, verify):
+    # selector is the resourceSelector entry list. For the tag form, `field` is
+    # the TAG KEY itself, not the literal string "tag": the KVO UI's
     # workload-selector dropdown lists the tag keys present on the instances
     # (Name, cloudlens, instance-id, aws:cloudformation:*), and that is what
     # goes in `field`. Sending field="tag" produced a selector the UI rendered
     # as "tag | yes" which matched ZERO hosts, while removing the selector
     # entirely revealed all 8 interfaces: proof KVO could see them and only the
     # selector was wrong. `tag` is carried too, since the input accepts it.
+    # The instance-id form ({field:"instance-id", regex:"^(i-..|i-..)$"}) comes
+    # from resolve_workloads.py, which resolves ANDed tags / exclusions to
+    # literal ids so KVO's undocumented multi-entry combination never matters.
     settings = {"cloudConfig": {"name": cfg_name}, "tapType": "RAW",
-                "resourceSelector": [{"field": tag_key, "tag": tag_key, "regex": tag_val}]}
+                "resourceSelector": selector}
     q = ("mutation($n:String!,$c:String!,$cl:String!,$s:_CloudCollectionInput!){ "
          "createCloudCollection(name:$n, changeID:$c, clusterID:$cl, settings:$s){ uid name } }")
     d = gql(base, token, q, {"n": name, "c": cr, "cl": cluster, "s": settings}, verify)
@@ -519,7 +523,14 @@ def main():
     ap.add_argument("--region", required=True, help="AWS region of the source VPC")
     ap.add_argument("--vpc-id", required=True, help="source VPC id to mirror from")
     ap.add_argument("--source-tag", default="cloudlens=yes",
-                    help="tag selecting sources to mirror, key=value (default cloudlens=yes)")
+                    help="tag selecting sources to mirror, key=value (default cloudlens=yes). "
+                         "Superseded by --selection when both are given.")
+    ap.add_argument("--selection", default="",
+                    help="path to the workload manifest written by "
+                         "scripts/resolve_workloads.py. Carries the customer's full "
+                         "selection (ANDed tags / explicit ids / exclusions) resolved "
+                         "to a per-VPC KVO selector plus interface counts, so the "
+                         "mirror taps exactly the set the sensor path targets.")
     ap.add_argument("--image-id", help="collector Service VM AMI. Omit to auto-resolve the newest "
                     "cloudlens-vpb-svm Marketplace image in --region (recommended; region-agnostic).")
     ap.add_argument("--ssh-key", help="EC2 key pair name for the collector SVMs")
@@ -592,6 +603,30 @@ def main():
                     help="seconds to wait, after configuring, for KVO to create the collector "
                          "ASG. If it never appears the run FAILS loudly instead of looking OK.")
     args = ap.parse_args()
+
+    # The resolved-selection manifest, when given, is authoritative for WHAT is
+    # tapped; the CLI stays authoritative for WHERE (this run's --vpc-id).
+    manifest_vpc = None
+    if args.selection:
+        try:
+            with open(args.selection) as fh:
+                _m = json.load(fh)
+        except Exception as e:
+            log(f"--selection {args.selection} unreadable: {e}"); return 2
+        manifest_vpc = (_m.get("mirror", {}).get("per_vpc", {}) or {}).get(args.vpc_id)
+        if manifest_vpc is None:
+            log(f"--selection manifest has no entry for {args.vpc_id}. Its VPCs: "
+                f"{', '.join(_m.get('mirror', {}).get('per_vpc', {}) or {}) or 'none'}. "
+                "Re-run resolve_workloads.py with --source-vpc-id "
+                f"{args.vpc_id}, or drop --selection."); return 2
+        if not manifest_vpc.get("selector"):
+            log(f"--selection resolved ZERO mirrorable instances in {args.vpc_id} "
+                f"({_m.get('described', '?')}). A fabric would commit cleanly and "
+                "cut no sessions. Refusing; fix the selection or the tapping mode.")
+            return 2
+        for nm in manifest_vpc.get("not_mirrorable", []):
+            log(f"not mirrorable (hypervisor {nm.get('hypervisor')}): {nm.get('id')} "
+                f"({nm.get('type')}) - the sensor path covers it")
     verify = not args.insecure
     if args.insecure:
         import urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -722,9 +757,20 @@ def main():
                 "cleanly in KVO and then launches NO collector and cuts ZERO "
                 "sessions, with no alert.")
             return 2
-        tk, _, tv = args.source_tag.partition("=")
-        pf = preflight_sources(args.region, args.vpc_id, tk, tv or "*",
-                               [sp["zone"] for sp in specs])
+        if manifest_vpc is not None:
+            # The resolver already enumerated and Nitro-classified the sources;
+            # reuse its counts and check AZ coverage against them.
+            pf = {"eni_count": manifest_vpc.get("eni_count", 0)}
+            zones = [sp["zone"] for sp in specs]
+            uncovered = sorted(set(manifest_vpc.get("azs", [])) - set(zones))
+            if uncovered:
+                log(f"WARNING: mirrorable interfaces sit in AZ(s) with no collector "
+                    f"({', '.join(uncovered)}) and will NOT be tapped. Add a "
+                    f"--zone-spec for each (three subnets per AZ).")
+        else:
+            tk, _, tv = args.source_tag.partition("=")
+            pf = preflight_sources(args.region, args.vpc_id, tk, tv or "*",
+                                   [sp["zone"] for sp in specs])
         max_size = args.max_size
         if max_size is None:
             enis = pf.get("eni_count", 0)
@@ -801,20 +847,62 @@ def main():
         log(f"AWS cloud config '{args.name}' live" +
             (f" (device link(s): {', '.join(want_links)})" if want_links else ""))
 
-    # 3. Cloud collection (tag selector) -> KVO creates AWS mirror sessions
-    if "=" in args.source_tag:
-        tag_key, tag_val = args.source_tag.split("=", 1)
+    # 3. Cloud collection -> KVO creates AWS mirror sessions. The selector is
+    # the manifest's resolved form when --selection was given (the customer's
+    # real selection), else the single-tag shim.
+    if manifest_vpc is not None:
+        selector = manifest_vpc["selector"]
+        _sel0 = selector[0]
+        selection_desc = (f"{_sel0['field']} ~ {_sel0['regex']}"
+                          + (f" (+{len(selector) - 1} more)" if len(selector) > 1 else "")
+                          + " [from the resolved selection manifest]")
+        log(f"selector from manifest: {len(selector)} entr"
+            + ("y" if len(selector) == 1 else "ies")
+            + f", {manifest_vpc.get('eni_count', '?')} interface(s) expected")
     else:
-        tag_key, tag_val = args.source_tag, ".*"
+        if "=" in args.source_tag:
+            tag_key, tag_val = args.source_tag.split("=", 1)
+        else:
+            tag_key, tag_val = args.source_tag, ".*"
+        selector = [{"field": tag_key, "tag": tag_key, "regex": tag_val}]
+        selection_desc = f"tag {tag_key}={tag_val}"
     coll_name = f"{args.name}-collect"
     have_coll = any(c.get("name") == coll_name for c in
                     (gql(kvo, tok, "{ cloudCollections { name } }", None, verify).get("data", {}).get("cloudCollections") or []))
     if have_coll:
-        log(f"cloud collection '{coll_name}' already exists; reusing")
+        cur_sel = []
+        _cd = gql(kvo, tok,
+                  "{ cloudCollections { name settingsFromChange { resourceSelector "
+                  "{ field tag regex } } } }", None, verify)
+        for c in (_cd.get("data", {}).get("cloudCollections") or []):
+            if c.get("name") == coll_name:
+                cur_sel = ((c.get("settingsFromChange") or {}).get("resourceSelector")) or []
+        _norm = lambda sel: sorted((e.get("field", ""), e.get("regex", "")) for e in sel)
+        if cur_sel and _norm(cur_sel) != _norm(selector):
+            # A stale selector (day-1 instance list after the fleet changed, or
+            # a changed tag) silently taps the wrong hosts. Update the
+            # COLLECTION in place: cheap by design, unlike a config edit.
+            log(f"cloud collection '{coll_name}' exists with a DIFFERENT selector; updating it")
+            cr = open_cr(kvo, tok, "aws-collection-sel", verify)
+            if not cr: return 7
+            upd = {"cloudConfig": {"name": args.name}, "tapType": "RAW",
+                   "resourceSelector": selector}
+            r = gql(kvo, tok,
+                    "mutation($n:String!,$c:String!,$s:_CloudCollectionInput!){ "
+                    "updateCloudCollection(name:$n, changeID:$c, settings:$s){ uid } }",
+                    {"n": coll_name, "c": cr, "s": upd}, verify)
+            if "errors" in r:
+                log(f"updateCloudCollection failed: {r['errors'][0]['message'][:180]}")
+                log("the OLD selector is still active; fix it in the KVO UI "
+                    "(Cloud Collections) or tear down and rebuild the fabric.")
+            elif commit_cr(kvo, tok, cr, verify):
+                log(f"cloud collection '{coll_name}' selector updated to the current selection")
+        else:
+            log(f"cloud collection '{coll_name}' already exists; reusing (selector unchanged)")
     else:
         cr = open_cr(kvo, tok, "aws-collection", verify)
         if not cr: return 7
-        coll = create_collection(kvo, tok, cr, coll_name, cluster, args.name, tag_key, tag_val, verify)
+        coll = create_collection(kvo, tok, cr, coll_name, cluster, args.name, selector, verify)
         if not coll:
             return 7
         if not commit_cr(kvo, tok, cr, verify): return 7
@@ -928,7 +1016,7 @@ def main():
                     log("  actually changes something. Nothing here is broken:")
                     log("  in KVO open Visibility Fabric > Cloud Collections >")
                     log(f"  {coll_name}, remove the workload selector and add it back")
-                    log(f"  ({tag_key} = {tag_val}), then commit that ONE change request.")
+                    log(f"  ({selection_desc}), then commit that ONE change request.")
                     log("  Sessions appear about a minute later. Verify with:")
                     log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
         else:
@@ -941,7 +1029,7 @@ def main():
     log("")
     log("=====================================================================")
     log(f" AWS Zone Tapping configured for VPC {args.vpc_id} in {args.region}.")
-    log(f"   Sources selected by tag: {tag_key}={tag_val}")
+    log(f"   Sources selected by: {selection_desc}")
     if args.tool_remote_ip:
         log(f"   Destination tool: {args.tool_remote_ip} ({args.tool_encap})")
         log(f"   Policy: {coll_name} -> {tool_name}")

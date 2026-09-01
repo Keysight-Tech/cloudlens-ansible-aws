@@ -103,8 +103,23 @@ scripts/kvo_aws_mirror.py \
 #   --zone-spec us-east-1b:subnet-m2:subnet-i2:subnet-e2
 ```
 
-`--source-tag cloudlens=yes` mirrors every ENI on instances carrying that tag -
-the same convention the sensor path uses, so one tag drives both models.
+`--source-tag cloudlens=yes` mirrors every ENI on instances carrying that tag.
+Prefer `--selection inventory/generated.workloads.json` instead, written by
+`scripts/resolve_workloads.py`: it carries the customer's FULL selection from
+customer_input.yaml (ANDed tags, explicit instance ids, exclusions), resolved
+per VPC, Nitro-classified, and already translated into the KVO selector. That
+is what makes the mirror tap exactly the set the sensor path targets; the
+single tag is the fallback when no selection can be resolved. deploy-stack.sh
+runs the resolver and passes `--selection` on its own; the tag remains for
+hand-run one-offs.
+
+Tapping a VPC other than the CloudLens one, or several: give deploy-stack.sh
+one `--source-vpc-id` (or `--source-vpc vpc:az:mgmt:ingress:egress`) per VPC,
+or list them as `aws.source_vpc_ids` in customer_input.yaml. One fabric is
+built per VPC (`aws-mirror-<vpcid>`), because a KVO cloud config is strictly
+one VPC and editing one destroys its vHub. Each tapped VPC needs its own
+collector placement (three distinct subnets in THAT VPC) and reachability to
+the CLMS/KVO on 443 and to the tool from its egress subnet (peering or TGW).
 The three SG flags and `--tool-remote-ip` are required in practice: the SGs are
 non-null in the KVO schema, and without a tool and monitoring policy KVO never
 creates sessions (KVO UG: the tapping infrastructure is created "only after a

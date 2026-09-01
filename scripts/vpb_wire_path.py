@@ -324,27 +324,32 @@ def main():
     # by the presence of awsConfiguration, not by the passed name.
     configs = q["data"]["cloudConfigs"]
     aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
-    cc = aws_configs[0] if aws_configs else None
-    if not cc:
+    if not aws_configs:
         # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
         # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
         # there is simply no AWS cloud config to attach the C2DL to.
         log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
         log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
         return 0
-    target = cc["name"]
-    st = cc["settings"] or {}
-    links = {l["name"] for l in (st.get("deviceLinks") or [])}
-    if a.c2dl in links:
-        log(f"  '{a.c2dl}' already linked to {target}")
-    else:
+    # EVERY AWS config gets the link, not just the first: the deploy builds one
+    # config per tapped VPC (aws-mirror-<vpcid>), and a config without its
+    # deviceLink delivers ZERO packets to the vPB, silently. The already-linked
+    # check keeps re-runs from re-editing a config (an edit rebuilds its vHub
+    # and briefly stops that VPC's mirroring, so it must happen exactly once).
+    for cc in aws_configs:
+        target = cc["name"]
+        st = cc["settings"] or {}
+        links = {l["name"] for l in (st.get("deviceLinks") or [])}
+        if a.c2dl in links:
+            log(f"  '{a.c2dl}' already linked to {target}")
+            continue
         aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
         for az in aws.get("availabilityZones", []):
             for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
         # deviceLinks is a LIST of name refs, not a single object.
         settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
         if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
-        if not step(base, tok, verify, "link C2DL to cloud config",
+        if not step(base, tok, verify, f"link C2DL to cloud config {target}",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": target, "c": cluster, "s": settings}): return 5
         log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
