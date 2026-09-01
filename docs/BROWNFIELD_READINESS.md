@@ -298,12 +298,33 @@ about what it is doing. Smallest change, highest value, no new features.
 **Stage 2, discovery.** Section 3 plus interactive VPC and subnet selection with
 a real listing. This is what makes a customer deployment possible at all.
 
-**Stage 3, the tapping question.** Section 4, plus unifying the selector so both
-paths target the same hosts (5.2).
+**Stage 3, the tapping question.** DONE: `--tapping sensors|mirror|both|none`
+(env `CLOUDLENS_TAPPING`) sets both paths from one answer; interactively it is
+a single question replacing the sensor gate and the Phase 15 mirror gate. The
+specific flags still win. Selector unification (5.2) remains open: mirror still
+takes one `--source-tag` while sensors use the full `customer_input.yaml`
+filters. The mirror preflight now reports the Nitro/sensor split, so the gap is
+at least stated per run instead of silent.
 
-**Stage 4, mirroring for existing environments.** The rest of section 5.
+**Stage 4, mirroring for existing environments.** CORE DONE:
+`--collector-zone/-mgmt-subnet/-ingress-subnet/-egress-subnet` and the three
+`--collector-*-sg` flags name the placement explicitly and always beat
+appliance-derived values; supplied SGs skip creation (no
+ec2:CreateSecurityGroup needed) and `--no-create-collector-sgs` makes a gap an
+input error. kvo_aws_mirror.py validates the trio (exists, tapped VPC, AZ
+match, pairwise distinct) before any KVO write, refuses a shared SG, supports
+multi-AZ via repeatable `--zone-spec`, derives `--max-size` from the matched
+interface count, and reports Nitro eligibility, AZ coverage and licence demand
+up front. The silent mgmt-subnet collapse is deleted. Open: per-VPC config
+loops for tapping a VPC other than the stack's own (`source_vpc_ids`), and the
+instance-id selector form for ANDed tag filters.
 
-**Stage 5, the certificate path.** Section 6, gated on lab proof.
+**Stage 5, the certificate path.** PLUMBING DONE, still gated on lab proof:
+`--secure-sensors` / `--ca-cert` write the TLS choice into customer_input.yaml
+with a certificate preflight (parse/expiry hard-fail, name-mismatch warning),
+and the Linux plays consume `ssl_verify` directly instead of deriving it from
+`registry_type`. Do not recommend to a customer until proven end to end,
+including a deliberate verification failure.
 
 ---
 
