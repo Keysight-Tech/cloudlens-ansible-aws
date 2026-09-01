@@ -195,7 +195,7 @@
         --project_key "{{ project_key }}" \
         --server "{{ cloudlens_manager_ip_or_FQDN }}" \
         --custom_tags "{{ custom_tags }}" \
-        --ssl_verify {% if registry_type == 'secure' %}yes{% else %}no{% endif %}
+        --ssl_verify {{ ssl_verify }}
       register: docker_run_result
 
     - name: Display container deployment output

@@ -57,7 +57,17 @@ cloudlens:
   manager_ip_or_fqdn: "clms.customer.example.com"
   project_key:        "REPLACE_WITH_PROJECT_KEY"
   custom_tags:        "Env=AWS Region=us-east-1 Customer=Acme"
+  # insecure: sensors skip TLS verification (lab default).
+  # secure: sensors verify the manager certificate (--ssl_verify yes) and the
+  # docker pull uses the trusted registry path. The manager must have its
+  # matching TLS certificate imported first (admin page: Import TLS
+  # Certificate, TLS 1.2). Set by deploy-stack.sh --secure-sensors.
   registry_type:      "insecure"
+  # ssl_verify follows registry_type unless set explicitly, so the two can
+  # differ while testing. local_ca_path is the CA file distributed to sensors
+  # (deploy-stack.sh --ca-cert); ca_cert_dir is where it lands on the host.
+  # ssl_verify:       "yes"
+  # local_ca_path:    "/path/to/ca.pem"
   linux_runtime:      "auto"   # auto | docker | podman
 
 vpc_ids:    []

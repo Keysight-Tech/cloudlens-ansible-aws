@@ -222,6 +222,15 @@ WINDOWS_INSTANCE_PROFILE="${CLOUDLENS_WINDOWS_INSTANCE_PROFILE:-}"
 # Windows host downloads it directly; otherwise the playbook asserts early with
 # the fix rather than failing silently at the copy step.
 WINDOWS_INSTALLER_URL="${CLOUDLENS_WINDOWS_INSTALLER_URL:-}"
+# Sensor-to-manager TLS. --secure-sensors switches the sensors to the secure
+# registry with --ssl_verify yes; --ca-cert names the CA file distributed to
+# them. PLUMBING status: implemented and preflighted here, but not yet proven
+# end to end in a lab (no worked --ssl_verify yes example exists in any
+# Keysight document); prove it, including a deliberate failure, before
+# recommending it to a customer. The manager must have its matching TLS
+# certificate imported first (admin page: Import TLS Certificate).
+SECURE_SENSORS="${CLOUDLENS_SECURE_SENSORS:-no}"
+SENSOR_CA_CERT="${CLOUDLENS_SENSOR_CA_CERT:-}"
 SUMMARY_FILE="cloudlens-deploy-summary.txt"
 LOG_FILE="cloudlens-deploy-stack.log"
 
@@ -1667,6 +1676,13 @@ Toggles:
                             only), both, or none. One answer instead of
                             --no-sensors plus the separate mirror question.
   --no-sensors              Skip sensor playbook chain at the end
+  --secure-sensors          Sensors verify the manager's TLS certificate
+                            (registry_type secure, --ssl_verify yes). The
+                            manager must have a matching certificate imported
+                            (admin page: Import TLS Certificate), TLS 1.2.
+  --ca-cert PATH            CA certificate distributed to the sensors for that
+                            verification (implies --secure-sensors). Checked
+                            here for parseability, expiry, and name match.
   --rollback                On any failure, delete the stack we created
                             (never touches a pre-existing stack).
   --no-rollback             Force keep-partial behavior (default).
@@ -1814,6 +1830,8 @@ while [[ $# -gt 0 ]]; do
     --no-vpb) DEPLOY_VPB=false; shift ;;
     --no-sensors) CHAIN_SENSORS=false; shift ;;
     --tapping) TAPPING_MODE="$(to_lower "$2")"; shift 2 ;;
+    --secure-sensors) SECURE_SENSORS="yes"; shift ;;
+    --ca-cert) SENSOR_CA_CERT="$2"; SECURE_SENSORS="yes"; shift 2 ;;
 
     --sensor-mode) SENSOR_MODE="$(to_lower "$2")"; shift 2 ;;
     --kvo-codes) KVO_CODES+=("$2"); shift 2 ;;
@@ -4463,6 +4481,42 @@ fi
 # render_inventory.py) rather than with sed: hand-rolled YAML edits are how the
 # discovery settings got lost in the first place.
 # ---------------------------------------------------------------------
+# Certificate preflight for --secure-sensors. Hard-fails on a certificate that
+# cannot work (unparseable, expired); warns on a name mismatch, because a CA
+# certificate legitimately does not carry the manager's name: only a
+# self-signed manager certificate does, and the vController UG advises FQDN
+# registration for verification.
+preflight_sensor_ca() {
+  [[ "$SECURE_SENSORS" == "yes" ]] || return 0
+  if [[ -z "$SENSOR_CA_CERT" ]]; then
+    warn "--secure-sensors without --ca-cert: the sensors will verify against"
+    warn "their OS trust store only. That works when the manager's certificate"
+    warn "chains to a public CA, and fails registration otherwise."
+    return 0
+  fi
+  [[ -f "$SENSOR_CA_CERT" ]] || fail "--ca-cert: no such file: ${SENSOR_CA_CERT}"
+  command -v openssl >/dev/null 2>&1 || { warn "openssl unavailable; skipping certificate preflight."; return 0; }
+  openssl x509 -in "$SENSOR_CA_CERT" -noout >/dev/null 2>&1 \
+    || fail "--ca-cert: ${SENSOR_CA_CERT} is not a parseable X.509 certificate (PEM expected)."
+  if ! openssl x509 -in "$SENSOR_CA_CERT" -noout -checkend 0 >/dev/null 2>&1; then
+    fail "--ca-cert: ${SENSOR_CA_CERT} is EXPIRED. Every sensor registration would fail TLS verification."
+  fi
+  # Name check against the address the sensors will actually dial.
+  local addr="${CLMS_PUBLIC_IP:-}"
+  if [[ -n "$addr" ]]; then
+    local names
+    names="$(openssl x509 -in "$SENSOR_CA_CERT" -noout -subject -ext subjectAltName 2>/dev/null)"
+    if ! grep -qF "$addr" <<<"$names"; then
+      warn "The certificate's subject/SAN does not mention ${addr}, the address the"
+      warn "sensors will register to. Fine for a real CA certificate; for a"
+      warn "self-signed manager certificate this fails verification. The UG's"
+      warn "advice: register sensors by FQDN and put that FQDN in the certificate."
+    fi
+  fi
+  ok "Sensor CA certificate preflight passed: ${SENSOR_CA_CERT}"
+  return 0
+}
+
 write_customer_input_fresh() {
   # Create the file with tight permissions BEFORE writing the project key into
   # it, so the secret is never briefly world-readable.
@@ -4496,7 +4550,9 @@ cloudlens:
   manager_ip_or_fqdn: "${CLMS_PUBLIC_IP}"
   project_key:        "${SENSOR_PROJECT_KEY}"
   custom_tags:        "DeployedBy=stack Region=${REGION}"
-  registry_type:      "insecure"
+  registry_type:      "${SENSOR_REGISTRY_TYPE:-insecure}"
+  ssl_verify:         "${SENSOR_SSL_VERIFY:-no}"
+  ${SENSOR_CA_LINE:-}
   linux_runtime:      "auto"
 
 # Windows sensors only. The Windows sensor is a native .exe, not a container.
@@ -4526,6 +4582,7 @@ merge_customer_input() {
   CL_TAG_K="$DISCOVERY_TAG_KEY" CL_TAG_V="$DISCOVERY_TAG_VALUE" \
   CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" CL_SSM_BUCKET="${SSM_BUCKET_NAME:-}" \
   CL_VPC_ID="${STACK_VPC_ID:-}" \
+  CL_SECURE="${SECURE_SENSORS:-no}" CL_CA_PATH="${SENSOR_CA_CERT:-}" \
     python3 - customer_input.yaml <<'PY'
 import os, sys
 try:
@@ -4556,6 +4613,13 @@ if key:
 # Only filled when absent: an operator who set them keeps their choice.
 cl.setdefault("registry_type", "insecure")
 cl.setdefault("linux_runtime", "auto")
+# --secure-sensors typed on THIS command line is an explicit ask, so it
+# overrides; without it the operator's existing TLS choice stands untouched.
+if os.environ.get("CL_SECURE", "no") == "yes":
+    cl["registry_type"] = "secure"
+    cl["ssl_verify"] = "yes"
+    if os.environ.get("CL_CA_PATH", ""):
+        cl["local_ca_path"] = os.environ["CL_CA_PATH"]
 doc["cloudlens"] = cl
 
 # --discovery-tag-key/value typed on THIS command line replaces the tag
@@ -4667,6 +4731,24 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
     # if it fails the playbook still asserts with the manual fix.
     if [[ "$TEST_WINDOWS" == "yes" ]]; then
       discover_windows_installer_url || true
+    fi
+
+    # Sensor-to-manager TLS inputs -> what the YAML carries. The CA path is
+    # written as its directory: the playbooks mount ca_cert_dir and expect the
+    # file inside it to be named cloudlenscerts.crt (vController UG).
+    if [[ "$SECURE_SENSORS" == "yes" ]]; then
+      preflight_sensor_ca
+      SENSOR_REGISTRY_TYPE="secure"
+      SENSOR_SSL_VERIFY="yes"
+      if [[ -n "$SENSOR_CA_CERT" ]]; then
+        SENSOR_CA_LINE="local_ca_path:      \"${SENSOR_CA_CERT}\""
+      else
+        SENSOR_CA_LINE="# local_ca_path:    (none given; OS trust store only)"
+      fi
+    else
+      SENSOR_REGISTRY_TYPE="insecure"
+      SENSOR_SSL_VERIFY="no"
+      SENSOR_CA_LINE="# local_ca_path:    (set with --ca-cert for --secure-sensors)"
     fi
 
     if [[ ! -f customer_input.yaml ]]; then

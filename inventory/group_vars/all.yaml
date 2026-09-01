@@ -20,7 +20,9 @@ cloudlens_agent_container_name: "{{ cloudlens.agent_container_name | default('cl
 registry_type: "{{ cloudlens.registry_type | default('insecure') }}"
 local_ca_path: "{{ cloudlens.local_ca_path | default('files/cloudlenscerts.crt') }}"
 ca_cert_dir: "{{ cloudlens.ca_cert_dir | default('/etc/ssl/certs') }}"
-ssl_verify: "{{ cloudlens.ssl_verify | default('no') }}"
+# Follows registry_type unless set explicitly, so the two CAN differ
+# (e.g. secure registry pull but no cert verification while testing).
+ssl_verify: "{{ cloudlens.ssl_verify | default('yes' if (cloudlens.registry_type | default('insecure')) == 'secure' else 'no') }}"
 auto_update: "{{ cloudlens.auto_update | default('yes') }}"
 log_max_size: "{{ cloudlens.log_max_size | default('50m') }}"
 log_max_file: "{{ cloudlens.log_max_file | default('5') }}"
