@@ -305,6 +305,16 @@ Parameters:
       Optional. ID of a separate existing subnet for the vPB data plane, if you
       keep management and data traffic in different subnets. Blank = vPB reuses
       the subnet above. Only used with an existing VPC.
+  ExistingToolSubnetId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. ID of a separate existing subnet for the vPB egress (tool) plane.
+      Supply this AND the data subnet to give the vPB its full three-NIC data
+      plane in an existing VPC. Without both, the vPB comes up management-only
+      and cannot forward tapped traffic. All three subnets must be in the SAME
+      Availability Zone as the instance: AWS cannot attach an interface across
+      zones. Only used with an existing VPC.
   ExistingSecurityGroupId:
     Type: String
     Default: ""
@@ -410,6 +420,10 @@ Conditions:
   CustomKvoName: !Not [!Equals [!Ref KvoName, ""]]
   CustomVpbName: !Not [!Equals [!Ref VpbName, ""]]
   UseDataSubnet: !Not [!Equals [!Ref ExistingDataSubnetId, ""]]
+  UseToolSubnet: !Not [!Equals [!Ref ExistingToolSubnetId, ""]]
+  # Brownfield can carry the full data plane too, but only when BOTH data and
+  # tool subnets are named: the ENIs need somewhere to land.
+  BrownfieldDataPlane: !And [!Condition UseDataSubnet, !Condition UseToolSubnet]
   TestUbuntu: !Equals [!Ref DeployTestWorkloadUbuntu, "yes"]
   TestRhel: !Equals [!Ref DeployTestWorkloadRhel, "yes"]
   TestWindows: !Equals [!Ref DeployTestWorkloadWindows, "yes"]
@@ -420,9 +434,15 @@ Conditions:
   KvoHasEip: !And [!Condition DeployKVO, !Condition WithPublicIp]
   VpbHasEip: !And [!Condition DeployVPB, !Condition WithPublicIp]
   WithZoneTapping: !And [!Condition DeployKVO, !Equals [!Ref EnableZoneTapping, "yes"]]
-  # A tapping vPB needs 3 NICs (mgmt/ingress/egress). Only the greenfield VPC has
-  # the dedicated data + tool subnets, so multi-NIC is gated on CreateVpc.
-  VpbMultiNic: !And [!Condition DeployVPB, !Condition CreateVpc]
+  # A tapping vPB needs 3 NICs (mgmt/ingress/egress). Greenfield always has the
+  # dedicated data + tool subnets. Brownfield qualifies when the operator names
+  # both. This used to be gated on CreateVpc alone, which silently gave every
+  # existing-VPC deploy a management-only vPB: no data plane, nothing for
+  # --wire-vpb-path to bind, and the mirror phase cutting zero sessions while
+  # the run reported success.
+  VpbMultiNic: !And
+    - !Condition DeployVPB
+    - !Or [!Condition CreateVpc, !Condition BrownfieldDataPlane]
 
 Resources:
 
@@ -807,11 +827,18 @@ Resources:
       InstanceType: !Ref VpbInstanceType
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SourceDestCheck: false
-      # vPB lands in the data subnet when one is supplied, else the mgmt/main subnet.
+      # eth0 is the MANAGEMENT interface. With a full brownfield data plane the
+      # ingress/egress ENIs carry the traffic, so eth0 belongs in the management
+      # subnet; putting it in the data subnet would collide with eth1. Only the
+      # single-NIC brownfield case falls back to the data subnet, preserving the
+      # previous behaviour for anyone who supplied a data subnet and no tool one.
       SubnetId: !If
         - CreateVpc
         - !Ref MgmtSubnet
-        - !If [UseDataSubnet, !Ref ExistingDataSubnetId, !Ref ExistingSubnetId]
+        - !If
+          - BrownfieldDataPlane
+          - !Ref ExistingSubnetId
+          - !If [UseDataSubnet, !Ref ExistingDataSubnetId, !Ref ExistingSubnetId]
       SecurityGroupIds:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       Tags:
@@ -856,7 +883,7 @@ Resources:
     Type: AWS::EC2::NetworkInterface
     Condition: VpbMultiNic
     Properties:
-      SubnetId: !Ref DataSubnet
+      SubnetId: !If [CreateVpc, !Ref DataSubnet, !Ref ExistingDataSubnetId]
       GroupSet:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       SourceDestCheck: false
@@ -869,7 +896,7 @@ Resources:
     Type: AWS::EC2::NetworkInterface
     Condition: VpbMultiNic
     Properties:
-      SubnetId: !Ref ToolSubnet
+      SubnetId: !If [CreateVpc, !Ref ToolSubnet, !Ref ExistingToolSubnetId]
       GroupSet:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
       SourceDestCheck: false

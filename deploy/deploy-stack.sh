@@ -149,6 +149,7 @@ VPB_NAME="${CLOUDLENS_VPB_NAME:-}"
 EXISTING_VPC_ID="${CLOUDLENS_EXISTING_VPC_ID:-}"
 EXISTING_SUBNET_ID="${CLOUDLENS_EXISTING_SUBNET_ID:-}"
 EXISTING_DATA_SUBNET_ID="${CLOUDLENS_EXISTING_DATA_SUBNET_ID:-}"
+EXISTING_TOOL_SUBNET_ID="${CLOUDLENS_EXISTING_TOOL_SUBNET_ID:-}"
 EXISTING_SG_ID="${CLOUDLENS_EXISTING_SG_ID:-}"
 ASSIGN_PUBLIC_IP="${CLOUDLENS_ASSIGN_PUBLIC_IP:-yes}"   # yes | no
 
@@ -1462,6 +1463,15 @@ resume_load_inputs() {
   if [[ -z "$KEY_NAME" ]] && v="$(state_get EC2_KEY_PAIR)" && [[ -n "$v" ]]; then
     KEY_NAME="$v"; note "Key pair from the previous run: ${KEY_NAME}"
   fi
+  # Restore the network choice before any phase can act on it. A flag on the
+  # command line still wins: these only fill what the operator did not pass.
+  for _k in EXISTING_VPC_ID EXISTING_SUBNET_ID EXISTING_DATA_SUBNET_ID \
+            EXISTING_TOOL_SUBNET_ID EXISTING_SG_ID; do
+    if [[ -z "${!_k}" ]] && v="$(state_get "$_k")" && [[ -n "$v" ]]; then
+      printf -v "$_k" '%s' "$v"
+      note "${_k} from the previous run: ${v}"
+    fi
+  done
   if [[ -z "$SENSOR_MODE" ]] && v="$(state_get SENSOR_MODE)" && [[ -n "$v" ]]; then
     case "$v" in standalone|kvo|none) SENSOR_MODE="$v"; note "Sensor mode from the previous run: ${SENSOR_MODE}" ;; esac
   fi
@@ -1603,6 +1613,12 @@ Deploy into existing infrastructure (brownfield):
   --existing-subnet-id ID   Subnet to place the instances in.
   --existing-data-subnet-id ID
                             Separate subnet for the vPB data plane (optional).
+  --existing-tool-subnet-id ID
+                            Subnet for the vPB egress (tool) plane. Supply this
+                            AND --existing-data-subnet-id to give the vPB its
+                            full data plane in an existing VPC. Without both it
+                            comes up management-only and cannot forward traffic.
+                            All three subnets must be in the SAME AZ.
   --existing-sg-id ID       Attach a pre-approved security group instead of
                             creating one (then --admin-cidr is ignored).
 
@@ -1665,7 +1681,8 @@ Env-var overrides (alternative to flags, useful for curl | bash):
   CLOUDLENS_REGION, CLOUDLENS_STACK_NAME, CLOUDLENS_ADMIN_USER,
   CLOUDLENS_KEY_NAME, CLOUDLENS_ADMIN_CIDR, CLOUDLENS_ASSIGN_PUBLIC_IP,
   CLOUDLENS_EXISTING_VPC_ID, CLOUDLENS_EXISTING_SUBNET_ID,
-  CLOUDLENS_EXISTING_DATA_SUBNET_ID, CLOUDLENS_EXISTING_SG_ID,
+  CLOUDLENS_EXISTING_DATA_SUBNET_ID, CLOUDLENS_EXISTING_TOOL_SUBNET_ID,
+  CLOUDLENS_EXISTING_SG_ID,
   CLOUDLENS_VCONTROLLER_AMI / _TYPE,
   CLOUDLENS_KVO_AMI / _TYPE,
   CLOUDLENS_VPB_AMI / _TYPE,
@@ -1779,6 +1796,7 @@ while [[ $# -gt 0 ]]; do
     --existing-vpc-id) EXISTING_VPC_ID="$2"; shift 2 ;;
     --existing-subnet-id) EXISTING_SUBNET_ID="$2"; shift 2 ;;
     --existing-data-subnet-id) EXISTING_DATA_SUBNET_ID="$2"; shift 2 ;;
+    --existing-tool-subnet-id) EXISTING_TOOL_SUBNET_ID="$2"; shift 2 ;;
     --existing-sg-id) EXISTING_SG_ID="$2"; shift 2 ;;
     --no-public-ip) ASSIGN_PUBLIC_IP="no"; shift ;;
     --test-vms) TEST_VMS="$2"; shift 2 ;;
@@ -1883,6 +1901,33 @@ if [[ -n "$EXISTING_VPC_ID" && -z "$EXISTING_SUBNET_ID" ]]; then
 fi
 if [[ -z "$EXISTING_VPC_ID" && -n "$EXISTING_SUBNET_ID" ]]; then
   fail "--existing-subnet-id requires --existing-vpc-id."
+fi
+# The Terraform module has no existing-network variables at all: it would accept
+# these flags, echo them back in the resolved config, and then build a brand new
+# VPC in the customer's account. Refuse rather than mislead.
+if [[ "$IAC" == "terraform" ]] && [[ -n "$EXISTING_VPC_ID$EXISTING_SUBNET_ID$EXISTING_DATA_SUBNET_ID$EXISTING_TOOL_SUBNET_ID$EXISTING_SG_ID" ]]; then
+  fail "The Terraform engine does not support deploying into existing infrastructure.
+  It would ignore the --existing-* flags and create a new VPC instead.
+
+  Use the CloudFormation engine for brownfield: drop --iac terraform, or run
+  with --iac cloudformation."
+fi
+if [[ -n "$EXISTING_TOOL_SUBNET_ID" && -z "$EXISTING_VPC_ID" ]]; then
+  fail "--existing-tool-subnet-id only applies with --existing-vpc-id / --existing-subnet-id."
+fi
+# The two data-plane subnets are only meaningful together: one without the other
+# describes a vPB that can receive but not forward, or forward but not receive.
+# Checked here rather than at vPB resolution time because this is an input error,
+# and the alternative is a deploy that reports success and cuts zero sessions.
+if [[ -n "$EXISTING_DATA_SUBNET_ID" && -z "$EXISTING_TOOL_SUBNET_ID" ]]; then
+  fail "--existing-data-subnet-id needs --existing-tool-subnet-id.
+  Without an egress subnet the vPB has no interface to forward tapped traffic on,
+  so it would come up management-only and deliver nothing. Supply both, or neither."
+fi
+if [[ -z "$EXISTING_DATA_SUBNET_ID" && -n "$EXISTING_TOOL_SUBNET_ID" ]]; then
+  fail "--existing-tool-subnet-id needs --existing-data-subnet-id.
+  Without an ingress subnet the vPB has no interface to receive tapped traffic on.
+  Supply both, or neither."
 fi
 if [[ -n "$EXISTING_DATA_SUBNET_ID" && -z "$EXISTING_VPC_ID" ]]; then
   fail "--existing-data-subnet-id only applies with --existing-vpc-id / --existing-subnet-id."
@@ -2591,6 +2636,17 @@ state_set ADMIN_USER "$ADMIN_USERNAME"
 state_set CLOUD_CONFIG "$CLOUD_CONFIG_NAME"
 state_set CLM_NAME "$CLM_NAME_IN_KVO"
 state_set VPB_DEVICE_NAME "$VPB_DEVICE_NAME"
+# The network choice MUST survive a resume. Without these, a resumed run
+# re-entered the stack phase with blank Existing* overrides and would redeploy
+# the same stack name as greenfield, building a new VPC in the customer's
+# account. Recorded even when empty so a resume cannot inherit a stale value
+# from an earlier, different run.
+state_set EXISTING_VPC_ID "$EXISTING_VPC_ID"
+state_set EXISTING_SUBNET_ID "$EXISTING_SUBNET_ID"
+state_set EXISTING_DATA_SUBNET_ID "$EXISTING_DATA_SUBNET_ID"
+state_set EXISTING_TOOL_SUBNET_ID "$EXISTING_TOOL_SUBNET_ID"
+state_set EXISTING_SG_ID "$EXISTING_SG_ID"
+state_set ASSIGN_PUBLIC_IP "$ASSIGN_PUBLIC_IP"
 state_set DISCOVERY_TAG "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 state_set LAST_RUN "$(date -u +%FT%TZ)"
 
@@ -2887,6 +2943,7 @@ deploy_cfn() {
   [[ -n "$EXISTING_VPC_ID" ]]         && params+=("ExistingVpcId=$EXISTING_VPC_ID")
   [[ -n "$EXISTING_SUBNET_ID" ]]      && params+=("ExistingSubnetId=$EXISTING_SUBNET_ID")
   [[ -n "$EXISTING_DATA_SUBNET_ID" ]] && params+=("ExistingDataSubnetId=$EXISTING_DATA_SUBNET_ID")
+  [[ -n "$EXISTING_TOOL_SUBNET_ID" ]] && params+=("ExistingToolSubnetId=$EXISTING_TOOL_SUBNET_ID")
   [[ -n "$EXISTING_SG_ID" ]]          && params+=("ExistingSecurityGroupId=$EXISTING_SG_ID")
 
   if [[ "$DRY_RUN" == "true" ]]; then
