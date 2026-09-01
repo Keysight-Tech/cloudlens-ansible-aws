@@ -672,13 +672,35 @@ fi
 if [[ "$STACK_STATUS" != "MISSING" ]]; then
   _kvo_param="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
     --query "Stacks[0].Parameters[?ParameterKey=='DeployKVO'].ParameterValue | [0]" --output text)")"
-  [[ "$(to_lower "${_kvo_param:-}")" == "yes" ]] && HAS_KVO=true
-  if [[ "$HAS_KVO" != "true" ]]; then
-    _kvo_inst="$(det_clean "$(ro_aws ec2 describe-instances \
-      --filters "Name=tag:Name,Values=*kvo*" "Name=instance-state-name,Values=running,stopped" \
-      --query 'Reservations[0].Instances[0].InstanceId' --output text)")"
-    if [[ -n "$_kvo_inst" ]] && in_list "$_kvo_inst" "$STACK_INSTANCE_IDS"; then HAS_KVO=true; fi
-  fi
+  # This decides whether the LICENCE gate runs. Getting it wrong in the "no"
+  # direction strands the activation quantity permanently: activation binds it
+  # to a KVO host and there is no release or rehost API. So every branch below
+  # fails CLOSED, assuming a KVO is present whenever it cannot prove otherwise.
+  case "$(to_lower "${_kvo_param:-}")" in
+    yes) HAS_KVO=true ;;
+    no)  HAS_KVO=false ;;   # the stack itself says so; KvoInstance is conditional
+    *)
+      # Empty means the probe FAILED or the template predates the parameter,
+      # and probe cannot tell those apart: it returns "" for a timeout, a
+      # throttle and expired credentials alike. Ask the stack's own manifest by
+      # LOGICAL id instead. A *kvo* Name filter would be wrong twice over: tag
+      # filters are case sensitive, and KvoName is operator settable, so
+      # KvoName=KVO-prod matches nothing and yields a confident false.
+      _kvo_res="$(det_clean "$(ro_aws cloudformation describe-stack-resources \
+        --stack-name "$STACK_NAME" \
+        --query "StackResources[?LogicalResourceId=='KvoInstance'].PhysicalResourceId | [0]" \
+        --output text)")"
+      _kvo_n="$(det_clean "$(ro_aws cloudformation describe-stack-resources \
+        --stack-name "$STACK_NAME" --query 'length(StackResources)' --output text)")"
+      if [[ ! "$_kvo_n" =~ ^[0-9]+$ ]]; then
+        warn "Could not read ${STACK_NAME}'s resources to check for a KVO."
+        note "Assuming there IS one: a licence warning nobody needed costs a"
+        note "confirmation, a missed one strands the licence for good."
+        HAS_KVO=true
+      elif [[ -n "$_kvo_res" ]]; then
+        HAS_KVO=true
+      fi ;;
+  esac
 else
   [[ "$(state_get DEPLOY_KVO 2>/dev/null || true)" == "true" ]] && HAS_KVO=true
 fi
