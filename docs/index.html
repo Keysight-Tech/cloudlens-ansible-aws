@@ -301,6 +301,22 @@ terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=tr
         </div>
 
         <div class="prereq-card">
+          <h3>&#127919; Tap the customer's workloads, wherever they are</h3>
+          <p>Both tapping paths resolve <strong>one selection</strong> from <code>customer_input.yaml</code>: ANDed <code>tag_filters</code>, explicit <code>instance_ids</code>, and <code>tapping.exclude_instance_ids</code> drive sensors and agentless mirroring identically, so the two can never target different hosts. The run reports the split up front: which hosts get sensors, which interfaces get mirror sessions (AWS mirrors Nitro instances only), and how many licence credits that demands.</p>
+          <ul>
+            <li><code>--tapping sensors|mirror|both|none</code> &mdash; one answer for both paths</li>
+            <li><code>--source-vpc-id vpc-...</code> &mdash; tap a VPC other than the CloudLens one; repeat it (or list <code>aws.source_vpc_ids</code> in <code>customer_input.yaml</code>) and one KVO fabric is built per VPC</li>
+            <li><code>--source-vpc vpc:az:mgmt:ingress:egress</code> &mdash; same, with that VPC's collector placement inline (three distinct subnets in the tapped VPC)</li>
+          </ul>
+          <p class="muted">A tapped VPC that is not the CloudLens VPC needs a route to the manager and KVO on 443 and to the tool from the collector egress subnet (VPC peering or Transit Gateway); the run states exactly that when it applies.</p>
+          <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
+  --tapping both \
+  --source-vpc-id vpc-0workloads1 \
+  --collector-zone us-east-1a \
+  --collector-mgmt-subnet subnet-aaa --collector-ingress-subnet subnet-bbb --collector-egress-subnet subnet-ccc</code></pre>
+        </div>
+
+        <div class="prereq-card">
           <h3>&#128274; Private subnets and no public IPs</h3>
           <p>Many enterprises forbid Elastic IPs on workload subnets. Set <code>AssignPublicIp</code> to <code>no</code> (or pass <code>--no-public-ip</code>) and no EIPs are created. The stack outputs private IPs and you reach the UIs over VPN, Direct Connect, or VPC peering.</p>
           <div class="callout callout-warn">
