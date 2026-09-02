@@ -1662,6 +1662,9 @@ Test workloads (optional, deployed into the stack's own subnet):
                             AmazonSSMManagedInstanceCore. Without it the VM
                             deploys but the sensor step cannot reach it.
   --test-vms LIST           Comma list of throwaway VMs to deploy alongside the
+                            stack. Each entry takes an optional :N count
+                            (1-10): "ubuntu:3,rhel:2,windows" = 3 Ubuntu,
+                            2 RHEL, 1 Windows. Original single-name form
                             stack so you can prove the sensor path immediately:
                             ubuntu, rhel, windows, all, or none (default none).
                             They are tagged with the discovery tag below, so the
@@ -1922,7 +1925,7 @@ while [[ $# -gt 0 ]]; do
     --test-vms) TEST_VMS="$2"; shift 2 ;;
     --public-ip) ASSIGN_PUBLIC_IP="yes"; shift ;;
 
-    --vcontroller-type) CLMS_TYPE="$2"; shift 2 ;;
+    --vcontroller-type) CLMS_TYPE="$2"; CLMS_TYPE_EXPLICIT=true; shift 2 ;;
     --kvo-type) KVO_TYPE="$2"; shift 2 ;;
     --vpb-type) VPB_TYPE="$2"; shift 2 ;;
 
@@ -2005,18 +2008,31 @@ check_type "vController" "$CLMS_TYPE" "$VCONTROLLER_ALLOWED"
 check_type "KVO"         "$KVO_TYPE"  "$KVO_ALLOWED"
 check_type "vPB"         "$VPB_TYPE"  "$VPB_ALLOWED"
 
-# Parse --test-vms into per-OS toggles the template understands.
+# Parse --test-vms into per-OS toggles the template understands, plus counts.
+# "ubuntu:3,rhel:2,windows" asks for three Ubuntu, two RHEL, one Windows: the
+# template builds the first of each (CloudFormation cannot loop) and the
+# deploy launches the rest right after the stack, tagged identically so the
+# sensor and mirror steps find every one of them.
 TEST_UBUNTU=no; TEST_RHEL=no; TEST_WINDOWS=no
+UBUNTU_COUNT=1; RHEL_COUNT=1; WINDOWS_COUNT=1
+_tv_count() {  # $1 raw count token, $2 os label -> echoes validated count
+  local c="${1:-1}"
+  [[ "$c" =~ ^[0-9]+$ ]] && (( c >= 1 && c <= 10 ))     || fail "--test-vms: count for $2 must be 1-10 (got '$1'). To skip an OS, leave it off the list."
+  echo "$c"
+}
 if [[ -n "$TEST_VMS" && "$(to_lower "$TEST_VMS")" != "none" ]]; then
   IFS=',' read -ra _tv <<< "$(to_lower "$TEST_VMS")"
   for v in "${_tv[@]}"; do
-    case "${v// /}" in
-      ubuntu)  TEST_UBUNTU=yes ;;
-      rhel|redhat) TEST_RHEL=yes ;;
-      windows) TEST_WINDOWS=yes ;;
-      all)     TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes ;;
+    v="${v// /}"; _os="${v%%:*}"; _n="${v#*:}"; [[ "$_n" == "$v" ]] && _n=""
+    case "$_os" in
+      ubuntu)  TEST_UBUNTU=yes;  UBUNTU_COUNT="$(_tv_count "${_n:-1}" ubuntu)" ;;
+      rhel|redhat) TEST_RHEL=yes; RHEL_COUNT="$(_tv_count "${_n:-1}" rhel)" ;;
+      windows) TEST_WINDOWS=yes; WINDOWS_COUNT="$(_tv_count "${_n:-1}" windows)" ;;
+      all)     TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes
+               _c="$(_tv_count "${_n:-1}" all)"
+               UBUNTU_COUNT="$_c"; RHEL_COUNT="$_c"; WINDOWS_COUNT="$_c" ;;
       "")      ;;
-      *) fail "--test-vms: unknown value '$v'. Use ubuntu, rhel, windows, all, or none (comma separated)." ;;
+      *) fail "--test-vms: unknown value '$v'. Use ubuntu[:N], rhel[:N], windows[:N], all[:N], or none (comma separated, N = how many of that OS, 1-10)." ;;
     esac
   done
 fi
@@ -2753,6 +2769,34 @@ fi
 ok "Tapping: sensors=${CHAIN_SENSORS}, mirroring=${WITH_MIRROR}"
 ok "Discovery tag: ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 
+# ---------------------------------------------------------------------
+# Appliance sizing. The Marketplace AMIs are the hard boundary here, probed
+# live with run-instances --dry-run across all 12 RegionMap regions: the
+# vController accepts t3.xlarge or m5.xlarge, KVO ONLY c5.2xlarge, the vPB
+# ONLY t3.xlarge. Keysight documents the vController at "at least 4 vCPU and
+# 16GB RAM" (vTAP UG 913-2798-01), which both permitted types meet: the
+# choice is burstable versus sustained CPU, not size. Anything outside these
+# lists fails at launch with UnsupportedOperation, so the question offers
+# exactly what can work and states what is fixed.
+if [[ "$INTERACTIVE" == "true" && "${CLMS_TYPE_EXPLICIT:-false}" != "true" ]]; then
+  echo
+  printf "${C_BOLD}Appliance sizing${C_RESET}\n"
+  echo "  vController capacity (both are 4 vCPU / 16 GB RAM, the documented"
+  echo "  requirement; the difference is the CPU model):"
+  echo "    1) t3.xlarge  - burstable, cheapest, right for labs and pilots (recommended)"
+  echo "    2) m5.xlarge  - sustained CPU, for production traffic volumes"
+  _sz="$(ask "  Choose [1/2, Enter = ${CLMS_TYPE}]: " "")"
+  case "$_sz" in
+    2|m5.xlarge) CLMS_TYPE="m5.xlarge" ;;
+    1|t3.xlarge|"") ;;
+    *) warn "Unknown choice '${_sz}'; keeping ${CLMS_TYPE}." ;;
+  esac
+  [[ "$DEPLOY_KVO" == "true" ]] \
+    && note "KVO runs on c5.2xlarge (8 vCPU / 16 GB): the only type its Marketplace image permits."
+  [[ "$DEPLOY_VPB" == "true" ]] \
+    && note "vPB runs on t3.xlarge (4 vCPU / 16 GB): the only type its Marketplace image permits."
+fi
+
 echo
 printf "${C_BOLD}Resolved configuration:${C_RESET}\n"
 printf "  %-22s %s\n" "Region:" "$REGION"
@@ -2766,6 +2810,11 @@ printf "  %-22s %s (%s)\n" "vController:" "$CLMS_AMI" "$CLMS_TYPE"
 printf "  %-22s %s\n" "vController name:" "${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
 [[ "$DEPLOY_KVO" == "true" ]] && printf "  %-22s %s\n" "KVO name:" "${KVO_NAME:-${STACK_NAME}-kvo}"
 [[ "$DEPLOY_VPB" == "true" ]] && printf "  %-22s %s\n" "vPB name:" "${VPB_NAME:-${STACK_NAME}-vpb}"
+_twl=""
+[[ "$TEST_UBUNTU" == "yes" ]]  && _twl+="ubuntu:${UBUNTU_COUNT} "
+[[ "$TEST_RHEL" == "yes" ]]    && _twl+="rhel:${RHEL_COUNT} "
+[[ "$TEST_WINDOWS" == "yes" ]] && _twl+="windows:${WINDOWS_COUNT} "
+[[ -n "$_twl" ]] && printf "  %-22s %s\n" "Test workloads:" "$_twl"
 printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
 printf "  %-22s %s\n" "Public IPs:" "$ASSIGN_PUBLIC_IP"
 if [[ -n "$EXISTING_VPC_ID" ]]; then
@@ -3208,6 +3257,41 @@ state_set VCONTROLLER_ADDRESS "$CLMS_PUBLIC_IP"
 state_set KVO_ADDRESS "$KVO_PUBLIC_IP"
 state_set VPB_ADDRESS "$VPB_PUBLIC_IP"
 state_phase stack done
+
+# ---------------------------------------------------------------------
+# Extra test workloads. CloudFormation cannot loop, so the template builds
+# exactly one instance per requested OS; any count above 1 from
+# --test-vms os:N is launched here, into the same subnet with the same
+# discovery tag, so the sensor and mirror steps treat them exactly like the
+# template's own. Idempotent by Name tag: a resume that already launched
+# them launches nothing.
+launch_extra_workloads() {
+  local u=0 r=0 w=0
+  [[ "$TEST_UBUNTU" == "yes" ]]  && u=$(( UBUNTU_COUNT - 1 ))
+  [[ "$TEST_RHEL" == "yes" ]]    && r=$(( RHEL_COUNT - 1 ))
+  [[ "$TEST_WINDOWS" == "yes" ]] && w=$(( WINDOWS_COUNT - 1 ))
+  (( u + r + w > 0 )) || return 0
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would launch extra test workloads (ubuntu:+${u} rhel:+${r} windows:+${w}) via deploy-test-workload-vms.sh"
+    return 0
+  fi
+  local have
+  have=$(probe aws ec2 describe-instances --region "$REGION"       --filters "Name=tag:Name,Values=${STACK_NAME}-extra-*"                 "Name=instance-state-name,Values=running,pending"       --query 'length(Reservations[].Instances[])' --output text 2>/dev/null)
+  if [[ -n "$have" && "$have" != "0" && "$have" != "None" ]]; then
+    note "Extra test workloads already exist (${have} named ${STACK_NAME}-extra-*); not launching more."
+    return 0
+  fi
+  local wl_script wl_subnet
+  wl_script="$(find_repo_script scripts/deploy-test-workload-vms.sh || true)"
+  [[ -n "$wl_script" ]] || { warn "deploy-test-workload-vms.sh not found; skipping the extra workloads."; return 0; }
+  wl_subnet="${EXISTING_SUBNET_ID:-}"
+  [[ -z "$wl_subnet" ]] && wl_subnet=$(probe aws ec2 describe-subnets --region "$REGION"       --filters "Name=vpc-id,Values=${STACK_VPC_ID:-}" "Name=map-public-ip-on-launch,Values=true"       --query 'Subnets[0].SubnetId' --output text 2>/dev/null | head -1)
+  [[ -z "$wl_subnet" || "$wl_subnet" == "None" ]] && { warn "No subnet resolved for the extra workloads; skipping."; return 0; }
+  step "Launching the extra test workloads (ubuntu:+${u} rhel:+${r} windows:+${w})"
+  bash "$wl_script" --region "$REGION" --key-name "$KEY_NAME" --subnet-id "$wl_subnet"        --tag-key "$DISCOVERY_TAG_KEY" --tag-value "$DISCOVERY_TAG_VALUE"        --name-prefix "${STACK_NAME}-extra"        --ubuntu "$u" --rhel "$r" --windows "$w" --yes     || warn "Extra workload launch failed; the template's own test VMs are unaffected."
+  return 0
+}
+launch_extra_workloads
 
 # ---------------------------------------------------------------------
 # Post-deploy helpers, shared by phases 8 and 10-16.

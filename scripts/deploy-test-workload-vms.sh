@@ -52,6 +52,9 @@ while [[ $# -gt 0 ]]; do
     --vpc-id)     VPC_ID="$2"; shift 2 ;;
     --subnet-id)  SUBNET_ID="$2"; shift 2 ;;
     --name-prefix) NAME_PREFIX="$2"; shift 2 ;;
+    --ubuntu)     UBUNTU_COUNT="$2"; shift 2 ;;
+    --rhel)       RHEL_COUNT="$2"; shift 2 ;;
+    --windows)    WINDOWS_COUNT="$2"; shift 2 ;;
     -y|--yes)     ASSUME_YES=true; shift ;;
     -h|--help)
       sed -n '1,/^set -e/p' "$0" | head -n -1 | tail -n +2; exit 0 ;;
@@ -59,10 +62,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Resolved after parsing so --name-prefix applies.
-UBUNTU_NAME="${NAME_PREFIX}-ubuntu-1"
-RHEL_NAME="${NAME_PREFIX}-rhel-1"
-WIN_NAME="${NAME_PREFIX}-windows-1"
+# How many of each OS. 0 skips that OS entirely; the default is the classic
+# one-of-each fixture. Counts land as -ubuntu-1..N name suffixes. Validated
+# below, after the helpers exist.
+UBUNTU_COUNT="${UBUNTU_COUNT:-1}"
+RHEL_COUNT="${RHEL_COUNT:-1}"
+WINDOWS_COUNT="${WINDOWS_COUNT:-1}"
 
 AWS=(aws --region "$REGION")
 
@@ -71,6 +76,11 @@ C_GREEN='\033[0;32m'; C_BLUE='\033[0;34m'; C_RED='\033[0;31m'; C_YELLOW='\033[1;
 ok()   { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
 warn() { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
 fail() { echo -e "${C_RED}[x]${C_RESET} $1" >&2; exit 1; }
+
+for _c in "$UBUNTU_COUNT" "$RHEL_COUNT" "$WINDOWS_COUNT"; do
+  [[ "$_c" =~ ^[0-9]+$ ]] && (( _c <= 10 )) || fail "--ubuntu/--rhel/--windows must be 0-10 (got '$_c')"
+done
+(( UBUNTU_COUNT + RHEL_COUNT + WINDOWS_COUNT > 0 )) || fail "all three counts are 0: nothing to deploy"
 step() { echo -e "${C_BLUE}--- $1 ---${C_RESET}"; }
 
 command -v aws >/dev/null 2>&1 || fail "AWS CLI not found. Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
@@ -267,8 +277,8 @@ else
   warn "AmazonSSMManagedInstanceCore yourself, or use WinRM instead."
 fi
 
-# ---- create the 3 instances ----
-step "Provisioning 3 instances"
+TOTAL=$(( UBUNTU_COUNT + RHEL_COUNT + WINDOWS_COUNT ))
+step "Provisioning ${TOTAL} instance(s) (ubuntu:${UBUNTU_COUNT} rhel:${RHEL_COUNT} windows:${WINDOWS_COUNT})"
 
 run_instance() {
   local name="$1" ami="$2" itype="$3" os="$4" userdata="$5"
@@ -282,22 +292,28 @@ run_instance() {
     --query 'Instances[0].InstanceId' --output text
 }
 
-UBUNTU_ID=$(run_instance "$UBUNTU_NAME" "$UBUNTU_AMI" "$LINUX_TYPE" "ubuntu" "$LINUX_USERDATA")
-ok "$UBUNTU_NAME -> $UBUNTU_ID"
-RHEL_ID=$(run_instance "$RHEL_NAME" "$RHEL_AMI" "$LINUX_TYPE" "rhel" "$LINUX_USERDATA")
-ok "$RHEL_NAME -> $RHEL_ID"
-WIN_ID=$(run_instance "$WIN_NAME" "$WIN_AMI" "$WIN_TYPE" "windows" "$WIN_USERDATA")
-ok "$WIN_NAME -> $WIN_ID"
+ALL_IDS=()
+launch_os() {
+  local count="$1" osname="$2" ami="$3" itype="$4" userdata="$5" i id
+  for (( i=1; i<=count; i++ )); do
+    id=$(run_instance "${NAME_PREFIX}-${osname}-${i}" "$ami" "$itype" "$osname" "$userdata")
+    ok "${NAME_PREFIX}-${osname}-${i} -> $id"
+    ALL_IDS+=("$id")
+  done
+}
+launch_os "$UBUNTU_COUNT"  ubuntu  "$UBUNTU_AMI" "$LINUX_TYPE" "$LINUX_USERDATA"
+launch_os "$RHEL_COUNT"    rhel    "$RHEL_AMI"   "$LINUX_TYPE" "$LINUX_USERDATA"
+launch_os "$WINDOWS_COUNT" windows "$WIN_AMI"    "$WIN_TYPE"   "$WIN_USERDATA"
 
 step "Waiting for instances to reach running"
-"${AWS[@]}" ec2 wait instance-running --instance-ids "$UBUNTU_ID" "$RHEL_ID" "$WIN_ID"
-for id in "$UBUNTU_ID" "$RHEL_ID" "$WIN_ID"; do
+"${AWS[@]}" ec2 wait instance-running --instance-ids "${ALL_IDS[@]}"
+for id in "${ALL_IDS[@]}"; do
   ip=$("${AWS[@]}" ec2 describe-instances --instance-ids "$id" \
     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
   ok "$id ready at $ip"
 done
 
-step "All 3 test instances provisioned + tagged"
+step "All ${TOTAL} test instance(s) provisioned + tagged"
 "${AWS[@]}" ec2 describe-instances \
   --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].{id:InstanceId,name:Tags[?Key==`Name`]|[0].Value,ip:PublicIpAddress}' \
@@ -309,10 +325,10 @@ echo "  curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansi
 echo "    bash -s -- --discovery-tag-key ${DISCOVERY_TAG_KEY} --discovery-tag-value ${DISCOVERY_TAG_VALUE} --region ${REGION}"
 echo
 echo "  In Phase 9 you should see:"
-echo "    Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: 3"
+echo "    Workload EC2s tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}: ${TOTAL}"
 echo
 echo "Cleanup when done:"
-echo "  aws ec2 terminate-instances --region ${REGION} --instance-ids ${UBUNTU_ID} ${RHEL_ID} ${WIN_ID}"
+echo "  aws ec2 terminate-instances --region ${REGION} --instance-ids ${ALL_IDS[*]}"
 echo
 
 }   # End of brace-wrap for curl|bash safety
