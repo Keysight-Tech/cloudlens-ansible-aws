@@ -258,6 +258,9 @@ EKS_SAMPLE="${CLOUDLENS_EKS_SAMPLE:-false}"
 EKS_MODE="${CLOUDLENS_EKS_MODE:-daemonset}"
 EKS_SENSOR_IMAGE="${CLOUDLENS_EKS_SENSOR_IMAGE:-}"
 EKS_SENSOR_TAR="${CLOUDLENS_EKS_SENSOR_TAR:-}"
+# Which pods the KVO collection selects (a pod-name regex). Unset = every pod,
+# with a licence warning: each selected pod consumes one credit (vTAP UG).
+EKS_POD_SELECTOR="${CLOUDLENS_EKS_POD_SELECTOR:-}"
 CHAIN_SENSORS=""
 # One input for the tapping method: sensors | mirror | both | none. Sets
 # CHAIN_SENSORS and WITH_MIRROR together; the specific flags still win.
@@ -1708,6 +1711,9 @@ Toggles:
                             snippet, never an automatic restart).
   --eks-sensor-image URI    Sensor image already in a registry the nodes reach.
   --eks-sensor-tar PATH     CloudLens-Sensor-<ver>.tar to push to ECR instead.
+  --eks-pod-selector REGEX  Which pods the KVO collection taps, by pod name
+                            (e.g. '^(payments|checkout)'). Default: every pod,
+                            warned, since each tapped pod costs a credit.
   --tapping MODE            How workloads are tapped: sensors (agent per VM),
                             mirror (agentless VPC Traffic Mirroring, Nitro
                             only), both, or none. One answer instead of
@@ -1879,6 +1885,7 @@ while [[ $# -gt 0 ]]; do
     --eks-mode) EKS_MODE="$(to_lower "$2")"; shift 2 ;;
     --eks-sensor-image) EKS_SENSOR_IMAGE="$2"; shift 2 ;;
     --eks-sensor-tar) EKS_SENSOR_TAR="$2"; shift 2 ;;
+    --eks-pod-selector) EKS_POD_SELECTOR="$2"; shift 2 ;;
     --with-kvo) DEPLOY_KVO=true; shift ;;
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
@@ -5346,6 +5353,32 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
       state_phase eks done
       ok "EKS pod tapping deployed. The K8s sensors register into the same"
       ok "project as the VM sensors and follow the same tool path."
+      # KVO side of the rail: the Kubernetes Cloud Config referencing the
+      # vController, and the pod collection. The policy needs the vPB tool,
+      # which the traffic-path phase creates LATER, so with a vPB coming this
+      # stops before the policy and Phase 16 finishes the binding.
+      K8SWIRE_SCRIPT="$(find_repo_script scripts/kvo_k8s_config.py || true)"
+      if [[ "$KVO_CHAIN_OK" == "true" && -n "$K8SWIRE_SCRIPT" ]]; then
+        _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
+        _k8s_sel=()
+        if [[ -n "${EKS_POD_SELECTOR:-}" ]]; then
+          _k8s_sel=(--pod-selector "pod-name=${EKS_POD_SELECTOR}")
+        elif [[ "$EKS_SAMPLE" == "true" ]]; then
+          _k8s_sel=(--pod-selector 'pod-name=^(web|loadgen)')
+        fi
+        _k8s_pol=()
+        [[ "$DEPLOY_VPB" == "true" ]] && _k8s_pol=(--no-policy)
+        if python3 "$K8SWIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --name "$_k8s_name" \
+             --vcontroller "$CLM_NAME_IN_KVO" --device-link vpb-c2dl \
+             ${_k8s_sel[@]+"${_k8s_sel[@]}"} ${_k8s_pol[@]+"${_k8s_pol[@]}"} \
+             --accept-eula --insecure; then
+          ok "KVO Kubernetes cloud config + pod collection wired."
+        else
+          warn "The KVO Kubernetes wiring did not complete (its output says why,"
+          warn "including the manual UI steps when the schema differs). The"
+          warn "sensors still register and are visible via the vController."
+        fi
+      fi
     else
       warn "The EKS tapping step did not complete; the rest of the run continues."
       note "Re-run just this step with: bash deploy/deploy-stack.sh --only eks"
@@ -5840,6 +5873,25 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
          "${PORT_ARG[@]}" "${EGRESS_ARG[@]}" "${CAPTURE_ARG[@]}" --insecure; then
       ok "vPB traffic path and monitoring policy committed."
+
+      # The Kubernetes rail's LAST link: the tool now exists, so bind the pod
+      # collection to it. Idempotent: the config and collection made in the
+      # eks phase are reused, only the policy is new.
+      if [[ "$DEPLOY_EKS" == "true" ]]; then
+        K8SWIRE_SCRIPT="$(find_repo_script scripts/kvo_k8s_config.py || true)"
+        if [[ -n "$K8SWIRE_SCRIPT" ]]; then
+          _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
+          if python3 "$K8SWIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --name "$_k8s_name" \
+               --vcontroller "$CLM_NAME_IN_KVO" --device-link vpb-c2dl \
+               --tool vpb-egress-tool --accept-eula --insecure; then
+            ok "Kubernetes rail complete: pod collection -> vpb-egress-tool policy bound."
+          else
+            warn "K8s collection -> vPB tool policy did not bind; run manually:"
+            warn "  python3 scripts/kvo_k8s_config.py --kvo ${KVO_PUBLIC_IP} --name ${_k8s_name} \\"
+            warn "    --vcontroller ${CLM_NAME_IN_KVO} --tool vpb-egress-tool --insecure"
+          fi
+        fi
+      fi
 
       # Ask the vPB itself what it holds and what it is doing with the traffic.
       #
