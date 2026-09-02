@@ -4324,7 +4324,7 @@ UD
       --subnet-id "$egress_subnet" --security-group-ids "$sg" --associate-public-ip-address \
       ${KEY_NAME:+--key-name "$KEY_NAME"} "${prof_arg[@]}" \
       --user-data "file://$ud" \
-      --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=cloudlens-tool-receiver},{Key=cloudlens-role,Value=tool-receiver}]' \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${STACK_NAME}-tool-receiver},{Key=cloudlens-role,Value=tool-receiver},{Key=cloudlens:stack,Value=${STACK_NAME}}]" \
       --query 'Instances[0].InstanceId' --output text 2>/dev/null)
   rm -f "$ud"
   [[ -z "$iid" || "$iid" == "None" ]] && { warn "Capture host launch failed."; return 1; }

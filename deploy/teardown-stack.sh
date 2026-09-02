@@ -1072,6 +1072,34 @@ else
     fi
   fi
 
+  # ---- Loose instances in the stack's own VPC. Everything KVO launches
+  # outside CloudFormation (mirror collectors via their ASG, and the capture
+  # receiver with NO asg) lives here, holds an ENI, and blocks every subnet
+  # below it. Only when the VPC is the stack's own (the same rule that scopes
+  # SGs and ASGs): in a customer VPC, other people's instances are none of
+  # this script's business and STACK_OWNS_VPC is false.
+  if [[ "${STACK_OWNS_VPC:-false}" == "true" && -n "${STACK_VPC_ID:-}" ]]; then
+    _loose=$(ro_aws ec2 describe-instances \
+        --filters "Name=vpc-id,Values=${STACK_VPC_ID}" \
+                  "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+        --query 'Reservations[].Instances[].InstanceId' --output text | tr '\t' '\n')
+    _loose_ids=()
+    while IFS= read -r _li; do [[ -n "$_li" ]] && _loose_ids+=("$_li"); done <<< "$_loose"
+    if [[ ${#_loose_ids[@]} -gt 0 ]]; then
+      note "${#_loose_ids[@]} instance(s) still alive in the stack's VPC (launched"
+      note "outside CloudFormation, e.g. the mirror capture receiver); terminating"
+      note "them so the subnets can go."
+      for _li in "${_loose_ids[@]}"; do
+        if del_aws ec2 terminate-instances --instance-ids "$_li"; then
+          ok "$(did) instance ${_li}"
+        else
+          warn "could not terminate ${_li}: ${DEL_ERR}"
+        fi
+      done
+      ro_aws ec2 wait instance-terminated --instance-ids "${_loose_ids[@]}" 2>/dev/null || true
+    fi
+  fi
+
   # ---- Auto Scaling groups first: a live group re-creates its instances,
   # which re-creates volumes and holds ENIs on the groups below.
   for _a in $SWEEP_ASGS; do
