@@ -250,6 +250,14 @@ DRY_RUN=false
 IAC="cfn"                 # cfn | terraform
 DEPLOY_KVO=""
 DEPLOY_VPB=""
+# Kubernetes (EKS) pod tapping: a third workload class alongside VM sensors
+# and agentless mirroring. Blank = the interview asks; flags/env win.
+DEPLOY_EKS="${CLOUDLENS_DEPLOY_EKS:-}"
+EKS_CLUSTER="${CLOUDLENS_EKS_CLUSTER:-}"
+EKS_SAMPLE="${CLOUDLENS_EKS_SAMPLE:-false}"
+EKS_MODE="${CLOUDLENS_EKS_MODE:-daemonset}"
+EKS_SENSOR_IMAGE="${CLOUDLENS_EKS_SENSOR_IMAGE:-}"
+EKS_SENSOR_TAR="${CLOUDLENS_EKS_SENSOR_TAR:-}"
 CHAIN_SENSORS=""
 # One input for the tapping method: sensors | mirror | both | none. Sets
 # CHAIN_SENSORS and WITH_MIRROR together; the specific flags still win.
@@ -627,7 +635,7 @@ ask_yn() {
 #   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
 #   vpb=14  path=15  mirror=16
 # ---------------------------------------------------------------------
-PHASE_ORDER="stack wait bootstrap key license adopt sensors vpb mirror path prove"
+PHASE_ORDER="stack wait bootstrap key license adopt sensors eks vpb mirror path prove"
 
 phase_index() {
   local want="$1" i=1 p
@@ -647,6 +655,7 @@ phase_label() {
     license) printf '%s' "KVO licensing" ;;
     adopt)   printf '%s' "Adopt CLMS into KVO" ;;
     sensors) printf '%s' "Sensors" ;;
+    eks)     printf '%s' "EKS pod tapping" ;;
     vpb)     printf '%s' "vPB in KVO" ;;
     path)    printf '%s' "vPB traffic path" ;;
     mirror)  printf '%s' "AWS mirror" ;;
@@ -693,6 +702,7 @@ phase_applicable() {
   esac
   case "$1" in
     sensors) [[ "$CHAIN_SENSORS" == "false" || "$SENSOR_MODE" == "none" ]] && return 1 ;;
+    eks)     [[ "$DEPLOY_EKS" != "true" ]] && return 1 ;;
   esac
   return 0
 }
@@ -1689,6 +1699,15 @@ Toggles:
   --with-kvo                Deploy KVO (skip interactive prompt)
   --with-vpb                Deploy vPB (skip interactive prompt)
   --no-vpb                  Skip vPB deployment
+  --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
+  --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
+  --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
+                            plus a sample traffic app (implies --with-eks).
+  --eks-mode M              daemonset (default: one sensor per node, automated)
+                            or sidecar (per-pod; customer pods get a rendered
+                            snippet, never an automatic restart).
+  --eks-sensor-image URI    Sensor image already in a registry the nodes reach.
+  --eks-sensor-tar PATH     CloudLens-Sensor-<ver>.tar to push to ECR instead.
   --tapping MODE            How workloads are tapped: sensors (agent per VM),
                             mirror (agentless VPC Traffic Mirroring, Nitro
                             only), both, or none. One answer instead of
@@ -1853,6 +1872,13 @@ while [[ $# -gt 0 ]]; do
     --iac) IAC="$(to_lower "$2")"; shift 2 ;;
 
     --no-kvo) DEPLOY_KVO=false; shift ;;
+    --with-eks) DEPLOY_EKS=true; shift ;;
+    --no-eks) DEPLOY_EKS=false; shift ;;
+    --eks-cluster) DEPLOY_EKS=true; EKS_CLUSTER="$2"; shift 2 ;;
+    --eks-sample) DEPLOY_EKS=true; EKS_SAMPLE=true; shift ;;
+    --eks-mode) EKS_MODE="$(to_lower "$2")"; shift 2 ;;
+    --eks-sensor-image) EKS_SENSOR_IMAGE="$2"; shift 2 ;;
+    --eks-sensor-tar) EKS_SENSOR_TAR="$2"; shift 2 ;;
     --with-kvo) DEPLOY_KVO=true; shift ;;
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
@@ -2899,6 +2925,38 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   esac
 fi
 
+# Q4b: Kubernetes. EKS pod tapping is its own workload class: VM sensors and
+# mirroring never see pod-to-pod traffic inside a node, the K8s sensor does.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && -z "$DEPLOY_EKS" ]]; then
+  echo
+  echo "Do you also run Kubernetes workloads (EKS) to tap?"
+  echo "  1) No. Default."
+  echo "  2) Yes, tap an EXISTING EKS cluster (picked from a listing; needs"
+  echo "     kubectl rights on it)."
+  echo "  3) Yes, create a small SAMPLE cluster to see it work (2x t3.medium,"
+  echo "     ~15 extra minutes, plus a demo app generating pod-to-pod HTTP)."
+  read -rp "Choose 1-3 [1]: " eks_choice || true
+  case "${eks_choice:-1}" in
+    2) DEPLOY_EKS=true ;;
+    3) DEPLOY_EKS=true; EKS_SAMPLE=true ;;
+    *) DEPLOY_EKS=false ;;
+  esac
+  if [[ "$DEPLOY_EKS" == "true" ]]; then
+    echo "  How should the pods be tapped?"
+    echo "    1) DaemonSet  one sensor pod per NODE taps every pod on it."
+    echo "                  One object, no app restarts. Default, recommended"
+    echo "                  when you own the cluster."
+    echo "    2) Sidecar    a sensor container inside each tapped pod. Pod-"
+    echo "                  selective, but adding it restarts the pod, so your"
+    echo "                  apps get a rendered snippet to apply yourselves."
+    read -rp "  Choose 1-2 [1]: " eks_mode_choice || true
+    [[ "${eks_mode_choice:-1}" == "2" ]] && EKS_MODE="sidecar" || EKS_MODE="daemonset"
+  fi
+fi
+[[ -z "$DEPLOY_EKS" ]] && DEPLOY_EKS=false
+case "$EKS_MODE" in daemonset|sidecar) ;; *) fail "--eks-mode must be daemonset or sidecar (got '$EKS_MODE')" ;; esac
+
 # Q5: collector placement, only when the answers so far make it REQUIRED
 # (mirroring into an existing VPC has no stack subnets to derive from).
 # Asked now so Phase 15 executes instead of refusing mid-run.
@@ -2970,6 +3028,8 @@ _twl=""
 [[ "$TEST_RHEL" == "yes" ]]    && _twl+="rhel:${RHEL_COUNT} "
 [[ "$TEST_WINDOWS" == "yes" ]] && _twl+="windows:${WINDOWS_COUNT} "
 [[ -n "$_twl" ]] && printf "  %-22s %s\n" "Test workloads:" "$_twl"
+[[ "$DEPLOY_EKS" == "true" ]] && printf "  %-22s %s\n" "EKS pod tapping:" \
+  "${EKS_MODE}$([[ "$EKS_SAMPLE" == "true" ]] && echo ", sample cluster + demo app" || echo ", cluster: ${EKS_CLUSTER:-discovered}")"
 printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
 printf "  %-22s %s\n" "Public IPs:" "$ASSIGN_PUBLIC_IP"
 if [[ -n "$EXISTING_VPC_ID" ]]; then
@@ -3005,6 +3065,10 @@ state_set IAC "$IAC"
 state_set EC2_KEY_PAIR "$KEY_NAME"
 state_set DEPLOY_KVO "$DEPLOY_KVO"
 state_set DEPLOY_VPB "$DEPLOY_VPB"
+state_set DEPLOY_EKS "$DEPLOY_EKS"
+state_set EKS_CLUSTER "$EKS_CLUSTER"
+state_set EKS_MODE "$EKS_MODE"
+state_set EKS_SAMPLE "$EKS_SAMPLE"
 state_set ADMIN_USER "$ADMIN_USERNAME"
 state_set CLOUD_CONFIG "$CLOUD_CONFIG_NAME"
 state_set CLM_NAME "$CLM_NAME_IN_KVO"
@@ -5240,6 +5304,53 @@ else
     note "Install them later with: curl -sSL ${REPO_RAW}/quickstart.sh | bash"
     note "Or force it now with:    bash deploy/deploy-stack.sh --only sensors"
     state_phase sensors skipped "$SENSOR_SKIP_REASON"
+  fi
+fi
+
+# =====================================================================
+# Phase 13b: EKS pod tapping
+# =====================================================================
+# Kubernetes pods talk to each other INSIDE a node: neither the VM sensor on
+# an EC2 host nor VPC Traffic Mirroring ever sees that traffic. The CloudLens
+# K8s sensor does (DaemonSet per node, or a sidecar per pod), registering into
+# the SAME vController project as the VM sensors, so tap groups, tools, and
+# the vPB path treat pods and VMs identically. scripts/deploy-eks-tapping.sh
+# is the engine and works standalone with the same flags.
+if [[ "$DEPLOY_EKS" == "true" ]]; then
+  step "Phase 13b: EKS pod tapping (${EKS_MODE})"
+  EKS_SCRIPT="$(find_repo_script scripts/deploy-eks-tapping.sh || true)"
+  if ! run_phase eks; then
+    skip_note "the EKS tapping step"
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "bash scripts/deploy-eks-tapping.sh --region ${REGION} --clms-ip ${CLMS_PUBLIC_IP:-<clms>} --project-key <key> --mode ${EKS_MODE} --stack-name ${STACK_NAME}$([[ "$EKS_SAMPLE" == "true" ]] && echo " --create-sample --vpc-id ${STACK_VPC_ID:-<vpc>} --sample-app" || echo "${EKS_CLUSTER:+ --cluster ${EKS_CLUSTER}}")"
+  elif [[ -z "$EKS_SCRIPT" ]]; then
+    warn "scripts/deploy-eks-tapping.sh not found; skipping the EKS step."
+  elif [[ -z "$VC_PROJECT_KEY" ]]; then
+    warn "No vController project key was resolved (Phase 9), so the K8s sensors"
+    warn "would have nothing to register to. Skipping; re-run with --only eks"
+    warn "after the key exists."
+    state_phase eks failed "no project key"
+  else
+    # Pods reach the vController over the network the CLUSTER has: the public
+    # address when the manager has one, else its private address (the customer
+    # then needs VPC reachability, which the engine's probe surfaces).
+    _eks_clms="${CLMS_PUBLIC_IP:-$CLMS_PRIVATE_IP}"
+    _eks_args=(--region "$REGION" --clms-ip "$_eks_clms" --project-key "$VC_PROJECT_KEY" \
+               --mode "$EKS_MODE" --stack-name "$STACK_NAME" \
+               --custom-tags "platform=eks,stack=${STACK_NAME}" --yes)
+    [[ -n "$EKS_CLUSTER" ]]           && _eks_args+=(--cluster "$EKS_CLUSTER")
+    [[ "$EKS_SAMPLE" == "true" ]]     && _eks_args+=(--create-sample --vpc-id "$STACK_VPC_ID" --sample-app)
+    [[ -n "$EKS_SENSOR_IMAGE" ]]      && _eks_args+=(--sensor-image "$EKS_SENSOR_IMAGE")
+    [[ -n "$EKS_SENSOR_TAR" ]]        && _eks_args+=(--sensor-tar "$EKS_SENSOR_TAR")
+    if bash "$EKS_SCRIPT" "${_eks_args[@]}"; then
+      state_phase eks done
+      ok "EKS pod tapping deployed. The K8s sensors register into the same"
+      ok "project as the VM sensors and follow the same tool path."
+    else
+      warn "The EKS tapping step did not complete; the rest of the run continues."
+      note "Re-run just this step with: bash deploy/deploy-stack.sh --only eks"
+      state_phase eks failed "deploy-eks-tapping.sh returned non-zero"
+    fi
   fi
 fi
 

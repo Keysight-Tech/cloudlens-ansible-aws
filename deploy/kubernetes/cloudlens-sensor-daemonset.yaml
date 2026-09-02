@@ -1,0 +1,226 @@
+---
+# Source: cloudlens-sensor/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudlens-sensor
+  labels:
+    helm.sh/chart: cloudlens-sensor-6.13.0-359
+    app.kubernetes.io/name: cloudlens-sensor
+    app.kubernetes.io/instance: cloudlens-sensor
+    app.kubernetes.io/version: "6.13.0-359"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: cloudlens-sensor/templates/dtls-ca.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudlens-agent-custom-dtls-ca
+type: Opaque
+data:
+  dtls-custom-ca.crt: Cg==
+---
+# Source: cloudlens-sensor/templates/roles.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cloudlens-sensor-cr
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+# Source: cloudlens-sensor/templates/roles.yaml
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cloudlens-sensor-crb
+subjects:
+- kind: ServiceAccount
+  name: cloudlens-sensor
+  namespace: cloudlens
+roleRef:
+  kind: ClusterRole
+  name: cloudlens-sensor-cr
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: cloudlens-sensor/templates/daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cloudlens-sensor
+  labels:
+    helm.sh/chart: cloudlens-sensor-6.13.0-359
+    app.kubernetes.io/name: cloudlens-sensor
+    app.kubernetes.io/instance: cloudlens-sensor
+    app.kubernetes.io/version: "6.13.0-359"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudlens-sensor
+      app.kubernetes.io/instance: cloudlens-sensor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudlens-sensor
+        app.kubernetes.io/instance: cloudlens-sensor
+    spec:
+      serviceAccountName: cloudlens-sensor
+      hostNetwork: true
+      containers:
+      - name: cloudlens-sensor
+        image: __IMAGE_REPO__:__IMAGE_TAG__
+        imagePullPolicy: IfNotPresent
+        args:
+          - "--auto_update"
+          - "n"
+          - "--accept_eula"
+          - "yes"
+          - "--ssl_verify"
+          - "no"
+          - "--runmode"
+          - "kubernetes_collector"
+          - "--used_cpus"
+          - "all"
+          - "--server"
+          - "__CLMS_IP__"
+          - "--project_key"
+          - "__PROJECT_KEY__"
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        # Volumes for ContainerD
+        - name: netns-volume
+          mountPath: /var/run/netns
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: containerd-volume
+          mountPath: /run/containerd
+          mountPropagation: "HostToContainer"
+          readOnly: true
+          # Volumes for CRI-O
+        - name: crio-volume
+          mountPath: /run/crio
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: crio-runc
+          mountPath: /run/runc
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: crio-containers
+          mountPath: /var/lib/containers
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        # Volumes for Docker
+        - name: netns-docker-volume
+          mountPath: /var/run/docker/netns
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: docker-storage
+          mountPath: /var/lib/docker
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: docker-socket
+          mountPath: /run/docker.sock
+          readOnly: true
+        # Generic volumes
+        - name: proc-volume
+          mountPath: /host/proc
+          mountPropagation: "HostToContainer"
+          readOnly: true
+        - name: modules-volume
+          mountPath: /lib/modules
+          readOnly: true
+        - name: kernel-volume
+          mountPath: /sys/kernel
+          mountPropagation: "HostToContainer"
+          readOnly: false
+        - name: os-release-volume
+          mountPath: /host/etc/os-release
+          readOnly: true
+        - name: dtls-certificate
+          mountPath: /var/cloudtap/ca-certificates
+          readOnly: true
+        - name: cloudlens-sensor-data
+          mountPath: /var/cloudtap
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["SYS_MODULE", "SYS_RESOURCE", "NET_RAW", "NET_ADMIN", "NET_BROADCAST", "SYS_ADMIN"]
+      volumes:
+      # Volumes for ContainerD
+      - name: netns-volume
+        hostPath:
+          path: /var/run/netns
+      - name: containerd-volume
+        hostPath:
+          path: /run/containerd
+      # Volumes for CRI-O
+      - name: crio-volume
+        hostPath:
+          path: /run/crio
+      - name: crio-runc
+        hostPath:
+          path: /run/runc
+      - name: crio-containers
+        hostPath:
+          path: /var/lib/containers
+      # Volumes for Docker
+      - name: netns-docker-volume
+        hostPath:
+          path: /var/run/docker/netns
+      - name: docker-storage
+        hostPath:
+          path: /var/lib/docker
+      - name: docker-socket
+        hostPath:
+          path: /run/docker.sock
+      # Generic volumes
+      - name: proc-volume
+        hostPath:
+          path: /proc/
+      - name: modules-volume
+        hostPath:
+          path: /lib/modules
+      - name: kernel-volume
+        hostPath:
+          path: /sys/kernel
+      - name: os-release-volume
+        hostPath:
+          path: /etc/os-release
+          type: File
+      - name: dtls-certificate
+        secret:
+          secretName: cloudlens-agent-custom-dtls-ca
+          optional: true
+      - name: cloudlens-sensor-data
+        hostPath:
+          path: /var/cloudtap
+          type: DirectoryOrCreate
+# ---------------------------------------------------------------------
+# Rendered from Keysight's official cloudlens-sensor Helm chart
+# (6.13.0-359, https://keysight-tech.github.io/cloudlens-helm/) with
+# helm template, so it applies with plain kubectl: AWS CloudShell ships
+# kubectl but not helm. The three __PLACEHOLDERS__ are substituted at
+# deploy time by scripts/deploy-eks-tapping.sh from the LIVE stack:
+#   __IMAGE_REPO__   the registry the cluster pulls from (ECR)
+#   __IMAGE_TAG__    the sensor version pushed there
+#   __CLMS_IP__      the vController this fabric runs
+#   __PROJECT_KEY__  the project the sensors register into
+# Nothing here is customer-specific. To re-render after a chart update:
+#   helm template cloudlens-sensor <chart> --namespace cloudlens \
+#     --set image.repository=__IMAGE_REPO__ --set image.tag=__IMAGE_TAG__ \
+#     --set sensor.server=__CLMS_IP__ --set sensor.projectKey=__PROJECT_KEY__ \
+#     --set privileged=true --set sensor.debug=false
+# ---------------------------------------------------------------------

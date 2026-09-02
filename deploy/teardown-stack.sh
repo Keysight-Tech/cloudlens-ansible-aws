@@ -1036,6 +1036,42 @@ if [[ "$NO_SWEEP" == "true" ]]; then
 else
   step "Phase 7: Sweep"
 
+  # ---- Sample EKS cluster first: it owns ENIs in the VPC (control plane +
+  # nodes) that block subnet and VPC deletion below, and its nodegroup is an
+  # ASG the generic ASG pass does not know is EKS-managed. Only the SAMPLE
+  # cluster this deploy created is touched: matched strictly by its name
+  # (${STACK_NAME}-eks) AND its cloudlens:stack tag; a customer's own cluster
+  # never carries both. Order per AWS: nodegroup, then cluster, then roles.
+  _eks_name="${STACK_NAME}-eks"
+  _eks_tag=$(ro_aws eks describe-cluster --name "$_eks_name"       --query 'cluster.tags."cloudlens:stack"' --output text 2>/dev/null)
+  if [[ "$_eks_tag" == "$STACK_NAME" ]]; then
+    note "Sample EKS cluster ${_eks_name} belongs to this stack; removing it."
+    for _ng in $(ro_aws eks list-nodegroups --cluster-name "$_eks_name"                    --query 'nodegroups[]' --output text 2>/dev/null); do
+      if del_aws eks delete-nodegroup --cluster-name "$_eks_name" --nodegroup-name "$_ng"; then
+        ok "$(did) EKS nodegroup ${_ng} (delete started)"
+      fi
+    done
+    for _ng in $(ro_aws eks list-nodegroups --cluster-name "$_eks_name"                    --query 'nodegroups[]' --output text 2>/dev/null); do
+      note "waiting for nodegroup ${_ng} to go (2-5 min)..."
+      ro_aws eks wait nodegroup-deleted --cluster-name "$_eks_name" --nodegroup-name "$_ng" || true
+    done
+    if del_aws eks delete-cluster --name "$_eks_name"; then
+      note "waiting for the control plane to go (a few minutes)..."
+      ro_aws eks wait cluster-deleted --name "$_eks_name" || true
+      ok "$(did) EKS cluster ${_eks_name}"
+    fi
+    for _r in "${STACK_NAME}-eks-cluster-role" "${STACK_NAME}-eks-node-role"; do
+      for _pa in $(ro_aws iam list-attached-role-policies --role-name "$_r"                      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+        del_aws iam detach-role-policy --role-name "$_r" --policy-arn "$_pa" || true
+      done
+      del_aws iam delete-role --role-name "$_r" && ok "$(did) IAM role ${_r}"
+    done
+    _ecr_tag=$(ro_aws ecr list-tags-for-resource         --resource-arn "arn:aws:ecr:${REGION}:$(ro_aws sts get-caller-identity --query Account --output text):repository/cloudlens-sensor"         --query 'tags[?Key==`cloudlens:stack`].Value | [0]' --output text 2>/dev/null)
+    if [[ "$_ecr_tag" == "$STACK_NAME" ]]; then
+      del_aws ecr delete-repository --repository-name cloudlens-sensor --force         && ok "$(did) ECR repository cloudlens-sensor (this stack created it)"
+    fi
+  fi
+
   # ---- Auto Scaling groups first: a live group re-creates its instances,
   # which re-creates volumes and holds ENIs on the groups below.
   for _a in $SWEEP_ASGS; do
