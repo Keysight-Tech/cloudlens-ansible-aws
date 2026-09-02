@@ -2722,6 +2722,74 @@ else
   select_key_pair
 fi
 
+# ---------------------------------------------------------------------
+# The upfront interview. Every answer that DETERMINES the flow is collected
+# here, in sequence, before anything deploys: infrastructure, components,
+# tapping method, workloads, and (when it applies) collector placement.
+# Mid-run prompts are reserved for what genuinely cannot be known earlier
+# (passwords typed at the moment of use, a licence code). Flags and env
+# always win: a question is only asked when nothing answered it already,
+# and a resume (FOUND_DEPLOYMENT=true) re-asks nothing.
+# ---------------------------------------------------------------------
+
+# Numbered picker over one VPC's subnets. $1 = vpc id, $2 = prompt label.
+# Echoes the chosen subnet id ("" when the operator skips).
+pick_subnet() {
+  local vpc="$1" label="$2" rows=() line pick i=0
+  while IFS= read -r line; do rows+=("$line"); done < <(
+    aws ec2 describe-subnets --region "$REGION" \
+      --filters "Name=vpc-id,Values=${vpc}" \
+      --query 'Subnets[].join(`\t`, [SubnetId, AvailabilityZone, CidrBlock, to_string(MapPublicIpOnLaunch)])' \
+      --output text 2>/dev/null)
+  if [[ ${#rows[@]} -eq 0 ]]; then
+    read -rp "  ${label} (subnet id, Enter to skip): " pick || true
+    echo "$pick"; return 0
+  fi
+  echo "  Subnets in ${vpc} (public=auto-assigns public IPs):" >&2
+  for line in "${rows[@]}"; do
+    i=$((i+1))
+    printf "    %2d) %s\n" "$i" "$(echo "$line" | awk -F'\t' '{printf "%s  %s  %-18s  %s", $1, $2, $3, ($4=="true")?"public":"private"}')" >&2
+  done
+  read -rp "  ${label} [1-${#rows[@]}, subnet id, or Enter to skip]: " pick || true
+  if [[ "$pick" =~ ^[0-9]+$ ]]; then
+    if (( pick >= 1 && pick <= ${#rows[@]} )); then
+      echo "${rows[$((pick-1))]}" | cut -f1
+    else
+      # A number that is not on the list is a typo, never a subnet id.
+      # Passing it through would put the literal digit in the plan.
+      echo "  ${pick} is not on the list (1-${#rows[@]}); skipping." >&2
+      echo ""
+    fi
+  else
+    echo "$pick"
+  fi
+}
+
+# Q1: infrastructure. The first architectural fork: everything downstream
+# (subnets, SGs, collector placement, teardown scope) hangs off it.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
+      && -z "$EXISTING_VPC_ID" && "$DRY_RUN" != "true" ]]; then
+  echo
+  echo "Where should CloudLens land?"
+  echo "  1) Build a NEW VPC for it. Clean lab or demo; teardown removes everything. Default."
+  echo "  2) Deploy INTO infrastructure you already run (your VPC and subnet;"
+  echo "     nothing network-level is created, and teardown never touches your VPC)."
+  read -rp "Choose 1-2 [1]: " infra_choice || true
+  if [[ "${infra_choice:-1}" == "2" ]]; then
+    echo "  Your VPCs:"
+    aws ec2 describe-vpcs --region "$REGION" \
+      --query 'Vpcs[].[VpcId,CidrBlock,Tags[?Key==`Name`]|[0].Value]' \
+      --output table 2>/dev/null | sed 's/^/  /' || true
+    read -rp "  VPC id for the CloudLens appliances: " EXISTING_VPC_ID || true
+    if [[ -n "$EXISTING_VPC_ID" ]]; then
+      EXISTING_SUBNET_ID="$(pick_subnet "$EXISTING_VPC_ID" "Management subnet (appliances live here)")"
+      [[ -z "$EXISTING_SUBNET_ID" ]] && { warn "An existing VPC needs a subnet; falling back to a NEW VPC."; EXISTING_VPC_ID=""; }
+    else
+      note "No VPC id given; building a new VPC."
+    fi
+  fi
+fi
+
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then
   read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn || true
@@ -2767,6 +2835,93 @@ if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
   fi
 fi
 ok "Tapping: sensors=${CHAIN_SENSORS}, mirroring=${WITH_MIRROR}"
+
+# Q4: workloads. Decided HERE, before anything deploys: a run that reaches
+# the sensor phase and only then discovers there is nothing to tap has asked
+# its questions in the wrong order (seen live: the operator was offered test
+# VMs three phases after the stack was already up).
+WORKLOAD_CHOICE="${WORKLOAD_CHOICE:-}"
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && -z "$TEST_VMS" && "${DISCOVERY_TAG_EXPLICIT:-false}" != "true" \
+      && ( "$CHAIN_SENSORS" == "true" || "$WITH_MIRROR" == "true" ) ]]; then
+  echo
+  echo "What should be tapped?"
+  echo "  1) Workloads you ALREADY run: selected by a tag you name, in the VPC(s)"
+  echo "     you name. Nothing extra is deployed."
+  echo "  2) Throwaway TEST workloads created with the stack (you choose how many"
+  echo "     of Ubuntu / RHEL / Windows). Right for demos and first runs. Default."
+  echo "  3) Decide later (tag instances afterwards and re-run the sensor step)."
+  read -rp "Choose 1-3 [2]: " wl_choice || true
+  case "${wl_choice:-2}" in
+    1)
+      WORKLOAD_CHOICE="existing"
+      read -rp "  Tag that marks them, key=value [${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}]: " _wt || true
+      if [[ -n "$_wt" && "$_wt" == *=* ]]; then
+        DISCOVERY_TAG_KEY="${_wt%%=*}"; DISCOVERY_TAG_VALUE="${_wt#*=}"
+        DISCOVERY_TAG_EXPLICIT=true
+      fi
+      _wl_default_vpc="${EXISTING_VPC_ID:-the new VPC this deploy builds}"
+      read -rp "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " _wv || true
+      if [[ -n "$_wv" ]]; then
+        for _v in ${_wv//,/ }; do SOURCE_VPC_SPECS+=("$_v"); done
+      fi
+      # Immediate feedback: say NOW how many hosts that selection matches,
+      # not three phases after the stack is up.
+      _scope=()
+      [[ -n "$_wv" ]] && _scope=(--filters "Name=vpc-id,Values=${_wv}")
+      _n=$(aws ec2 describe-instances --region "$REGION" \
+             --filters "Name=tag:${DISCOVERY_TAG_KEY},Values=${DISCOVERY_TAG_VALUE}" \
+                       "Name=instance-state-name,Values=running" ${_scope[@]+"${_scope[@]}"} \
+             --query 'length(Reservations[].Instances[])' --output text 2>/dev/null || echo "?")
+      if [[ "$_n" == "0" ]]; then
+        warn "  ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} matches ZERO running instances right now."
+        warn "  The deploy continues, but nothing gets a sensor until instances carry"
+        warn "  that tag. Tag them, or re-answer with a different tag."
+      else
+        ok "  ${_n} running instance(s) match ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}."
+      fi
+      ;;
+    3) WORKLOAD_CHOICE="later"
+       note "Nothing will be tapped until instances carry ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}." ;;
+    *)
+      WORKLOAD_CHOICE="test"
+      TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes
+      read -rp "  How many Ubuntu VMs? [1, 0 skips]: " _c || true
+      [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
+      [[ "${_c:-1}" == "0" ]] && TEST_UBUNTU=no || UBUNTU_COUNT="${_c:-1}"
+      read -rp "  How many RHEL VMs? [1, 0 skips]: " _c || true
+      [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
+      [[ "${_c:-1}" == "0" ]] && TEST_RHEL=no || RHEL_COUNT="${_c:-1}"
+      read -rp "  How many Windows VMs? [1, 0 skips]: " _c || true
+      [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
+      [[ "${_c:-1}" == "0" ]] && TEST_WINDOWS=no || WINDOWS_COUNT="${_c:-1}"
+      ;;
+  esac
+fi
+
+# Q5: collector placement, only when the answers so far make it REQUIRED
+# (mirroring into an existing VPC has no stack subnets to derive from).
+# Asked now so Phase 15 executes instead of refusing mid-run.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && "$WITH_MIRROR" == "true" && -n "$EXISTING_VPC_ID" \
+      && -z "$COLLECTOR_MGMT_SUBNET$COLLECTOR_INGRESS_SUBNET$COLLECTOR_EGRESS_SUBNET" ]]; then
+  echo
+  echo "Mirroring needs a collector appliance in the tapped VPC, on THREE DISTINCT"
+  echo "subnets (management / ingress / egress), same availability zone (KVO UG,"
+  echo "AWS Cloud Configs). Pick them now, or press Enter three times to skip and"
+  echo "the mirror step will be skipped with instructions."
+  COLLECTOR_MGMT_SUBNET="$(pick_subnet "$EXISTING_VPC_ID" "Collector MANAGEMENT subnet")"
+  COLLECTOR_INGRESS_SUBNET="$(pick_subnet "$EXISTING_VPC_ID" "Collector INGRESS subnet")"
+  COLLECTOR_EGRESS_SUBNET="$(pick_subnet "$EXISTING_VPC_ID" "Collector EGRESS subnet")"
+  if [[ -n "$COLLECTOR_MGMT_SUBNET" && -z "$COLLECTOR_ZONE" ]]; then
+    COLLECTOR_ZONE=$(aws ec2 describe-subnets --region "$REGION" \
+      --subnet-ids "$COLLECTOR_MGMT_SUBNET" \
+      --query 'Subnets[0].AvailabilityZone' --output text 2>/dev/null) || COLLECTOR_ZONE=""
+    [[ "$COLLECTOR_ZONE" == "None" ]] && COLLECTOR_ZONE=""
+    [[ -n "$COLLECTOR_ZONE" ]] && note "Collector zone derived from the mgmt subnet: ${COLLECTOR_ZONE}"
+  fi
+fi
+
 ok "Discovery tag: ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 
 # ---------------------------------------------------------------------
@@ -2832,6 +2987,16 @@ fi
 [[ "$ENABLE_ZONE_TAPPING" == "yes" ]] && printf "  %-22s %s\n" "Zone tapping IAM:" "yes (KVO instance profile)"
 printf "  %-22s %s\n" "Rollback on failure:" "$ROLLBACK_ON_FAIL"
 echo
+# Every flow-determining answer is in. One confirmation, then the deployment
+# runs; the prompts left after this point are ones that cannot come earlier
+# (a licence code, a password typed at the moment of use).
+if [[ "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
+  if ! ask_yn "Proceed with this plan? [Y/n]: " y; then
+    note "Nothing was deployed. Re-run with different answers or flags when ready."
+    exit 0
+  fi
+  echo
+fi
 
 # Remember the inputs (never the secrets) so a resume does not re-ask for them.
 state_set REGION "$REGION"
@@ -3868,12 +4033,22 @@ install_ansible_now() {
     fi
   fi
   command -v ansible-playbook >/dev/null 2>&1 || { warn "Ansible still not on PATH."; return 1; }
-  ok "Ansible $(ansible --version 2>/dev/null | head -1 | awk '{print $2}') installed"
+  ok "Ansible $(ansible --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+[0-9.]*' | head -1) installed"
   return 0
 }
 
 deploy_test_workloads_now() {
   [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would deploy Ubuntu + RHEL test workloads tagged ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"; return 0; }
+  if [[ -n "${WORKLOAD_CHOICE:-}" && "${WORKLOAD_CHOICE}" != "test" ]]; then
+    # The operator already answered the workloads question up front. Repeating
+    # it mid-run, in different words, is the exact out-of-order prompting this
+    # interview removed. State the situation and move on.
+    echo
+    note "Nothing tagged ${DISCOVERY_DESC} is running yet. You chose to tap"
+    note "existing workloads: tag them and re-run the sensor step:"
+    note "  aws ec2 create-tags --resources <instance-id> --tags Key=${DISCOVERY_TAG_KEY},Value=${DISCOVERY_TAG_VALUE}"
+    return 1
+  fi
   echo
   echo "  There is nothing tagged ${DISCOVERY_DESC} to install a sensor on."
   echo "  Three throwaway EC2s (Ubuntu + RHEL t3.small, Windows t3.medium) can be"
