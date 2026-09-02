@@ -2772,7 +2772,7 @@ pick_subnet() {
   while IFS= read -r line; do rows+=("$line"); done < <(
     aws ec2 describe-subnets --region "$REGION" \
       --filters "Name=vpc-id,Values=${vpc}" \
-      --query 'Subnets[].join(`\t`, [SubnetId, AvailabilityZone, CidrBlock, to_string(MapPublicIpOnLaunch)])' \
+      --query 'Subnets[].[SubnetId, AvailabilityZone, CidrBlock, to_string(MapPublicIpOnLaunch)]' \
       --output text 2>/dev/null)
   if [[ ${#rows[@]} -eq 0 ]]; then
     read -rp "  ${label} (subnet id, Enter to skip): " pick || true
