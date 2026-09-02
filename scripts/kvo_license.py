@@ -218,60 +218,88 @@ def coverage_missing(products_text):
     return [name for name, keys in COVERAGE_CHECKS if not any(k in p for k in keys)]
 
 
+def read_codes_paste():
+    """Read a paste of activation codes: any mix of lines, spaces and commas,
+    finished with an empty line. Pasting the whole KSM email at once is the
+    point; one-at-a-time was the complaint that produced this."""
+    print("  Paste ALL your activation codes at once (one per line, or separated")
+    print("  by spaces/commas), then press Enter on an empty line to check them")
+    print("  together. A single code works the same way.")
+    raw = []
+    while True:
+        try:
+            line = input("  > ").strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        raw.append(line)
+    codes, seen = [], set()
+    for tok_ in " ".join(raw).replace(",", " ").split():
+        c = tok_.strip()
+        if c and c not in seen:
+            seen.add(c)
+            codes.append(c)
+    return codes
+
+
 def prompt_plan(kvo, base, tok, verify):
-    """Interactive prompt: codes, then a quantity per entitlement the code unlocks.
+    """Interactive prompt: ALL codes in one paste, ONE batch check against KSM
+    showing what every code holds, then a quantity question per entitlement.
 
     Raises EOFError / KeyboardInterrupt to the caller, which exits cleanly.
     """
     plan = []
     print("KVO licensing")
-    print("  Enter every code you were issued, one at a time. A full KVO")
-    print("  deployment usually needs several distinct entitlements, for")
-    print("  example sensor credits, KVO device licences, and vPB feature")
+    print("  A full KVO deployment usually needs several distinct entitlements,")
+    print("  for example sensor credits, KVO device licences, and vPB feature")
     print("  licences. Each arrives as its own activation code.")
     while True:
-        if not plan:
-            code = input("  Activation code: ").strip()
-        else:
-            # "blank to finish" after a successful activation reads as a dead
-            # end, not an invitation. An operator with a second code pressed
-            # Enter and moved on with only one entitlement licensed, then had
-            # to go back and add the other by hand. Ask the real question.
-            # plan entries are {"code":..., "picks":[(product, qty), ...]}: there
-            # is no "product" key at the top level, and reading one gave an empty
-            # summary that said "nothing yet" right after a successful activation.
-            have = ", ".join(sorted({prod for e in plan for prod, _q in e.get("picks", [])}))
-            print(f"  Licensed so far: {have or 'nothing yet'}")
-            # Guide, do not label the prompt: a code only reveals its entitlement
-            # after the KSM lookup, so we cannot ask for "the CloudLens code"
-            # specifically. Instead, say which of the three a full deployment
-            # still needs, so the operator enters those before finishing.
-            still = coverage_missing(have)
-            if still:
-                print(f"  Still needed for a full deployment: {', '.join(still)}")
-                print("  Enter the activation code for one of those next.")
-            else:
-                print("  All three entitlements are covered. You can finish here.")
-            more = input("  Add another activation code? [y/N]: ").strip().lower()
-            if more not in ("y", "yes"):
-                return plan
-            code = input("  Activation code: ").strip()
-        if not code:
+        codes = read_codes_paste()
+        if not codes and not plan:
             return plan
-        print("    checking this code against the KSM licensing backend, one moment...", flush=True)
-        ents, info = lookup_code(kvo, base, tok, code, verify)
-        if not ents:
-            state = info.get("state") if isinstance(info, dict) else info
-            print(f"    lookup failed for that code ({state}); check it and try again")
-            continue
-        picks = []
-        for product, avail, _total in ents:
-            if not avail:
-                print(f"    -> {product:<24} available: 0  (nothing left to activate)")
-                continue
-            picks.append((product, ask_quantity(product, avail)))
-        if picks:
-            plan.append({"code": code, "picks": picks})
+        if codes:
+            # 1. ONE sweep: every code checked before any question is asked,
+            # so the operator sees the whole picture first.
+            print(f"    checking {len(codes)} code(s) against the KSM licensing backend, one moment...",
+                  flush=True)
+            checked = []
+            for code in codes:
+                ents, info = lookup_code(kvo, base, tok, code, verify)
+                checked.append((code, ents, info))
+            print()
+            print("  What your codes hold:")
+            for code, ents, info in checked:
+                short = code if len(code) <= 24 else code[:21] + "..."
+                if not ents:
+                    state = info.get("state") if isinstance(info, dict) else info
+                    print(f"    {short:<24}  LOOKUP FAILED ({state})")
+                    continue
+                for product, avail, total in ents:
+                    print(f"    {short:<24}  {product:<24} available: {avail} of {total}")
+            print()
+            # 2. Quantities, per entitlement, in the same order.
+            for code, ents, _info in checked:
+                picks = []
+                for product, avail, _total in (ents or []):
+                    if not avail:
+                        print(f"    -> {product:<24} available: 0  (nothing left to activate)")
+                        continue
+                    picks.append((product, ask_quantity(product, avail)))
+                if picks:
+                    plan.append({"code": code, "picks": picks})
+        # 3. Coverage: say what a full deployment still lacks, then offer
+        # another paste rather than silently finishing half-licensed.
+        have = ", ".join(sorted({prod for e in plan for prod, _q in e.get("picks", [])}))
+        print(f"  Licensed so far: {have or 'nothing yet'}")
+        still = coverage_missing(have)
+        if still:
+            print(f"  Still needed for a full deployment: {', '.join(still)}")
+        else:
+            print("  All three entitlements are covered. You can finish here.")
+        more = input("  Add more activation codes? [y/N]: ").strip().lower()
+        if more not in ("y", "yes"):
+            return plan
 
 
 def main():
