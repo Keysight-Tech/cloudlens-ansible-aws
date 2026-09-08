@@ -20,26 +20,38 @@ for B in "${shells[@]}"; do
   rm -f "$S"/*.jsonl
 
   # 1. A full dry run. --dry-run touches no AWS and needs no credentials or
-  #    profile; the events file must still describe the whole run.
+  #    profile; the events file must still describe the whole run. It runs
+  #    twice: once with nothing optional (no kvo or vpb rows may appear) and
+  #    once with KVO and vPB, the only way every login event is emitted.
   "$B" deploy/deploy-stack.sh --dry-run --region us-east-1 --key-name k --stack-name evt \
     --tapping none --no-kvo --no-vpb --events "$S/events.jsonl" </dev/null >/dev/null 2>&1
   code=$?
   if [[ $code -ne 0 ]]; then echo "FAIL dry-run: exit $code, expected 0"; rc=1; fi
-  python3 - "$S/events.jsonl" <<'PY' || rc=1
+  "$B" deploy/deploy-stack.sh --dry-run --region us-east-1 --key-name k --stack-name evt \
+    --tapping none --with-kvo --with-vpb --events "$S/events-full.jsonl" </dev/null >/dev/null 2>&1
+  code=$?
+  if [[ $code -ne 0 ]]; then echo "FAIL dry-run (with-kvo, with-vpb): exit $code, expected 0"; rc=1; fi
+  python3 - "$S/events.jsonl" "$S/events-full.jsonl" <<'PY' || rc=1
 import json, sys
-evs = [json.loads(line) for line in open(sys.argv[1])]   # every line is one JSON object
-seqs = [e["seq"] for e in evs]
+runs = {name: [json.loads(line) for line in open(path)]   # every line is one JSON object
+        for name, path in (("minimal", sys.argv[1]), ("full", sys.argv[2]))}
+for name, evs in runs.items():
+    seqs = [e["seq"] for e in evs]
+    types = [e["type"] for e in evs]
+    for e in evs:
+        assert "ts" in e and "type" in e, e
+    assert seqs == list(range(1, len(seqs) + 1)), "%s: seq must be 1..N with no gap or repeat: %r" % (name, seqs)
+    assert types[0] == "hello", (name, types[:3])
+    assert "phase" in types, (name, types)
+    assert types.count("done") == 1, "%s: exactly one done per run: %r" % (name, types)
+    assert types[-1] == "done", (name, types)
+    hello = [e for e in evs if e["type"] == "hello"][-1]
+    assert hello["stack"] == "evt" and hello["region"] == "us-east-1", hello
+    assert evs[-1]["status"] == "dry-run", evs[-1]
+    # No event may ever carry a password value: logins say where it lives.
+    assert not any("password" in e for e in evs), [e for e in evs if "password" in e]
+evs = runs["minimal"]
 types = [e["type"] for e in evs]
-for e in evs:
-    assert "ts" in e and "type" in e, e
-assert seqs == list(range(1, len(seqs) + 1)), "seq must be 1..N with no gap or repeat: %r" % seqs
-assert types[0] == "hello", types[:3]
-assert "phase" in types, types
-assert types.count("done") == 1, "exactly one done per run: %r" % types
-assert types[-1] == "done", types
-hello = [e for e in evs if e["type"] == "hello"][-1]
-assert hello["stack"] == "evt" and hello["region"] == "us-east-1", hello
-assert evs[-1]["status"] == "dry-run", evs[-1]
 # The console draws the stack from resource events, so the dry run emits its
 # placeholders too (--no-kvo --no-vpb: no kvo and no vpb rows).
 res = [e for e in evs if e["type"] == "resource"]
@@ -47,9 +59,20 @@ kinds = [(r["kind"], r.get("role")) for r in res]
 assert ("vpc", None) in kinds and ("subnet", "mgmt") in kinds and ("vcontroller", None) in kinds, kinds
 assert not any(r["kind"] in ("kvo", "vpb") for r in res), kinds
 assert all(r["id"] for r in res if r["kind"] in ("vpc", "subnet")), res
-# No event may ever carry a password value: logins say where it lives.
-assert not any("password" in e for e in evs), [e for e in evs if "password" in e]
-print("PASS dry-run: %d lines, %d phase events, %d resources, one done" % (len(evs), types.count("phase"), len(res)))
+full_kinds = [r["kind"] for r in runs["full"] if r["type"] == "resource"]
+assert "kvo" in full_kinds and "vpb" in full_kinds, full_kinds
+# Every component announces a login, and password_in names WHERE the password
+# is (a file, an environment variable, a key pair, a factory default) and
+# never contains its value. The factory passwords are the values a careless
+# string would leak, so none may appear as a substring (case-sensitive).
+logins = [e for e in runs["minimal"] + runs["full"] if e["type"] == "login"]
+assert {l["component"] for l in logins} == {"vcontroller", "kvo", "vpb"}, logins
+factory = {"admin", "ixia", "Cl0udLens@dm!n"}
+for l in logins:
+    assert l.get("user") and l.get("url") and l.get("password_in"), l
+    assert not any(pw in l["password_in"] for pw in factory), "password_in leaks a factory password: %r" % l
+print("PASS dry-run: %d lines, %d phase events, %d resources, one done; %d logins name no password"
+      % (len(evs), types.count("phase"), len(res), len(logins)))
 PY
 
   # 2. A parse-time fail() after the sink exists, with every byte JSON hates in
@@ -69,12 +92,14 @@ assert 'x"y\\z' in r and "\n" in r and "\x1b" in r, repr(r)
 print("PASS parse-time fail: hello + one done, reason round-trips %r" % r)
 PY
 
-  # 3. --doctor with no usable AWS credentials (the config and credential
-  #    files are stubbed out and IMDS is off, so this never reaches a real
-  #    account). The doctor still runs every check it can: the CLI-present one
-  #    passes, the credentials one fails. Each check is an event with a
-  #    status, and every check that is not a pass names its fix.
-  env -u AWS_PROFILE AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+  # 3. --doctor with no usable AWS credentials (the profile and any static
+  #    keys are unset, the config and credential files are stubbed out and
+  #    IMDS is off, so this never reaches STS or a real account). The doctor
+  #    still runs every check it can: the CLI-present one passes, the
+  #    credentials one fails. Each check is an event with a status, and every
+  #    check that is not a pass names its fix.
+  env -u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+    AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
     AWS_EC2_METADATA_DISABLED=true \
     "$B" deploy/deploy-stack.sh --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true
   python3 - "$S/doctor.jsonl" <<'PY' || rc=1

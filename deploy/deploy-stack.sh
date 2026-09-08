@@ -581,8 +581,10 @@ announce_kvo_login() {
   watch_header
   echo "    https://${ip}/"
   echo "    ${KVO_ADMIN_USER} / ${KVO_ADMIN_PASS}"
+  # The login event says WHERE the password lives, never what it is: the
+  # factory default is named, not spelled out.
   local pw_in="CLOUDLENS_KVO_ADMIN_PASS (environment)"
-  [[ "$KVO_ADMIN_PASS" == "admin" ]] && pw_in="admin (KVO default)"
+  [[ "$KVO_ADMIN_PASS" == "admin" ]] && pw_in="KVO factory default"
   emit_event login component=kvo url="https://${ip}/" user="$KVO_ADMIN_USER" password_in="$pw_in"
   echo "  Licensing, the adopted vController and the Visibility Fabric appear"
   echo "  here as the phases below build them."
