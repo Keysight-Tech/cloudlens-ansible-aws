@@ -106,36 +106,86 @@ sanitize_stack_name() {
 # arbitrary variable, or a secret (secrets are never written into one).
 # ---------------------------------------------------------------------
 PROFILE_SRC=""
+DOCTOR_MODE=false
 _pa=("$@")
 for (( _pi=0; _pi<${#_pa[@]}; _pi++ )); do
+  [[ "${_pa[$_pi]}" == "--doctor" ]] && DOCTOR_MODE=true
   if [[ "${_pa[$_pi]}" == "--profile" && $((_pi+1)) -lt ${#_pa[@]} ]]; then
     PROFILE_SRC="${_pa[$((_pi+1))]}"
   fi
 done
+
+# The EXACT keys a profile may set: the interview's answers and the plan-
+# visible settings, nothing else. A prefix match was tried first and let a
+# profile choose the sensor image, the Windows installer URL, an IAM role,
+# and the ssh username (which reaches ssh as an option). Anything not listed
+# here is reported and ignored, by name.
+profile_key_allowed() {
+  case "$1" in
+    CLOUDLENS_REGION|CLOUDLENS_STACK_NAME|CLOUDLENS_KEY_NAME|CLOUDLENS_IAC|\
+    CLOUDLENS_ADMIN_CIDR|CLOUDLENS_ASSIGN_PUBLIC_IP|CLOUDLENS_INFRA|\
+    CLOUDLENS_EXISTING_VPC_ID|CLOUDLENS_EXISTING_SUBNET_ID|CLOUDLENS_EXISTING_DATA_SUBNET_ID|\
+    CLOUDLENS_EXISTING_TOOL_SUBNET_ID|CLOUDLENS_EXISTING_SG_ID|\
+    CLOUDLENS_DEPLOY_KVO|CLOUDLENS_DEPLOY_VPB|CLOUDLENS_VCONTROLLER_TYPE|\
+    CLOUDLENS_VPB_INGRESS_NICS|CLOUDLENS_VPB_EGRESS_NICS|\
+    CLOUDLENS_VCONTROLLER_NAME|CLOUDLENS_KVO_NAME|CLOUDLENS_VPB_NAME|\
+    CLOUDLENS_ENABLE_ZONE_TAPPING|CLOUDLENS_ROLLBACK_ON_FAIL|\
+    CLOUDLENS_TAPPING|CLOUDLENS_SENSOR_MODE|CLOUDLENS_WORKLOAD_CHOICE|\
+    CLOUDLENS_DISCOVERY_TAG_KEY|CLOUDLENS_DISCOVERY_TAG_VALUE|CLOUDLENS_TEST_VMS|\
+    CLOUDLENS_SOURCE_VPCS|CLOUDLENS_COLLECTOR_ZONE|CLOUDLENS_COLLECTOR_MGMT_SUBNET|\
+    CLOUDLENS_COLLECTOR_INGRESS_SUBNET|CLOUDLENS_COLLECTOR_EGRESS_SUBNET|\
+    CLOUDLENS_COLLECTOR_MGMT_SG|CLOUDLENS_COLLECTOR_INGRESS_SG|CLOUDLENS_COLLECTOR_EGRESS_SG|\
+    CLOUDLENS_DEPLOY_EKS|CLOUDLENS_EKS_CLUSTER|CLOUDLENS_EKS_SAMPLE|CLOUDLENS_EKS_MODE|\
+    CLOUDLENS_EKS_POD_SELECTOR|CLOUDLENS_CLOUD_CONFIG|CLOUDLENS_CLM_NAME|CLOUDLENS_VPB_DEVICE_NAME)
+      return 0 ;;
+  esac
+  return 1
+}
+
 if [[ -n "$PROFILE_SRC" ]]; then
   _profile_body=""
   case "$PROFILE_SRC" in
-    http://*|https://*) _profile_body="$(curl -sSL --max-time 30 "$PROFILE_SRC" 2>/dev/null)" ;;
-    *) [[ -f "$PROFILE_SRC" ]] && _profile_body="$(cat "$PROFILE_SRC")" ;;
+    http://*)
+      echo "[x] --profile: only https:// URLs are accepted (a profile sets deployment inputs)." >&2
+      exit 2 ;;
+    https://*)
+      # -f: an HTTP error page is not a profile. Under set -e the fetch must
+      # not be able to end the script silently, hence the || true.
+      _profile_body="$(curl -fsSL --proto =https --max-time 30 "$PROFILE_SRC" 2>/dev/null)" || _profile_body="" ;;
+    *)
+      [[ -f "$PROFILE_SRC" ]] && _profile_body="$(cat "$PROFILE_SRC")" ;;
   esac
   if [[ -z "$_profile_body" ]]; then
-    echo "[x] --profile ${PROFILE_SRC}: not readable (file missing, or URL unreachable)." >&2
+    echo "[x] --profile ${PROFILE_SRC}: not readable (file missing, URL unreachable, or an HTTP error)." >&2
+    echo "    For GitHub use the raw.githubusercontent.com link, not the /blob/ page." >&2
     exit 2
   fi
-  _n=0
+  _n=0; _rejected=""
+  # Windows editors add a BOM and CRLF; both are stripped before parsing.
+  _profile_body="$(printf '%s' "$_profile_body" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//')"
   while IFS= read -r _pl; do
-    _pl="${_pl%%#*}"; _pl="${_pl#"${_pl%%[![:space:]]*}"}"
-    [[ -z "$_pl" ]] && continue
-    if [[ "$_pl" =~ ^(CLOUDLENS_[A-Z0-9_]+)=(.*)$ ]]; then
+    _pl="${_pl#"${_pl%%[![:space:]]*}"}"; _pl="${_pl%"${_pl##*[![:space:]]}"}"
+    [[ -z "$_pl" || "$_pl" == \#* ]] && continue
+    _pl="${_pl#export }"
+    if [[ "$_pl" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
       _k="${BASH_REMATCH[1]}"; _v="${BASH_REMATCH[2]}"
-      _v="${_v#\"}"; _v="${_v%\"}"
-      case "$_k" in
-        *SECRET*|*PASS*|*ACCESS_KEY*|*PROJECT_KEY*|*TOKEN*|*CREDENTIAL*)
-          echo "[warn] profile: refusing secret-looking key ${_k} (secrets are typed, never filed)" >&2 ;;
-        *) export "$_k=$_v"; _n=$((_n+1)) ;;
-      esac
+      # one matching pair of quotes around the whole value, either kind
+      if [[ "$_v" == \"*\" && ${#_v} -ge 2 ]]; then _v="${_v#\"}"; _v="${_v%\"}"
+      elif [[ "$_v" == \'*\' && ${#_v} -ge 2 ]]; then _v="${_v#\'}"; _v="${_v%\'}"; fi
+      if profile_key_allowed "$_k"; then
+        export "$_k=$_v"; _n=$((_n+1))
+      else
+        _rejected="${_rejected} ${_k}"
+      fi
+    else
+      _rejected="${_rejected} [unparsed:${_pl%%=*}]"
     fi
   done <<< "$_profile_body"
+  [[ -n "$_rejected" ]] && echo "[warn] profile: ignored keys that a profile may not set:${_rejected}" >&2
+  if [[ "$_n" -eq 0 ]]; then
+    echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?)." >&2
+    exit 2
+  fi
   echo "[ok] Profile ${PROFILE_SRC}: ${_n} setting(s) applied; matching questions will not be asked."
 fi
 
@@ -290,10 +340,16 @@ LOG_FILE="cloudlens-deploy-stack.log"
 
 # Flag defaults (set by argument parser)
 DRY_RUN=false
-IAC="cfn"                 # cfn | terraform
+IAC="${CLOUDLENS_IAC:-cfn}"   # cfn | terraform
 DEPLOY_KVO="${CLOUDLENS_DEPLOY_KVO:-}"
 DEPLOY_VPB="${CLOUDLENS_DEPLOY_VPB:-}"
 RUN_DOCTOR=false
+# Interview answers that only a profile/env can pre-answer (they have no
+# other flag form). Each skips its question when set.
+INFRA_CHOICE="${CLOUDLENS_INFRA:-}"                  # new | existing
+WORKLOAD_CHOICE="${CLOUDLENS_WORKLOAD_CHOICE:-}"     # existing | test | later
+[[ -n "${CLOUDLENS_VCONTROLLER_TYPE:-}" ]] && CLMS_TYPE_EXPLICIT=true
+[[ -n "${CLOUDLENS_DISCOVERY_TAG_KEY:-}" ]] && DISCOVERY_TAG_EXPLICIT=true
 # Kubernetes (EKS) pod tapping: a third workload class alongside VM sensors
 # and agentless mirroring. Blank = the interview asks; flags/env win.
 DEPLOY_EKS="${CLOUDLENS_DEPLOY_EKS:-}"
@@ -1614,10 +1670,12 @@ secure_run_file() {
   fi
   chmod 600 "$f" 2>/dev/null || true
 }
-secure_run_file "$LOG_FILE"
-secure_run_file "$SUMMARY_FILE"
-
-exec > >(tee -a "$LOG_FILE") 2>&1
+# --doctor is read-only and leaves nothing behind, so no log or summary file.
+if [[ "${DOCTOR_MODE:-false}" != "true" ]]; then
+  secure_run_file "$LOG_FILE"
+  secure_run_file "$SUMMARY_FILE"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 
 # ---------------------------------------------------------------------
 # Help
@@ -2170,6 +2228,10 @@ if [[ -n "$EXISTING_DATA_SUBNET_ID" && -z "$EXISTING_VPC_ID" ]]; then
 fi
 
 ADMIN_USERNAME="$DEFAULT_ADMIN_USER"
+# It is spliced into "user@host" for ssh, and ssh reads a leading '-' as an
+# option (ProxyCommand runs a local command). Only a plain POSIX username.
+[[ "$ADMIN_USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+  || fail "Admin username '${ADMIN_USERNAME}' is not a plain lowercase username (letters, digits, _ and -)."
 
 # ---------------------------------------------------------------------
 # aws wrappers (echo in dry-run)
@@ -2368,11 +2430,15 @@ run_doctor() {
     _fail "AWS CLI not installed" "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html (or run without --doctor: the deploy offers to install it)"
   fi
 
-  # 2. Credentials
-  local _id _err
-  _id="$(aws sts get-caller-identity --query Arn --output text 2>/tmp/.doctor.$$)" || _id=""
-  _err="$(cat /tmp/.doctor.$$ 2>/dev/null)"; rm -f /tmp/.doctor.$$
-  if [[ -n "$_id" ]]; then
+  # 2. Credentials (only meaningful once the CLI exists)
+  local _id="" _err=""
+  if command -v aws >/dev/null 2>&1; then
+    _id="$(aws sts get-caller-identity --query Arn --output text 2>/tmp/.doctor.$$)" || _id=""
+    _err="$(cat /tmp/.doctor.$$ 2>/dev/null)"; rm -f /tmp/.doctor.$$
+  fi
+  if [[ -z "$_id" && ! $(command -v aws 2>/dev/null) ]]; then
+    :  # already reported above
+  elif [[ -n "$_id" ]]; then
     _pass "Signed in as ${_id}"
   elif [[ "$_err" == *"Token has expired"* || "$_err" == *"sso"* ]]; then
     _fail "AWS SSO session expired" "aws sso login${AWS_PROFILE:+ --profile $AWS_PROFILE}"
@@ -2387,42 +2453,74 @@ run_doctor() {
     else
       _fail "Region ${REGION} not usable with these credentials" "pass --region <one you can use>; enable the region in the account if it is opt-in"
     fi
-    # 4. Marketplace subscriptions
-    local _n _r
-    for _n in "vController:${CLMS_AMI_NAME}" "KVO:${KVO_AMI_NAME}" "vPB:${VPB_AMI_NAME}"; do
+    case " ${SUPPORTED_CFN_REGIONS} " in
+      *" ${REGION} "*) _pass "Region ${REGION} is in the CloudFormation RegionMap" ;;
+      *) _fail "Region ${REGION} is not in the CloudFormation RegionMap (the default engine)" "use one of: ${SUPPORTED_CFN_REGIONS}; or --iac terraform, which takes AMI ids directly" ;;
+    esac
+    # 4. Marketplace subscriptions. describe-images succeeds whether or not
+    # the terms are accepted (the script's Phase 4 learned this the hard way);
+    # only a run-instances --dry-run reports OptInRequired. Probed per
+    # component the run will actually launch.
+    local _n _r _probe
+    for _n in "vController:${CLMS_AMI_NAME}:t3.xlarge:always" \
+              "KVO:${KVO_AMI_NAME}:c5.2xlarge:${DEPLOY_KVO:-ask}" \
+              "vPB:${VPB_AMI_NAME}:t3.xlarge:${DEPLOY_VPB:-ask}"; do
+      local _lbl="${_n%%:*}" _rest="${_n#*:}"
+      local _ami_name="${_rest%%:*}"; _rest="${_rest#*:}"
+      local _itype="${_rest%%:*}" _sel="${_rest#*:}"
+      [[ "$_sel" == "false" ]] && { _pass "Marketplace ${_lbl}: not selected, skipped"; continue; }
       _r="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-images --owners "$MARKETPLACE_OWNER" \
-              --filters "Name=name,Values=${_n#*:}" --query 'Images[0].ImageId' --output text 2>/dev/null)"
-      if [[ -n "$_r" && "$_r" != "None" ]]; then
-        _pass "Marketplace ${_n%%:*} image visible (${_r})"
-      else
-        _fail "Marketplace ${_n%%:*} image not visible: not subscribed, or not offered in ${REGION}" "AWS Marketplace > search 'Keysight CloudLens' > Subscribe (one-time, free); the deploy's Phase 4 prints the exact link"
+              --filters "Name=name,Values=${_ami_name}" --query 'Images[0].ImageId' --output text 2>/dev/null || true)"
+      if [[ -z "$_r" || "$_r" == "None" ]]; then
+        _fail "Marketplace ${_lbl} image is not offered in ${REGION} (or ec2:DescribeImages is denied)" "pick a region from: ${SUPPORTED_CFN_REGIONS}"
+        continue
       fi
+      _probe="$(aws "${AWS_REGION_ARG[@]}" ec2 run-instances --dry-run --image-id "$_r" \
+                 --instance-type "$_itype" --count 1 2>&1 || true)"
+      case "$_probe" in
+        *DryRunOperation*) _pass "Marketplace ${_lbl} subscribed (${_r})" ;;
+        *OptInRequired*)   _fail "Marketplace ${_lbl}: terms not accepted on this account" "AWS Marketplace > search 'Keysight CloudLens ${_lbl}' > Subscribe (one-time, free); the deploy's Phase 4 prints the exact link" ;;
+        *UnauthorizedOperation*) _warn "Marketplace ${_lbl}: cannot probe (ec2:RunInstances dry-run denied); subscription unknown" "if the deploy fails with OptInRequired, subscribe in AWS Marketplace" ;;
+        *) _warn "Marketplace ${_lbl}: probe inconclusive ($(printf '%s' "$_probe" | tail -1 | cut -c1-90))" "subscribe in AWS Marketplace if the deploy reports OptInRequired" ;;
+      esac
     done
     # 5. Elastic IP headroom (a full stack needs 3)
     local _used _quota
-    _used="$(aws ec2 describe-addresses "${AWS_REGION_ARG[@]}" --query 'length(Addresses)' --output text 2>/dev/null || echo 0)"
-    _quota="$(aws service-quotas get-service-quota "${AWS_REGION_ARG[@]}" --service-code ec2 --quota-code L-0263D0A3 --query 'Quota.Value' --output text 2>/dev/null | cut -d. -f1)"
-    _quota="${_quota:-5}"
-    if (( _quota - _used >= 3 )); then
-      _pass "Elastic IPs: ${_used} used of ${_quota} (a full stack needs 3)"
+    _used="$(aws ec2 describe-addresses "${AWS_REGION_ARG[@]}" --query 'length(Addresses)' --output text 2>/dev/null || true)"
+    _quota="$(aws service-quotas get-service-quota "${AWS_REGION_ARG[@]}" --service-code ec2 --quota-code L-0263D0A3 --query 'Quota.Value' --output text 2>/dev/null || true)"
+    _quota="${_quota%%.*}"
+    if [[ "$_used" =~ ^[0-9]+$ && "$_quota" =~ ^[0-9]+$ ]]; then
+      if (( _quota - _used >= 3 )); then
+        _pass "Elastic IPs: ${_used} used of ${_quota} (a full stack needs 3)"
+      else
+        _fail "Elastic IPs: ${_used} used of ${_quota}; a full stack needs 3 free" "request a quota increase for 'EC2-VPC Elastic IPs', or --no-public-ip (then reach the UIs over VPN/peering)"
+      fi
     else
-      _fail "Elastic IPs: ${_used} used of ${_quota}; a full stack needs 3 free" "request a quota increase for 'EC2-VPC Elastic IPs', or --no-public-ip (then reach the UIs over VPN/peering)"
+      _warn "Elastic IP quota could not be read (servicequotas:GetServiceQuota or ec2:DescribeAddresses denied)" "a full stack needs 3 free Elastic IPs; check EC2 > Limits"
     fi
     # 6. vCPU quota (vController 4 + KVO 8 + vPB 4 + test VMs ~6)
     local _vq
-    _vq="$(aws service-quotas get-service-quota "${AWS_REGION_ARG[@]}" --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value' --output text 2>/dev/null | cut -d. -f1)"
-    if [[ -n "$_vq" ]] && (( _vq >= 24 )); then
+    _vq="$(aws service-quotas get-service-quota "${AWS_REGION_ARG[@]}" --service-code ec2 --quota-code L-1216C47A --query 'Quota.Value' --output text 2>/dev/null || true)"
+    _vq="${_vq%%.*}"
+    if [[ "$_vq" =~ ^[0-9]+$ ]] && (( _vq >= 24 )); then
       _pass "On-demand vCPU quota ${_vq} (full stack + test VMs need about 22)"
-    elif [[ -n "$_vq" ]]; then
+    elif [[ "$_vq" =~ ^[0-9]+$ ]]; then
       _warn "On-demand vCPU quota is ${_vq}; a full stack + test VMs needs about 22" "request an increase for 'Running On-Demand Standard instances', or deploy without KVO/vPB"
+    else
+      _warn "vCPU quota could not be read (servicequotas permission?)" "a full stack + test VMs needs about 22 on-demand vCPUs; check EC2 > Limits"
     fi
     # 7. Key pair
     if [[ -n "$KEY_NAME" ]]; then
       if aws ec2 describe-key-pairs "${AWS_REGION_ARG[@]}" --key-names "$KEY_NAME" >/dev/null 2>&1; then
-        if [[ -f "$HOME/.ssh/${KEY_NAME}.pem" ]]; then
-          _pass "Key pair ${KEY_NAME} exists and ~/.ssh/${KEY_NAME}.pem is here"
+        local _pem_found="" _c
+        for _c in "${CLOUDLENS_KEY_PEM:-}" "$HOME/.ssh/${KEY_NAME}.pem" "$HOME/Downloads/${KEY_NAME}.pem" \
+                  "$HOME/${KEY_NAME}.pem" "$PWD/${KEY_NAME}.pem" "$HOME/Downloads/${KEY_NAME}.cer" "$HOME/.ssh/${KEY_NAME}"; do
+          [[ -n "$_c" && -f "$_c" ]] && { _pem_found="$_c"; break; }
+        done
+        if [[ -n "$_pem_found" ]]; then
+          _pass "Key pair ${KEY_NAME} exists and its private key is here (${_pem_found})"
         else
-          _warn "Key pair ${KEY_NAME} exists in AWS but ~/.ssh/${KEY_NAME}.pem is not on this machine" "copy the .pem to ~/.ssh/ and chmod 400 it, or the SSH steps (sensors, vPB) will be skipped"
+          _warn "Key pair ${KEY_NAME} exists in AWS but its .pem is not on this machine" "copy ${KEY_NAME}.pem to ~/.ssh/ (chmod 400), or the SSH steps (sensors, vPB) will be skipped; the deploy also looks in ~/Downloads, ~ and the current directory"
         fi
       else
         _warn "Key pair ${KEY_NAME} does not exist in ${REGION}" "the deploy creates it for you (the .pem is saved locally), or pick an existing one"
@@ -2473,7 +2571,10 @@ run_doctor() {
 if [[ "$RUN_DOCTOR" == "true" ]]; then
   REGION="${ARG_REGION:-${REGION:-$DEFAULT_REGION}}"
   AWS_REGION_ARG=(--region "$REGION")
-  run_doctor; exit $?
+  # An if-condition disables errexit for the call, so a failing doctor
+  # reaches its own exit instead of the ERR trap's "FAILED in phase" banner.
+  SCRIPT_DONE=true
+  if run_doctor; then exit 0; else exit 1; fi
 fi
 
 # =====================================================================
@@ -2683,6 +2784,7 @@ step "Phase 3: Customer input"
 # Region
 echo
 echo "AWS region (e.g. us-east-1, us-west-2, eu-west-1):"
+[[ -z "$ARG_REGION" && -n "${CLOUDLENS_REGION:-}" ]] && ARG_REGION="$CLOUDLENS_REGION"
 if [[ -n "$ARG_REGION" ]]; then
   REGION="$ARG_REGION"; ok "Region: ${REGION} (from --region)"
 else
@@ -2737,6 +2839,7 @@ fi
 echo
 echo "Stack name is the CloudFormation stack (and Terraform workspace) that"
 echo "owns every VPC, subnet, security group, and EC2 in this deploy."
+[[ -z "$ARG_STACK" && -n "${CLOUDLENS_STACK_NAME:-}" ]] && ARG_STACK="$CLOUDLENS_STACK_NAME"
 if [[ -n "$ARG_STACK" ]]; then
   STACK_NAME="$ARG_STACK"
   if ! valid_stack_name "$STACK_NAME"; then
@@ -2989,14 +3092,16 @@ pick_subnet() {
 # Q1: infrastructure. The first architectural fork: everything downstream
 # (subnets, SGs, collector placement, teardown scope) hangs off it.
 if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
-      && -z "$EXISTING_VPC_ID" && "$DRY_RUN" != "true" ]]; then
+      && -z "$EXISTING_VPC_ID" && -z "$INFRA_CHOICE" && "$DRY_RUN" != "true" ]]; then
   echo
   echo "Where should CloudLens land?"
   echo "  1) Build a NEW VPC for it. Clean lab or demo; teardown removes everything. Default."
   echo "  2) Deploy INTO infrastructure you already run (your VPC and subnet;"
   echo "     nothing network-level is created, and teardown never touches your VPC)."
   read -rp "Choose 1-2 [1]: " infra_choice || true
+  INFRA_CHOICE="new"
   if [[ "${infra_choice:-1}" == "2" ]]; then
+    INFRA_CHOICE="existing"
     echo "  Your VPCs:"
     aws ec2 describe-vpcs --region "$REGION" \
       --query 'Vpcs[].[VpcId,CidrBlock,Tags[?Key==`Name`]|[0].Value]' \
@@ -3057,12 +3162,25 @@ if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
 fi
 ok "Tapping: sensors=${CHAIN_SENSORS}, mirroring=${WITH_MIRROR}"
 
+# Q3b: which management plane owns the sensors. Asked here, not in Phase 10,
+# so the answer is part of the plan and of the saved profile.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && -z "$SENSOR_MODE" && "$DEPLOY_KVO" == "true" && "$CHAIN_SENSORS" == "true" ]]; then
+  echo
+  echo "Which management plane owns the sensors?"
+  echo "  1) standalone   register straight to the vController project"
+  echo "  2) KVO-managed  register to the project KVO provisions, so KVO is the"
+  echo "                  single pane of glass (licensing and adoption run first)"
+  read -rp "Choose 1-2 [1]: " _sm || true
+  [[ "${_sm:-1}" == "2" ]] && SENSOR_MODE="kvo" || SENSOR_MODE="standalone"
+fi
+
 # Q4: workloads. Decided HERE, before anything deploys: a run that reaches
 # the sensor phase and only then discovers there is nothing to tap has asked
 # its questions in the wrong order (seen live: the operator was offered test
 # VMs three phases after the stack was already up).
-WORKLOAD_CHOICE="${WORKLOAD_CHOICE:-}"
 if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && -z "$WORKLOAD_CHOICE" \
       && -z "$TEST_VMS" && "${DISCOVERY_TAG_EXPLICIT:-false}" != "true" \
       && ( "$CHAIN_SENSORS" == "true" || "$WITH_MIRROR" == "true" ) ]]; then
   echo
@@ -3254,8 +3372,21 @@ write_profile() {
     echo "CLOUDLENS_REGION=${REGION}"
     echo "CLOUDLENS_STACK_NAME=${STACK_NAME}"
     echo "CLOUDLENS_KEY_NAME=${KEY_NAME}"
+    echo "CLOUDLENS_IAC=${IAC}"
     echo "CLOUDLENS_ADMIN_CIDR=${ADMIN_CIDR}"
     echo "CLOUDLENS_ASSIGN_PUBLIC_IP=${ASSIGN_PUBLIC_IP}"
+    echo "CLOUDLENS_INFRA=${INFRA_CHOICE:-$([[ -n "$EXISTING_VPC_ID" ]] && echo existing || echo new)}"
+    echo "CLOUDLENS_WORKLOAD_CHOICE=${WORKLOAD_CHOICE}"
+    echo "CLOUDLENS_VPB_INGRESS_NICS=${VPB_INGRESS_NICS}"
+    echo "CLOUDLENS_VPB_EGRESS_NICS=${VPB_EGRESS_NICS}"
+    echo "CLOUDLENS_VCONTROLLER_NAME=${VCONTROLLER_NAME}"
+    echo "CLOUDLENS_KVO_NAME=${KVO_NAME}"
+    echo "CLOUDLENS_VPB_NAME=${VPB_NAME}"
+    echo "CLOUDLENS_ENABLE_ZONE_TAPPING=${ENABLE_ZONE_TAPPING}"
+    echo "CLOUDLENS_ROLLBACK_ON_FAIL=${ROLLBACK_ON_FAIL}"
+    echo "CLOUDLENS_CLOUD_CONFIG=${CLOUD_CONFIG_NAME}"
+    echo "CLOUDLENS_CLM_NAME=${CLM_NAME_IN_KVO}"
+    echo "CLOUDLENS_VPB_DEVICE_NAME=${VPB_DEVICE_NAME}"
     echo "CLOUDLENS_EXISTING_VPC_ID=${EXISTING_VPC_ID}"
     echo "CLOUDLENS_EXISTING_SUBNET_ID=${EXISTING_SUBNET_ID}"
     echo "CLOUDLENS_EXISTING_DATA_SUBNET_ID=${EXISTING_DATA_SUBNET_ID}"
@@ -3286,12 +3417,10 @@ write_profile() {
     echo "CLOUDLENS_EKS_SAMPLE=${EKS_SAMPLE}"
     echo "CLOUDLENS_EKS_MODE=${EKS_MODE}"
     echo "CLOUDLENS_EKS_POD_SELECTOR=${EKS_POD_SELECTOR}"
-  } > "$f" 2>/dev/null && chmod 600 "$f" 2>/dev/null
-  PROFILE_FILE="$f"
+  } > "$f" 2>/dev/null && chmod 600 "$f" 2>/dev/null && PROFILE_FILE="$f"
+  return 0
 }
 PROFILE_FILE=""
-[[ "$DRY_RUN" != "true" ]] && write_profile
-[[ -n "$PROFILE_FILE" ]] && note "These answers are saved to ${PROFILE_FILE}: replay them anywhere with --profile ${PROFILE_FILE} (no questions asked)."
 
 # Every flow-determining answer is in. One confirmation, then the deployment
 # runs; the prompts left after this point are ones that cannot come earlier
@@ -3302,6 +3431,13 @@ if [[ "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
     exit 0
   fi
   echo
+fi
+# Saved only for a FRESH interview, and only once the plan was accepted: a
+# resume or --only run has answered nothing and must not overwrite the file
+# the interview wrote, and a rejected plan must not either.
+if [[ "$DRY_RUN" != "true" && "$FOUND_DEPLOYMENT" != "true" && -z "$ONLY_PHASE" ]]; then
+  write_profile || true
+  [[ -n "$PROFILE_FILE" ]] && note "These answers are saved to ${PROFILE_FILE}: replay them anywhere with --profile ${PROFILE_FILE} (no questions asked)."
 fi
 
 # Remember the inputs (never the secrets) so a resume does not re-ask for them.
@@ -6499,26 +6635,30 @@ write_report() {
     row+="<tr><td>$(phase_label "$p")</td><td class=\"${cls}\">$(_esc "$st")</td></tr>"
   done
   local tap=""
-  [[ "$CHAIN_SENSORS" == "true" ]] && tap+="<li>Sensors on instances tagged <code>${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}</code> (${TAGGED_COUNT:-?} matched)</li>"
+  local e_tagk e_tagv e_eks e_vpc e_sub e_key e_stack
+  e_tagk="$(_esc "$DISCOVERY_TAG_KEY")"; e_tagv="$(_esc "$DISCOVERY_TAG_VALUE")"
+  e_eks="$(_esc "${EKS_CLUSTER:-${STACK_NAME}-eks}")"; e_vpc="$(_esc "$EXISTING_VPC_ID")"
+  e_sub="$(_esc "$EXISTING_SUBNET_ID")"; e_key="$(_esc "$KEY_NAME")"; e_stack="$(_esc "$STACK_NAME")"
+  [[ "$CHAIN_SENSORS" == "true" ]] && tap+="<li>Sensors on instances tagged <code>${e_tagk}=${e_tagv}</code> (${TAGGED_COUNT:-?} matched)</li>"
   [[ "$WITH_MIRROR" == "true" ]]   && tap+="<li>Agentless VPC Traffic Mirroring via KVO (${SESSION_COUNT:-?} session(s) at last check)</li>"
-  [[ "$DEPLOY_EKS" == "true" ]]    && tap+="<li>EKS pod tapping, ${EKS_MODE} mode (${EKS_CLUSTER:-${STACK_NAME}-eks})</li>"
+  [[ "$DEPLOY_EKS" == "true" ]]    && tap+="<li>EKS pod tapping, $(_esc "$EKS_MODE") mode (${e_eks})</li>"
   [[ -z "$tap" ]] && tap="<li>Infrastructure only, no tapping selected</li>"
-  cat > "$f" <<HTML
-<!doctype html><html><head><meta charset="utf-8"><title>CloudLens deployment: ${STACK_NAME}</title>
+  cat > "$f" <<HTML || return 1
+<!doctype html><html><head><meta charset="utf-8"><title>CloudLens deployment: ${e_stack}</title>
 <style>body{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#222}
 h1{color:#E90029;border-bottom:3px solid #E90029;padding-bottom:6px}h2{margin-top:32px}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f6f6f6}
 code,pre{background:#f4f4f4;padding:2px 5px;border-radius:3px}pre{padding:12px;overflow-x:auto}
 .ok{color:#1a7f37}.skip{color:#8a6d00}.bad{color:#b00020}.na{color:#777}.muted{color:#666;font-size:.92em}</style></head><body>
-<h1>Keysight CloudLens on AWS: ${STACK_NAME}</h1>
+<h1>Keysight CloudLens on AWS: ${e_stack}</h1>
 <p class="muted">Region ${REGION}. Generated $(date -u +'%Y-%m-%d %H:%M UTC') by the CloudLens AutoPilot deploy.</p>
 <h2>What was deployed</h2>
 <table><tr><th>Component</th><th>Address</th><th>Sign in</th></tr>
 <tr><td>vController (CloudLens Manager)</td><td>${CLMS_PUBLIC_IP:-${CLMS_PRIVATE_IP:-?}}</td><td>https://${CLMS_PUBLIC_IP:-${CLMS_PRIVATE_IP:-?}}/cloudlens/login, user <code>admin</code>; password in <code>${VC_CREDS_FILE}</code></td></tr>
 $([[ "$DEPLOY_KVO" == "true" ]] && echo "<tr><td>KVO (Vision Orchestrator)</td><td>${KVO_PUBLIC_IP:-?}</td><td>https://${KVO_PUBLIC_IP:-?}/, user <code>${KVO_ADMIN_USER:-admin}</code></td></tr>")
-$([[ "$DEPLOY_VPB" == "true" ]] && echo "<tr><td>vPB (virtual Packet Broker)</td><td>${VPB_PUBLIC_IP:-?}</td><td><code>ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP:-?}</code></td></tr>")
+$([[ "$DEPLOY_VPB" == "true" ]] && echo "<tr><td>vPB (virtual Packet Broker)</td><td>${VPB_PUBLIC_IP:-?}</td><td><code>ssh -i ~/.ssh/${e_key}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP:-?}</code></td></tr>")
 </table>
-<p class="muted">Network: $([[ -n "$EXISTING_VPC_ID" ]] && echo "deployed into your existing VPC ${EXISTING_VPC_ID} (subnet ${EXISTING_SUBNET_ID}); no network resources were created" || echo "new VPC ${STACK_VPC_ID:-} built by the stack").</p>
+<p class="muted">Network: $([[ -n "$EXISTING_VPC_ID" ]] && echo "deployed into your existing VPC ${e_vpc} (subnet ${e_sub}); no network resources were created" || echo "new VPC $(_esc "${STACK_VPC_ID:-}") built by the stack").</p>
 <h2>What is being tapped</h2><ul>${tap}</ul>
 <h2>How each phase ended</h2><table><tr><th>Phase</th><th>Outcome</th></tr>${row}</table>
 <h2>Verify it yourself</h2><pre>
@@ -6526,27 +6666,32 @@ $([[ "$DEPLOY_VPB" == "true" ]] && echo "<tr><td>vPB (virtual Packet Broker)</td
 # mirror sessions cut by KVO:
 aws ec2 describe-traffic-mirror-sessions --region ${REGION}
 # vPB counters, the ground truth (Inspected vs Passed):
-ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP:-<vpb>} 'sudo vpb -c "show traffic-rule-packet-counters"'
+ssh -i ~/.ssh/${e_key}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP:-VPB-IP} 'sudo vpb -c "show traffic-rule-packet-counters"'
 </pre>
 <h2>Files on the machine that ran this</h2>
 <ul><li><code>${SUMMARY_FILE}</code> and <code>${LOG_FILE}</code>: full summary and log (mode 600, contain credentials)</li>
 <li><code>${VC_CREDS_FILE}</code>: vController login (mode 600)</li>
-$([[ -n "${PROFILE_FILE:-}" ]] && echo "<li><code>${PROFILE_FILE}</code>: this deployment's answers; replay anywhere with <code>--profile ${PROFILE_FILE}</code></li>")</ul>
+$([[ -n "${PROFILE_FILE:-}" ]] && echo "<li><code>$(_esc "$PROFILE_FILE")</code>: this deployment's answers; replay anywhere with <code>--profile $(_esc "$PROFILE_FILE")</code></li>")</ul>
 <h2>Re-run, extend, or remove</h2><pre>
 # resume or retry anything outstanding (safe to re-run; finished work is skipped):
-curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh | bash -s -- --stack-name ${STACK_NAME} --region ${REGION}
+curl -sSL ${REPO_RAW}/deploy/deploy-stack.sh | bash -s -- --stack-name ${e_stack} --region ${REGION}
 # see what is loose, delete nothing:
-curl -sSL ${REPO_RAW}/deploy/teardown-stack.sh | bash -s -- --stack-name ${STACK_NAME} --region ${REGION} --orphans
+curl -sSL ${REPO_RAW}/deploy/teardown-stack.sh | bash -s -- --stack-name ${e_stack} --region ${REGION} --orphans
 # take it all down (release KVO licences first: KVO UI > Settings > Product Licensing > deactivate):
-curl -sSL ${REPO_RAW}/deploy/teardown-stack.sh | bash -s -- --stack-name ${STACK_NAME} --region ${REGION}
+curl -sSL ${REPO_RAW}/deploy/teardown-stack.sh | bash -s -- --stack-name ${e_stack} --region ${REGION}
 </pre>
 </body></html>
 HTML
   chmod 600 "$f" 2>/dev/null
   REPORT_FILE="$f"
+  return 0
 }
 REPORT_FILE=""
-[[ "$DRY_RUN" != "true" ]] && write_report
+# A report that cannot be written must never turn a finished deploy into a
+# failed one: the if-condition keeps errexit out of the function.
+if [[ "$DRY_RUN" != "true" ]]; then
+  if ! write_report; then REPORT_FILE=""; warn "Could not write the HTML report (the summary and log files still hold everything)."; fi
+fi
 
 banner "Stack deployment complete"
 echo
