@@ -496,7 +496,8 @@ banner() {
 }
 ok()    { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
 warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
-fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; exit 1; }
+# emit_done lives with the state helpers below; nothing calls fail() before then.
+fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; emit_done status=failed phase="$PHASE_NAME" reason="$1"; exit 1; }
 step()  { echo; echo -e "${C_BLUE}--- $1 ---${C_RESET}"; PHASE_NAME="$1"; }
 note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
 dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
@@ -873,12 +874,53 @@ state_set() {
   mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------
+# Structured events: the side channel the operations console renders.
+# --events FILE appends one JSON object per line at the points where this
+# script already knows the truth (phase changes, discovered resources, doctor
+# checks, prompts, logins, the end). No flag, no file, no change to the
+# terminal output. seq is strictly increasing so a reconnecting reader can
+# resume without gaps or duplicates: it is the line's number in the file, so
+# a resumed run appending to the same file, or an emitter that happens to run
+# in a subshell, cannot repeat one. Nothing here may ever abort the run: an
+# unwritable file is silently ignored.
+# ---------------------------------------------------------------------
+EVENTS_FILE="${CLOUDLENS_EVENTS_FILE:-}"
+DONE_EMITTED=false
+json_str() { # minimal JSON string escaper (bash 3.2, no jq dependency)
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+emit_event() { # emit_event TYPE key=value ... (values are strings)
+  [[ -n "$EVENTS_FILE" ]] || return 0
+  local type="$1" seq=1 body kv; shift
+  if [[ -f "$EVENTS_FILE" ]]; then
+    seq=$(( $(wc -l 2>/dev/null < "$EVENTS_FILE" || echo 0) + 1 ))
+  fi
+  body="{\"seq\":${seq},\"ts\":\"$(date -u +%FT%TZ)\",\"type\":$(json_str "$type")"
+  for kv in "$@"; do
+    body+=",$(json_str "${kv%%=*}"):$(json_str "${kv#*=}")"
+  done
+  body+="}"
+  { printf '%s\n' "$body" >> "$EVENTS_FILE"; } 2>/dev/null || true
+}
+# emit_done key=value ...: the run's last event, written once however the run
+# ends (final summary, declined plan, --doctor, fail(), the EXIT trap).
+emit_done() {
+  [[ "$DONE_EMITTED" == "true" ]] && return 0
+  DONE_EMITTED=true
+  emit_event done "$@"
+}
+
 # state_phase NAME done|failed|skipped [detail]
 # A dry run records itself as a dry run: it did not actually do the work.
 state_phase() {
   local outcome="$2"
   [[ "$DRY_RUN" == "true" ]] && outcome="dry-run ${outcome}"
   state_set "PHASE_$(upper "$1")" "${outcome} at $(date -u +%FT%TZ)${3:+ (${3})}"
+  emit_event phase name="$1" status="$2" reason="${3:-}"
 }
 
 # Printed whenever an SSH step cannot find its private key. Every SSH-based
@@ -1813,6 +1855,10 @@ Toggles:
                             answers is skipped. The plan step writes
                             deploy-profile-<stack>.env after any interview;
                             share it so someone else deploys the same shape.
+  --events FILE             Append one JSON object per line describing the run
+                            (phase changes, discovered resources, the end) to
+                            FILE. The operations console reads it; the terminal
+                            output does not change.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
@@ -1991,6 +2037,7 @@ while [[ $# -gt 0 ]]; do
     --no-kvo) DEPLOY_KVO=false; shift ;;
     --doctor) RUN_DOCTOR=true; shift ;;
     --profile) shift 2 ;;   # consumed at the top of the script, before defaults
+    --events) EVENTS_FILE="$2"; shift 2 ;;
     --with-eks) DEPLOY_EKS=true; shift ;;
     --no-eks) DEPLOY_EKS=false; shift ;;
     --eks-cluster) DEPLOY_EKS=true; EKS_CLUSTER="$2"; shift 2 ;;
@@ -2082,6 +2129,9 @@ while [[ $# -gt 0 ]]; do
     *) warn "Unknown argument: $1"; show_help; exit 1 ;;
   esac
 done
+# The console's first line. Stack and region may still be empty here (the
+# interview fills them in Phase 3); a second hello follows once they are known.
+emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
 
 if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
   fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
@@ -2324,6 +2374,11 @@ trap on_error ERR
 on_exit() {
   local code=$?
   [[ "${BASHPID:-$$}" == "$$" ]] || return 0
+  # The console must always see how the run ended, explained or not.
+  if (( code == 0 )); then emit_done status=ok
+  elif (( code == 130 )); then emit_done status=interrupted phase="$PHASE_NAME"
+  else emit_done status=failed phase="$PHASE_NAME" code="$code"
+  fi
   [[ "$SCRIPT_DONE" == "true" ]] && return 0
   (( code == 0 )) && return 0
   echo
@@ -2574,7 +2629,7 @@ if [[ "$RUN_DOCTOR" == "true" ]]; then
   # An if-condition disables errexit for the call, so a failing doctor
   # reaches its own exit instead of the ERR trap's "FAILED in phase" banner.
   SCRIPT_DONE=true
-  if run_doctor; then exit 0; else exit 1; fi
+  if run_doctor; then emit_done status=ok mode=doctor; exit 0; else emit_done status=failed mode=doctor reason="--doctor found blockers"; exit 1; fi
 fi
 
 # =====================================================================
@@ -2865,6 +2920,7 @@ fi
 # Runs the moment stack name + region are known, which is the earliest point at
 # which "does this deployment already exist" is a question that can be asked.
 # Everything it does is read-only.
+emit_event hello stack="$STACK_NAME" region="$REGION" dry_run="$DRY_RUN"
 resume_check
 resume_load_inputs
 
@@ -3428,6 +3484,7 @@ PROFILE_FILE=""
 if [[ "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
   if ! ask_yn "Proceed with this plan? [Y/n]: " y; then
     note "Nothing was deployed. Re-run with different answers or flags when ready."
+    emit_done status=declined reason="plan not accepted"
     exit 0
   fi
   echo
@@ -6703,6 +6760,8 @@ login_block
 completion_report
 echo
 ok "Done."
+_done_status=ok; [[ "$DRY_RUN" == "true" ]] && _done_status=dry-run
+emit_done status="$_done_status" report="${REPORT_FILE:-}" profile="${PROFILE_FILE:-}"
 SCRIPT_DONE=true
 trap - ERR
 exit 0
