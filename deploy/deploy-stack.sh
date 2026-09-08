@@ -552,11 +552,16 @@ announce_vcontroller_login() {
   pw="$(vc_password_now)"
   watch_header
   echo "    https://${ip}/cloudlens/login"
+  # The login event says WHERE the password lives, never what it is.
+  local pw_in="factory default until phase 9 sets one (the first login forces a change)"
   if [[ -n "$pw" ]]; then
     echo "    ${VC_ADMIN_USER} / ${pw}"
+    pw_in="$VC_CREDS_FILE"
+    [[ -n "${CLOUDLENS_VC_PASSWORD:-}" ]] && pw_in="CLOUDLENS_VC_PASSWORD (environment)"
   else
     echo "    ${VC_ADMIN_USER} / ${VC_FACTORY_PASS}   (the first login forces a change)"
   fi
+  emit_event login component=vcontroller url="https://${ip}/cloudlens/login" user="$VC_ADMIN_USER" password_in="$pw_in"
   # Which project the sensors land in depends on the sensor mode, and this line
   # used to name the standalone one unconditionally. In KVO mode the sensors
   # register with the key the Cloud Config provisioned, into KVO_<cloud-config>,
@@ -576,6 +581,9 @@ announce_kvo_login() {
   watch_header
   echo "    https://${ip}/"
   echo "    ${KVO_ADMIN_USER} / ${KVO_ADMIN_PASS}"
+  local pw_in="CLOUDLENS_KVO_ADMIN_PASS (environment)"
+  [[ "$KVO_ADMIN_PASS" == "admin" ]] && pw_in="admin (KVO default)"
+  emit_event login component=kvo url="https://${ip}/" user="$KVO_ADMIN_USER" password_in="$pw_in"
   echo "  Licensing, the adopted vController and the Visibility Fabric appear"
   echo "  here as the phases below build them."
   echo "  A freshly booted KVO shows its EULA first: accept it to reach the login."
@@ -587,6 +595,8 @@ announce_vpb_login() {
   [[ -n "$ip" && "$ip" != "None" ]] || return 0
   watch_header
   echo "    ssh -i ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${ip}"
+  emit_event login component=vpb url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${ip}" \
+    user="${ADMIN_USERNAME:-admin}" password_in="${KEY_PEM:-${KEY_NAME}.pem} (EC2 key pair, no password)"
   echo "    key-pair auth (no password), then 'sudo vpb' for the CLI"
   echo "    device login KVO manages it with: ${VPB_DEVICE_USER} / ${VPB_DEVICE_PASS}"
   echo "  It appears in KVO as device '${VPB_DEVICE_NAME}' once phase 14 adopts it."
@@ -911,10 +921,11 @@ json_str() { # minimal JSON string escaper (bash 3.2, no jq dependency)
   # \u00XX (0 is a no-op because bash cannot hold NUL; 127 is legal raw but
   # harmless to escape). Bash 3.2 only: no ${var@Q}, no printf %q round trip.
   if [[ "$s" == *[[:cntrl:]]* ]]; then
-    local c i
+    local c i oct rep
     for i in 0 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
-      c=$(printf "\\$(printf '%03o' "$i")")
-      [[ -n "$c" && "$s" == *"$c"* ]] && s="${s//$c/$(printf '\\u%04x' "$i")}"
+      # printf -v, not $(printf): that was three forks per byte per string.
+      printf -v oct '%03o' "$i"; printf -v c "\\$oct"; printf -v rep '\\u%04x' "$i"
+      [[ -n "$c" && "$s" == *"$c"* ]] && s="${s//$c/$rep}"
     done
   fi
   printf '"%s"' "$s"
@@ -2163,10 +2174,15 @@ while [[ $# -gt 0 ]]; do
     *) warn "Unknown argument: $1"; show_help; exit 1 ;;
   esac
 done
-# An explicitly requested --events path that cannot be created is an input
+# An --events or CLOUDLENS_EVENTS_FILE path that cannot be created is an input
 # error. A write that fails later in the run stays silent (see the sink).
 if [[ -n "$EVENTS_FILE" ]] && ! { : >> "$EVENTS_FILE"; } 2>/dev/null; then
   fail "--events: cannot write ${EVENTS_FILE}"
+fi
+# A previous run killed mid-write leaves a partial last line. Finish it, or
+# this run's hello would be glued onto it and the reader would lose both.
+if [[ -n "$EVENTS_FILE" && -s "$EVENTS_FILE" && -n "$(tail -c 1 "$EVENTS_FILE" 2>/dev/null)" ]]; then
+  { printf '\n' >> "$EVENTS_FILE"; } 2>/dev/null || true
 fi
 # The console's first line. Stack and region may still be empty here (the
 # interview fills them in Phase 3); a second hello follows once they are known.
@@ -2510,9 +2526,12 @@ fi
 # ---------------------------------------------------------------------
 run_doctor() {
   local fails=0 warns=0
-  _pass() { printf "  %-6s %s\n" "[PASS]" "$1"; }
-  _warn() { printf "  %-6s %s\n" "[WARN]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; warns=$((warns+1)); }
-  _fail() { printf "  %-6s %s\n" "[FAIL]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; fails=$((fails+1)); }
+  # Each verdict is also a check event, so the console shows the same list
+  # the terminal prints without parsing it. A warn or fail always carries
+  # its fix: that is what the console renders next to the red or amber row.
+  _pass() { printf "  %-6s %s\n" "[PASS]" "$1"; emit_event check item="$1" status=pass; }
+  _warn() { printf "  %-6s %s\n" "[WARN]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; warns=$((warns+1)); emit_event check item="$1" status=warn fix="${2:-}"; }
+  _fail() { printf "  %-6s %s\n" "[FAIL]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; fails=$((fails+1)); emit_event check item="$1" status=fail fix="${2:-}"; }
   echo
   printf "${C_BOLD}CloudLens deploy doctor: ${REGION}${C_RESET}\n"
   echo
@@ -2639,8 +2658,8 @@ run_doctor() {
   else
     _warn "Ansible not installed (needed for the sensor step)" "the deploy offers to pip-install it; or: pip3 install --user ansible"
   fi
-  command -v kubectl >/dev/null 2>&1 && _pass "kubectl (EKS tapping ready)" || _warn "kubectl not installed (only needed for EKS tapping; CloudShell has it)"
-  command -v docker  >/dev/null 2>&1 && _pass "docker (can push the sensor image to ECR)" || _warn "docker not installed (only needed to push the EKS sensor image; CloudShell has it)"
+  command -v kubectl >/dev/null 2>&1 && _pass "kubectl (EKS tapping ready)" || _warn "kubectl not installed (only needed for EKS tapping; CloudShell has it)" "install kubectl (https://kubernetes.io/docs/tasks/tools/), or run the EKS step from CloudShell"
+  command -v docker  >/dev/null 2>&1 && _pass "docker (can push the sensor image to ECR)" || _warn "docker not installed (only needed to push the EKS sensor image; CloudShell has it)" "install Docker, or pass --eks-sensor-image with an image already in a registry the cluster can pull"
 
   # 9. Network paths the deploy uses
   if curl -sSf --max-time 15 -o /dev/null "${REPO_RAW}/deploy/deploy-stack.sh"; then
@@ -4034,6 +4053,31 @@ ec2_fact() {
   printf '%s' "$v"
 }
 
+# The stack as the console draws it: one resource event per thing an operator
+# would otherwise have to read out of the terminal. Called once the facts are
+# known; a dry run emits its placeholders, and hello.dry_run says so.
+emit_stack_resources() {
+  local vpc="${STACK_VPC_ID:-}" mgmt="${MGMT_SUBNET_ID:-}" zone="${STACK_ZONE:-}"
+  local ing="${INGRESS_SUBNET_ID:-}" eg="${EGRESS_SUBNET_ID:-}"
+  local vc_ip="${CLMS_PUBLIC_IP:-}" vc_priv="${CLMS_PRIVATE_IP:-}"
+  local kvo_ip="${KVO_PUBLIC_IP:-}" kvo_priv="${KVO_PRIVATE_IP:-}"
+  local vpb_ip="${VPB_PUBLIC_IP:-}" vpb_in="${VPB_INGRESS_IP:-}" vpb_out="${VPB_EGRESS_IP:-}"
+  # The AWS CLI prints the word None for a null field; the console wants "".
+  local v
+  for v in vpc mgmt zone ing eg vc_ip vc_priv kvo_ip kvo_priv vpb_ip vpb_in vpb_out; do
+    # printf -v with a NON-empty format: bash 3.2 assigns nothing for ''.
+    if [[ "${!v}" == "None" ]]; then printf -v "$v" '%s' ''; fi
+  done
+  emit_event resource kind=vpc id="$vpc"
+  emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"
+  if [[ -n "$ing" ]]; then emit_event resource kind=subnet id="$ing" role=ingress; fi
+  if [[ -n "$eg"  ]]; then emit_event resource kind=subnet id="$eg"  role=egress;  fi
+  emit_event resource kind=vcontroller ip="$vc_ip" private_ip="$vc_priv"
+  if [[ "$DEPLOY_KVO" == "true" ]]; then emit_event resource kind=kvo ip="$kvo_ip" private_ip="$kvo_priv"; fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then emit_event resource kind=vpb ip="$vpb_ip" ingress_ip="$vpb_in" egress_ip="$vpb_out"; fi
+  return 0
+}
+
 discover_stack_facts() {
   local vc_tag="${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
   local kvo_tag="${KVO_NAME:-${STACK_NAME}-kvo}"
@@ -4049,6 +4093,7 @@ discover_stack_facts() {
     EGRESS_SUBNET_ID="${COLLECTOR_EGRESS_SUBNET:-subnet-egress}"
     VPB_EGRESS_IP="10.0.2.12"; VPB_EGRESS_NETMASK="255.255.255.0"; VPB_EGRESS_GATEWAY="10.0.2.1"
     dryrun_say "would read private IPs, VPC and subnets from the deployed stack"
+    emit_stack_resources
     return 0
   fi
 
@@ -4116,6 +4161,7 @@ discover_stack_facts() {
   # properly"), and the collapse produced a fabric that committed cleanly and
   # then cut zero sessions with no alert. The mirror phase now names the
   # missing --collector-* flags instead.
+  emit_stack_resources
   return 0
 }
 
@@ -5021,6 +5067,7 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
       echo "  Matching running EC2s: ${TAGGED_COUNT}"
       echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
     fi
+    emit_event resource kind=workloads count="${TAGGED_COUNT:-0}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
   fi
   echo
 fi
@@ -5822,6 +5869,7 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
     [[ -n "$EKS_SENSOR_TAR" ]]        && _eks_args+=(--sensor-tar "$EKS_SENSOR_TAR")
     if bash "$EKS_SCRIPT" "${_eks_args[@]}"; then
       state_phase eks done
+      emit_event resource kind=eks cluster="${EKS_CLUSTER:-${STACK_NAME}-eks}" mode="$EKS_MODE"
       ok "EKS pod tapping deployed. The K8s sensors register into the same"
       ok "project as the VM sensors and follow the same tool path."
       # KVO side of the rail: the Kubernetes Cloud Config referencing the
