@@ -301,6 +301,21 @@ terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=tr
         </div>
 
         <div class="prereq-card">
+          <h3>&#129657; Three commands, no stress: check, deploy, remove</h3>
+          <p>For anyone, SE or customer. The doctor finds every setup gap first and prints the exact fix; the deploy asks all of its questions <strong>before</strong> anything is built and saves your answers; the teardown removes only what it built.</p>
+          <pre><code># 1. Is this machine and account ready? Deploys nothing.
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --doctor --region us-east-1
+
+# 2. Deploy. Every question comes first, then one Proceed.
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
+
+# 3. Replay a saved deployment anywhere, zero questions (an SE fills the
+#    interview once; deploy-profile-&lt;stack&gt;.env is written at the plan step):
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --profile ./deploy-profile-acme.env</code></pre>
+          <p class="muted">Every run ends with <code>deploy-report-&lt;stack&gt;-&lt;region&gt;.html</code>: what was built, where to sign in, what is tapped, how each phase ended, how to verify, and the exact teardown command. Passwords stay in the mode-600 files it points to, never in the page. Profiles never contain secrets either: licence codes and keys are always typed at the moment of use.</p>
+        </div>
+
+        <div class="prereq-card">
           <h3>&#127919; Tap the customer's workloads, wherever they are</h3>
           <p>Both tapping paths resolve <strong>one selection</strong> from <code>customer_input.yaml</code>: ANDed <code>tag_filters</code>, explicit <code>instance_ids</code>, and <code>tapping.exclude_instance_ids</code> drive sensors and agentless mirroring identically, so the two can never target different hosts. The run reports the split up front: which hosts get sensors, which interfaces get mirror sessions (AWS mirrors Nitro instances only), and how many licence credits that demands.</p>
           <ul>
