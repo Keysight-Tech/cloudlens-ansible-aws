@@ -95,7 +95,7 @@ def test_stack_cmd_speaks_the_flags_deploy_stack_actually_accepts():
     assert "--with-kvo" not in off and "--with-vpb" not in off
 
 
-def test_no_flow_asks_for_something_it_then_throws_away():
+def test_no_script_flow_asks_for_something_it_then_throws_away():
     """A field the visitor fills in that reaches no command is a lie.
 
     Found by auditing the argv after the stack flow turned out to be sending
@@ -123,7 +123,12 @@ def test_no_flow_asks_for_something_it_then_throws_away():
         flow = F.FLOWS[fid]
         keys = [f["key"] for f in flow["inputs"]]
         sentinel = dict((k, "SENTINEL_" + k) for k in keys)
-        argv = " ".join(O._script_cmd(J(sentinel), flow))
+        argv_list = O._script_cmd(J(sentinel), flow)
+        # An empty token is the other way to lie: `--kvo ""` reads as wired
+        # from here and hands the script a value it cannot use.
+        assert all(a for a in argv_list), \
+            "%s builds an argv with an empty token: %r" % (fid, argv_list)
+        argv = " ".join(argv_list)
         for k in keys:
             if "SENTINEL_" + k in argv:
                 continue
@@ -159,9 +164,9 @@ def test_a_finished_node_never_goes_back_to_creating():
     because the CREATE_COMPLETE that would relight it has already gone by.
     """
     import threading
-    import time
 
     events = []
+    stop = threading.Event()
 
     class J(object):
         stopped = False
@@ -169,12 +174,23 @@ def test_a_finished_node_never_goes_back_to_creating():
 
         def emit(self, ev):
             events.append(ev)
+            # A stat closes one poll iteration, so stopping on it runs one
+            # full pass on this thread: no worker, no sleep, no join.
+            if ev.get("type") == E.STAT:
+                stop.set()
 
         def elapsed(self):
             return 1
 
     class FakeCF(object):
+        calls = 0
+
         def describe_stack_events(self, StackName):
+            # Safety net: with POLL_SECS at 0, losing the stat emit would
+            # spin this forever instead of failing. Two passes are plenty.
+            FakeCF.calls += 1
+            if FakeCF.calls >= 2:
+                stop.set()
             # Oldest last, the way CloudFormation returns them.
             return {"StackEvents": [
                 {"EventId": "3", "LogicalResourceId": "VpcGatewayAttachment",
@@ -198,24 +214,29 @@ def test_a_finished_node_never_goes_back_to_creating():
 
     fake_sess.Session = S
     fake_boto3.session = fake_sess
-    saved = sys.modules.get("boto3")
+    # Both entries go back the same way: restore what was there, delete what
+    # was not. Restoring only "boto3" left a fake "boto3.session" behind for
+    # whatever imported it next.
+    saved = dict((m, sys.modules.get(m)) for m in ("boto3", "boto3.session"))
     sys.modules["boto3"] = fake_boto3
     sys.modules["boto3.session"] = fake_sess
-    stop = threading.Event()
+    poll_secs = O.POLL_SECS
+    O.POLL_SECS = 0
     try:
-        t = threading.Thread(
-            target=O._poll_cfn,
-            args=(J(), F.FLOWS["stack"], "st", "us-east-1", stop), daemon=True)
-        t.start()
-        time.sleep(0.4)
-        stop.set()
-        t.join(timeout=3)
+        O._poll_cfn(J(), F.FLOWS["stack"], "st", "us-east-1", stop)
     finally:
-        if saved is not None:
-            sys.modules["boto3"] = saved
-        else:
-            sys.modules.pop("boto3", None)
-        sys.modules.pop("boto3.session", None)
+        O.POLL_SECS = poll_secs
+        for m, mod in saved.items():
+            if mod is not None:
+                sys.modules[m] = mod
+            else:
+                sys.modules.pop(m, None)
+
+    # The poll must say it is no longer waiting, in so many words: the page
+    # clears the "waiting for the stack to appear" note on waiting=False,
+    # not on the field being absent.
+    assert any(e.get("type") == E.STAT and e.get("waiting") is False
+               for e in events), "no stat carried waiting=False"
 
     vpc = [e for e in events
            if e.get("type") == E.STATE and e.get("node") == "vpc"]
@@ -225,12 +246,13 @@ def test_a_finished_node_never_goes_back_to_creating():
         "dragged it backwards" % (vpc[-1]["status"],))
 
 
-def test_stack_without_a_key_pair_fails_loudly_instead_of_hanging():
-    """No key means an interactive prompt, and the console has no TTY.
+def test_stack_without_a_key_pair_fails_loudly_instead_of_minting_one():
+    """No key means the script picks one for you, and says nothing.
 
-    The script's key-pair picker reads from stdin. Under the console that
-    blocks forever with an empty screen, which reads to the visitor as a
-    hung deploy. Refusing up front is the honest failure.
+    select_key_pair prompts with raw `read -rp ... || true`, not ask(), so
+    under the console (no stdin, no terminal) every read returns EOF, the
+    answer is empty, and the default wins: a key pair named cloudlens-key
+    the visitor never chose. Refusing up front is the honest failure.
     """
     from cloudlens_console import orchestrator as O
 
@@ -242,7 +264,21 @@ def test_stack_without_a_key_pair_fails_loudly_instead_of_hanging():
     except ValueError as exc:
         assert "key pair" in str(exc).lower()
     else:
-        raise AssertionError("a missing key pair must raise, not hang")
+        raise AssertionError("a missing key pair must raise, not mint one")
+
+
+def test_engine_subprocess_has_no_controlling_tty():
+    """deploy-stack.sh re-attaches /dev/tty whenever stdin is not a terminal,
+    then treats the run as interactive. Launched from a console that was
+    itself started in a terminal, the deploy inherited that terminal and
+    stopped on "Proceed with this plan? [Y/n]" with every input supplied.
+    A new session has no controlling terminal to re-attach, so every ask()
+    takes its default; DEVNULL keeps the raw reads from blocking on it.
+    """
+    import inspect
+    src = inspect.getsource(O._stream_subprocess)
+    assert "start_new_session=True" in src
+    assert "stdin=subprocess.DEVNULL" in src
 
 
 def _replay_terminal(stop_after):

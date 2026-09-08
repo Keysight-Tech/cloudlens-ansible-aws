@@ -112,8 +112,17 @@ def _rebuild(typ, data):
 
 # ---------------------------------------------------------------- subprocess
 def _stream_subprocess(job, cmd, cwd, on_line):
+    # No stdin and no controlling terminal, on purpose. deploy-stack.sh
+    # re-attaches /dev/tty whenever stdin is not a terminal and then decides
+    # the run is INTERACTIVE, so a deploy launched from a console that was
+    # itself started in a terminal inherited that terminal and sat on
+    # "Proceed with this plan? [Y/n]" with every input already supplied.
+    # start_new_session detaches the child from the terminal, so the
+    # /dev/tty re-attach cannot happen and every ask() takes its default;
+    # DEVNULL makes the script's raw reads see EOF instead of blocking.
     job._proc = subprocess.Popen(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True,
         text=True, bufsize=1, env=dict(os.environ, PYTHONUNBUFFERED="1"),
     )
     for line in job._proc.stdout:
@@ -222,10 +231,12 @@ def _stack_cmd(job, stack, region):
     Three things the script insists on that are easy to get wrong, and did
     get wrong: the flag is --stack-name (--stack is rejected outright), the
     toggles are bare booleans (--with-kvo / --no-kvo) not "--kvo yes", and
-    --key-name has to be supplied. Omit the key and the script drops into an
-    interactive picker, but the console gives it no TTY, so the run hangs
-    with nothing on screen instead of failing. --no-sensors because sensors
-    are their own flow here.
+    --key-name has to be supplied. Omit the key and the script falls into
+    select_key_pair, whose prompts are raw `read -rp ... || true` rather
+    than ask(): with no stdin they read EOF, the answer is empty, and the
+    script quietly creates a key pair named cloudlens-key that the visitor
+    never chose. Requiring the name here is what stops that. --no-sensors
+    because sensors are their own flow here.
     """
     i = job.inputs
     cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),
@@ -236,7 +247,8 @@ def _stack_cmd(job, stack, region):
     if not key:
         raise ValueError(
             "An EC2 key pair name is required: without it the deploy script "
-            "stops at an interactive prompt this console cannot answer.")
+            "would silently create a key pair named cloudlens-key that you "
+            "never chose.")
     cmd += ["--key-name", key]
     return cmd
 
@@ -308,9 +320,15 @@ def _script_cmd(job, flow):
                 "--cloud-config", i.get("cloud", "prod-cloud"), "--accept-eula", "--insecure"]
     if flow["id"] == "mirror":
         cmd = ["python3", S("kvo_aws_mirror.py"),
-               "--kvo", i.get("kvo", ""), "--vpc-id", i.get("vpc", ""),
+               "--vpc-id", i.get("vpc", ""),
                "--source-tag", i.get("tag", "cloudlens=yes"),
                "--zone", i.get("az", "us-east-1a"), "--accept-eula", "--insecure"]
+        # MIRROR has no kvo input, so this was always `--kvo ""`: an empty
+        # token argparse accepted as a value and the script fell over on
+        # later. Omitting the flag lets argparse say "--kvo is required".
+        kvo = (i.get("kvo") or "").strip()
+        if kvo:
+            cmd += ["--kvo", kvo]
         # The UI asks for a tool IP and used to throw the answer away, so the
         # mirror had nowhere to forward to and the field was decoration.
         tool = (i.get("tool") or "").strip()

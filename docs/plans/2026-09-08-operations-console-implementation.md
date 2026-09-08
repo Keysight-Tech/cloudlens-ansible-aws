@@ -30,8 +30,10 @@ Expected: the commit list above.
 
 **Step 2: Cherry-pick the console commits, oldest first**
 
-Run: `git cherry-pick 83eb1c5 51310d9 c9bfd0c 187059f 5daf0a3`
+Run: `git cherry-pick 83eb1c5 c9bfd0c 187059f 5daf0a3`
 Expected: clean picks (they touch only `console/`). If one conflicts, resolve keeping the branch's version of the console file, then `git cherry-pick --continue`.
+
+Done as: four of the five were ported (`83eb1c5` a stopped replay reported as success, `c9bfd0c` flags the script does not accept, `187059f` two things the page got wrong during a real deploy, `5daf0a3` inputs collected and thrown away). `51310d9` was skipped: it is a Node smoke harness (`console/tests/smoke_browser.mjs`, driven by Playwright) for the bridge's `/health` endpoint, its pairing box and `bridge.js`, none of which exist on main, and this console stays stdlib.
 
 **Step 3: Run the console tests**
 
@@ -41,6 +43,8 @@ Expected: all pass.
 **Step 4: Commit** (the cherry-picks are the commits; push)
 
 Run: `git push origin main`
+
+**Follow-up recorded:** the legacy kvo, mirror and sensors flows cannot launch from this console today. `kvo_adopt_clms.py` requires `--clms-admin-pass`, which the kvo flow never passes. `kvo_aws_mirror.py` requires `--clm-name` and `--region`, which the mirror flow never passes, and the flow has no kvo input at all (it used to send `--kvo ""`; it now omits the flag so argparse fails loudly). The sensors flow passes `-e cloudlens_ip=`, which no playbook reads. Tasks 6-8 replace these three flows with the profile-driven engine, so no work is spent on them here.
 
 ---
 
