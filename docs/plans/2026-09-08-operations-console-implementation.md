@@ -147,14 +147,7 @@ git commit -m "deploy: --events writes the structured side channel the console r
 - Modify: `deploy/deploy-stack.sh` (`discover_stack_facts`, the logins block, `run_doctor`'s `_pass/_warn/_fail`)
 - Test: extend `deploy/tests/test_events.sh`
 
-**Step 1: Extend the test** (append before the final `print`):
-
-```python
-kinds = [ev for ev in map(json.loads, open(sys.argv[1])) if ev["type"] == "check"]
-assert kinds, "doctor checks must be events too"   # --dry-run runs the doctor-lite checks
-```
-
-and add a second invocation in the shell part: `bash deploy/deploy-stack.sh --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true` followed by a python assertion that `doctor.jsonl` contains `check` events with `status` in `pass|warn|fail` and a `fix` key on non-pass rows.
+**Step 1: Extend the test**: the dry run emits no check events (it runs no doctor checks), so the doctor is its own invocation in the shell part: `bash deploy/deploy-stack.sh --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true` followed by a python assertion that `doctor.jsonl` contains `check` events with `status` in `pass|warn|fail` and a `fix` key on non-pass rows.
 
 **Step 2: Run to verify it fails** (no `check` events yet).
 

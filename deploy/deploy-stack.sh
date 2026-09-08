@@ -553,7 +553,7 @@ announce_vcontroller_login() {
   watch_header
   echo "    https://${ip}/cloudlens/login"
   # The login event says WHERE the password lives, never what it is.
-  local pw_in="factory default until phase 9 sets one (the first login forces a change)"
+  local pw_in="vController factory default (the first login forces a change; phase 9 recorded no password)"
   if [[ -n "$pw" ]]; then
     echo "    ${VC_ADMIN_USER} / ${pw}"
     pw_in="$VC_CREDS_FILE"
@@ -906,7 +906,9 @@ state_set() {
 # The file is append-only for the life of a stack: every run of that stack
 # appends to the same file. A reader that sees a seq smaller than the last
 # one it handled is looking at a new stream (the file was replaced or
-# truncated) and must treat it as one, not as a gap to skip.
+# truncated) and must treat it as one, not as a gap to skip. A line that
+# does not parse as JSON (a run killed mid-write leaves one) must be skipped,
+# not treated as the end of the stream.
 #
 # Nothing here may ever abort the run: a write that fails mid-run is silently
 # ignored. Only a --events path that cannot be created at startup is an input
@@ -4071,7 +4073,7 @@ emit_stack_resources() {
     if [[ "${!v}" == "None" ]]; then printf -v "$v" '%s' ''; fi
   done
   emit_event resource kind=vpc id="$vpc"
-  emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"
+  if [[ -n "$mgmt" ]]; then emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"; fi
   if [[ -n "$ing" ]]; then emit_event resource kind=subnet id="$ing" role=ingress; fi
   if [[ -n "$eg"  ]]; then emit_event resource kind=subnet id="$eg"  role=egress;  fi
   emit_event resource kind=vcontroller ip="$vc_ip" private_ip="$vc_priv"
@@ -5069,7 +5071,12 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
       echo "  Matching running EC2s: ${TAGGED_COUNT}"
       echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
     fi
-    emit_event resource kind=workloads count="${TAGGED_COUNT:-0}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
+    # The terminal shows "?" for a count the CLI could not produce; the console
+    # wants "" for an unknown, as emit_stack_resources does for a None id.
+    _wl_count="${TAGGED_COUNT:-0}"
+    if [[ "$_wl_count" == "?" ]]; then _wl_count=""; fi
+    emit_event resource kind=workloads count="$_wl_count" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+      mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}"
   fi
   echo
 fi
@@ -5118,6 +5125,11 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
     if deploy_test_workloads_now; then
       sensor_blocker="${sensor_blocker/notags/}"
       sensor_blocker="${sensor_blocker%,}"; sensor_blocker="${sensor_blocker#,}"
+      # The workloads row above said count=0 and nothing updated it, so the
+      # console kept drawing an empty stack while the sensors installed onto
+      # the machines just created. Say what exists now, and that we made it.
+      emit_event resource kind=workloads count="${TAGGED_COUNT:-0}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+        mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}" created=true
     else
       echo "    Tag your workloads first (see the command above), then run:"
       echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
