@@ -496,7 +496,9 @@ banner() {
 }
 ok()    { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
 warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
-# emit_done lives with the state helpers below; nothing calls fail() before then.
+# emit_done is defined with the state helpers below. bash resolves function
+# names at call time, so this only requires that no fail() executes before the
+# sink is defined; none does.
 fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; emit_done status=failed phase="$PHASE_NAME" reason="$1"; exit 1; }
 step()  { echo; echo -e "${C_BLUE}--- $1 ---${C_RESET}"; PHASE_NAME="$1"; }
 note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
@@ -879,11 +881,25 @@ state_set() {
 # --events FILE appends one JSON object per line at the points where this
 # script already knows the truth (phase changes, discovered resources, doctor
 # checks, prompts, logins, the end). No flag, no file, no change to the
-# terminal output. seq is strictly increasing so a reconnecting reader can
-# resume without gaps or duplicates: it is the line's number in the file, so
-# a resumed run appending to the same file, or an emitter that happens to run
-# in a subshell, cannot repeat one. Nothing here may ever abort the run: an
-# unwritable file is silently ignored.
+# terminal output.
+#
+# The FILE is the truth, for seq and for done alike. seq is the line's
+# number in the file, so a resumed run appending to the same file, or an
+# emitter that happens to run in a $( ) subshell, cannot repeat one. And
+# emit_done reads the file's last line instead of trusting DONE_EMITTED: a
+# variable set inside a $( ) never reaches the parent shell, so the variable
+# alone would let a fail() in a command substitution and the EXIT trap each
+# write their own done.
+#
+# The file is append-only for the life of a stack: every run of that stack
+# appends to the same file. A reader that sees a seq smaller than the last
+# one it handled is looking at a new stream (the file was replaced or
+# truncated) and must treat it as one, not as a gap to skip.
+#
+# Nothing here may ever abort the run: a write that fails mid-run is silently
+# ignored. Only a --events path that cannot be created at startup is an input
+# error (checked right after the parser). Bytes that are not valid UTF-8 pass
+# through unchanged, so the console should open the file with errors="replace".
 # ---------------------------------------------------------------------
 EVENTS_FILE="${CLOUDLENS_EVENTS_FILE:-}"
 DONE_EMITTED=false
@@ -891,6 +907,16 @@ json_str() { # minimal JSON string escaper (bash 3.2, no jq dependency)
   local s="${1//\\/\\\\}"
   s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  # JSON forbids raw U+0000..U+001F, so every other control byte becomes
+  # \u00XX (0 is a no-op because bash cannot hold NUL; 127 is legal raw but
+  # harmless to escape). Bash 3.2 only: no ${var@Q}, no printf %q round trip.
+  if [[ "$s" == *[[:cntrl:]]* ]]; then
+    local c i
+    for i in 0 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
+      c=$(printf "\\$(printf '%03o' "$i")")
+      [[ -n "$c" && "$s" == *"$c"* ]] && s="${s//$c/$(printf '\\u%04x' "$i")}"
+    done
+  fi
   printf '"%s"' "$s"
 }
 emit_event() { # emit_event TYPE key=value ... (values are strings)
@@ -901,6 +927,7 @@ emit_event() { # emit_event TYPE key=value ... (values are strings)
   fi
   body="{\"seq\":${seq},\"ts\":\"$(date -u +%FT%TZ)\",\"type\":$(json_str "$type")"
   for kv in "$@"; do
+    [[ "$kv" == [A-Za-z_]*=* ]] || continue   # skip a malformed key=value token
     body+=",$(json_str "${kv%%=*}"):$(json_str "${kv#*=}")"
   done
   body+="}"
@@ -910,6 +937,13 @@ emit_event() { # emit_event TYPE key=value ... (values are strings)
 # ends (final summary, declined plan, --doctor, fail(), the EXIT trap).
 emit_done() {
   [[ "$DONE_EMITTED" == "true" ]] && return 0
+  # A fail() inside $( ) already wrote the done; the parent must not repeat it.
+  # Deliberately not `tail | grep -q`: under pipefail an early-closing grep can
+  # turn a match into a non-zero status.
+  if [[ -n "$EVENTS_FILE" && -f "$EVENTS_FILE" ]] \
+     && [[ "$(tail -n 1 "$EVENTS_FILE" 2>/dev/null)" == *'"type":"done"'* ]]; then
+    DONE_EMITTED=true; return 0
+  fi
   DONE_EMITTED=true
   emit_event done "$@"
 }
@@ -2129,6 +2163,11 @@ while [[ $# -gt 0 ]]; do
     *) warn "Unknown argument: $1"; show_help; exit 1 ;;
   esac
 done
+# An explicitly requested --events path that cannot be created is an input
+# error. A write that fails later in the run stays silent (see the sink).
+if [[ -n "$EVENTS_FILE" ]] && ! { : >> "$EVENTS_FILE"; } 2>/dev/null; then
+  fail "--events: cannot write ${EVENTS_FILE}"
+fi
 # The console's first line. Stack and region may still be empty here (the
 # interview fills them in Phase 3); a second hello follows once they are known.
 emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
@@ -2373,7 +2412,7 @@ trap on_error ERR
 # ---------------------------------------------------------------------
 on_exit() {
   local code=$?
-  [[ "${BASHPID:-$$}" == "$$" ]] || return 0
+  (( BASH_SUBSHELL == 0 )) || return 0   # BASHPID is unset on bash 3.2
   # The console must always see how the run ended, explained or not.
   if (( code == 0 )); then emit_done status=ok
   elif (( code == 130 )); then emit_done status=interrupted phase="$PHASE_NAME"
