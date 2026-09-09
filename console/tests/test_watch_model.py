@@ -480,9 +480,13 @@ def test_a_replayed_frame_does_not_duplicate_what_it_already_said(tmp_path, orde
     assert m["checks"][1]["status"] == "fail" and m["checks"][1]["fix"] == "aws configure"
 
 
-def test_a_check_that_reports_again_updates_its_row(tmp_path):
+def test_a_check_that_reports_again_updates_its_row_and_keeps_the_fix_it_carried(tmp_path):
     """The same item twice is the same row, and the second report is the one
-    that stands: a check that failed and then passed reads pass."""
+    that stands: a check that failed and then passed reads pass. The fix from
+    the failing frame stays in the MODEL - copy() will not overwrite a known
+    value with an empty one, and a doctor re-run may fail the item again - so
+    it is the passing ROW, not the model, that declines to print it. That half
+    is test_a_passing_check_stops_telling_the_reader_how_to_fix_it."""
     evs = [{"type": "check", "item": "AWS credentials", "status": "fail",
             "fix": "aws configure", "id": 1},
            {"type": "check", "item": "AWS credentials", "status": "pass", "id": 2},
@@ -660,7 +664,16 @@ global.EventSource=function(url){ this.url=url; this.readyState=0; this.heard={}
 global.EventSource.CLOSED=2;
 let confirmSays=false; const confirmed=[];
 const sent=[]; let reply={ok:true,status:200};
-global.fetch=function(url,opts){ sent.push({url:url,method:opts&&opts.method}); return Promise.resolve(reply); };
+/* holdNext parks the NEXT request instead of answering it, so a POST can be
+   left in flight while the page is driven on to another run; release(...)
+   is how it finally comes back. send() reads the body, Stop does not. */
+let holdNext=false, release=null;
+function answered(body){ return {ok:true,status:200,text:function(){return Promise.resolve(body||"{}");}}; }
+global.fetch=function(url,opts){
+  sent.push({url:url,method:opts&&opts.method,body:opts&&opts.body});
+  if(holdNext){ holdNext=false; return new Promise(function(res){ release=res; }); }
+  return Promise.resolve(reply);
+};
 global.window={confirm:function(msg){ confirmed.push(msg); return confirmSays; }};
 const settle=function(){ return Promise.resolve().then().then().then(); };
 new Function(fs.readFileSync(process.argv[2],"utf8"))();
@@ -742,7 +755,20 @@ W.render(e2);
 out.queuedAgain=queue.length;
 flush();
 
-/* 4. Stop, through the button's own handler on a really attached run */
+/* 4. the checks table: an item that failed with a fix and then passed. The
+      model keeps the fix (a later frame that omits a field is "not known",
+      not "cleared"), and the row is where it stops being printed. */
+const ck=W.emptyModel(); ck.job="runK";
+W.applyEvent(ck,{type:"check",item:"AWS credentials",status:"fail",fix:"aws configure",id:1});
+W.render(ck); flush();
+out.checkWhileFailing=$("wChecks").innerHTML;
+W.applyEvent(ck,{type:"check",item:"AWS credentials",status:"pass",id:2});
+W.applyEvent(ck,{type:"check",item:"kubectl",status:"warn",fix:"brew install kubectl",id:3});
+W.render(ck); flush();
+out.checkAfterPassing=$("wChecks").innerHTML;
+out.checkModelFix=ck.checks[0].fix;
+
+/* 5. Stop, through the button's own handler on a really attached run */
 (async function(){
   W.attach("job-77");
   stream.heard.hello({data:JSON.stringify({type:"hello",stack:"lab",region:"us-east-1",
@@ -773,6 +799,33 @@ flush();
   stop.call(btn);
   await settle(); flush();
   out.stopRefused={sent:sent.length,disabled:btn.disabled,said:$("wConn").textContent};
+
+  /* 6. an answer POST still in flight when the operator attaches to another
+        run. Both runs number their prompts from p1, so run C's answer must
+        not land on run D's question of the same name, and must not empty the
+        box run D's operator is already typing a secret into. */
+  W.attach("runC");
+  frame({id:1,type:"prompt",prompt_id:"p1",question:"Region [us-east-1]: ",kind:"text",
+         "default":"us-east-1"});
+  flush();
+  $("wPromptInput").value="eu-west-1";
+  holdNext=true;                             // the POST goes out and stays out
+  const before=sent.length;
+  $("wPromptForm").on.submit({preventDefault:function(){}});
+  await settle(); flush();
+  out.inFlight={sent:sent.length-before,url:sent[sent.length-1].url,
+                note:$("wPromptNote").textContent};
+
+  W.attach("runD");
+  frame({id:1,type:"prompt",prompt_id:"p1",question:"KVO admin password: ",kind:"secret"});
+  flush();
+  $("wPromptInput").value="Zq7-CANARY-typed-into-run-D";
+  release(answered());                       // run C's answer comes back now
+  await settle(); await settle(); flush();
+  out.crossRun={question:$("wPromptQ").textContent,value:$("wPromptInput").value,
+                type:$("wPromptInput").type,hidden:$("wPrompt").hidden,
+                answers:W.model().prompts.map(function(p){return p.answer;}),
+                open:W.openPrompt(W.model()) ? W.openPrompt(W.model()).prompt_id : null};
 
   process.stdout.write(JSON.stringify(out));
 })();
@@ -883,3 +936,36 @@ def test_stop_says_what_came_of_it(dom):
     r = dom["stopRefused"]
     assert "409" in r["said"] and "still going" in r["said"], r["said"]
     assert r["disabled"] is False, "a refused stop gives the button back"
+
+
+def test_a_passing_check_stops_telling_the_reader_how_to_fix_it(dom):
+    """A check that fails and later passes keeps the fix in the model, because
+    copy() will not overwrite a known value with an empty one and a doctor
+    re-run may fail again. The ROW is where it stops being printed: a PASS
+    line still saying `aws configure` reads as an instruction to go and repair
+    credentials that already work. warn and fail keep theirs."""
+    assert "aws configure" in dom["checkWhileFailing"], dom["checkWhileFailing"]
+    after = dom["checkAfterPassing"]
+    assert "PASS" in after and "aws configure" not in after, after
+    assert "brew install kubectl" in after, "a warn still says what to do: %s" % after
+    assert dom["checkModelFix"] == "aws configure", \
+        "the model still holds it; only the passing row declines to print it"
+
+
+def test_an_answer_in_flight_lands_on_the_run_it_was_sent_for(dom):
+    """The last place a question could still cross runs. send() captured the
+    prompt and the input box but not the job, so attaching to another run
+    while the POST was in flight ran the continuation against the NEW model:
+    it emptied the box run D's operator was typing into, and noteAnswer looked
+    p1 up in run D's prompts - prompt ids are per-run counters, so run D's own
+    open question was marked answered with run C's text, the modal closed on a
+    question the engine is still blocked on, and openPrompt could never reopen
+    it because the answer was no longer null."""
+    assert dom["inFlight"]["sent"] == 1 and dom["inFlight"]["url"] == "/api/answer/runC"
+    assert dom["inFlight"]["note"] == "sending...", dom["inFlight"]
+    c = dom["crossRun"]
+    assert c["question"] == "KVO admin password: ", "run D's question is still the one on screen"
+    assert c["type"] == "password" and c["hidden"] is False
+    assert c["value"] == "Zq7-CANARY-typed-into-run-D", "what is being typed is untouched"
+    assert c["answers"] == [None], "run D's question is still unanswered"
+    assert c["open"] == "p1", "and the engine is still blocked on it"

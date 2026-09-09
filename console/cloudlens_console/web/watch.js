@@ -413,11 +413,21 @@ function renderLogins(model){
   }).join("");
 }
 
+/* A check's fix is what to do about it, so it belongs to the row that still
+   needs doing. copy() never overwrites a known value with an empty one (a
+   later frame that omits a field is the script saying "not known", not
+   "cleared"), so the fix the failing frame carried is still on the row after
+   the item reports pass - and the row was printing it, which left a PASS
+   line telling the reader to run `aws configure` about credentials that now
+   work. The model keeps it, because a doctor re-run may fail again; the
+   screen shows it only where there is something to fix. */
 function renderChecks(model){
   $("wChecksWrap").hidden=!model.checks.length;
   $("wChecks").innerHTML=model.checks.map(function(c){
-    return '<tr><td><span class="st '+esc(c.status||"")+'">'+esc(String(c.status||"").toUpperCase())+"</span></td>"+
-      "<td>"+esc(c.item||"")+"</td><td>"+(c.fix?esc(c.fix):'<span class="dim"></span>')+"</td></tr>";
+    var status=txt(c.status);
+    var fix=(status!=="pass"&&c.fix)?esc(c.fix):'<span class="dim"></span>';
+    return '<tr><td><span class="st '+esc(status)+'">'+esc(status.toUpperCase())+"</span></td>"+
+      "<td>"+esc(c.item||"")+"</td><td>"+fix+"</td></tr>";
   }).join("");
 }
 
@@ -653,9 +663,21 @@ function attach(jobId){
   render(model);
 }
 
+/* The answer POST, and the two things that happen when it comes back.
+   Both continuations belong to the run the send was started on: the page can
+   move to another run while the request is in flight (the wizard's Launch and
+   the resume form both call attach(), which swaps the module-level model out
+   from under this closure). Unguarded, the OK path emptied the box someone
+   was already typing into for run B's question, and noteAnswer looked run B's
+   prompts up by the BARE prompt id - and prompt ids are per-run counters, so
+   run B's own open question was marked answered with run A's text, the modal
+   closed on a question the engine is still blocked on, and openPrompt could
+   never reopen it because the answer was no longer null. The Stop handler
+   guards its own continuations the same way, for the same reason. */
 function send(){
   var p=openPrompt(model);
   if(!p||p.sending)return;
+  var job=model.job;
   var input=$("wPromptInput"),value=input.value;
   // exactly what the answered frame will carry, so the stream confirms what
   // the card already shows rather than rewriting it; an empty answer is left
@@ -671,6 +693,7 @@ function send(){
      return {ok:r.ok,status:r.status,j:j};});})
    .catch(function(){return {err:"Could not reach the console server."};})
    .then(function(x){
+     if(model.job!==job)return;    // the page has moved on to another run
      if(x.err||!x.ok){
        // the modal stays open with the reason on it: the run is still
        // blocked, and nothing else can be done from here

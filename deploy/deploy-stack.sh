@@ -4095,6 +4095,13 @@ tf_output() {
   ( cd "$REPO_DIR/$TF_DIR_REL" && terraform output -raw "$key" 2>/dev/null ) || echo ""
 }
 
+# Did this run actually deploy, or did a selector / the resume state take the
+# apply out of it? A phase that did not run is never recorded as done: the
+# state file, the HTML report's phase table and the console's timeline all
+# read that record, and a green row for work nothing did is a lie in all three.
+STACK_PHASE_RAN=true
+STACK_SKIP_REASON=""
+
 if [[ "$IAC" == "terraform" ]]; then
   if run_phase stack; then
     # A real apply can move addresses, so re-read them rather than trusting
@@ -4102,6 +4109,7 @@ if [[ "$IAC" == "terraform" ]]; then
     CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
     deploy_terraform
   else
+    STACK_PHASE_RAN=false; STACK_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the Terraform apply"
     note "Keeping the addresses detection already read from the existing workspace."
   fi
@@ -4113,6 +4121,7 @@ else
     CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
     deploy_cfn
   else
+    STACK_PHASE_RAN=false; STACK_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the CloudFormation deploy"
     note "Keeping the addresses detection already read from the existing stack."
   fi
@@ -4130,7 +4139,11 @@ ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
 state_set VCONTROLLER_ADDRESS "$CLMS_PUBLIC_IP"
 state_set KVO_ADDRESS "$KVO_PUBLIC_IP"
 state_set VPB_ADDRESS "$VPB_PUBLIC_IP"
-state_phase stack done
+if [[ "$STACK_PHASE_RAN" == "true" ]]; then
+  state_phase stack done
+else
+  state_phase stack skipped "$STACK_SKIP_REASON"
+fi
 
 # ---------------------------------------------------------------------
 # Extra test workloads. CloudFormation cannot loop, so the template builds
@@ -4361,9 +4374,19 @@ discover_stack_facts
 # =====================================================================
 step "Phase 7: Wait for vController initialization"
 
+WAIT_PHASE_RAN=true
+WAIT_SKIP_REASON=""
+
 if ! run_phase wait; then
+  WAIT_PHASE_RAN=false; WAIT_SKIP_REASON="$PHASE_SKIP_REASON"
   skip_note "the vController wait"
-  ok "The vController API answered during detection, so there is nothing to wait for."
+  # run_phase skips for several different reasons, and only ONE of them is
+  # "the API is already serving". Claiming that on a --only or --from run said
+  # the appliance had answered when nothing had asked it. skip_note above
+  # already printed the real reason; this line is only for the real one.
+  if [[ -n "$REASON_WAIT" && "$WAIT_SKIP_REASON" == "$REASON_WAIT" ]]; then
+    ok "The vController API answered during detection, so there is nothing to wait for."
+  fi
 elif [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would poll https://${CLMS_PUBLIC_IP}:443 every 15s for up to 17 minutes"
 elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
@@ -4419,7 +4442,11 @@ else
     note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/cloudlens/api/v1/identity/login"
   fi
 fi
-state_phase wait done
+if [[ "$WAIT_PHASE_RAN" == "true" ]]; then
+  state_phase wait done
+else
+  state_phase wait skipped "$WAIT_SKIP_REASON"
+fi
 
 # =====================================================================
 # Phase 8: vPB post-deploy bootstrap (KCOS wait + vpb CLI wrapper)
@@ -4516,7 +4543,11 @@ vc_key_script() { find_repo_script "scripts/vcontroller_project_key.py"; }
 
 # Re-running this step against an already-rotated admin password FAILS, so a
 # resume reuses the key already in the creds file rather than rotating again.
+KEY_PHASE_RAN=true
+KEY_SKIP_REASON=""
+
 if ! run_phase key; then
+  KEY_PHASE_RAN=false; KEY_SKIP_REASON="$PHASE_SKIP_REASON"
   skip_note "the project key step"
   if VC_PROJECT_KEY="$(vc_key_from_creds)"; then
     ok "Reusing the project key already in ${VC_CREDS_FILE} (${#VC_PROJECT_KEY} characters)."
@@ -4582,7 +4613,20 @@ Manual path: to deploy sensors, you need a project key.
 
 EOM
 fi
-state_phase key done
+# The phase's output is a project key, so that is what decides how it is
+# recorded. A skip that read one back out of the creds file DID produce it and
+# is done; a skip that could not is not, and neither is a run that ended with
+# the manual instructions above and nothing in hand. Sensors cannot register
+# without this key, so recording it done either way put a green row on a step
+# whose whole point had not happened. A dry run is a dry run: it says what it
+# would do, and state_phase already stamps the record "dry-run".
+if [[ "$KEY_PHASE_RAN" != "true" && -z "$VC_PROJECT_KEY" ]]; then
+  state_phase key skipped "$KEY_SKIP_REASON"
+elif [[ -n "$VC_PROJECT_KEY" || "$DRY_RUN" == "true" ]]; then
+  state_phase key done
+else
+  state_phase key failed "no project key was retrieved"
+fi
 
 # The vController can take a login from here on, and everything below (KVO
 # licensing, adoption, sensors, vPB) is visible in its UI while it happens.
@@ -5365,7 +5409,11 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
 
   # Activation codes are consumable: re-activating one that is already spent
   # burns entitlement quantity. An already-licensed KVO is therefore left alone.
+  LICENSE_PHASE_RAN=true
+  LICENSE_SKIP_REASON=""
+
   if ! run_phase license; then
+    LICENSE_PHASE_RAN=false; LICENSE_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "KVO licensing"
     ok "No activation code is re-used, so no entitlement quantity is spent."
   elif [[ "$DRY_RUN" == "true" ]]; then
@@ -5412,8 +5460,12 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     note "  bash deploy/deploy-stack.sh --sensor-mode ${SENSOR_MODE} --kvo-codes CODE[,QTY]"
     note "The re-run resumes: everything already done above is detected and skipped."
     state_phase license failed "KVO licensing did not complete"
-  else
+  elif [[ "$LICENSE_PHASE_RAN" == "true" ]]; then
     state_phase license done
+  else
+    # An untouched KVO is not a licensed one: a selector that removed this
+    # phase left the licence exactly as it found it, whatever it was.
+    state_phase license skipped "$LICENSE_SKIP_REASON"
   fi
 fi
 
@@ -5446,7 +5498,11 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
 
   # Re-adopting an already-adopted manager errors, and the Cloud Config is
   # reusable by name, so a resume reads the existing key back instead.
+  ADOPT_PHASE_RAN=true
+  ADOPT_SKIP_REASON=""
+
   if ! run_phase adopt; then
+    ADOPT_PHASE_RAN=false; ADOPT_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the KVO adoption and Cloud Config"
     kvo_auth "$KVO_PUBLIC_IP" || true
     if KVO_PROJECT_KEY="$(kvo_cloud_config_key "$KVO_PUBLIC_IP")"; then
@@ -5488,10 +5544,14 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
       KVO_CHAIN_OK=false
     fi
   fi
-  if [[ "$KVO_CHAIN_OK" == "true" ]]; then
+  if [[ "$KVO_CHAIN_OK" != "true" ]]; then
+    state_phase adopt failed "adoption or Cloud Config did not complete"
+  elif [[ "$ADOPT_PHASE_RAN" == "true" ]]; then
     state_phase adopt done
   else
-    state_phase adopt failed "adoption or Cloud Config did not complete"
+    # The skip branch above only READS a key back out of an existing Cloud
+    # Config. Nothing was adopted and no Cloud Config was created here.
+    state_phase adopt skipped "$ADOPT_SKIP_REASON"
   fi
 fi
 

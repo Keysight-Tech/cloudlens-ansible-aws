@@ -154,7 +154,29 @@ evs, types, phases = announced(sys.argv[3])
 assert not phases, "a run that cannot start announces no phases: %r" % types
 assert types == ["hello", "done"], types
 assert evs[-1]["status"] == "failed" and "nosuchphase" in evs[-1]["reason"], evs[-1]
-print("PASS phase selectors: --only announces 1 phase, --from announces %d, an unknown phase announces none"
+# A phase the selector took out of the run did not run, so it is never
+# recorded done. `state_phase wait done` and `state_phase key done` sat AFTER
+# the closing fi of their own `if ! run_phase ...` blocks, so every --only and
+# --from run reported both as finished: a green check on the Watch timeline
+# for work nothing did, and, on a real run, a state file and an HTML report
+# claiming the vController had been waited for and a project key minted. The
+# key one is the expensive lie - sensors have nothing to register with.
+def reported(path):
+    return [e for e in (json.loads(line) for line in open(path)) if e["type"] == "phase"]
+# what each selector actually left in the run: --only stack is the one phase,
+# --from vpb is vpb onwards. Everything else was taken out of it.
+for path, ran in ((sys.argv[1], {"stack"}), (sys.argv[2], set(order[order.index("vpb"):]))):
+    for e in reported(path):
+        if e["name"] in ran:
+            continue
+        assert e["status"] != "done", "a phase the selector removed, reported done: %r" % e
+        assert e["status"] == "skipped", "a phase that did not run is skipped, not %r" % e
+        assert e.get("reason"), "a skipped phase says why: %r" % e
+only_said = {e["name"]: e["status"] for e in reported(sys.argv[1])}
+for name in ("wait", "key"):
+    assert only_said.get(name, "skipped") == "skipped", (name, only_said)
+print("PASS phase selectors: --only announces 1 phase, --from announces %d, an unknown phase announces none;"
+      " every phase a selector removed is skipped with a reason, never done"
       % len(order[order.index("vpb"):]))
 PY
 
