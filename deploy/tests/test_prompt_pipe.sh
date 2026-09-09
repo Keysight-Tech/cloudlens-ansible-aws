@@ -14,7 +14,12 @@
 set -u
 cd "$(dirname "$0")/../.."
 S=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$S"' EXIT
+# The end-to-end run (test 5) has a process group of its own, so a Ctrl-C here
+# never reaches it, and a TERM to its pid alone is held behind the $( ) child
+# blocked in the FIFO open. The trap signals the group. $e2e is empty until
+# that run starts and again once it is reaped, so a recycled pgid is never hit.
+e2e=""
+trap '[[ -n "${e2e:-}" ]] && kill -TERM -- -"$e2e" 2>/dev/null; kill $(jobs -p) 2>/dev/null; rm -rf "$S"' EXIT
 mkfifo "$S/answers"
 EV="$S/ev.jsonl"
 awk '/^(json_str|emit_event|ask|ask_secret|pick_subnet)\(\)/{p=1} p{print} p&&/^}/{p=0}' deploy/deploy-stack.sh > "$S/helpers.sh"
@@ -97,6 +102,8 @@ out=$(/bin/bash -c "$harness"'aws() { return 1; }; REGION=us-east-1; pick_subnet
       _ "$S/answers" "$EV" "$S/helpers.sh" </dev/null 2>"$S/err6")
 if [[ "$out" == "subnet-0123456789abcdef0" ]]; then echo "PASS pick_subnet returned the piped subnet id"
 else echo "FAIL pick_subnet: got '$out'"; rc=1; fi
+if grep -qF '  Management subnet (subnet id, Enter to skip): subnet-0123456789abcdef0' "$S/err6"; then echo "PASS transcript shows the subnet question and the answer"
+else echo "FAIL pick_subnet transcript: $(cat "$S/err6")"; rc=1; fi
 python3 - "$EV" <<'PY' || rc=1
 import json, sys
 evs = [json.loads(l) for l in open(sys.argv[1])]
@@ -154,6 +161,7 @@ if kill -0 "$e2e" 2>/dev/null; then
 else
   wait "$e2e"; code=$?; wait
 fi
+e2e=""   # reaped on both paths: the EXIT trap must never signal a recycled pgid
 if [[ $code -eq 0 ]]; then echo "PASS end to end: dry run over the pipe exited 0"
 else echo "FAIL end to end: exit $code; $(tail -3 "$S/e2e.out")"; rc=1; fi
 if grep -q '^Deploy KVO (Keysight Vision Orchestrator) alongside vController? \[y/N\]: y$' "$S/e2e.out" \

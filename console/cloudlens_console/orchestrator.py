@@ -232,11 +232,11 @@ def _stack_cmd(job, stack, region):
     get wrong: the flag is --stack-name (--stack is rejected outright), the
     toggles are bare booleans (--with-kvo / --no-kvo) not "--kvo yes", and
     --key-name has to be supplied. Omit the key and the script falls into
-    select_key_pair, whose prompts are raw `read -rp ... || true` rather
-    than ask(): with no stdin they read EOF, the answer is empty, and the
-    script quietly creates a key pair named cloudlens-key that the visitor
-    never chose. Requiring the name here is what stops that. --no-sensors
-    because sensors are their own flow here.
+    select_key_pair, which prompts through ask() with defaults, so without
+    a console pipe an empty stdin takes the default and mints a key pair
+    named cloudlens-key that the visitor never chose. Requiring the name
+    here is what stops that. --no-sensors because sensors are their own
+    flow here.
     """
     i = job.inputs
     cmd = ["bash", os.path.join(REPO_ROOT, "deploy", "deploy-stack.sh"),

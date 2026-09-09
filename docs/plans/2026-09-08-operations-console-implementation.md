@@ -190,8 +190,7 @@ S=$(mktemp -d); mkfifo "$S/answers"
 # a tiny harness that sources ask() with the pipe set
 ( sleep 1; echo "hello-from-ui" > "$S/answers" ) &
 out=$(bash -c '
-  source <(awk "/^ask\(\)/,/^}/" deploy/deploy-stack.sh)
-  source <(awk "/^json_str\(\)/,/^}/; /^emit_event\(\)/,/^}/" deploy/deploy-stack.sh)
+  source "$S/helpers.sh"  # ask, json_str, emit_event, lifted out by awk to a file: bash 3.2 cannot source <(...), the shipped test explains it
   INTERACTIVE=true PROMPT_PIPE="'"$S/answers"'" EVENTS_FILE="'"$S/ev.jsonl"'" EVENT_SEQ=0
   ask "Type something: " "default"')
 [[ "$out" == "hello-from-ui" ]] && echo "PASS answer came from the pipe" || { echo "FAIL got '$out'"; exit 1; }
@@ -202,7 +201,7 @@ grep -q '"type":"prompt"' "$S/ev.jsonl" && echo "PASS prompt event emitted" || {
 
 **Step 3: Implement** - `ask()` gains a `PROMPT_PIPE` branch: emit the question as a prompt event, block on one line from the FIFO, return it (the default when the line is empty). The prompt id is derived from the count of prompt events already in the events file, not from a shell counter, because nearly every call site is `x="$(ask ...)"` and a counter never advances inside a `$( )` subshell.
 
-The FIFO contract, stated in the ask header and the `--prompt-pipe` help. Per prompt: wait for its prompt event, open the FIFO for writing, write exactly one line, close. Never hold the write end open between answers: a held-then-closed end reads as an empty answer and takes the default. A run whose console goes away blocks on the next prompt forever and emits no done; the console owns the process and must kill it.
+The FIFO contract, stated in the ask header and the `--prompt-pipe` help. Per prompt: wait for its prompt event, open the FIFO for writing, write exactly one line, close. Never hold the write end open between answers: a held-then-closed end reads as an empty answer and takes the default. A run whose console goes away blocks on the next prompt forever and emits no done; the console owns the process and must kill it. A TERM to the pid alone does not stop a run blocked on a prompt: signal its process group. After a group kill there is no done event (the tee dies first); the console must treat process exit without a done as terminal.
 
 Secrets: the two `read -rsp` calls (KVO secret key, and any password) must go through a new `ask_secret()` with `kind=secret`; replace them. Parser: `--prompt-pipe) PROMPT_PIPE="$2"; shift 2 ;;`. When `PROMPT_PIPE` is set, force `INTERACTIVE=true` after the tty detection so the interview runs (the UI is the terminal).
 

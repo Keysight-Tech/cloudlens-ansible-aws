@@ -736,7 +736,10 @@ login_block() {
 # exactly one line, close. Never hold the write end open between answers: a
 # held-then-closed end reads as an empty answer and takes the default. A run
 # whose console goes away blocks on the next prompt forever and emits no done;
-# the console owns the process and must kill it.
+# the console owns the process and must kill it. A TERM to the pid alone does
+# not stop a run blocked on a prompt: signal its process group. After a group
+# kill there is no done event (the tee dies first); the console must treat
+# process exit without a done as terminal.
 # ---------------------------------------------------------------------
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
@@ -1960,7 +1963,11 @@ Toggles:
                             takes the default. A run whose console goes away
                             blocks on the next prompt forever and emits no
                             done; the console owns the process and must kill
-                            it.
+                            it. A TERM to the pid alone does not stop a run
+                            blocked on a prompt: signal its process group.
+                            After a group kill there is no done event (the
+                            tee dies first); the console must treat process
+                            exit without a done as terminal.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
