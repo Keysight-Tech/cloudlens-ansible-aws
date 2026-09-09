@@ -35,16 +35,45 @@ WEB = os.path.join(CONSOLE, "cloudlens_console", "web")
 HARNESS = r"""
 const fs = require("fs");
 global.window = {};
+const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+
+// A DOM, only for a test that drives the SCREEN and not its pure half.
+// It is installed BEFORE the files load, because each screen inits itself
+// when the element it draws into exists. Enough of one for the licensing
+// screen: elements that remember their handlers, and a document that
+// makes one up for any id asked for, since the screens build rows as
+// markup and then look the ids back up.
+if (IN.flight !== undefined) {
+  let seq = 0;
+  const byId = {};
+  const make = function(id){
+    const el = {id: id, value: "", checked: false, disabled: false, textContent: "",
+                innerHTML: "", className: "", type: "", hidden: false, on: {}, kids: []};
+    el.classList = {toggle: function(){}, add: function(){}, remove: function(){}};
+    el.setAttribute = function(){};
+    el.appendChild = function(c){ el.kids.push(c); return c; };
+    el.addEventListener = function(k, f){ el.on[k] = f; };
+    return el;
+  };
+  global.document = {
+    getElementById: function(id){ return byId[id] || (byId[id] = make(id)); },
+    createElement: function(){ return make("::" + (++seq)); },
+    createTextNode: function(t){ return {text: t}; },
+    addEventListener: function(){}
+  };
+  global.window.confirm = function(){ return true; };
+}
+
 process.argv.slice(3).forEach(function(f){
   new Function(fs.readFileSync(f, "utf8"))();
 });
-const IN = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const W = global.window;
 const out = {};
 if (IN.status !== undefined) {
   out.model = W.clOperate.operateModel(IN.status);
   out.why = W.clOperate.replayWhy(out.model, IN.stack || "", IN.region || "", false);
 }
+if (IN.escape !== undefined) out.escaped = W.clPlan.esc(IN.escape);
 if (IN.check !== undefined) out.codeRows = W.clLicences.codeRows(IN.check);
 if (IN.licences !== undefined) {
   out.licenceRows = W.clLicences.licenceRows(IN.licences);
@@ -71,6 +100,44 @@ if (IN.session !== undefined) out.session = IN.session.map(function(step){
   m.released = W.clTeardown.recordFor(m.kvoAddr, W.clLicences);
   return {released: m.released, gate: W.clTeardown.teardownGate(m)};
 });
+/* The screen, driven a step at a time with the network HELD: a licensing
+   call POSTs one operation per row and polls each to its end, so the
+   interesting moment is what the operator does while one is in flight. */
+if (IN.flight !== undefined) {
+  const posts = [], reads = [];
+  let pending = null;
+  W.clUi.post = function(path, body, cb){
+    posts.push({path: path, action: body.action, kvo: body.kvo});
+    pending = cb;                       // held, until the test answers it
+  };
+  IN.flight.forEach(function(step, n){
+    if (step.set) Object.keys(step.set).forEach(function(id){
+      document.getElementById(id).value = step.set[id];
+    });
+    if (step.click) {
+      const el = document.getElementById(step.click);
+      if (!el.on.click) throw new Error("step " + n + ": #" + step.click + " has no click handler");
+      el.on.click();
+    }
+    if (step.answer !== undefined) {
+      if (!pending) throw new Error("step " + n + ": nothing is in flight to answer");
+      const cb = pending; pending = null;
+      cb({ok: true, status: 200, d: step.answer});
+    }
+    if (step.read !== undefined) reads.push({kvo: step.read, record: W.clLicences.released(step.read)});
+    if (step.gate !== undefined) {
+      const m = {};
+      Object.keys(step.gate).forEach(function(k){ m[k] = step.gate[k]; });
+      // exactly what teardown.js's render() does: the record is SELECTED
+      m.released = W.clTeardown.recordFor(m.kvoAddr, W.clLicences);
+      reads.push({gate: W.clTeardown.teardownGate(m)});
+    }
+  });
+  // an unanswered call leaves ui.js's ticking interval running, which
+  // would hold node open: fail loudly instead of hanging
+  if (pending) throw new Error("a call was left in flight");
+  out.flight = {posts: posts, reads: reads};
+}
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -660,9 +727,17 @@ def test_the_gate_needs_the_kvo_question_answered_not_only_an_address(tmp_path):
         dict(base, hasKvo=True, released=dict(mine, stale=True)),           # 6 clear but stale
         # 7 an empty form: nothing named, so nothing to warn about yet
         dict(base, hasKvo=None, stack="", region="", typed=""),
+        # 8 and 9: the record counts, and the screen is NOT armed. `counts`
+        # is computed above the empty-form check, because the banner is
+        # chosen on it, so both of these answered licencesReleased:true
+        # beside armed:false. Nothing reads it in that state, and the one
+        # value in this file that becomes --accept-licence-loss should
+        # still never be true in a state the function calls unarmed.
+        dict(base, hasKvo=True, released=mine, stack="", region="", typed=""),
+        dict(base, hasKvo=True, released=mine, typed=""),                   # 9 name not typed back
     ]
     out = _node({"gates": gates}, tmp_path, "ui.js", "plan.js", "teardown.js")["gates"]
-    assert [g["licencesReleased"] for g in out] == [True, False, False, False, False, False, False, False]
+    assert [g["licencesReleased"] for g in out] == [True] + [False] * 9
     assert out[0]["warn"]["level"] == "good"
     assert out[1]["warn"]["level"] == "warn", "unknown warns; it does not arm"
     # the empty form draws nothing at all: the screen opens on it, and a
@@ -670,6 +745,10 @@ def test_the_gate_needs_the_kvo_question_answered_not_only_an_address(tmp_path):
     # scroll past the one that matters
     assert out[7]["warn"] is None and out[7]["armed"] is False
     assert "Name the stack" in out[7]["why"]
+    assert out[8]["armed"] is False and "Name the stack" in out[8]["why"]
+    assert out[9]["armed"] is False and "Type demo" in out[9]["why"]
+    # the banner still says what it knows: not armed is not "no news"
+    assert out[9]["warn"]["level"] == "good"
 
 
 def test_a_truncated_instance_list_never_answers_no_kvo(tmp_path, monkeypatch):
@@ -752,3 +831,96 @@ def test_a_code_still_being_looked_up_is_not_a_code_the_kvo_refused(tmp_path, mo
     assert rows[1]["valid"] is False and rows[1]["running"] is True
     assert "outcome unknown" in rows[1]["summary"], rows[1]["summary"]
     assert "recognised nothing" not in rows[1]["summary"]
+
+
+def test_the_answer_is_filed_against_the_kvo_the_question_was_sent_to(tmp_path, monkeypatch):
+    """The address is read ONCE, when the call goes out, and carried to
+    the callback that reads the answer.
+
+    Every handler used to re-read the field. call() disables the buttons
+    while a call runs, but not the address box, and it cannot: a licensing
+    call POSTs one operation per row and polls each to its end, which is
+    minutes. So an operator who retyped the address while one was in
+    flight had the answer filed against whatever was in the box when it
+    landed.
+
+    Both halves are wrong, in opposite directions. A release answered
+    after the edit wrote its record under an appliance nothing had been
+    released from, and left the one it WAS released from with no record at
+    all. An activation answered after the edit marked the OTHER appliance
+    stale, which does nothing, and left this one's record saying
+    clear:true, stale:false: green banner, --accept-licence-loss on the
+    argv, and a KVO deleted holding a licence activated a minute earlier.
+    That is the exact loss the stale rule exists to close.
+
+    So this drives the screen itself: real API answers, the real handlers,
+    and the field edited between the POST and its answer."""
+    monkeypatch.setattr(api, "_kvo_license", lambda: _KL())
+    creds = {"kvo": "10.1.2.3", "user": "admin", "password": "pw"}
+    listed = api.licences(dict(creds, action="list"))
+    released = api.licences(dict(creds, action="release",
+                                 rows=[{"activationCode": "AAAA-1111-BBBB", "quantity": 5}]))
+    check = api.licences(dict(creds, action="check", codes=["BBBB-2222-CCCC"]))
+    activated = api.licences(dict(creds, action="activate", codes=["BBBB-2222-CCCC,10"]))
+    assert released["released"] is True and released["clear"] is True
+    assert activated["activated"] == 1
+
+    armed = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1",
+             "hasKvo": True, "kvoAddr": "10.1.2.3", "kvoName": "demo-kvo"}
+    steps = [
+        {"set": {"licKvo": "10.1.2.3", "licPass": "pw"}},
+        {"click": "licLoad"},                          # 1 list: the KVO holds one licence
+        {"answer": listed},
+        {"click": "licRel0"},                          # 2 release that row, against 10.1.2.3
+        {"set": {"licKvo": "10.9.9.9"}},               #   the operator retypes the box, mid-flight
+        {"answer": released},                          #   and the answer lands
+        {"read": "10.1.2.3"},                          # 0
+        {"read": "10.9.9.9"},                          # 1
+        {"gate": dict(armed)},                         # 2
+        # and the same during an activation, which is the case that ends
+        # in a green banner over an appliance holding a fresh licence
+        {"set": {"licKvo": "10.1.2.3", "licEntry": "BBBB-2222-CCCC"}},
+        {"click": "licAdd"},
+        {"click": "licCheck"},
+        {"answer": check},
+        {"click": "licActivate"},                      # 3 activate, against 10.1.2.3
+        {"set": {"licKvo": "10.9.9.9"}},               #   retyped again
+        {"answer": activated},
+        {"read": "10.1.2.3"},                          # 3
+        {"read": "10.9.9.9"},                          # 4
+        {"gate": dict(armed)},                         # 5
+    ]
+    out = _node({"flight": steps}, tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js")["flight"]
+
+    # every call was addressed to the appliance in the box when the button
+    # was pressed, which is the value the callback must also use
+    assert [p["action"] for p in out["posts"]] == ["list", "release", "check", "activate"]
+    assert {p["kvo"] for p in out["posts"]} == {"10.1.2.3"}, out["posts"]
+
+    rec, other, gate = out["reads"][0], out["reads"][1], out["reads"][2]["gate"]
+    assert rec["record"], "the release was filed against the appliance it was sent to"
+    assert rec["record"]["kvo"] == "10.1.2.3" and rec["record"]["codes"] == ["****-BBBB"]
+    assert rec["record"]["clear"] is True and rec["record"]["stale"] is False
+    assert other["record"] is None, (
+        "a release was recorded against an appliance nothing was released from: " + str(other["record"]))
+    assert gate["licencesReleased"] is True and gate["warn"]["level"] == "good"
+
+    after, still_none, gate2 = out["reads"][3], out["reads"][4], out["reads"][5]["gate"]
+    assert after["record"]["stale"] is True and after["record"]["clear"] is False, (
+        "the activation landed on 10.1.2.3, so 10.1.2.3's release stopped being evidence: " +
+        str(after["record"]))
+    assert still_none["record"] is None
+    assert gate2["licencesReleased"] is False, (
+        "a KVO activated on since its release must not arm --accept-licence-loss")
+    assert gate2["warn"]["level"] == "bad" and "ACTIVATED on it" in gate2["warn"]["text"]
+
+
+def test_the_plan_pages_escaper_is_the_shared_one(tmp_path):
+    """plan.js kept an esc() of its own over [&<>"], and wizard.js takes
+    ITS escaper from plan.js: the screen that builds the most markup by
+    concatenation - VPC names, instance names, AWS error text - used the
+    weaker of the console's two rules, and a value carrying an apostrophe
+    walked out of any single-quoted attribute. There is one escaper, in
+    ui.js, and this is it."""
+    out = _node({"escape": "a\'b<c>&\"d"}, tmp_path, "ui.js", "plan.js")
+    assert out["escaped"] == "a&#39;b&lt;c&gt;&amp;&quot;d", out["escaped"]

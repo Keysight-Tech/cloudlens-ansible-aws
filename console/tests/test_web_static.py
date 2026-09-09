@@ -392,14 +392,24 @@ def test_the_operations_screens_take_their_escaper_from_one_place():
     instance name and an AWS error message as markup. An escaper fails
     closed or it is not an escaper. There is one now, in ui.js, and the
     screens take it from there rather than carrying a fallback: without
-    ui.js each throws on its first line and draws nothing."""
+    ui.js each throws on its first line and draws nothing.
+
+    plan.js is in the list, and was the exemption. It kept an esc() of its
+    own over [&<>"], with no apostrophe in the set, and wizard.js takes
+    its escaper from plan.js: the screen that builds the most markup by
+    concatenation used the weaker of the two rules. One rule, one place,
+    every file."""
     ui = _read("ui.js")
     assert "window.clUi=" in ui
     assert 'replace(/[&<>"\']/g' in ui, "ui.js carries a real escaper"
     # the apostrophe is in the set: an escaper that covers three of the four
     # delimiters is one single-quoted attribute away from useless
     assert '"&#39;"' in ui, "ui.js escapes the apostrophe too"
-    for name in ("operate.js", "licences.js", "teardown.js"):
+    # wizard.js reads its escaper from plan.js, and plan.js now reads
+    # ui.js's, so the apostrophe is escaped on the screen that builds the
+    # most markup by concatenation
+    assert re.search(r"esc\s*=\s*P\.esc\b", _read("wizard.js")), "wizard.js takes plan.js's esc"
+    for name in ("operate.js", "licences.js", "teardown.js", "plan.js"):
         js = _read(name)
         assert "var U=window.clUi;" in js, name
         assert re.search(r"\besc=U\.esc\b", js), "%s takes esc from the shared surface" % name
@@ -424,8 +434,8 @@ def test_the_shared_surface_loads_before_the_screens_that_need_it():
     order = re.findall(r'<script src="/web/([\w.]+)"></script>', _read("index.html"))
     assert "ui.js" in order, "index.html loads the shared surface"
     # wizard.js is in the list because it took ui.js's codeTail instead of
-    # keeping its own copy of it
-    for name in ("operate.js", "licences.js", "teardown.js", "wizard.js"):
+    # keeping its own copy of it, and plan.js because it took ui.js's esc
+    for name in ("operate.js", "licences.js", "teardown.js", "wizard.js", "plan.js"):
         assert order.index("ui.js") < order.index(name), name
 
 

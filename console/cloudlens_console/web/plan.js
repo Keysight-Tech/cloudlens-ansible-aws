@@ -4,7 +4,16 @@
    answer. Nothing here touches the DOM or the network; wizard.js calls
    these and puts the HTML where it goes. Exposed as window.clPlan. */
 
-function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+var U=window.clUi;                            // ui.js, loaded before this file
+
+/* The one escaper, ui.js's. This file kept its own over [&<>"], which left
+   the apostrophe unescaped, and wizard.js takes ITS esc from here: so the
+   screen that builds the most markup by concatenation was one
+   single-quoted attribute away from rendering a VPC name, an instance
+   name or an AWS error as markup. Two escapers is two rules, and the
+   weaker one was the one most of the page used. It is re-exported on
+   window.clPlan because that is where wizard.js reads it. */
+var esc=U.esc;
 
 /* The resolved table: one row per profile key in the file's order, as the
    CLI prints its "Resolved configuration". A row with a value shows it; one

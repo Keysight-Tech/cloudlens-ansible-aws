@@ -155,7 +155,15 @@ function teardownGate(m){
           // --accept-licence-loss on the script's command line. The API
           // trusts this by design, so this page is the only place the
           // release can be tied to the appliance it was made against.
-          licencesReleased:counts};
+          //
+          // AND armed. `counts` is computed above the empty-form check,
+          // because the banner is chosen on it, so a form with no stack
+          // and no region could answer licencesReleased:true beside
+          // armed:false. Nothing reads it in that state today (tearDown
+          // returns on !armed), but the one value in this file that
+          // becomes --accept-licence-loss should not be true in a state
+          // the function itself calls unarmed.
+          licencesReleased:counts&&!why};
 }
 
 /* The session release record this stack's gate should stand on: this

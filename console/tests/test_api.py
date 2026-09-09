@@ -1231,6 +1231,60 @@ def test_a_poll_that_ran_out_of_its_budget_is_not_a_success(monkeypatch):
     assert r["released"] is False and r["clear"] is False and r["count"] == 1
 
 
+def test_only_a_state_that_says_done_is_read_as_done(monkeypatch):
+    """_op_ok was a deny-list: truthy, not IN_PROGRESS, no FAIL, no ERROR.
+
+    poll_op stops at the FIRST state that is neither empty nor
+    IN_PROGRESS, so any word a KVO uses for "accepted, not finished yet" -
+    PENDING, QUEUED - arrives here as the last word on the row, and the
+    deny-list read every one of them as a success. On an activate that is
+    entitlement reported as spent with nobody having watched it land; on a
+    release it is a row that sits beside `clear` and turns the teardown
+    banner green. So it is an allow-list of what is known to mean done,
+    and everything else is running-or-unknown, which is the safe
+    direction: a real "done" word missing from _OP_DONE costs one row
+    reported as unknown, and a wrong guess costs a licence count.
+
+    The other shape is the empty state. poll_op reads `state` out of the
+    body it polls and leaves it "" when that body is not the JSON object
+    it expects (an HTML page from a pending EULA, a plain-text error, no
+    body at all), and "" never breaks its loop, so an empty state means
+    the poll ran to its deadline having never read one. That is a
+    TIMEOUT, and it came back ok:false running:false, which the page
+    prints as "refused": the operator was told the KVO rejected a code it
+    never answered about."""
+    assert api._op_ok("SUCCESS") is True and api._op_running("SUCCESS") is False
+    assert api._op_ok("success") is True, "the state is compared case-insensitively"
+    # a refusal IS an outcome, and the only one that may be shown as one
+    for word in ("FAILED", "FAILURE", "INTERNAL_ERROR", "error"):
+        assert api._op_ok(word) is False, word
+        assert api._op_running(word) is False, word
+    # everything else: not done, not refused, not known
+    for word in ("IN_PROGRESS", "PENDING", "QUEUED", "ACCEPTED", "COMPLETED", "", None):
+        assert api._op_ok(word) is False, word
+        assert api._op_running(word) is True, "%r is not an outcome this code knows" % (word,)
+
+    # a KVO that answers PENDING to an activate: nothing is counted as
+    # activated, and the row says its outcome is unknown
+    kl = FakeKL(ents={"BBBB-2222": [("CloudLens-Credit", 10, 20)]}, states={"activate": "PENDING"})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "activate", "codes": ["BBBB-2222,3"]})
+    assert r["activated"] == 0 and r["running"] == 1, r
+    assert r["results"][0]["ok"] is False and r["results"][0]["running"] is True
+
+    # and a release whose poll never read a state at all: the timeout that
+    # used to be reported as a refusal. The KVO still holds the row it was
+    # asked to give back, which is the other half of the same answer.
+    kl = FakeKL(licences=[LICENCE_ROW], states={"deactivate": ""})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                      "rows": [{"activationCode": "AAAA-1111", "quantity": 5}]})
+    assert r["released"] is False and r["running"] == 1, r
+    assert r["results"][0]["ok"] is False and r["results"][0]["running"] is True, (
+        "a poll that never read a state is a timeout, not a code the KVO refused")
+    assert r["clear"] is False and r["count"] == 1
+
+
 class _TimedLookupKL(FakeKL):
     """FakeKL that records the timeout each lookup was given and lets the
     lookup take time on a clock the test holds."""
@@ -1310,7 +1364,13 @@ def test_a_refused_code_is_named_by_position_and_never_echoed(tmp_path, monkeypa
     for good in ("A-AA-1111", "1234", "1234-ABCD-5678-EFGH-9012", "A" * 64):
         assert api._shape(api.CODE, good) and api._shape(api.CODE_QTY, good + ",5"), good
     assert api.MAX_LIST == 50
-    assert "at most 50" in api._check_codes(["A123"] * 51)[1]
+    over = api._check_codes(["A123"] * 51)[1]
+    assert "at most 50" in over and "51" in over, over
+    # and it says what to do next, as the MAX_CHECK and MAX_OPS refusals
+    # do: a refusal that only names a limit leaves the operator to guess
+    assert "batches" in over, over
+    not_a_list = api._check_codes("A123-4567")[1]
+    assert "list" in not_a_list and "CODE,QTY" in not_a_list, not_a_list
     assert "at most 50" in api._release_rows({"rows": [{"activationCode": "A123", "quantity": 1}] * 51})[1]
     assert "vpcs" in api.discover_workloads("us-east-1", "k=v", ",".join(["vpc-0a0a0a0a"] * 51))["error"]
 
@@ -1902,6 +1962,50 @@ def test_the_profile_reader_takes_export_and_single_quotes_as_the_loader_does(tm
     stack_says = tmp_path / "deploy-profile-demo.env"
     stack_says.write_text('export CLOUDLENS_STACK_NAME="demo"\nexport CLOUDLENS_REGION="us-west-2"\n')
     assert api._profile_says(str(stack_says), ("CLOUDLENS_REGION",)) == {"CLOUDLENS_REGION": "us-west-2"}
+
+
+def test_the_profile_reader_strips_a_bom_as_the_loader_does(tmp_path, monkeypatch):
+    """A UTF-8 BOM on the first line was the third way the same guard
+    failed OPEN, and the same way round.
+
+    Windows editors write one, and deploy-stack.sh strips it before it
+    parses anything (`sed '1s/^\\xEF\\xBB\\xBF//'`, under a comment that
+    says which editors). This reader opened the file as plain utf-8, and
+    str.strip() does not remove U+FEFF, so a profile whose FIRST line was
+    CLOUDLENS_REGION= or CLOUDLENS_STACK_NAME= arrived here as
+    "\ufeffCLOUDLENS_REGION=..." and matched nothing at all. The key then
+    read as one the profile does not set, the caller refuses only on a
+    value that DISAGREES, and the replay ran in the profile's region
+    while the console held, and reported, the typed one. The key that
+    comes first is the one that is lost, so both are tested first."""
+    bom = b"\xef\xbb\xbf"
+    want = {"CLOUDLENS_REGION": "us-west-2", "CLOUDLENS_STACK_NAME": "demo"}
+    for first, second in (("CLOUDLENS_REGION", "CLOUDLENS_STACK_NAME"),
+                          ("CLOUDLENS_STACK_NAME", "CLOUDLENS_REGION")):
+        p = tmp_path / ("bom-%s.env" % first.lower())
+        p.write_bytes(bom + ('%s="%s"\n%s="%s"\n' % (first, want[first], second, want[second])).encode())
+        assert api._profile_says(str(p), tuple(want)) == want, first
+    # line for line with the loader: it strips exactly this
+    with open(api.DEPLOY, encoding="utf-8", errors="replace") as fh:
+        assert r"1s/^\xEF\xBB\xBF//" in fh.read(), "deploy-stack.sh strips the BOM before parsing"
+
+    # and the guard itself, end to end, agreeing and disagreeing
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    started = []
+    start = lambda job, cmd, cwd, env: started.append(cmd)
+    path = tmp_path / "deploy-profile-demo.env"
+    path.write_bytes(bom + b'CLOUDLENS_REGION="us-west-2"\nCLOUDLENS_STACK_NAME="demo"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert r["http"] == 400 and "us-west-2" in r["error"] and "us-east-1" in r["error"], r
+    assert not started, "a BOM is not permission to run in another region"
+    path.write_bytes(bom + b'CLOUDLENS_STACK_NAME="other"\nCLOUDLENS_REGION="us-east-1"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert r["http"] == 400 and "CLOUDLENS_STACK_NAME" in r["error"] and "other" in r["error"], r
+    assert not started
+    path.write_bytes(bom + b'CLOUDLENS_REGION="us-east-1"\nCLOUDLENS_STACK_NAME="demo"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert not r.get("error") and not r.get("errors"), r
+    assert started and started[-1] == ["bash", api.DEPLOY, "--profile", str(path), "--resume"]
 
 
 def test_status_names_the_kvo_by_role_over_every_instance_not_only_the_rows(tmp_path, monkeypatch):

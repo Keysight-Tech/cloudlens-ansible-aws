@@ -535,8 +535,17 @@ def _check_codes(codes, with_qty=True):
     secret, and a near miss is most of one."""
     if codes is None:
         return [], None
-    if not isinstance(codes, list) or len(codes) > MAX_LIST:
-        return [], "codes must be a list of at most %d activation codes" % MAX_LIST
+    if not isinstance(codes, list):
+        return [], ('codes must be a list of activation codes, ["CODE"] or ["CODE,QTY"] as the Licensing '
+                    "screen sends them, and at most %d of them in one body" % MAX_LIST)
+    if len(codes) > MAX_LIST:
+        # as the MAX_CHECK and MAX_OPS refusals do: say what to do next.
+        # A list this long has to be split whatever it is for, because
+        # every action that takes one is capped tighter than this.
+        return [], ("codes takes at most %d activation codes in one body, and this asks for %d. Split the "
+                    "paste and send it in batches: check takes at most %d in one call and activate at most "
+                    "%d, so a list this long has to be broken up either way."
+                    % (MAX_LIST, len(codes), MAX_CHECK, MAX_OPS))
     rule = CODE_QTY if with_qty else CODE
     out = []
     for n, c in enumerate(codes, 1):
@@ -616,7 +625,18 @@ def _profile_says(path, keys):
     so an unreadable profile is left to fail where it is used."""
     out = dict.fromkeys(keys)
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        # utf-8-sig, not utf-8: a BOM belongs to the encoding, not to the
+        # first key. The script's loader strips it before it parses
+        # anything (`sed '1s/^\xEF\xBB\xBF//'`, whose comment names the
+        # Windows editors that add one) and str.strip() below does not, so
+        # a profile whose first line was CLOUDLENS_REGION= or
+        # CLOUDLENS_STACK_NAME= read as "\ufeffCLOUDLENS_REGION=..." here,
+        # matched nothing, and said NOTHING about the key. The caller only
+        # refuses on a value that disagrees, so the guard failed OPEN in
+        # the same direction the `export ` prefix used to: the replay ran
+        # in the profile's region while the console held, and reported,
+        # the typed one.
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             for raw in fh:
                 line = raw.strip()
                 if not line or line.startswith("#"):
@@ -917,29 +937,63 @@ class _Kvo(object):
         return max(1, int(self.deadline - _now()))
 
 
-def _op_running(state):
-    """Whether the operation had NOT finished when the poll stopped.
+# The states that mean an operation FINISHED and succeeded. An allow-list,
+# and a short one, because only SUCCESS is knowable from here: kvo_license.py
+# polls until the state leaves IN_PROGRESS and names no other word, and the
+# deactivates that proved the release path answered SUCCESS. A KVO build that
+# says something else for "done" belongs in this tuple; until it is in it, its
+# rows are reported as unknown, which is the safe direction. Guessing the
+# vocabulary is the unsafe one: a word wrongly counted as success is a licence
+# count nobody released and a teardown banner that goes green on it.
+_OP_DONE = ("SUCCESS",)
 
-    kvo_license.py's poll_op returns IN_PROGRESS in exactly one case: it
-    ran out of its timeout with the KVO still working. So IN_PROGRESS from
-    here never means "the operation is fine, it is just slow"; it means
-    the console stopped watching and does not know how it ended."""
-    return str(state or "").upper() == "IN_PROGRESS"
+
+def _op_failed(state):
+    """Whether the KVO REFUSED the operation. FAIL and ERROR are matched as
+    substrings on purpose: FAILED, FAILURE and INTERNAL_ERROR are one
+    answer. This is the only reading that may be shown as a refusal."""
+    s = str(state or "").upper()
+    return "FAIL" in s or "ERROR" in s
 
 
 def _op_ok(state):
-    """kvo_license.py's own reading of an operation's final state.
+    """Whether the operation finished AND succeeded.
 
-    IN_PROGRESS is NOT ok. It used to be: "FAIL" not in "IN_PROGRESS" and
-    "ERROR" not in it, so a poll that exhausted the request's budget was
-    counted as a success. With OP_BUDGET shared across the rows of one
-    call that is not a rare case, it is what the last rows of a full call
-    get: rows 4 and 5 of a five-code activate are polled with 1 second.
-    "5 of 5 activated" then included two operations nobody had watched to
-    their end, and for a release it paired with `clear` to turn the
-    teardown banner green."""
-    s = str(state or "").upper()
-    return bool(state) and not _op_running(s) and "FAIL" not in s and "ERROR" not in s
+    This was a deny-list: anything truthy that was not IN_PROGRESS and
+    carried neither FAIL nor ERROR. Two things got through it. IN_PROGRESS
+    itself did at first ("FAIL" is not in it), so a poll that exhausted
+    the request's budget counted as a success, which is not a rare shape:
+    OP_BUDGET is shared across the rows of one call, so rows 4 and 5 of a
+    five-code activate are polled with a second each. And any word the KVO
+    might use for "accepted, not finished" - PENDING, QUEUED - still does,
+    because poll_op stops at the FIRST state that is neither empty nor
+    IN_PROGRESS, so such a word arrives here as the last word on the row.
+    "5 of 5 activated" then counts operations nobody watched to their end,
+    and on the release side one of them sits beside `clear` and turns the
+    teardown banner green. An allow-list cannot make that mistake."""
+    return str(state or "").upper() in _OP_DONE
+
+
+def _op_running(state):
+    """Whether the row's outcome is NOT KNOWN. Three shapes, one meaning:
+
+      IN_PROGRESS, which kvo_license.py's poll_op returns in exactly one
+      case: it ran out of its timeout with the KVO still working.
+
+      no state at all. poll_op reads `state` out of the polled body and
+      leaves it "" when that body is not a JSON object (an HTML page from
+      a pending EULA, a plain-text error, nothing at all), and "" never
+      breaks its loop, so an empty state means the poll ran to its
+      deadline having never read one. That is a timeout, and it was
+      reported as a refusal: `ok` false, `running` false, and the page
+      printing the row as "refused", which tells the operator the KVO
+      rejected a code it never answered about.
+
+      a word that is neither a known success nor a failure, which is the
+      other half of _op_ok's allow-list.
+
+    None of the three is a refusal, and none of them is a success."""
+    return not _op_ok(state) and not _op_failed(state)
 
 
 def _state(info):

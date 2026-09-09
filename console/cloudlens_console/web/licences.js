@@ -287,9 +287,11 @@ function renderRecord(){
 /* ------------------------------------------------------------ the calls */
 
 /* The body every call shares. The password is read HERE, at the moment of
-   the call, and the object is thrown away with the request. */
-function body(action,extra){
-  var b={action:action,kvo:$("licKvo").value.trim(),user:$("licUser").value.trim()||"admin",
+   the call, and the object is thrown away with the request. The address is
+   NOT read here: call() reads it once and passes it in, so the request and
+   the answer to it name the same appliance. */
+function body(action,kvo,extra){
+  var b={action:action,kvo:kvo,user:$("licUser").value.trim()||"admin",
          password:$("licPass").value,verify:$("licVerify").checked===true,
          accept_eula:$("licEula").checked===true};
   if(extra)for(var k in extra)if(Object.prototype.hasOwnProperty.call(extra,k))b[k]=extra[k];
@@ -304,18 +306,32 @@ function body(action,extra){
    the wait has a ceiling on both sides. */
 function call(action,extra,cb){
   if(busy)return;
-  if(!$("licKvo").value.trim())return status("licStatus","Name the KVO first.",true);
+  // The appliance this call is ADDRESSED to, read once, here, and carried
+  // to the callback. The buttons are disabled while a call runs; the
+  // address field is not, and it cannot be, because a call is minutes:
+  // activate and release POST one operation per row and poll each to its
+  // end. Every handler used to re-read the field when the answer came
+  // back, so an operator who retyped the address mid-flight had the answer
+  // filed against whatever was in the box by then. Activate against
+  // 10.1.2.3, retype the field, and the callback marked 10.9.9.9 stale,
+  // which is a no-op because nothing was released there, while 10.1.2.3
+  // kept a record saying clear:true, stale:false. The Teardown screen
+  // reads that record, and a green one puts --accept-licence-loss on the
+  // argv of a run that deletes a KVO holding a licence activated a minute
+  // earlier: the exact loss the stale rule exists to close.
+  var kvo=$("licKvo").value.trim();
+  if(!kvo)return status("licStatus","Name the KVO first.",true);
   busy=true;
   ["licLoad","licCheck","licActivate"].forEach(function(id){$(id).disabled=true;});
   var stop=U.ticking("licStatus",action+"...");
-  U.post("/api/licences/"+encodeURIComponent(action),body(action,extra),function(x){
+  U.post("/api/licences/"+encodeURIComponent(action),body(action,kvo,extra),function(x){
     busy=false;
     stop();
     ["licLoad","licCheck"].forEach(function(id){$(id).disabled=false;});
     paintCodes();
     var why=U.why(x);
     if(why)return status("licStatus",why,true);
-    cb(x.d);
+    cb(x.d,kvo);
   });
 }
 
@@ -348,13 +364,13 @@ function activate(){
       "operation polled to its end: the console takes at most "+OPS_MAX+" at a time so a single request "+
       "cannot run for the rest of the afternoon. Set the quantity to 0 on the ones to leave for the next "+
       "batch.",true);
-  call("activate",{codes:picked},function(d){
+  call("activate",{codes:picked},function(d,kvo){
     installed=licenceRows(d);
     renderInstalled();
     // whatever this KVO's release record said before, something has just
     // been put back ON it: the record keeps its sentence and stops being
     // the evidence the Teardown screen may arm on
-    noteHolds($("licKvo").value.trim());
+    noteHolds(kvo);
     renderRecord();
     var ok=(d.activated||0);
     // a row still running is not a row that failed and not a row that
@@ -377,12 +393,12 @@ function activate(){
 }
 
 function load(){
-  call("list",null,function(d){
+  call("list",null,function(d,kvo){
     installed=licenceRows(d);
     renderInstalled();
     // a list that names anything is the KVO saying it still holds
     // something, whatever this session released earlier
-    if(installed.length){noteHolds($("licKvo").value.trim());renderRecord();}
+    if(installed.length){noteHolds(kvo);renderRecord();}
     // clear is tri-state: the API answers null when it could not read the
     // list at all, and "this KVO holds no licences" is not a thing to say
     // about an answer nobody got
@@ -401,10 +417,10 @@ function release(row){
   var what=releaseRow(row);
   if(!window.confirm("Release "+what.quantity+" of "+(row.product||"this licence")+
       " ("+row.tail+") back to the pool? This is the step that must happen BEFORE the KVO is deleted."))return;
-  call("release",{rows:[what]},function(d){
+  call("release",{rows:[what]},function(d,kvo){
     installed=licenceRows(d);
     renderInstalled();
-    noteRelease($("licKvo").value.trim(),d);
+    noteRelease(kvo,d);
     renderRecord();
     var open=(d.results||[]).filter(function(r){return r&&r.running===true;});
     status("licStatus",d.released
