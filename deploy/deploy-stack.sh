@@ -731,6 +731,12 @@ login_block() {
 # is the terminal: every question goes out as a prompt event on the --events
 # file and the run blocks until the console writes one line to the FIFO. The
 # parser forces INTERACTIVE=true for it, whatever stdin is.
+#
+# Per prompt: wait for its prompt event, open the FIFO for writing, write
+# exactly one line, close. Never hold the write end open between answers: a
+# held-then-closed end reads as an empty answer and takes the default. A run
+# whose console goes away blocks on the next prompt forever and emits no done;
+# the console owns the process and must kill it.
 # ---------------------------------------------------------------------
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
@@ -751,10 +757,7 @@ ask() {
     ans="${ans%$'\r'}"
     # The transcript still reads like a terminal session: question, answer.
     printf '%s%s\n' "$prompt" "$ans" >&2
-    printf '%s' "${ans:-$def}"
-    return 0
-  fi
-  if [[ "$INTERACTIVE" == "true" ]]; then
+  elif [[ "$INTERACTIVE" == "true" ]]; then
     read -rp "$prompt" ans || true
   fi
   printf '%s' "${ans:-$def}"
@@ -770,10 +773,7 @@ ask_secret() {
     IFS= read -r ans < "$PROMPT_PIPE" || true
     ans="${ans%$'\r'}"
     printf '%s\n' "$prompt" >&2
-    printf '%s' "$ans"
-    return 0
-  fi
-  if [[ "$INTERACTIVE" == "true" ]]; then
+  elif [[ "$INTERACTIVE" == "true" ]]; then
     read -rsp "$prompt" ans || true; echo >&2
   fi
   printf '%s' "$ans"
@@ -1953,6 +1953,14 @@ Toggles:
                             prompt event and the run waits for one line on the
                             pipe. The operations console creates the pipe and
                             answers from the page. Needs --events.
+                            Per prompt: wait for its prompt event, open the
+                            FIFO for writing, write exactly one line, close.
+                            Never hold the write end open between answers: a
+                            held-then-closed end reads as an empty answer and
+                            takes the default. A run whose console goes away
+                            blocks on the next prompt forever and emits no
+                            done; the console owns the process and must kill
+                            it.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
@@ -2570,7 +2578,7 @@ elif [[ "$KERNEL" == MINGW* ]] || [[ "$KERNEL" == MSYS* ]] || [[ "$KERNEL" == CY
   echo "    2. WSL                  (Windows Subsystem for Linux: 'wsl --install')"
   echo "    3. Linux jumpbox EC2    (small EC2 you SSH into)"
   echo
-  yn="$(ask "Continue anyway in this Windows shell? [y/N]: " "")"
+  yn="$(ask "Continue anyway in this Windows shell? [y/N]: " "n")"
   yn_lc=$(to_lower "${yn:-n}")
   if [[ "$yn_lc" != "y" && "$yn_lc" != "yes" ]]; then
     fail "Aborted. Open AWS CloudShell and rerun the curl line there for the smoothest experience."
@@ -2781,7 +2789,7 @@ install_aws_cli() {
     note "Windows shell detected ($os). AWS CLI v2 ships as an MSI."
     echo "    Download: https://awscli.amazonaws.com/AWSCLIV2.msi"
     if command -v msiexec >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
-      yn="$(ask "    Download and run the MSI installer now? [Y/n]: " "")"
+      yn="$(ask "    Download and run the MSI installer now? [Y/n]: " "y")"
       if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
         curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "$TMPDIR/AWSCLIV2.msi" 2>/dev/null \
           || curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "./AWSCLIV2.msi"
@@ -2808,7 +2816,7 @@ if ! command -v aws >/dev/null 2>&1; then
     warn "aws CLI not installed (dry-run continues)"
   else
     warn "AWS CLI not installed."
-    yn="$(ask "Install it now? Pulls the official AWS CLI v2. [Y/n]: " "")"
+    yn="$(ask "Install it now? Pulls the official AWS CLI v2. [Y/n]: " "y")"
     yn_lc=$(to_lower "${yn:-y}")
     if [[ "$yn_lc" == "n" || "$yn_lc" == "no" ]]; then
       fail "AWS CLI required. Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
@@ -2896,7 +2904,7 @@ else
     echo "    2) Access key + secret         (runs: aws configure)"
     echo "    3) I will sort it out myself   (exit)"
     echo
-    auth_choice="$(ask "  Choose 1-3 [1]: " "")"
+    auth_choice="$(ask "  Choose 1-3 [1]: " "1")"
     case "${auth_choice:-1}" in
       1)
         auth_profile="$(ask "  AWS profile name (blank = default): " "")"
@@ -3136,7 +3144,7 @@ select_key_pair() {
 
   if [[ ${#existing[@]} -eq 0 ]]; then
     warn "No EC2 key pairs exist in ${REGION}."
-    pick="$(ask "Name for a new key pair to create [${default_new}]: " "")"
+    pick="$(ask "Name for a new key pair to create [${default_new}]: " "$default_new")"
     KEY_NAME="${pick:-$default_new}"
     ensure_key_pair "$KEY_NAME"
     return 0
@@ -3166,7 +3174,7 @@ select_key_pair() {
   # Default to creating a new pair. Defaulting to the FIRST existing pair meant
   # pressing Enter picked a key whose .pem was on a different machine entirely,
   # which is how a full deploy reached the sensor step and died UNREACHABLE.
-  pick="$(ask "Choose 1-${i}, or type a key pair name [${i}]: " "")"
+  pick="$(ask "Choose 1-${i}, or type a key pair name [${i}]: " "$i")"
   pick="${pick:-$i}"
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
@@ -3191,7 +3199,7 @@ select_key_pair() {
     note "sensor install both need it. If you continue, those SSH steps fail here"
     note "until you upload ${KEY_NAME}.pem to ~/.ssh/ yourself."
     if ask_yn "  Create a NEW key pair instead, so the .pem is written here? [Y/n]: " "y"; then
-      pick="$(ask "Name for the new key pair [${default_new}]: " "")"
+      pick="$(ask "Name for the new key pair [${default_new}]: " "$default_new")"
       pick="${pick:-$default_new}"
       KEY_NAME="$pick"; ensure_key_pair "$KEY_NAME"; return 0
     fi
@@ -3201,7 +3209,7 @@ select_key_pair() {
   fi
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick == i )); then
-    pick="$(ask "Name for the new key pair [${default_new}]: " "")"
+    pick="$(ask "Name for the new key pair [${default_new}]: " "$default_new")"
     pick="${pick:-$default_new}"
   fi
 
@@ -3240,7 +3248,7 @@ pick_subnet() {
       --query 'Subnets[].[SubnetId, AvailabilityZone, CidrBlock, to_string(MapPublicIpOnLaunch)]' \
       --output text 2>/dev/null)
   if [[ ${#rows[@]} -eq 0 ]]; then
-    read -rp "  ${label} (subnet id, Enter to skip): " pick || true
+    pick="$(ask "  ${label} (subnet id, Enter to skip): " "")"
     echo "$pick"; return 0
   fi
   echo "  Subnets in ${vpc} (public=auto-assigns public IPs):" >&2
@@ -3248,7 +3256,7 @@ pick_subnet() {
     i=$((i+1))
     printf "    %2d) %s\n" "$i" "$(echo "$line" | awk -F'\t' '{printf "%s  %s  %-18s  %s", $1, $2, $3, ($4=="true")?"public":"private"}')" >&2
   done
-  read -rp "  ${label} [1-${#rows[@]}, subnet id, or Enter to skip]: " pick || true
+  pick="$(ask "  ${label} [1-${#rows[@]}, subnet id, or Enter to skip]: " "")"
   if [[ "$pick" =~ ^[0-9]+$ ]]; then
     if (( pick >= 1 && pick <= ${#rows[@]} )); then
       echo "${rows[$((pick-1))]}" | cut -f1
@@ -3272,7 +3280,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
   echo "  1) Build a NEW VPC for it. Clean lab or demo; teardown removes everything. Default."
   echo "  2) Deploy INTO infrastructure you already run (your VPC and subnet;"
   echo "     nothing network-level is created, and teardown never touches your VPC)."
-  infra_choice="$(ask "Choose 1-2 [1]: " "")"
+  infra_choice="$(ask "Choose 1-2 [1]: " "1")"
   INFRA_CHOICE="new"
   if [[ "${infra_choice:-1}" == "2" ]]; then
     INFRA_CHOICE="existing"
@@ -3292,7 +3300,7 @@ fi
 
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then
-  yn="$(ask "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " "")"
+  yn="$(ask "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " "n")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_KVO=true || DEPLOY_KVO=false
 fi
@@ -3300,7 +3308,7 @@ ok "Deploy KVO: ${DEPLOY_KVO}"
 
 # Deploy vPB?
 if [[ -z "$DEPLOY_VPB" ]]; then
-  yn="$(ask "Deploy vPB alongside vController? [y/N]: " "")"
+  yn="$(ask "Deploy vPB alongside vController? [y/N]: " "n")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_VPB=true || DEPLOY_VPB=false
 fi
@@ -3320,7 +3328,7 @@ if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
     echo "                only; needs KVO and an AWS access key for it."
     echo "  3) both       sensors where possible plus the mirror fabric."
     echo "  4) none       infrastructure only, no tapping."
-    tap_choice="$(ask "Choose 1-4 [1]: " "")"
+    tap_choice="$(ask "Choose 1-4 [1]: " "1")"
     case "${tap_choice:-1}" in
       2) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
       3) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
@@ -3345,7 +3353,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  1) standalone   register straight to the vController project"
   echo "  2) KVO-managed  register to the project KVO provisions, so KVO is the"
   echo "                  single pane of glass (licensing and adoption run first)"
-  _sm="$(ask "Choose 1-2 [1]: " "")"
+  _sm="$(ask "Choose 1-2 [1]: " "1")"
   [[ "${_sm:-1}" == "2" ]] && SENSOR_MODE="kvo" || SENSOR_MODE="standalone"
 fi
 
@@ -3364,7 +3372,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  2) Throwaway TEST workloads created with the stack (you choose how many"
   echo "     of Ubuntu / RHEL / Windows). Right for demos and first runs. Default."
   echo "  3) Decide later (tag instances afterwards and re-run the sensor step)."
-  wl_choice="$(ask "Choose 1-3 [2]: " "")"
+  wl_choice="$(ask "Choose 1-3 [2]: " "2")"
   case "${wl_choice:-2}" in
     1)
       WORKLOAD_CHOICE="existing"
@@ -3399,13 +3407,13 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     *)
       WORKLOAD_CHOICE="test"
       TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes
-      _c="$(ask "  How many Ubuntu VMs? [1, 0 skips]: " "")"
+      _c="$(ask "  How many Ubuntu VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_UBUNTU=no || UBUNTU_COUNT="${_c:-1}"
-      _c="$(ask "  How many RHEL VMs? [1, 0 skips]: " "")"
+      _c="$(ask "  How many RHEL VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_RHEL=no || RHEL_COUNT="${_c:-1}"
-      _c="$(ask "  How many Windows VMs? [1, 0 skips]: " "")"
+      _c="$(ask "  How many Windows VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_WINDOWS=no || WINDOWS_COUNT="${_c:-1}"
       ;;
@@ -3423,7 +3431,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "     kubectl rights on it)."
   echo "  3) Yes, create a small SAMPLE cluster to see it work (2x t3.medium,"
   echo "     ~15 extra minutes, plus a demo app generating pod-to-pod HTTP)."
-  eks_choice="$(ask "Choose 1-3 [1]: " "")"
+  eks_choice="$(ask "Choose 1-3 [1]: " "1")"
   case "${eks_choice:-1}" in
     2) DEPLOY_EKS=true ;;
     3) DEPLOY_EKS=true; EKS_SAMPLE=true ;;
@@ -3437,7 +3445,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     echo "    2) Sidecar    a sensor container inside each tapped pod. Pod-"
     echo "                  selective, but adding it restarts the pod, so your"
     echo "                  apps get a rendered snippet to apply yourselves."
-    eks_mode_choice="$(ask "  Choose 1-2 [1]: " "")"
+    eks_mode_choice="$(ask "  Choose 1-2 [1]: " "1")"
     [[ "${eks_mode_choice:-1}" == "2" ]] && EKS_MODE="sidecar" || EKS_MODE="daemonset"
   fi
 fi
@@ -3811,7 +3819,7 @@ check_eip_headroom() {
   echo "    Or deploy without public IPs and reach the stack privately:"
   echo "      re-run with --no-public-ip"
   echo
-  yn="$(ask "    Continue anyway? [y/N]: " "")"
+  yn="$(ask "    Continue anyway? [y/N]: " "n")"
   [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
 }
 # Only when we are actually going to create the stack. A resume against an
@@ -4453,7 +4461,7 @@ else
   elif ! python3 -c "import requests" 2>/dev/null; then
     # The one dependency. Offer to install rather than silently degrading.
     warn "The python 'requests' module is missing (needed to talk to the vController API)."
-    yn="$(ask "  Install it now with pip? [Y/n]: " "")"
+    yn="$(ask "  Install it now with pip? [Y/n]: " "y")"
     if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
       python3 -m pip install --quiet --user requests 2>/dev/null \
         || python3 -m pip install --quiet --break-system-packages --user requests 2>/dev/null \
@@ -5194,7 +5202,7 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
 
   if [[ -n "$sensor_blocker" ]]; then
     echo
-    skip_yn="$(ask "Skip the sensor step for now? [Y/n]: " "")"
+    skip_yn="$(ask "Skip the sensor step for now? [Y/n]: " "y")"
     if [[ "$(to_lower "${skip_yn:-y}")" != "n" ]]; then
       warn "Skipping sensor deployment. Infrastructure is deployed and ready."
       # Do not end here without saying how to come back. The stack is built and

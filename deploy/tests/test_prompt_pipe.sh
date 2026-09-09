@@ -6,7 +6,7 @@
 # and the ids stay unique even though nearly every call site is x="$(ask ...)",
 # where a shell counter would never advance.
 #
-# Only the helpers are exercised, lifted out of the script by awk into a file.
+# Only the helpers and pick_subnet are exercised, lifted out by awk to a file.
 # That relies on them being written name() { ... } with both braces at column
 # 0. Two portability traps shaped this: macOS awk 20200816 keeps only the last
 # of several range patterns, and bash 3.2 sources nothing from <(...) because
@@ -17,7 +17,7 @@ S=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$S"' EXIT
 mkfifo "$S/answers"
 EV="$S/ev.jsonl"
-awk '/^(json_str|emit_event|ask|ask_secret)\(\)/{p=1} p{print} p&&/^}/{p=0}' deploy/deploy-stack.sh > "$S/helpers.sh"
+awk '/^(json_str|emit_event|ask|ask_secret|pick_subnet)\(\)/{p=1} p{print} p&&/^}/{p=0}' deploy/deploy-stack.sh > "$S/helpers.sh"
 
 harness='
   source "$3"
@@ -87,6 +87,25 @@ assert [e["seq"] for e in evs] == list(range(1, len(evs) + 1)), [e["seq"] for e 
 print("PASS prompt ids are unique and ordered across subshells: %s" % ", ".join(ids))
 PY
 
+# 4b. pick_subnet, the interview's subnet picker, prompts through ask too. With
+#     the listing empty (aws shadowed to fail) it asks for a subnet id; that
+#     answer must arrive as one prompt event over the pipe. It used to be a raw
+#     read on stdin, which is /dev/null under the console, so the operator's
+#     existing-VPC choice silently fell back to building a new VPC.
+answer_when p6 "subnet-0123456789abcdef0"
+out=$(/bin/bash -c "$harness"'aws() { return 1; }; REGION=us-east-1; pick_subnet vpc-0abc "Management subnet"' \
+      _ "$S/answers" "$EV" "$S/helpers.sh" </dev/null 2>"$S/err6")
+if [[ "$out" == "subnet-0123456789abcdef0" ]]; then echo "PASS pick_subnet returned the piped subnet id"
+else echo "FAIL pick_subnet: got '$out'"; rc=1; fi
+python3 - "$EV" <<'PY' || rc=1
+import json, sys
+evs = [json.loads(l) for l in open(sys.argv[1])]
+p = [e for e in evs if e["type"] == "prompt"]
+assert len(p) == 6 and p[5]["id"] == "p6" and p[5]["kind"] == "text" \
+    and p[5]["question"] == "  Management subnet (subnet id, Enter to skip): " and p[5]["default"] == "", p
+print("PASS pick_subnet emitted exactly one prompt event")
+PY
+
 # 5. The whole script, end to end: a dry run with --prompt-pipe, stdin closed
 #    and no AWS credentials at all (the same hermetic set as test_events.sh),
 #    driven by a stand-in for the console that answers every prompt event as
@@ -114,11 +133,27 @@ console_stand_in() { # answers prompt events on $E2E through the FIFO until done
     done ) &
 }
 console_stand_in
-( cd "$S" && env "${nocreds[@]}" HOME="$S" /bin/bash "$REPO/deploy/deploy-stack.sh" \
+# A run whose console stops answering blocks on the next prompt forever, and
+# macOS has no timeout(1): poll with a deadline and kill it rather than hang
+# the suite. Job control (set -m) gives the run a process group of its own so
+# the whole tree can be signalled: the blocking read sits in a $( ) subshell,
+# and a TERM sent to the script alone is held until that child exits, which
+# is never. The exec makes $e2e the script itself, not a wrapper shell.
+set -m
+( cd "$S" && exec env "${nocreds[@]}" HOME="$S" /bin/bash "$REPO/deploy/deploy-stack.sh" \
     --dry-run --region us-east-1 --key-name k --stack-name pp --tapping none \
-    --events "$E2E" --prompt-pipe "$S/answers" </dev/null >"$S/e2e.out" 2>&1 )
-code=$?
-wait
+    --events "$E2E" --prompt-pipe "$S/answers" </dev/null >"$S/e2e.out" 2>&1 ) &
+e2e=$!
+set +m
+i=0
+while kill -0 "$e2e" 2>/dev/null && (( i++ < 1200 )); do sleep 0.1; done
+if kill -0 "$e2e" 2>/dev/null; then
+  kill -TERM -- -"$e2e" 2>/dev/null; sleep 1; kill -KILL -- -"$e2e" $(jobs -p) 2>/dev/null
+  wait 2>/dev/null
+  echo "FAIL end to end: still running after 120s, killed; $(tail -3 "$S/e2e.out")"; rc=1; code=124
+else
+  wait "$e2e"; code=$?; wait
+fi
 if [[ $code -eq 0 ]]; then echo "PASS end to end: dry run over the pipe exited 0"
 else echo "FAIL end to end: exit $code; $(tail -3 "$S/e2e.out")"; rc=1; fi
 if grep -q '^Deploy KVO (Keysight Vision Orchestrator) alongside vController? \[y/N\]: y$' "$S/e2e.out" \

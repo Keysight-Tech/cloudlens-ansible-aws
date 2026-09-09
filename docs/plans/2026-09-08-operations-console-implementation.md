@@ -200,28 +200,9 @@ grep -q '"type":"prompt"' "$S/ev.jsonl" && echo "PASS prompt event emitted" || {
 
 **Step 2: Run** -> FAIL (`PROMPT_PIPE` unknown to `ask`).
 
-**Step 3: Implement** - replace `ask()`:
+**Step 3: Implement** - `ask()` gains a `PROMPT_PIPE` branch: emit the question as a prompt event, block on one line from the FIFO, return it (the default when the line is empty). The prompt id is derived from the count of prompt events already in the events file, not from a shell counter, because nearly every call site is `x="$(ask ...)"` and a counter never advances inside a `$( )` subshell.
 
-```bash
-PROMPT_PIPE="${CLOUDLENS_PROMPT_PIPE:-}"
-PROMPT_SEQ=0
-ask() {
-  local prompt="$1" def="${2:-}" ans=""
-  if [[ -n "$PROMPT_PIPE" ]]; then
-    # The console owns this FIFO. Emit the question, block on the reply. The
-    # prompt id lets the page pair answer with question after a reconnect.
-    PROMPT_SEQ=$((PROMPT_SEQ + 1))
-    emit_event prompt id="p${PROMPT_SEQ}" question="$prompt" default="$def" kind=text
-    IFS= read -r ans < "$PROMPT_PIPE" || ans=""
-    printf '%s' "${ans:-$def}"
-    return 0
-  fi
-  if [[ "$INTERACTIVE" == "true" ]]; then
-    read -rp "$prompt" ans || true
-  fi
-  printf '%s' "${ans:-$def}"
-}
-```
+The FIFO contract, stated in the ask header and the `--prompt-pipe` help. Per prompt: wait for its prompt event, open the FIFO for writing, write exactly one line, close. Never hold the write end open between answers: a held-then-closed end reads as an empty answer and takes the default. A run whose console goes away blocks on the next prompt forever and emits no done; the console owns the process and must kill it.
 
 Secrets: the two `read -rsp` calls (KVO secret key, and any password) must go through a new `ask_secret()` with `kind=secret`; replace them. Parser: `--prompt-pipe) PROMPT_PIPE="$2"; shift 2 ;;`. When `PROMPT_PIPE` is set, force `INTERACTIVE=true` after the tty detection so the interview runs (the UI is the terminal).
 
