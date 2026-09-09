@@ -17,6 +17,7 @@ import fcntl
 import itertools
 import shutil
 import signal
+import sys
 import time
 import tempfile
 import threading
@@ -477,6 +478,22 @@ def run_engine(job, cmd, cwd=None, env=None, wired=True):
         exited.set()
         if tail is not None and tail.is_alive():
             tail.join()
+        if not job.done:
+            # Every path above ends in a terminal event, so a job that is
+            # not done here is an exception that escaped between the Popen
+            # and the verdict (the stdout loop, the tail join, _verdict
+            # itself). Without a terminal event the job holds its stack in
+            # api._in_flight until the console restarts. The type only: the
+            # message can carry a path or the surroundings of a secret, and
+            # the exception itself goes on to the caller as it did. The
+            # engine is killed if it is still there: nobody reads its
+            # stdout any more, and running() is about to say it is gone, so
+            # stop() could never reach it again.
+            exc = sys.exc_info()[1]
+            if job._proc is not None and job._proc.poll() is None:
+                job._signal_group(signal.SIGKILL)
+            job.emit(E.error("engine runner failed: " + (type(exc).__name__ if exc else "unknown"),
+                             fix="The console's own stderr has the traceback; start the run again."))
         job._group_open = False
         with job._lock:
             job.pending_prompt = None

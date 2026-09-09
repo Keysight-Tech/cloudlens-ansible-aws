@@ -749,6 +749,34 @@ def test_the_real_starter_runs_the_engine_on_a_daemon_thread(monkeypatch):
     assert got["cmd"] == ["bash", "t"] and got["wired"] is False, "teardown-stack.sh knows no --events"
 
 
+def test_a_starter_that_fails_frees_the_stack(tmp_path, monkeypatch):
+    """_launch: a starter that raises before run_engine runs (a thread the OS
+    refused) has already registered its job, and the job holds its stack
+    until its terminal event. The failure is that event, the exception
+    still reaches the caller, and the next run for the stack is accepted."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    jobs = {}
+
+    def refused(job, cmd, cwd, env):
+        raise RuntimeError("can't start new thread (/private/detail)")
+
+    with pytest.raises(RuntimeError):
+        api.run({"plan": GOOD}, jobs=jobs, start=refused)
+    assert len(jobs) == 1, "the job was registered before the starter ran"
+    failed = next(iter(jobs.values()))
+    last = failed.buffer[-1]
+    assert last["type"] == E.ERROR and last["text"] == "could not start the engine: RuntimeError", failed.buffer
+    assert failed.done and not failed.running()
+    assert "private" not in json.dumps(failed.buffer), "the exception's message is for stderr, not the stream"
+    assert api._in_flight(jobs, "demo", "us-east-1") is None
+
+    started = {}
+    r = api.run({"plan": GOOD}, jobs=jobs, start=lambda job, cmd, cwd, env: started.update(job=job))
+    assert "error" not in r and "errors" not in r, r
+    assert r["job_id"] == started["job"].id and r["job_id"] != failed.id
+    assert api._in_flight(jobs, "demo", "us-east-1") == started["job"].id, "the new job holds the stack now"
+
+
 # -------------------------------------------------------------- teardown
 def test_teardown_requires_typed_name():
     r = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "nope"}, start=lambda *a, **k: "j")

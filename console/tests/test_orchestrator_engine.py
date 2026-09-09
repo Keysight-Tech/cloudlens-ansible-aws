@@ -516,6 +516,31 @@ def test_a_command_that_cannot_start_is_the_terminal_error_and_leaks_nothing():
         "the temp directory outlived a launch that never happened"
 
 
+def test_a_runner_that_fails_before_its_verdict_still_ends_the_job(tmp_path, monkeypatch):
+    """An exception between the Popen and the verdict (here _verdict itself)
+    used to leave the job with no terminal event: not done, and with
+    _group_open cleared not running either, so api._in_flight held its
+    stack until the console restarted. The finally now emits the terminal
+    error, naming the exception's type only, and the exception still goes
+    on to the caller."""
+    script = _script(tmp_path, FAKE_EXIT % 0, "exit0.sh")
+
+    def boom(job, rc, state):
+        raise KeyError("/private/path/the-message-must-not-reach-the-stream")
+
+    monkeypatch.setattr(O, "_verdict", boom)
+    job = O.Job("j3f", "stack", {})
+    with pytest.raises(KeyError):
+        O.run_engine(job, [script])
+    assert job.done and not job.running()
+    last = _last(job)
+    assert last["type"] == "error", _types(job)
+    assert last["text"] == "engine runner failed: KeyError"
+    assert "private" not in json.dumps(job.buffer), "the exception's message is for stderr, not the stream"
+    assert job.events_path and not os.path.exists(os.path.dirname(job.events_path)), \
+        "the temp directory outlived the run"
+
+
 # ------------------------------------------------------------------ stop
 def test_stop_reaps_a_script_blocked_on_the_fifo(tmp_path):
     """A TERM to the pid alone does not stop a run blocked on a prompt: the
