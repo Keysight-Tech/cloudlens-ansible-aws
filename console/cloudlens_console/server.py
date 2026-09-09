@@ -13,8 +13,11 @@ Routes (nothing else is exposed):
   GET  /api/discover/subnets?region=R&vpc=V           aws ec2 describe-subnets (+ route tables)
   GET  /api/discover/workloads?region=R&tag=K=V&vpcs= aws ec2 describe-instances
   GET  /api/discover/eks?region=R                     aws eks list-clusters
+  GET  /api/status?stack=S&region=R                   one deployed stack, read-only
+  GET  /api/verify-empty?region=R                     what is left in the region after a teardown
   POST /api/plan       {plan}                         profile.py render + validation
   POST /api/run        {plan, secrets?, kvo_codes?}   deploy-stack.sh --profile, via run_engine
+  POST /api/run        {stack, region, only?}         deploy-stack.sh --profile --resume [--only P]
   POST /api/answer/<job_id>  {prompt_id, text}        job.answer
   POST /api/teardown   {stack, region, confirm_name, orphans_only?, licences_released?}
   POST /api/licences   {action, kvo, user, password, ...}  (also /api/licences/<action>)
@@ -285,6 +288,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._api(A.discover_workloads(region, q.get("tag", ""), q.get("vpcs", "")))
         if path == "/api/discover/eks":
             return self._api(A.discover_eks(region))
+        if path == "/api/status":
+            # a query string only: the vController password this may need
+            # comes from the creds file the CLI wrote, never from a URL
+            return self._api(A.status(q.get("stack", ""), region))
+        if path == "/api/verify-empty":
+            return self._api(A.verify_empty(region))
         if path == "/api/licences" or path.startswith("/api/licences/"):
             # the KVO password travels in a body, never a query string
             return self._send(405, {"error": "POST {action: list|check|activate|release, kvo, user, password}: "

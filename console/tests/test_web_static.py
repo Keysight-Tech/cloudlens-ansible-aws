@@ -39,7 +39,7 @@ PKG = os.path.join(HERE, "..", "cloudlens_console")
 WEB = os.path.join(PKG, "web")
 SERVER = os.path.join(PKG, "server.py")
 DEPLOY = os.path.join(HERE, "..", "..", "deploy", "deploy-stack.sh")
-SCRIPTS = ("app.js", "wizard.js", "plan.js", "watch.js")
+SCRIPTS = ("app.js", "wizard.js", "plan.js", "watch.js", "operate.js", "licences.js", "teardown.js")
 KEY = re.compile(r"CLOUDLENS_[A-Z0-9_]+")
 
 
@@ -177,6 +177,62 @@ def test_the_page_and_the_api_agree_on_a_code_with_a_quantity():
     assert said in _read("index.html"), "the field's label says %r" % said
 
 
+def _licensing_block(html):
+    m = re.search(r'<section class="page" id="page-licensing".*?</section>', html, re.S)
+    assert m, "index.html carries the Licensing page"
+    return m.group(0)
+
+
+def test_the_licensing_screen_takes_codes_the_same_way_the_wizard_does():
+    """Same reasoning, same shape: a textarea shows every code in clear on
+    a browser that ignores -webkit-text-security, so the codes go in
+    through a password input and show as chips of their last four
+    characters. This screen has a second password field (the KVO's own),
+    which is NOT a data-secret: api.SECRET_ENV is the list of names the
+    deploy script reads from the environment, and the KVO password here
+    goes in a request body instead."""
+    block = _licensing_block(_read("index.html"))
+    assert "<textarea" not in block, "a textarea shows the codes in clear on Firefox"
+    entry = [t for t in re.findall(r"<input\b[^>]*>", block) if 'id="licEntry"' in t]
+    assert len(entry) == 1, entry
+    assert 'type="password"' in entry[0] and "value=" not in entry[0], entry[0]
+    pw = [t for t in re.findall(r"<input\b[^>]*>", block) if 'id="licPass"' in t]
+    assert len(pw) == 1 and 'type="password"' in pw[0], pw
+    assert not [t for t in re.findall(r"<input\b[^>]*>", block) if "data-secret" in t], (
+        "the KVO password is not one of the script's environment secrets")
+    for i in ("licAdd", "licList", "licCount"):
+        assert 'id="%s"' % i in block, i
+    js = _read("licences.js")
+    m = re.search(r"var CODE_QTY_RE\s*=\s*/(.+?)/;", js)
+    assert m, "licences.js declares var CODE_QTY_RE = /.../;"
+    rule = re.compile(m.group(1))
+    for value in ("AAAA", "AAAA,1", "AAAA,123456", "AAAA,1234567", "AAAA,", "AAAA,x", "-AAA", "AAA",
+                  "A" * 64, "A" * 65, "has space"):
+        assert bool(rule.fullmatch(value)) == bool(api.CODE_QTY.fullmatch(value)), value
+    assert "codeTail" in js, "a code is shown by its last four characters, never whole"
+    assert not re.search(r"localStorage\s*\.", js), (
+        "the KVO password and its codes are stored nowhere: no localStorage call in this file")
+
+
+def test_the_teardown_screen_gates_on_the_typed_name_and_points_at_licensing():
+    """The order this screen exists to enforce: the read-only audit, the
+    licence warning, the typed name, the run. The button starts disabled
+    in the page itself, so a script that failed to load leaves it off
+    rather than armed."""
+    html = _read("index.html")
+    m = re.search(r'<section class="page" id="page-teardown".*?</section>', html, re.S)
+    assert m
+    block = m.group(0)
+    run = [t for t in re.findall(r"<button\b[^>]*>", block) if 'id="tdRun"' in t]
+    assert len(run) == 1 and "disabled" in run[0], run
+    assert "--orphans" in block, "the audit says which flag it is"
+    js = _read("teardown.js")
+    assert "confirm_name:model.typed" in js, "the typed name is what the API is given"
+    assert "orphans_only:true" in js, "the audit is the read-only run"
+    assert 'clNav.show("licensing")' in js, "the warning points at the screen that fixes it"
+    assert "licences_released:gate.licencesReleased" in js
+
+
 # ---------------------------------------------------------------- buttons
 def _js_function(src, name):
     """The text of `function name(...){ ... }`, braces matched. Every body
@@ -306,6 +362,33 @@ def test_every_path_a_script_calls_is_one_the_server_routes(name):
             name, p)
 
 
+def test_the_operations_screens_use_the_routes_they_are_faces_on():
+    """Operate reads /api/status and replays through /api/run; Licensing
+    speaks only to /api/licences/*; Teardown audits and runs through
+    /api/teardown, follows the audit on /events/ and proves the result
+    with /api/verify-empty. A path typed wrong in any of them is a button
+    that does nothing, silently."""
+    assert {"/api/status", "/api/run"} <= _script_paths(_read("operate.js"))
+    lic = _script_paths(_read("licences.js"))
+    assert lic and all(p.startswith("/api/licences") for p in lic), sorted(lic)
+    assert {"/api/teardown", "/api/verify-empty", "/events/"} <= _script_paths(_read("teardown.js"))
+
+
+def test_the_audit_report_listens_for_the_frames_an_unwired_run_sends():
+    """teardown-stack.sh runs unwired: it has no events channel, so the
+    console's own frames are all there are (narrate for the command line,
+    log per output line, done or error for the verdict). A named SSE event
+    with no listener is never delivered, so a type missing here is a
+    report that silently stops at the command line."""
+    from cloudlens_console import events as E
+    js = _read("teardown.js")
+    heard = set(re.findall(r'addEventListener\("(\w+)"', js))
+    heard |= set(re.findall(r'\["([\w",]+)"\]\.forEach\(function\(type\)', js))
+    heard = {w for chunk in heard for w in chunk.replace('"', "").split(",")}
+    assert {E.NARRATE, E.LOG, E.DONE, E.ERROR} <= heard, sorted(heard)
+    assert "phase" not in heard, "the audit has no phases: that screen is Watch's"
+
+
 def test_the_wizard_uses_the_discovery_plan_run_and_doctor_routes():
     paths = _script_paths(_read("wizard.js"))
     assert {"/api/doctor", "/api/discover/vpcs", "/api/discover/subnets", "/api/discover/workloads",
@@ -325,7 +408,8 @@ def _ids_a_script_names(src):
     return ids
 
 
-@pytest.mark.parametrize("name", ("app.js", "wizard.js", "watch.js"))
+@pytest.mark.parametrize("name", ("app.js", "wizard.js", "watch.js", "operate.js", "licences.js",
+                                 "teardown.js"))
 def test_every_id_a_script_looks_up_exists_in_the_page(name):
     ids = set(re.findall(r'id="([^"]+)"', _read("index.html")))
     wanted = _ids_a_script_names(_read(name))

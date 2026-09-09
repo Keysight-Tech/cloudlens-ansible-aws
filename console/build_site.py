@@ -167,7 +167,7 @@ for marker in ("<!-- ops:start -->", "<!-- ops:end -->"):
     found = body.count(marker)
     assert found == 1, "index.html carries %d of %s, expected exactly one" % (found, marker)
 body = re.sub(r"<!-- ops:start -->.*?<!-- ops:end -->", "", body, flags=re.S)
-body = re.sub(r'\s*<script src="/web/(?:plan|wizard|watch)\.js"></script>', "", body)
+body = re.sub(r'\s*<script src="/web/(?:plan|wizard|watch|operate|licences|teardown)\.js"></script>', "", body)
 body = body.replace('<details class="quick" id="quickFlows">', '<details class="quick" id="quickFlows" open>')
 body = body.replace('DEMO · REPLAYING REAL EVENTS', 'WATCH IT DEPLOY · REAL CAPTURED RUN')
 body = body.replace('<script src="/web/app.js"></script>', data + '<script>' + CLIENT_APP + '</script>')
@@ -181,7 +181,8 @@ html = ("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n
 # What the static page must not carry: the wizard's screens, the scripts
 # that only it uses, any API path, the secret fields and the activation
 # code entry. And the one thing it must: the quick flows, opened.
-for gone in ("data-screen", "wizard.js", "plan.js", "watch.js", "/api/", "data-secret", "codeEntry"):
+for gone in ("data-screen", "wizard.js", "plan.js", "watch.js", "operate.js", "licences.js",
+             "teardown.js", "/api/", "/events/", "data-secret", "codeEntry", "licEntry"):
     assert gone not in html, "the static page still carries %r: the ops block survived the cut" % gone
 assert 'quickFlows" open' in html, "the quick flows fold does not open on the static page"
 

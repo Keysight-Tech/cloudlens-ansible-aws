@@ -4,9 +4,14 @@ Nothing here knows AWS on its own. Discovery shells out to the aws CLI with
 --output json (an argv list, never a shell); the doctor is deploy-stack.sh
 --doctor read back through its own events file; a run is deploy-stack.sh
 --profile on a file this module wrote from the one allowlist the script
-enforces (profile.py); a teardown is teardown-stack.sh with the flags it
-documents; licensing is scripts/kvo_license.py's own functions against the
-KVO REST API.
+enforces (profile.py), and a re-run or a resume is that same script on the
+file that is already there; a teardown is teardown-stack.sh with the flags
+it documents; licensing is scripts/kvo_license.py's own functions against
+the KVO REST API. status() adds the two reads that have no CLI: the
+vController's own REST API (with the credentials file the deploy wrote,
+never anything from a URL) and ssh to the vPB with the EC2 key pair. Every
+field it returns carries either a value or the reason there is none, and
+no field is ever a fabricated zero.
 
 Every function validates its inputs before anything runs and answers a bad
 one as {"error": str} or {"errors": [str]}, which server.py sends as 400 (or
@@ -22,10 +27,12 @@ import os
 import re
 import shutil
 import signal
+import ssl
 import subprocess
 import tempfile
 import threading
 import urllib.error
+import urllib.request
 import uuid
 
 from . import events as E
@@ -550,9 +557,93 @@ def _in_flight(jobs, stack, region):
     return None
 
 
+# a phase name as deploy-stack.sh writes them in PHASE_ORDER: short, lower
+# case, stable. The rule bounds the shape; phase_order() decides the
+# vocabulary, because only the script knows it.
+PHASE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+
+
+def _replay(body, jobs, start=None):
+    """The Operate screen's two buttons: Resume, and Re-run one phase.
+    {stack, region, only?, secrets?, kvo_codes?}.
+
+    Both replay the profile file that already exists next to the deploy
+    script (deploy-profile-<stack>.env, which run() wrote from a plan the
+    operator reviewed), and NEITHER writes one. That is what keeps this
+    from being a second way to launch an unreviewed deploy: with no such
+    file the request is refused and the answer sends the operator to the
+    Deploy screen. Both go through the same _in_flight guard under the
+    same _ENGINE_LOCK as run() and teardown(), so one stack still has one
+    engine.
+
+    Both pass --resume. The engine hands the script a --prompt-pipe, which
+    forces INTERACTIVE=true, so without --resume every replay stops on the
+    script's own "Continue from <phase>? [Y/n]" in the Watch modal;
+    --resume is the answer the operator already gave by pressing the
+    button, and it deletes nothing either way (the script says so in a
+    dozen places). Re-run adds --only PHASE, and the phase has to be one
+    of the script's own PHASE_ORDER, read from the script by
+    phase_order(); resume adds no --only and lets the script's own resume
+    decide what to skip. Secrets and activation codes travel exactly as
+    they do on a launch: environment and argv, both registered with the
+    job so the stream redacts them."""
+    stack, region = body.get("stack"), body.get("region")
+    if not stack_ok(stack):
+        return _err("stack must be a CloudFormation stack name (letters, digits and hyphens, starting with a letter)")
+    bad = _check_region(region)
+    if bad:
+        return bad
+    only, order = None, phase_order()
+    if "only" in body:
+        only = body["only"]
+        if not _shape(PHASE, only) or only not in order:
+            return _err("only must name one phase deploy-stack.sh runs (%s)"
+                        % (", ".join(order) or "the script names none"))
+    env, errors = _check_secrets(body.get("secrets") or {})
+    codes, bad = _check_codes(body.get("kvo_codes"))
+    if bad:
+        errors.append("kvo_codes: " + bad)
+    if errors:
+        return {"errors": errors}
+    profile_file = "deploy-profile-%s.env" % stack
+    path = os.path.join(REPO, profile_file)
+    with _ENGINE_LOCK:
+        busy = _in_flight(jobs, stack, region)
+        if busy:
+            return _err("stack %s already has a run in progress (job %s)" % (stack, busy), 409)
+        if not os.path.isfile(path):
+            return _err("no profile for stack %s: %s is not next to the deploy script, so there is nothing to "
+                        "replay. Plan and launch it on the Deploy screen first: that is what writes the file, "
+                        "and this screen only replays it." % (stack, profile_file), 400)
+        cmd = ["bash", DEPLOY, "--profile", path, "--resume"]
+        for c in codes:
+            cmd += ["--kvo-codes", c]
+        if only:
+            cmd += ["--only", only]
+        job_id = uuid.uuid4().hex[:12]
+        job = O.Job(job_id, "engine-deploy",
+                    {"stack": stack, "region": region, "profile": path, "only": only})
+        for c in codes:
+            job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
+        job.redactions.extend(env.values())
+        jobs[job_id] = job
+    shown = "bash deploy/deploy-stack.sh --profile %s --resume" % profile_file
+    if codes:
+        shown += " --kvo-codes ... (%d code%s)" % (len(codes), "" if len(codes) == 1 else "s")
+    if only:
+        shown += " --only %s" % only
+    if env:
+        shown += "   [%s in the environment]" % ", ".join(sorted(env))
+    job.emit(E.narrate("engine: " + shown, "note"))
+    _launch(start or _start_engine, job, cmd, env or None)
+    return {"job_id": job_id, "profile_file": profile_file, "stack": stack, "region": region, "only": only}
+
+
 def run(body, jobs=None, start=None):
     """Write deploy-profile-<stack>.env from the validated plan and start
-    deploy-stack.sh --profile on it. The plan goes through plan(); the
+    deploy-stack.sh --profile on it. A body with no plan but a stack name
+    is the Operate screen's replay instead and goes to _replay(), which
+    writes no profile and refuses without one. The plan goes through plan(); the
     secrets through _check_secrets() and then only into the engine's
     environment; activation codes (kvo_codes) onto the argv as --kvo-codes.
     The profile file name comes from the validated stack name alone, so it
@@ -573,6 +664,8 @@ def run(body, jobs=None, start=None):
     if not isinstance(body, dict):
         return {"errors": ["body must be an object: {plan, secrets?, kvo_codes?}"]}
     jobs = jobs if jobs is not None else _jobs()
+    if body.get("plan") is None and body.get("stack") is not None:
+        return _replay(body, jobs, start)
     p = plan(body.get("plan"))
     if p.get("errors"):
         return {"errors": p["errors"]}
@@ -890,3 +983,354 @@ def licences(body, action=None):
 def _scrub(exc, password):
     text = "%s: %s" % (type(exc).__name__, exc)
     return text.replace(password, "***") if password else text
+
+
+# --------------------------------------------------------------- operate
+# A cell is one field of the Operate screen: what was read, or why it could
+# not be, with the command the operator can run instead. Never both, and
+# never a zero standing in for "I could not tell": a fabricated count on
+# this screen is how an operator concludes a stack is idle and tears it
+# down. `detail` rides beside a value where a count needs a second number.
+def _cell(value, **detail):
+    c = {"value": value}
+    c.update(detail)
+    return c
+
+
+def _blind(reason, command):
+    return {"unavailable": reason, "command": command}
+
+
+def phase_order():
+    """The phases deploy-stack.sh can run, in its order, read from the
+    script's own PHASE_ORDER line at call time.
+
+    There is exactly one home for this list and it is the script. A copy
+    here (or in the page) goes stale the first time a phase is added
+    there, and /api/run would then refuse a phase the script knows, or
+    accept one it does not. The Watch screen gets the same list a
+    different way (the script's `phases` event, which is selected_phases()
+    of this), so both sides read the script and neither reads the other.
+    A script that does not say returns [], which refuses every --only."""
+    try:
+        with open(DEPLOY, encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+    except OSError:
+        return []
+    m = re.search(r'^PHASE_ORDER="([^"]+)"$', src, re.M)
+    return m.group(1).split() if m else []
+
+
+# The vController login the CLI already wrote, mode 600 (deploy-stack.sh's
+# VC_CREDS_FILE, same default and same override). It is the ONLY credential
+# a GET here may use: /api/status carries no password, because a password in
+# a query string is in the browser's history, the referrer and every log on
+# the way. When the file is not there the answer is where to log in, not a
+# field asking for one.
+VC_CREDS_FILE = (os.environ.get("CLOUDLENS_VC_CREDS_FILE")
+                 or os.path.join(os.path.expanduser("~"), ".cloudlens-vcontroller-creds.json"))
+VC_API = "/cloudlens/api/v1"        # vcontroller_project_key.py's API_ROOT, confirmed live on 6.14.1
+VC_TIMEOUT = 15
+# the vPB's management SSH, as deploy-stack.sh reports it: port 9022, the
+# EC2 key pair, and the counters command its own summary prints
+VPB_SSH_PORT = os.environ.get("CLOUDLENS_VPB_SSH_PORT") or "9022"
+VPB_USER = "admin"
+VPB_COUNTERS = 'sudo vpb -c "show traffic-rule-packet-counters"'
+SSH_TIMEOUT = 25
+MAX_TEXT = 4000                     # characters of command output carried back
+# every CloudFormation status but DELETE_COMPLETE: a stack in any of these
+# is still in the region, which is what a post-teardown check is asking
+STACK_ALIVE = ["CREATE_IN_PROGRESS", "CREATE_FAILED", "CREATE_COMPLETE", "ROLLBACK_IN_PROGRESS",
+               "ROLLBACK_FAILED", "ROLLBACK_COMPLETE", "DELETE_IN_PROGRESS", "DELETE_FAILED",
+               "UPDATE_IN_PROGRESS", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_IN_PROGRESS",
+               "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS"]
+
+
+def _vc_call(method, url, token=None, body=None, timeout=None):
+    """One vController REST call as (status, parsed body). stdlib urllib,
+    like kvo_license.py; the appliance serves a self-signed certificate, so
+    the context does not verify it (the script's own probes are curl -k).
+    Any transport failure is (0, str(exc)): the caller turns it into the
+    field's own `unavailable`, never an exception out of a GET."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    if token:
+        # the scheme is literally "jwt" on this product, not Bearer
+        req.add_header("Authorization", "jwt " + token)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout or VC_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return resp.status, json.loads(raw) if raw else None
+            except ValueError:
+                return resp.status, raw
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except Exception as exc:  # noqa: urllib raises several; none carries the password
+        return 0, "%s: %s" % (type(exc).__name__, exc)
+
+
+def _dig(obj, *names):
+    """The first value under any of `names`, at any depth. The login
+    payload's shape has moved between releases (vcontroller_project_key.py
+    says so and does the same), so the key is searched for, not assumed."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() in names and isinstance(v, (str, int)) and not isinstance(v, bool):
+                return str(v)
+        for v in obj.values():
+            found = _dig(v, *names)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _dig(v, *names)
+            if found:
+                return found
+    return None
+
+
+_SENSOR_KEYS = ("agentcount", "sensorcount", "agents", "sensors", "agent_count", "sensor_count")
+
+
+def _creds():
+    """(creds, error): the CLI's vController credentials file as a dict."""
+    path = VC_CREDS_FILE
+    if not os.path.isfile(path):
+        return None, ("no vController credentials file at %s: the deploy writes it (mode 600) when it "
+                      "mints the project key" % path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "the credentials file %s could not be read: %s" % (path, type(exc).__name__)
+    if not isinstance(data, dict) or not data.get("url") or not data.get("password"):
+        return None, "the credentials file %s carries no url and password" % path
+    return data, None
+
+
+def _sensors_cell(vc_ip):
+    """Sensors registered, through the vController's own REST API with the
+    credentials file the CLI wrote. Every path that is not a number is an
+    `unavailable` naming the reason and the UI to log into: the API's
+    verified calls are the login and the project list, and if the project
+    payload carries no count then this console does not know one."""
+    ui = "https://%s/cloudlens/login" % vc_ip if vc_ip else "the vController UI"
+    look = "open %s and log in: the project page lists the VMs whose sensors have registered" % ui
+    if not vc_ip:
+        return _blind("the stack's vController address is not known, so nothing can be asked", look)
+    creds, bad = _creds()
+    if bad:
+        return _blind(bad, look)
+    if vc_ip not in str(creds.get("url", "")):
+        return _blind("the credentials file is for another vController (%s), not this stack's %s"
+                      % (creds.get("url", ""), vc_ip), look)
+    base = "https://%s%s" % (vc_ip, VC_API)
+    code, body = _vc_call("POST", base + "/identity/login",
+                          body={"Email": creds.get("username", "admin"), "Password": creds["password"]})
+    if code == 0:
+        # a transport failure, not an answer: the exception's own words,
+        # with the file's password scrubbed out of them for the same reason
+        # licences() scrubs the KVO's
+        return _blind("the vController could not be reached: %s"
+                      % str(body).replace(creds["password"], "***"), look)
+    if code != 200 or not isinstance(body, dict):
+        return _blind("the vController did not accept the saved login (HTTP %s)" % code, look)
+    token = _dig(body, "jwttoken", "token", "jwt", "access_token")
+    account = _dig(body.get("Accounts"), "id") if isinstance(body.get("Accounts"), dict) else None
+    account = account or _dig(body, "account_id", "accountid")
+    if not token or not account:
+        return _blind("the vController logged in but named no token and account to read projects with", look)
+    code, rows = _vc_call("GET", "%s/mgmt/accounts/%s/projects" % (base, account), token=token)
+    if code != 200:
+        return _blind("the vController refused the project list (HTTP %s)" % code, look)
+    if isinstance(rows, dict):
+        rows = rows.get("data", [])
+    if not isinstance(rows, list):
+        return _blind("the vController's project list was not a list", look)
+    # the project the creds file names is looked at first; a row that is not
+    # an object is not a project and is skipped, never sorted on
+    want = creds.get("project")
+    for row in sorted([r for r in rows if isinstance(r, dict)], key=lambda r: r.get("name") != want):
+        for key in row:
+            if key.lower() in _SENSOR_KEYS and isinstance(row[key], int) and not isinstance(row[key], bool):
+                return _cell({"sensors": row[key], "project": row.get("name") or row.get("project_name") or "",
+                              "vcontroller": vc_ip})
+    return _blind("the vController answered (%d project%s) but its payload carries no sensor count"
+                  % (len(rows), "" if len(rows) == 1 else "s"), look)
+
+
+def _key_pem(key_name):
+    """The private key for an EC2 key pair, in the places deploy-stack.sh's
+    own doctor looks, in its order. None when it is on another machine."""
+    if not key_name:
+        return None
+    home = os.path.expanduser("~")
+    for cand in (os.environ.get("CLOUDLENS_KEY_PEM", ""),
+                 os.path.join(home, ".ssh", key_name + ".pem"),
+                 os.path.join(home, "Downloads", key_name + ".pem"),
+                 os.path.join(home, key_name + ".pem"),
+                 os.path.join(REPO, key_name + ".pem"),
+                 os.path.join(home, "Downloads", key_name + ".cer"),
+                 os.path.join(home, ".ssh", key_name)):
+        if cand and os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _vpb_cell(vpb):
+    """The vPB's own packet counters over SSH, which is the only way to
+    them: the box answers on port 9022 with the EC2 key pair. Without that
+    key on this machine there is no count to report and no way to get one
+    from here, so the field carries the exact command instead of a blank."""
+    ip = (vpb or {}).get("public_ip") or (vpb or {}).get("private_ip") or ""
+    key_name = (vpb or {}).get("key") or ""
+    shown = "ssh -i %s -p %s %s@%s '%s'" % (
+        "~/.ssh/%s.pem" % key_name if key_name else "<key>.pem", VPB_SSH_PORT, VPB_USER, ip or "<vpb-ip>",
+        VPB_COUNTERS)
+    if not vpb:
+        return _blind("this stack has no running instance named <stack>-vpb", shown)
+    if not ip:
+        return _blind("the vPB has no address in this account's answer", shown)
+    pem = _key_pem(key_name)
+    if not pem:
+        return _blind("%s.pem is not on this machine (looked in ~/.ssh, ~/Downloads, ~ and the repo, the "
+                      "places the doctor looks), so there is no way to reach the vPB from here"
+                      % (key_name or "the key pair's"), shown)
+    shown = "ssh -i %s -p %s %s@%s '%s'" % (pem, VPB_SSH_PORT, VPB_USER, ip, VPB_COUNTERS)
+    argv = ["ssh", "-i", pem, "-p", str(VPB_SSH_PORT), "-n",
+            "-o", "BatchMode=yes",          # a key that does not fit must fail, never ask for a password
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=8", "%s@%s" % (VPB_USER, ip), VPB_COUNTERS]
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              errors="replace", timeout=SSH_TIMEOUT)
+    except OSError as exc:
+        return _blind("ssh could not be run: %s" % (getattr(exc, "strerror", None) or exc), shown)
+    except subprocess.TimeoutExpired:
+        return _blind("the vPB did not answer within %ds" % SSH_TIMEOUT, shown)
+    if proc.returncode != 0:
+        lines = [l for l in ((proc.stderr or "") + (proc.stdout or "")).splitlines() if l.strip()]
+        return _blind(lines[-1].strip() if lines else "ssh exited %d" % proc.returncode, shown)
+    return _cell({"text": (proc.stdout or "").strip()[:MAX_TEXT], "command": shown})
+
+
+def _role(name, stack):
+    """The part of a Name tag after the stack's own name: vcontroller, kvo,
+    vpb, and whatever else a deploy tagged with the same prefix."""
+    return name[len(stack) + 1:] if name.startswith(stack + "-") else ""
+
+
+def status(stack, region):
+    """One read-only look at a deployed stack: {stack, region, phases,
+    profile, instances, sensors, mirror, vpb}.
+
+    Every field but the first four is a cell that carries EITHER a value OR
+    the reason it has none and the command that would get one. Nothing here
+    guesses and nothing invents a count. It takes no credential: the only
+    one it may use is the file the CLI already wrote (VC_CREDS_FILE), never
+    a query parameter.
+
+    `phases` is the script's own PHASE_ORDER, which is what the Operate
+    screen's re-run offers; it does not need AWS, so it is answered even
+    when every probe fails."""
+    if not stack_ok(stack):
+        return _err("stack must be a CloudFormation stack name (letters, digits and hyphens, starting with a letter)")
+    bad = _check_region(region)
+    if bad:
+        return bad
+    profile = "deploy-profile-%s.env" % stack
+    out = {"stack": stack, "region": region, "phases": phase_order(),
+           "profile": {"file": profile, "present": os.path.isfile(os.path.join(REPO, profile))}}
+    inst_cmd = ("aws ec2 describe-instances --filters Name=tag:Name,Values=%s-* --region %s" % (stack, region))
+    rows, by_role = [], {}
+    try:
+        data = _aws(["ec2", "describe-instances", "--filters", _filters(("tag:Name", [stack + "-*"]))], region)
+        for res in data.get("Reservations", []):
+            for i in res.get("Instances", []):
+                state = (i.get("State") or {}).get("Name", "")
+                if state == "terminated":
+                    continue        # a terminated instance is not part of a stack that is up
+                name = _name_tag(i.get("Tags"))
+                row = {"id": i.get("InstanceId", ""), "name": name, "role": _role(name, stack), "state": state,
+                       "type": i.get("InstanceType", ""), "key": i.get("KeyName", "") or "",
+                       "az": (i.get("Placement") or {}).get("AvailabilityZone", ""),
+                       "private_ip": i.get("PrivateIpAddress", "") or "",
+                       "public_ip": i.get("PublicIpAddress", "") or ""}
+                rows.append(row)
+                by_role.setdefault(row["role"], row)
+        out["instances"] = _cell({"count": len(rows), "rows": rows[:MAX_ROWS],
+                                  "truncated": len(rows) > MAX_ROWS})
+    except AwsError as exc:
+        out["instances"] = _blind(str(exc), inst_cmd)
+    out["sensors"] = _sensors_cell((by_role.get("vcontroller") or {}).get("public_ip", ""))
+    try:
+        mirror = _aws(["ec2", "describe-traffic-mirror-sessions"], region)
+        out["mirror"] = _cell({"sessions": len(mirror.get("TrafficMirrorSessions", [])),
+                               "scope": "every mirror session in the region: KVO's carry no stack tag, so "
+                                        "they cannot be counted per stack from here"})
+    except AwsError as exc:
+        out["mirror"] = _blind(str(exc), "aws ec2 describe-traffic-mirror-sessions --region " + region)
+    out["vpb"] = _vpb_cell(by_role.get("vpb"))
+    return out
+
+
+def verify_empty(region):
+    """What is still in a region: the proof to read after a teardown.
+
+    Read-only, and region-wide, which it says: the counts are of everything
+    in the region and not only one stack's, because a teardown's own sweep
+    is what ties a resource to a stack and this is the check that it
+    worked. `empty` is True when every count is zero, False when one is
+    not, and None when any probe could not answer: a region is never
+    called empty on a question that got no answer."""
+    bad = _check_region(region)
+    if bad:
+        return bad
+    out = {"region": region}
+
+    def count(name, args, pick, command, **detail):
+        try:
+            data = _aws(args, region)
+        except AwsError as exc:
+            out[name] = _blind(str(exc), command)
+            return
+        value, extra = pick(data)
+        out[name] = _cell(value, **extra) if extra else _cell(value)
+
+    def instances(d):
+        n = sum(1 for r in d.get("Reservations", []) for i in r.get("Instances", [])
+                if (i.get("State") or {}).get("Name") != "terminated")
+        return n, None
+
+    def vpcs(d):
+        return sum(1 for v in d.get("Vpcs", []) if not v.get("IsDefault")), None
+
+    def volumes(d):
+        vols = d.get("Volumes", [])
+        return len(vols), {"detail": {"available": sum(1 for v in vols if v.get("State") == "available"),
+                                      "gb": sum(int(v.get("Size") or 0) for v in vols)}}
+
+    count("instances", ["ec2", "describe-instances"], instances,
+          "aws ec2 describe-instances --region " + region)
+    count("vpcs", ["ec2", "describe-vpcs"], vpcs, "aws ec2 describe-vpcs --region " + region)
+    count("volumes", ["ec2", "describe-volumes"], volumes, "aws ec2 describe-volumes --region " + region)
+    count("enis", ["ec2", "describe-network-interfaces"],
+          lambda d: (len(d.get("NetworkInterfaces", [])), None),
+          "aws ec2 describe-network-interfaces --region " + region)
+    count("mirror_sessions", ["ec2", "describe-traffic-mirror-sessions"],
+          lambda d: (len(d.get("TrafficMirrorSessions", [])), None),
+          "aws ec2 describe-traffic-mirror-sessions --region " + region)
+    count("stacks", ["cloudformation", "list-stacks", "--stack-status-filter"] + STACK_ALIVE,
+          lambda d: (len(d.get("StackSummaries", [])), None),
+          "aws cloudformation list-stacks --region " + region)
+    cells = [out[k] for k in ("instances", "vpcs", "volumes", "enis", "mirror_sessions", "stacks")]
+    if any("unavailable" in c for c in cells):
+        out["empty"] = None
+    else:
+        out["empty"] = all(c["value"] == 0 for c in cells)
+    return out

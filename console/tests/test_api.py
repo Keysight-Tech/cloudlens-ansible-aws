@@ -1559,3 +1559,391 @@ def test_run_and_answer_routes_are_wired(live, tmp_path, monkeypatch):
     assert st == 200 and started[-1][1][-1] == "--yes"
     st, r = _call(live, "POST", "/api/stop/" + r["job_id"])
     assert st == 200 and r["ok"]
+
+
+# ------------------------------------------------------------- operate
+def test_phase_order_is_read_from_the_script_never_copied():
+    """The phase list has exactly one home: deploy-stack.sh's own
+    PHASE_ORDER. A copy in Python (or in the page) is a list that goes
+    stale the first time a phase is added there, and /api/run would then
+    refuse a phase the script knows, or accept one it does not."""
+    src = open(DEPLOY).read()
+    m = re.search(r'^PHASE_ORDER="([^"]+)"$', src, re.M)
+    assert m, "deploy-stack.sh declares PHASE_ORDER"
+    assert api.phase_order() == m.group(1).split()
+    assert "stack" in api.phase_order() and "license" in api.phase_order()
+
+
+def test_phase_order_of_a_script_that_does_not_say_is_empty(tmp_path, monkeypatch):
+    script = tmp_path / "no-phases.sh"
+    script.write_text("#!/usr/bin/env bash\necho hi\n")
+    monkeypatch.setattr(api, "DEPLOY", str(script))
+    api.phase_order.cache_clear() if hasattr(api.phase_order, "cache_clear") else None
+    assert api.phase_order() == []
+    monkeypatch.setattr(api, "DEPLOY", str(tmp_path / "nowhere.sh"))
+    assert api.phase_order() == []
+
+
+def _stack_instances():
+    def i(name, kind, ip, state="running", key="lab"):
+        return {"InstanceId": "i-" + kind.ljust(8, "0"), "InstanceType": "t3.large", "KeyName": key,
+                "State": {"Name": state}, "VpcId": "vpc-0a0a0a0a", "SubnetId": "subnet-01010101",
+                "Placement": {"AvailabilityZone": "us-east-1a"},
+                "PrivateIpAddress": "10.0.1.5", "PublicIpAddress": ip,
+                "Tags": [{"Key": "Name", "Value": name}]}
+    return {"Reservations": [{"Instances": [
+        i("demo-vcontroller", "vc", "3.1.1.1"),
+        i("demo-kvo", "kvo", "3.1.1.2"),
+        i("demo-vpb", "vpb", "3.1.1.3"),
+        i("demo-old", "old", "3.1.1.9", state="terminated")]}]}
+
+
+def test_status_carries_a_state_per_field_and_never_invents_a_count(tmp_path, monkeypatch):
+    """Every field on the Operate screen says either what it read or why it
+    could not read it, with the command that would. Nothing is a guess: a
+    field with no answer is `unavailable`, never a zero."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "not-here.json"))
+    monkeypatch.setattr(api.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
+    # the doctor's own first candidate is this variable: an operator who has
+    # it set would otherwise lend this test a real key
+    monkeypatch.delenv("CLOUDLENS_KEY_PEM", raising=False)
+    calls = []
+
+    def fake_aws(args, region, **kw):
+        calls.append(list(args))
+        if args[:2] == ["ec2", "describe-instances"]:
+            return _stack_instances()
+        if args[:2] == ["ec2", "describe-traffic-mirror-sessions"]:
+            return {"TrafficMirrorSessions": [{"TrafficMirrorSessionId": "tms-1"},
+                                              {"TrafficMirrorSessionId": "tms-2"}]}
+        raise AssertionError(args)
+
+    monkeypatch.setattr(api, "_aws", fake_aws)
+    monkeypatch.setattr(api.subprocess, "run", _never)   # no .pem on this machine: no ssh is tried
+    r = api.status("demo", "us-east-1")
+    assert r["stack"] == "demo" and r["region"] == "us-east-1"
+    assert r["phases"] == api.phase_order(), "the script's own list, served so nothing copies it"
+    assert r["profile"] == {"file": "deploy-profile-demo.env", "present": False}
+    # instances: the stack's own Name tags, the terminated one dropped
+    rows = r["instances"]["value"]["rows"]
+    assert [x["name"] for x in rows] == ["demo-vcontroller", "demo-kvo", "demo-vpb"]
+    assert [x["role"] for x in rows] == ["vcontroller", "kvo", "vpb"]
+    assert r["instances"]["value"]["count"] == 3
+    flt = [c for c in calls if c[:2] == ["ec2", "describe-instances"]][0]
+    assert json.loads(flt[flt.index("--filters") + 1]) == [{"Name": "tag:Name", "Values": ["demo-*"]}]
+    # sensors: no creds file, so the honest answer is where to look instead
+    assert "value" not in r["sensors"]
+    assert "credentials" in r["sensors"]["unavailable"]
+    assert "3.1.1.1" in r["sensors"]["command"], "the vController it would have asked"
+    # mirror: a region-wide count, and it says so
+    assert r["mirror"]["value"]["sessions"] == 2 and "region" in r["mirror"]["value"]["scope"]
+    # vPB: no key, so the exact command the operator can run
+    assert "value" not in r["vpb"]
+    assert r["vpb"]["command"] == (
+        'ssh -i ~/.ssh/lab.pem -p 9022 admin@3.1.1.3 \'sudo vpb -c "show traffic-rule-packet-counters"\'')
+    assert ".pem" in r["vpb"]["unavailable"]
+
+
+def test_status_says_what_the_cli_said_when_it_could_not_answer(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "not-here.json"))
+
+    def broken(args, region, **kw):
+        raise api.AwsError("An error occurred (UnauthorizedOperation)")
+
+    monkeypatch.setattr(api, "_aws", broken)
+    r = api.status("demo", "us-east-1")
+    assert "UnauthorizedOperation" in r["instances"]["unavailable"]
+    assert r["instances"]["command"].startswith("aws ec2 describe-instances")
+    assert "UnauthorizedOperation" in r["mirror"]["unavailable"]
+    # with no instance list there is no vController and no vPB to ask about
+    assert "unavailable" in r["sensors"] and "unavailable" in r["vpb"]
+    assert r["phases"] == api.phase_order(), "the phase list does not need AWS"
+
+
+def test_status_validates_before_it_reads_anything(monkeypatch):
+    monkeypatch.setattr(api, "_aws", _never)
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    assert "stack" in api.status("bad name", "us-east-1")["error"]
+    assert "stack" in api.status("", "us-east-1")["error"]
+    assert "region" in api.status("demo", "nowhere")["error"]
+    assert "stack" in api.status("demo\n", "us-east-1")["error"]
+
+
+def test_status_reads_the_sensor_count_through_the_creds_file(tmp_path, monkeypatch):
+    """The one credential this GET may use is the file the CLI already
+    wrote (mode 600), never a query parameter: a password in a URL is in
+    the browser's history, the referrer and every log on the way."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    creds = tmp_path / "creds.json"
+    creds.write_text(json.dumps({"url": "https://3.1.1.1/cloudlens/login", "username": "admin",
+                                 "password": "s3cr3t", "project": "autopilot"}))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(creds))
+    monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
+                        _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    seen = []
+
+    def fake_vc(method, url, token=None, body=None, timeout=None):
+        seen.append((method, url, token, body))
+        if url.endswith("/identity/login"):
+            return 200, {"ActiveSessionCredentials": {"JwtToken": "JWT"}, "Accounts": {"OwningAccount": {"id": "a1"}}}
+        return 200, [{"name": "autopilot", "id": "p1", "agentCount": 3}]
+
+    monkeypatch.setattr(api, "_vc_call", fake_vc)
+    r = api.status("demo", "us-east-1")
+    assert r["sensors"]["value"] == {"sensors": 3, "project": "autopilot", "vcontroller": "3.1.1.1"}
+    assert seen[0][0] == "POST" and seen[0][1] == "https://3.1.1.1/cloudlens/api/v1/identity/login"
+    assert seen[0][3] == {"Email": "admin", "Password": "s3cr3t"}, "the identity API's own field names"
+    assert seen[1][:3] == ("GET", "https://3.1.1.1/cloudlens/api/v1/mgmt/accounts/a1/projects", "JWT")
+    assert "s3cr3t" not in json.dumps(r), "the file's password reaches the vController and nothing else"
+
+    # a payload with no count is said so, never counted as zero
+    monkeypatch.setattr(api, "_vc_call", lambda m, u, token=None, body=None, timeout=None:
+                        (200, {"ActiveSessionCredentials": {"JwtToken": "JWT"}, "Accounts": {"OwningAccount": {"id": "a1"}}})
+                        if u.endswith("/identity/login") else (200, [{"name": "autopilot"}]))
+    r = api.status("demo", "us-east-1")
+    assert "value" not in r["sensors"] and "no sensor count" in r["sensors"]["unavailable"]
+
+    # a login the vController refuses says the code and never the password
+    monkeypatch.setattr(api, "_vc_call", lambda m, u, token=None, body=None, timeout=None: (401, {"error": "nope"}))
+    r = api.status("demo", "us-east-1")
+    assert "401" in r["sensors"]["unavailable"] and "s3cr3t" not in json.dumps(r)
+
+    # a vController that did not answer at all: its own words, with the
+    # file's password scrubbed out of them, and still no count
+    monkeypatch.setattr(api, "_vc_call", lambda m, u, token=None, body=None, timeout=None:
+                        (0, "URLError: <urlopen error [Errno 61] Connection refused> s3cr3t"))
+    r = api.status("demo", "us-east-1")
+    assert "could not be reached" in r["sensors"]["unavailable"] and "Connection refused" in r["sensors"]["unavailable"]
+    assert "s3cr3t" not in json.dumps(r) and "***" in r["sensors"]["unavailable"]
+
+    # a creds file for another vController is not this stack's
+    monkeypatch.setattr(api, "_vc_call", lambda m, u, token=None, body=None, timeout=None: (200, {}))
+    creds.write_text(json.dumps({"url": "https://9.9.9.9/cloudlens/login", "username": "admin", "password": "s3cr3t"}))
+    r = api.status("demo", "us-east-1")
+    assert "another vController" in r["sensors"]["unavailable"] and "9.9.9.9" in r["sensors"]["unavailable"]
+
+
+def test_status_runs_the_vpb_counters_over_ssh_when_the_key_is_there(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "not-here.json"))
+    pem = tmp_path / ".ssh" / "lab.pem"
+    pem.parent.mkdir()
+    pem.write_text("-----BEGIN-----\n")
+    monkeypatch.setattr(api.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
+    monkeypatch.delenv("CLOUDLENS_KEY_PEM", raising=False)
+    monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
+                        _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
+    ran = []
+
+    def fake_run(argv, **kw):
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="rule-1  packets 145037\n", stderr="")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    r = api.status("demo", "us-east-1")
+    assert r["vpb"]["value"]["text"] == "rule-1  packets 145037"
+    assert ran[0][0] == "ssh" and "-i" in ran[0] and str(pem) in ran[0]
+    assert "admin@3.1.1.3" in ran[0] and "9022" in ran[0]
+    assert ran[0][-1] == 'sudo vpb -c "show traffic-rule-packet-counters"'
+    assert "-o" in ran[0] and "BatchMode=yes" in ran[0], "no password prompt on a console's GET"
+    # an ssh that fails says so with its own last line, and never a count
+    monkeypatch.setattr(api.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 255, stdout="", stderr="ssh: connect to host 3.1.1.3 port 9022: Operation timed out\n"))
+    r = api.status("demo", "us-east-1")
+    assert "value" not in r["vpb"] and "timed out" in r["vpb"]["unavailable"]
+    assert r["vpb"]["command"].startswith("ssh -i ")
+
+
+# -------------------------------------------------------- verify-empty
+def test_verify_empty_counts_what_a_teardown_should_have_left(monkeypatch):
+    canned = {
+        ("ec2", "describe-instances"): {"Reservations": [{"Instances": [
+            {"State": {"Name": "running"}}, {"State": {"Name": "terminated"}}]}]},
+        ("ec2", "describe-vpcs"): {"Vpcs": [{"VpcId": "vpc-1", "IsDefault": True},
+                                            {"VpcId": "vpc-2", "IsDefault": False}]},
+        ("ec2", "describe-volumes"): {"Volumes": [{"VolumeId": "vol-1", "State": "available", "Size": 100},
+                                                  {"VolumeId": "vol-2", "State": "in-use", "Size": 8}]},
+        ("ec2", "describe-network-interfaces"): {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-1"}]},
+        ("ec2", "describe-traffic-mirror-sessions"): {"TrafficMirrorSessions": []},
+        ("cloudformation", "list-stacks"): {"StackSummaries": [{"StackName": "demo", "StackStatus": "CREATE_COMPLETE"}]},
+    }
+
+    def fake_aws(args, region, **kw):
+        return canned[tuple(args[:2])]
+
+    monkeypatch.setattr(api, "_aws", fake_aws)
+    r = api.verify_empty("us-east-1")
+    assert r["region"] == "us-east-1"
+    assert r["instances"]["value"] == 1, "terminated instances are not left behind"
+    assert r["vpcs"]["value"] == 1, "the default VPC is not something a teardown removes"
+    assert r["volumes"]["value"] == 2 and r["volumes"]["detail"]["available"] == 1
+    assert r["enis"]["value"] == 1 and r["mirror_sessions"]["value"] == 0
+    assert r["stacks"]["value"] == 1
+    assert r["empty"] is False
+    # everything at zero is empty; a probe that could not answer makes it unknown
+    for key in canned:
+        canned[key] = {"Reservations": [], "Vpcs": [{"IsDefault": True}], "Volumes": [], "NetworkInterfaces": [],
+                       "TrafficMirrorSessions": [], "StackSummaries": []}
+    assert api.verify_empty("us-east-1")["empty"] is True
+
+    def half(args, region, **kw):
+        if args[:2] == ["ec2", "describe-volumes"]:
+            raise api.AwsError("AccessDenied")
+        return canned[tuple(args[:2])]
+
+    monkeypatch.setattr(api, "_aws", half)
+    r = api.verify_empty("us-east-1")
+    assert r["empty"] is None, "a region cannot be called empty on a probe that did not answer"
+    assert "AccessDenied" in r["volumes"]["unavailable"]
+    monkeypatch.setattr(api, "_aws", _never)
+    assert "region" in api.verify_empty("nowhere")["error"]
+
+
+# ----------------------------------------------- resume and re-run a phase
+def _profile_for(tmp_path, stack="demo"):
+    p = tmp_path / ("deploy-profile-%s.env" % stack)
+    p.write_text('CLOUDLENS_STACK_NAME="%s"\nCLOUDLENS_REGION="us-east-1"\n' % stack)
+    return p
+
+
+def test_a_resume_replays_the_profile_the_wizard_wrote(tmp_path, monkeypatch):
+    """Resume is the CLI's own resume on the profile file that already
+    exists: no plan is posted, nothing is written, and the stack cannot be
+    named into a file outside the repo."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    path = _profile_for(tmp_path)
+    started = []
+    jobs = {}
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs=jobs,
+                start=lambda job, cmd, cwd, env: started.append((job, cmd, cwd, env)))
+    assert not r.get("errors") and not r.get("error"), r
+    job, cmd, cwd, env = started[-1]
+    assert cmd == ["bash", api.DEPLOY, "--profile", str(path), "--resume"]
+    assert "--only" not in cmd and cwd == str(tmp_path) and env is None
+    assert job.flow_id == "engine-deploy" and jobs[job.id] is job
+    assert r == {"job_id": job.id, "profile_file": "deploy-profile-demo.env", "stack": "demo",
+                 "region": "us-east-1", "only": None}
+    assert job.buffer[0]["type"] == E.NARRATE and "--resume" in job.buffer[0]["text"]
+
+
+def test_a_re_run_names_one_phase_the_script_knows(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    _profile_for(tmp_path)
+    started = []
+    jobs = {}
+    start = lambda job, cmd, cwd, env: started.append((job, cmd, cwd, env))
+    r = api.run({"stack": "demo", "region": "us-east-1", "only": "license"}, jobs=jobs, start=start)
+    assert r["only"] == "license"
+    assert started[-1][1][-2:] == ["--only", "license"]
+    assert "--resume" in started[-1][1], "the engine makes the script interactive: the replay is not re-asked"
+    started[-1][0].emit(E.done("engine exited 0"))
+    # a phase the script does not have is refused, and the answer names the list
+    n = len(started)
+    r = api.run({"stack": "demo", "region": "us-east-1", "only": "wibble"}, jobs=jobs, start=start)
+    assert "wibble" not in r["error"] or "phase" in r["error"]
+    assert "license" in r["error"], "the refusal names the phases the script does have"
+    for bad in ("", "license extra", "license\n", "--events", 5, None):
+        r = api.run({"stack": "demo", "region": "us-east-1", "only": bad}, jobs=jobs, start=start)
+        assert r.get("error") or r.get("errors"), bad
+    assert len(started) == n, "a refused phase starts nothing"
+
+
+def test_a_replay_without_a_profile_is_refused_and_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    started = []
+    start = lambda *a: started.append(a)
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert "deploy-profile-demo.env" in r["error"] and "Deploy" in r["error"]
+    assert r["http"] == 400
+    assert not os.listdir(str(tmp_path)), "a refused replay writes no profile"
+    assert not started
+    # and the stack name still has to be one the script would accept
+    assert api.run({"stack": "../etc", "region": "us-east-1"}, jobs={}, start=start).get("error")
+    assert api.run({"stack": "demo", "region": "nowhere"}, jobs={}, start=start).get("error")
+    assert not started
+
+
+def test_a_replay_shares_the_one_engine_per_stack_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    _profile_for(tmp_path)
+    jobs = {}
+    started = []
+    start = lambda job, cmd, cwd, env: started.append(job)
+    first = api.run({"stack": "demo", "region": "us-east-1"}, jobs=jobs, start=start)
+    r = api.run({"stack": "demo", "region": "us-east-1", "only": "license"}, jobs=jobs, start=start)
+    assert r["http"] == 409 and first["job_id"] in r["error"]
+    r = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo"}, jobs=jobs, start=start)
+    assert r["http"] == 409
+    r = api.run({"plan": GOOD}, jobs=jobs, start=start)
+    assert r["http"] == 409
+    started[0].emit(E.done("engine exited 0"))
+    assert not api.run({"stack": "demo", "region": "us-east-1"}, jobs=jobs, start=start).get("error")
+
+
+def test_a_replay_takes_the_same_secrets_and_codes_as_a_launch(tmp_path, monkeypatch):
+    """A re-run of the licence phase needs the codes, and a resume needs the
+    passwords the run would otherwise ask for. They travel exactly as they
+    do on a launch: codes on the argv, secrets in the environment, both
+    registered with the job so the stream redacts them."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    _profile_for(tmp_path)
+    started = []
+    jobs = {}
+    r = api.run({"stack": "demo", "region": "us-east-1", "only": "license",
+                 "secrets": {"CLOUDLENS_KVO_ADMIN_PASS": "hunter2"},
+                 "kvo_codes": ["AAAA-BBBB-CCCC-DDDD,5"]}, jobs=jobs,
+                start=lambda job, cmd, cwd, env: started.append((job, cmd, env)))
+    job, cmd, env = started[-1]
+    assert env == {"CLOUDLENS_KVO_ADMIN_PASS": "hunter2"}
+    assert cmd[-4:] == ["--kvo-codes", "AAAA-BBBB-CCCC-DDDD,5", "--only", "license"]
+    assert sorted(job.redactions) == ["AAAA-BBBB-CCCC-DDDD", "hunter2"]
+    everywhere = json.dumps(job.inputs) + json.dumps(job.buffer) + json.dumps(r)
+    for leak in ("hunter2", "AAAA-BBBB"):
+        assert leak not in everywhere, leak
+    n = len(started)
+    r = api.run({"stack": "demo", "region": "us-east-1", "secrets": {"PATH": "/x"}}, jobs=jobs, start=_never)
+    assert r["errors"] and len(started) == n
+
+
+def test_the_status_and_verify_routes_are_guarded_gets(live, tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "none.json"))
+    monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
+                        _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    st, r = _call(live, "GET", "/api/status?stack=demo&region=us-east-1")
+    assert st == 200 and r["instances"]["value"]["count"] == 3
+    st, r = _call(live, "GET", "/api/status?stack=bad!&region=us-east-1")
+    assert st == 400 and "stack" in r["error"]
+    st, r = _call(live, "GET", "/api/status?region=us-east-1")
+    assert st == 400
+    # the guards every other /api/ GET has
+    st, r = _call(live, "GET", "/api/status?stack=demo&region=us-east-1", headers={"Host": "evil.example"})
+    assert st == 403 and "Host" in r["error"]
+    st, r = _call(live, "GET", "/api/status?stack=demo&region=us-east-1", headers={"Sec-Fetch-Site": "cross-site"})
+    assert st == 403
+    monkeypatch.setattr(api, "_aws", lambda args, region, **kw: {
+        "Reservations": [], "Vpcs": [], "Volumes": [], "NetworkInterfaces": [],
+        "TrafficMirrorSessions": [], "StackSummaries": []})
+    st, r = _call(live, "GET", "/api/verify-empty?region=us-east-1")
+    assert st == 200 and r["empty"] is True
+    st, r = _call(live, "GET", "/api/verify-empty?region=nowhere")
+    assert st == 400 and "region" in r["error"]
+    st, r = _call(live, "GET", "/api/verify-empty?region=us-east-1", headers={"Sec-Fetch-Site": "same-site"})
+    assert st == 403
+
+
+def test_the_replay_route_is_wired(live, tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    _profile_for(tmp_path, "demo2")
+    started = []
+    monkeypatch.setattr(api, "_start_engine", lambda job, cmd, cwd, env: started.append(cmd))
+    st, r = _call(live, "POST", "/api/run", {"stack": "demo2", "region": "us-east-1", "only": "sensors"})
+    assert st == 200 and r["only"] == "sensors", r
+    assert started[-1][-2:] == ["--only", "sensors"]
+    server.JOBS[r["job_id"]].emit(E.done("engine exited 0"))
+    st, r = _call(live, "POST", "/api/run", {"stack": "nosuch", "region": "us-east-1"})
+    assert st == 400 and "deploy-profile-nosuch.env" in r["error"]

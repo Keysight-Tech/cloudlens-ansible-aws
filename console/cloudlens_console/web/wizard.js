@@ -727,6 +727,11 @@ $("pfBtn").addEventListener("click",function(){
   });
 });
 
+/* The page switch, for the screens that live in their own files: a run
+   started on Operate or Teardown belongs on Watch, and only this file
+   knows how a page is shown. */
+if(typeof window!=="undefined")window.clNav={show:showPage,pages:PAGES};
+
 /* ------------------------------------------------------------- start */
 derive();paint();
 var page="deploy",first=1;

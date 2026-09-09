@@ -262,6 +262,7 @@
   table.resolved td:first-child{font-weight:500}
   table.resolved tr.unset td{color:var(--ink-faint)}
   .dim{color:var(--ink-faint);font-style:italic}
+  .qty{width:96px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:6px 9px}
   .errs{margin:8px 0;padding-left:18px;color:var(--accent);font-size:13.5px}
   .errs li{margin:4px 0}
   pre.profile,pre.cli{background:var(--screen);border:1px solid #000;border-radius:10px;padding:14px 16px;font-family:var(--mono);font-size:12px;color:var(--screen-ink);overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:10px 0 0;line-height:1.6}
@@ -610,18 +611,113 @@
 </div></section>
 
 <section class="page" id="page-operate" role="tabpanel" aria-labelledby="tab-operate" tabindex="0" data-page-body="operate" hidden><div class="wrap">
-  <div class="sec-head"><span class="eyebrow">Operate</span><h2>A stack that is up.</h2></div>
-  <div class="placeholder">Not built yet: the logins, the sensor count, re-running one phase of a deployed stack. For now the run's own login cards and the CLI's summary carry this.</div>
+  <div class="sec-head"><span class="eyebrow">Operate</span><h2>A stack that is up.</h2>
+    <p>Read-only, and honest about its limits: every card says either what it read or why it could not, with the command that would. Nothing here is a guess and no missing answer is drawn as a zero. The two buttons replay the profile this stack was deployed from: the same file, the same script, no new plan.</p></div>
+
+  <form class="pfbar" id="opForm">
+    <div class="field"><label for="opStack">Stack name</label><input id="opStack" spellcheck="false" autocomplete="off" placeholder="cloudlens-stack"></div>
+    <div class="field"><label for="opRegion">Region</label><input id="opRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"></div>
+    <button type="submit" class="runbtn" id="opRead"><span class="tri"></span> Read status</button>
+  </form>
+  <div class="status" id="opStatus" role="status" aria-live="polite"></div>
+
+  <div class="wpanel"><h4>Instances this stack named</h4>
+    <div class="tblwrap"><table class="ref" aria-label="Instances this stack named"><thead><tr><th>Role</th><th>Name</th><th>State</th><th>Address</th><th>Type</th></tr></thead><tbody id="opInstances"></tbody></table></div>
+    <p class="hint">Every instance carrying a <code class="mono">Name</code> tag of <code class="mono">&lt;stack&gt;-*</code>, which is how the deploy names them and how it finds them again. Terminated ones are not listed.</p>
+  </div>
+
+  <div class="wpanel"><h4>What else this console can see</h4>
+    <div class="logins" id="opCards"></div>
+    <p class="hint">The sensor count comes from the vController, through the credentials file the deploy wrote (mode 600) and never from anything typed into a URL. The vPB counters need SSH with the EC2 key pair: without that key on this machine the card carries the exact command instead of a number.</p>
+  </div>
+
+  <div class="wpanel"><h4>Run it again</h4>
+    <p class="hint" id="opProfile"></p>
+    <div class="pfbar">
+      <div class="field"><label for="opPhase">Phase</label><select id="opPhase"></select></div>
+      <button type="button" class="ghostbtn" id="opRerun">Re-run this phase</button>
+      <button type="button" class="runbtn" id="opResume"><span class="tri"></span> Resume</button>
+    </div>
+    <p class="hint">Resume is <code class="mono">deploy-stack.sh --profile deploy-profile-&lt;stack&gt;.env --resume</code>: it skips what the account proves is already done, and deletes nothing. Re-run adds <code class="mono">--only</code> and forces that one phase. The phases offered are the script's own list, served with the status. Both need the profile the Deploy screen wrote, both take the same one-engine-per-stack lock as a launch, and both stream into Watch.</p>
+    <div class="status" id="opAction" role="status" aria-live="polite"></div>
+  </div>
 </div></section>
 
 <section class="page" id="page-licensing" role="tabpanel" aria-labelledby="tab-licensing" tabindex="0" data-page-body="licensing" hidden><div class="wrap">
-  <div class="sec-head"><span class="eyebrow">Licensing</span><h2>KVO activation codes.</h2></div>
-  <div class="placeholder">Not built yet: list, check, activate and release against a KVO. Until then: <code class="mono">python3 scripts/kvo_license.py</code>, or the codes on the wizard's plan screen. Release before deleting a KVO, or the counts are stranded.</div>
+  <div class="sec-head"><span class="eyebrow">Licensing</span><h2>KVO activation codes.</h2>
+    <p>Check what a code holds, activate what you need, and release before the KVO goes. Releasing is not tidying up: a KVO deleted with licences still installed strands those counts, and they do not come back. The address and password are typed here and posted in the body of the request; they are stored nowhere, so a reload asks again.</p></div>
+
+  <div class="wpanel"><h4>The KVO</h4>
+    <div class="pfbar">
+      <div class="field"><label for="licKvo">KVO address</label><input id="licKvo" spellcheck="false" autocomplete="off" placeholder="10.0.0.11"></div>
+      <div class="field"><label for="licUser">User</label><input id="licUser" spellcheck="false" autocomplete="off" placeholder="admin"></div>
+      <div class="field"><label for="licPass">Password</label><input id="licPass" type="password" autocomplete="off"></div>
+      <button type="button" class="ghostbtn" id="licLoad">List what is installed</button>
+    </div>
+    <p class="hint">An IP or a hostname, with no scheme, port or path. The password goes into the KVO's own token request and nowhere else: not this page's storage, not a URL, not the console's log.</p>
+    <div class="opts">
+      <label class="opt" for="licVerify"><input type="checkbox" id="licVerify"><span><b>Verify the KVO's TLS certificate</b>Off by default: the appliance serves its own certificate, which is what every script here already assumes.</span></label>
+      <label class="opt" for="licEula"><input type="checkbox" id="licEula"><span><b>Accept a pending EULA first</b>A freshly booted KVO redirects every request, the login included, until its EULA is signed. That is a legal acceptance, so it is a choice and not a default.</span></label>
+    </div>
+    <div class="status" id="licStatus" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="wpanel"><h4>Activation codes</h4>
+    <div class="coderow">
+      <div class="field"><label for="licEntry">Activation code, or a pasted list</label><input id="licEntry" type="password" autocomplete="off" spellcheck="false" placeholder="CODE or CODE,QUANTITY"></div>
+      <button type="button" class="ghostbtn" id="licAdd">Add</button>
+    </div>
+    <p class="hint">A password field, because a textarea shows every code in clear on browsers that ignore the masking. Add <code class="mono">,N</code> for a quantity of 1 to 6 digits. Each code shows as its last four characters, here and in the tables.</p>
+    <div class="codes" id="licList"></div>
+    <div class="status" id="licCount" role="status" aria-live="polite"></div>
+    <div class="pfbar">
+      <button type="button" class="ghostbtn" id="licCheck">Check what these hold</button>
+      <button type="button" class="runbtn" id="licActivate"><span class="tri"></span> Activate</button>
+    </div>
+    <div class="tblwrap"><table class="ref" aria-label="What each activation code holds"><thead><tr><th>Code</th><th>Known</th><th>Entitlements</th><th>Activate</th></tr></thead><tbody id="licCodes"></tbody></table></div>
+    <p class="hint">Check first, every time. Activating spends entitlement quantity, and a code that was already consumed does not give it back.</p>
+  </div>
+
+  <div class="wpanel"><h4>Installed on this KVO</h4>
+    <div class="tblwrap"><table class="ref" aria-label="Licences installed on this KVO"><thead><tr><th>Code</th><th>Product</th><th>Quantity</th><th>Release</th></tr></thead><tbody id="licRows"></tbody></table></div>
+    <p class="hint" id="licReleased"></p>
+    <p class="hint">Release is <code class="mono">POST /api/v2/licensing/operations/deactivate</code>, polled to its end: the counts go back to the pool. Do it before the KVO is deleted, never after; after, there is nothing to ask.</p>
+  </div>
 </div></section>
 
 <section class="page" id="page-teardown" role="tabpanel" aria-labelledby="tab-teardown" tabindex="0" data-page-body="teardown" hidden><div class="wrap">
-  <div class="sec-head"><span class="eyebrow">Teardown</span><h2>Remove a stack.</h2></div>
-  <div class="placeholder">Not built yet: the typed-name gate, the orphan audit and the licence-loss warning. Until then: <code class="mono">bash deploy/teardown-stack.sh --stack-name NAME --region REGION</code>.</div>
+  <div class="sec-head"><span class="eyebrow">Teardown</span><h2>Remove a stack.</h2>
+    <p>In this order, and the order is the whole point: audit what the stack would leave loose, release its licences if it has a KVO, type the name back, run, then count what is left. Nothing on this screen deletes anything before the typed name matches.</p></div>
+
+  <form class="pfbar" id="tdForm">
+    <div class="field"><label for="tdStack">Stack name</label><input id="tdStack" spellcheck="false" autocomplete="off" placeholder="cloudlens-stack"></div>
+    <div class="field"><label for="tdRegion">Region</label><input id="tdRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"></div>
+    <button type="submit" class="ghostbtn" id="tdAudit">Audit what is loose</button>
+  </form>
+  <p class="hint"><code class="mono">teardown-stack.sh --orphans</code>: read-only, deletes nothing, ever. It is what names the volumes the Marketplace AMIs leave behind, the security groups that make a VPC undeletable, and the collector auto-scaling groups KVO builds outside CloudFormation.</p>
+  <div class="status" id="tdAuditStatus" role="status" aria-live="polite"></div>
+  <div class="wpanel" id="tdReportWrap" hidden><h4>What the audit found <span class="tag" id="tdReportCount"></span></h4>
+    <div class="console" id="tdReport"></div></div>
+
+  <div class="banner" id="tdWarn" hidden></div>
+
+  <div class="wpanel"><h4>Type the name to arm it</h4>
+    <div class="pfbar">
+      <div class="field"><label for="tdConfirm">The stack name, typed back</label><input id="tdConfirm" spellcheck="false" autocomplete="off" placeholder="the name, exactly"></div>
+      <button type="button" class="stopbtn" id="tdRun" disabled>Tear it down</button>
+    </div>
+    <div class="status" id="tdRunNote" role="status" aria-live="polite"></div>
+    <p class="hint">The run streams into Watch, like any other run. It deletes the stack and sweeps what the stack leaves; nothing is rolled back.</p>
+  </div>
+
+  <div class="wpanel"><h4>After it ends</h4>
+    <div class="pfbar">
+      <button type="button" class="ghostbtn" id="tdVerify">Count what is left in the region</button>
+    </div>
+    <div class="status" id="tdVerifyStatus" role="status" aria-live="polite"></div>
+    <div id="tdVerifyCard"></div>
+    <p class="hint">Read-only, and region-wide: these are the counts for the whole region and not for one stack, which is the point. A teardown's own sweep is what ties a resource to a stack; this is the check that it worked.</p>
+  </div>
 </div></section>
 
 <div class="modal" id="wPrompt" hidden>
@@ -834,6 +930,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 <script src="/web/plan.js"></script>
 <script src="/web/app.js"></script>
 <script src="/web/watch.js"></script>
+<script src="/web/operate.js"></script>
+<script src="/web/licences.js"></script>
+<script src="/web/teardown.js"></script>
 <script src="/web/wizard.js"></script>
 </body>
 </html>
