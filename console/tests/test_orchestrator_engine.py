@@ -16,6 +16,7 @@ completed, and the script's own done is never emitted by the tail thread.
 Run:  cd console && python3 -m pytest tests/test_orchestrator_engine.py -q
 """
 import os
+import json
 import time
 import threading
 
@@ -248,6 +249,37 @@ def test_redact_blanks_registered_strings_and_their_prefixes():
     # a registered string of REDACT_PREFIX characters or fewer has no prefix form
     job.redactions[:] = ["1234-ABCD-5678"]
     assert job.redact("x 1234-ABCD-5678-EFGH y 1234-ABCD z") == "x [redacted]-EFGH y 1234-ABCD z"
+
+
+# a phase whose reason carries a code, a check whose fix carries a
+# password, then a done: the free text the script composes from what it saw
+FAKE_SECRET_FRAMES = PARSE + r'''
+echo '{"seq":1,"ts":"t","type":"phase","name":"kvo","status":"failed","reason":"activate 1234-ABCD-5678-EFGH-9012 refused"}' >> "$ev"
+echo '{"seq":2,"ts":"t","type":"check","item":"KVO login","status":"fail","fix":"try hunter2secret again","count":3,"ok":false}' >> "$ev"
+echo '{"seq":3,"ts":"t","type":"done","status":"failed","reason":"pw hunter2secret"}' >> "$ev"
+exit 1
+'''
+
+
+def test_tail_frames_are_redacted_before_they_are_emitted(tmp_path):
+    """Reproduced: only the stashed done went through _redact_event; every
+    other frame the tail emitted (a phase, a check, a login) carried its
+    text as the script wrote it, and the script writes what it saw: the
+    code it activated, the password it was given. Top-level strings only,
+    which is the whole frame: the script's frames are flat."""
+    job = O.Job("rd", "engine-deploy", {})
+    job.redactions += ["1234-ABCD-5678-EFGH-9012", "hunter2secret"]
+    _start(job, ["bash", _script(tmp_path, FAKE_SECRET_FRAMES)]).join(10)
+    assert job.done, _types(job)
+    phase = [e for e in job.buffer if e["type"] == E.PHASE][0]
+    assert phase["reason"] == "activate [redacted] refused"
+    check = [e for e in job.buffer if e["type"] == E.CHECK][0]
+    assert check["fix"] == "try [redacted] again" and check["count"] == 3 and check["ok"] is False, \
+        "a number and a bool pass through untouched"
+    assert _last(job)["type"] == E.DONE and _last(job)["reason"] == "pw [redacted]"
+    blob = json.dumps(job.buffer)
+    for leak in ("1234-ABCD", "EFGH-9012", "hunter2secret"):
+        assert leak not in blob, leak
 
 
 def test_stdout_lines_become_log_events(tmp_path):

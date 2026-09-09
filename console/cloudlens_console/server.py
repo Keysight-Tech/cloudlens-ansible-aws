@@ -20,18 +20,27 @@ Routes (nothing else is exposed):
   POST /api/licences   {action, kvo, user, password, ...}  (also /api/licences/<action>)
 
 Bind is 127.0.0.1 only - the console is never reachable off the machine.
-POST routes also check the Host header (a DNS-rebinding page reaches the
-loopback address under its own name), the Origin header when a browser
-sends one, and require application/json (a cross-site form or text/plain
-fetch can post without a preflight; JSON cannot).
+Every POST, and every GET under /api/ or /events/, checks the Host header
+(a DNS-rebinding page reaches the loopback address under its own name).
+POSTs also check the Origin header when a browser sends one (host AND
+port: the console's own page names both) and require application/json
+(a cross-site form or text/plain fetch can post without a preflight;
+JSON cannot). The GETs under /api/ and /events/ refuse a Sec-Fetch-Site
+of cross-site or same-site: a browser sends that header on every fetch,
+and a GET here runs a command (the doctor, the aws CLI) whether or not
+the page that fired it may read the answer. The page itself (/, /flows,
+/web/) stays open: it is fetched by name and runs nothing.
+
+A route that raises answers 500 with the exception's type and nothing
+else; the message and the traceback go to the console's own stderr.
 """
 from __future__ import annotations
 import os
 import re
 import json
 import uuid
-import queue
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
@@ -41,6 +50,9 @@ from . import flows as F
 from . import orchestrator as O
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
+# every job this process has started, by id. Never pruned: a finished job
+# keeps its buffer for a browser that reconnects late, and nothing yet
+# decides when that is over. Bounding it is a later task.
 JOBS = {}
 FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 MAX_BODY = 256 * 1024     # bytes of one POST body
@@ -50,6 +62,9 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 # a test's hand-made id, never for a control byte. Checked the way api.py
 # checks every typed value: control characters first, then fullmatch.
 JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+HOST_ERROR = "Host must be 127.0.0.1 or localhost: the console is loopback only"
+ORIGIN_ERROR = "Origin must be this console: it takes no cross-site requests"
+FETCH_SITE_ERROR = "Sec-Fetch-Site names another site: the console takes no cross-site requests"
 
 
 def job_id_ok(job_id):
@@ -75,16 +90,34 @@ def host_ok(host):
     return h in LOOPBACK_HOSTS
 
 
-def origin_ok(origin):
+def origin_ok(origin, port):
     """A browser names the page's origin on a cross-site POST; absent is the
-    console's own page (or a non-browser client on this machine)."""
+    console's own page (or a non-browser client on this machine). The
+    origin has to be this console's: a loopback host AND this server's
+    port. Another local server's page (http://localhost:3000) is another
+    origin, and one with no port is port 80 or 443, never the console's."""
     if origin is None:
         return True
     try:
         parts = urlsplit(origin.strip())
+        oport = parts.port
     except ValueError:
         return False
-    return parts.scheme in ("http", "https") and host_ok(parts.netloc)
+    if oport is None:
+        oport = 443 if parts.scheme == "https" else 80
+    return parts.scheme in ("http", "https") and host_ok(parts.netloc) and oport == port
+
+
+def fetch_site_ok(value):
+    """The Sec-Fetch-Site header, when there is one: same-origin is the
+    console's own page, none is a URL typed or bookmarked, and a client
+    that is not a browser (curl, the tests) sends no header at all. The
+    other two values (cross-site, same-site) are a page on another origin
+    making the request, which a GET's CORS default lets it do even though
+    it cannot read the answer; a GET here runs a command, so it is refused."""
+    if value is None:
+        return True
+    return value.strip().lower() in ("same-origin", "none")
 
 
 def last_event_id(value):
@@ -106,6 +139,7 @@ def events_after(job, last_id):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    _started = False    # a status line has gone out for the request in hand
 
     def log_message(self, *a):  # keep the console quiet
         pass
@@ -115,6 +149,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(body, (dict, list)):
             body = json.dumps(body)
         raw = body.encode("utf-8") if isinstance(body, str) else body
+        self._started = True
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
@@ -123,6 +158,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(raw)
+
+    def _internal(self, exc):
+        """A route that raised: 500 with the exception's type and nothing
+        else. The message can carry a path, an argv or a KVO's words, and
+        the traceback the surroundings of a secret, so both go to the
+        console's own stderr, where the operator reads them, never to the
+        client. A response already begun cannot be replaced: that case only
+        closes the connection, so the client sees a cut stream and not a
+        second status line spliced into the first."""
+        traceback.print_exc()
+        if self._started:
+            self.close_connection = True
+            return
+        self._send(500, {"error": "internal error: " + type(exc).__name__})
 
     def _api(self, result):
         """Send an api.py result: 200, or the error's own code (400 unless
@@ -173,6 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET ----
     def do_GET(self):
+        self._started = False
         parts = urlsplit(self.path)
         path = parts.path
         if path == "/":
@@ -182,12 +232,19 @@ class Handler(BaseHTTPRequestHandler):
                 fid: {k: F.FLOWS[fid][k] for k in ("id", "name", "script", "subtitle", "inputs", "nodes", "wires")}
                 for fid in F.ORDER}}
             return self._send(200, data)
-        if path.startswith("/events/"):
-            return self._sse(path[len("/events/"):])
         if path.startswith("/web/"):
             return self._file(path[len("/web/"):], _ctype(path))
-        if path.startswith("/api/"):
-            return self._api_get(path, parse_qs(parts.query, keep_blank_values=True))
+        if path.startswith("/events/") or path.startswith("/api/"):
+            if not host_ok(self.headers.get("Host")):
+                return self._send(403, {"error": HOST_ERROR})
+            if not fetch_site_ok(self.headers.get("Sec-Fetch-Site")):
+                return self._send(403, {"error": FETCH_SITE_ERROR})
+            try:
+                if path.startswith("/events/"):
+                    return self._sse(path[len("/events/"):])
+                return self._api_get(path, parse_qs(parts.query, keep_blank_values=True))
+            except Exception as exc:  # noqa: whatever a route did not foresee
+                return self._internal(exc)
         return self._send(404, {"error": "not found"})
 
     def _api_get(self, path, query):
@@ -211,11 +268,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
+        self._started = False
         if not host_ok(self.headers.get("Host")):
-            return self._send(403, {"error": "Host must be 127.0.0.1 or localhost: the console is loopback only"})
-        if not origin_ok(self.headers.get("Origin")):
-            return self._send(403, {"error": "Origin must be this console: it takes no cross-site requests"})
-        path = urlsplit(self.path).path
+            return self._send(403, {"error": HOST_ERROR})
+        if not origin_ok(self.headers.get("Origin"), self.server.server_address[1]):
+            return self._send(403, {"error": ORIGIN_ERROR})
+        try:
+            return self._post(urlsplit(self.path).path)
+        except Exception as exc:  # noqa: whatever a route did not foresee
+            return self._internal(exc)
+
+    def _post(self, path):
         if path == "/run":
             b, sent = self._read_json()
             if sent:
@@ -280,16 +343,21 @@ class Handler(BaseHTTPRequestHandler):
     # ---- SSE ----
     def _sse(self, job_id):
         """Replay what the browser missed (everything after Last-Event-ID,
-        or the whole buffer on a first connect), then stream live. Ids are
-        the buffer order, so the watermark is simply the last id written;
-        an event that is both in the replay and still on the queue is
-        dropped by that watermark. A job that is done and whose queue is
-        drained ends the stream at once, not after a keepalive timeout."""
+        or the whole buffer on a first connect), then stream live. Every
+        reader waits on the job's own condition and takes what the buffer
+        holds past its watermark, so any number of tabs on one job each
+        see every event in id order: the single queue that was here handed
+        each event to whichever reader took it first, and two tabs on one
+        job saw ids 1,3,5 and 2,4,6. A keepalive comment goes out whenever
+        the job has been quiet for KEEPALIVE_SECS; the stream ends once the
+        job is done and its terminal event has been written, not after a
+        keepalive timeout."""
         if not job_id_ok(job_id):
             return self._send(400, {"error": "job id must be letters, digits, - or _"})
         job = JOBS.get(job_id)
         if not job:
             return self._send(404, {"error": "no such job"})
+        self._started = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
@@ -301,25 +369,21 @@ class Handler(BaseHTTPRequestHandler):
         sent = last_event_id(self.headers.get("Last-Event-ID"))
         try:
             self.wfile.write(b"retry: 2000\n\n")
-            for ev in events_after(job, sent):
-                self.wfile.write(E.to_sse(ev).encode("utf-8"))
-                sent = ev["id"]
-            self.wfile.flush()
             while True:
-                if job.done and job.q.empty():
+                # sampled before the drain: emit sets done under the job's
+                # lock after appending the terminal event, so a done seen
+                # here means the drain below carries that event, and one
+                # that lands after the sample is caught by the next pass
+                finished = job.done
+                for ev in events_after(job, sent):
+                    self.wfile.write(E.to_sse(ev).encode("utf-8"))
+                    sent = ev["id"]
+                self.wfile.flush()
+                if finished:
                     break
-                try:
-                    ev = job.q.get(timeout=KEEPALIVE_SECS)
-                except queue.Empty:
-                    if job.done:
-                        break
+                if not job.wait_for_events(sent, KEEPALIVE_SECS):
                     self.wfile.write(b": keepalive\n\n")  # SSE comment
                     self.wfile.flush()
-                    continue
-                if ev["id"] > sent:
-                    self.wfile.write(E.to_sse(ev).encode("utf-8"))
-                    self.wfile.flush()
-                    sent = ev["id"]
         except (BrokenPipeError, ConnectionResetError):
             return
 

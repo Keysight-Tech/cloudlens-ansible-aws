@@ -47,6 +47,8 @@ override.tf.json
 cloudlens-deploy-stack.log
 cloudlens-deploy-summary.txt
 .cloudlens-deploy-*.state
+# the profile the console writes for deploy-stack.sh --profile (per machine, mode 600)
+deploy-profile-*.env
 load_aws_creds.sh
 
 # ansible-galaxy local install target

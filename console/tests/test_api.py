@@ -20,7 +20,10 @@ What these hold:
   licences   kvo_license.py's own functions; the password reaches the KVO
              and nothing else
   server     Last-Event-ID replay from the job buffer, ids stamped by emit in
-             buffer order, the Host guard on POST, body caps and JSON errors
+             buffer order, every reader of one job seeing every event, the
+             Host guard on every POST and on the /api/ and /events/ GETs, the
+             Sec-Fetch-Site guard on those GETs, the origin's port, body caps,
+             JSON errors and the 500 that names only the exception's type
 
 Run:  cd console && python3 -m pytest tests/test_api.py -q
 """
@@ -28,10 +31,13 @@ import http.client
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -45,7 +51,6 @@ GOOD = {"CLOUDLENS_STACK_NAME": "demo", "CLOUDLENS_REGION": "us-east-1", "CLOUDL
 
 # ------------------------------------------------------------------ plan
 def test_plan_rejects_bad_stack_name_and_renders_profile(monkeypatch):
-    from cloudlens_console import api
     r = api.plan({"CLOUDLENS_STACK_NAME": "bad name!", "CLOUDLENS_REGION": "us-east-1"})
     assert r["errors"]
     r = api.plan({"CLOUDLENS_STACK_NAME": "demo", "CLOUDLENS_REGION": "us-east-1", "CLOUDLENS_TAPPING": "sensors"})
@@ -97,13 +102,13 @@ class _NoPrompt(object):
 CONTROL_VALIDATORS = [
     ("stack (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_STACK_NAME="abc" + t)).get("errors"))),
     ("stack (teardown)", lambda t: "error" in api.teardown(
-        {"stack": "abc" + t, "region": "us-east-1", "confirm_name": "abc" + t}, start=_never)),
+        {"stack": "abc" + t, "region": "us-east-1", "confirm_name": "abc" + t}, start=_never, jobs={})),
     ("confirm_name", lambda t: "error" in api.teardown(
-        {"stack": "abc", "region": "us-east-1", "confirm_name": "abc" + t}, start=_never)),
+        {"stack": "abc", "region": "us-east-1", "confirm_name": "abc" + t}, start=_never, jobs={})),
     ("region (discover)", lambda t: "error" in api.discover_vpcs("us-east-1" + t)),
     ("region (doctor)", lambda t: "error" in api.doctor("us-east-1" + t)),
     ("region (teardown)", lambda t: "error" in api.teardown(
-        {"stack": "abc", "region": "us-east-1" + t, "confirm_name": "abc"}, start=_never)),
+        {"stack": "abc", "region": "us-east-1" + t, "confirm_name": "abc"}, start=_never, jobs={})),
     ("region (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_REGION="us-east-1" + t)).get("errors"))),
     ("zone (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_COLLECTOR_ZONE="us-east-1a" + t)).get("errors"))),
     ("vpc (discover)", lambda t: "error" in api.discover_subnets("us-east-1", "vpc-0a0a0a0a" + t)),
@@ -139,10 +144,29 @@ def test_control_characters_are_rejected_by_every_validator(name, rejects, tail,
     # check first and fullmatch after, so the three tails are refused by
     # every validator, and nothing is started or shelled out on the way.
     monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
     monkeypatch.setattr(api, "_aws", _never)
     monkeypatch.setattr(api, "_kvo_license", _never)
     assert rejects(tail), "%s accepted %r" % (name, "abc" + tail)
     assert rejects(tail * 2)
+
+
+@pytest.mark.parametrize("name,rejects", CONTROL_VALIDATORS, ids=[v[0] for v in CONTROL_VALIDATORS])
+def test_the_control_matrix_accepts_its_own_base_value(name, rejects, monkeypatch):
+    # The positive control for the matrix above: with no tail the same
+    # value is accepted, so a refusal up there is the tail's alone and not
+    # a validator that refuses everything. Accepted is the validator
+    # saying so, or the call going past it into a stub, which raises.
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
+    monkeypatch.setattr(api, "_aws", _never)
+    monkeypatch.setattr(api, "_kvo_license", _never)
+    try:
+        refused = rejects("")
+    except AssertionError as exc:
+        assert str(exc).startswith("a refused"), exc   # a stub's own words: the value went past the validator
+        refused = False
+    assert not refused, "%s refuses its own base value" % name
 
 
 def test_plan_refuses_unknown_keys_and_unwritable_values():
@@ -236,6 +260,16 @@ def test_aws_is_an_argv_list_with_json_output_never_a_shell(monkeypatch):
     # and the route answers an AwsError as a 502, not a traceback
     r = api.discover_vpcs("us-east-1")
     assert "not installed" in r["error"] and r["http"] == 502
+
+    def denied(argv, **kw):
+        raise PermissionError(13, "Permission denied", "aws")
+
+    # any other OSError from the exec (a CLI on PATH that cannot run) is
+    # an answer too: it used to escape as a traceback and a dropped connection
+    monkeypatch.setattr(api.subprocess, "run", denied)
+    with pytest.raises(api.AwsError, match="could not be run: Permission denied"):
+        api._aws(["ec2", "describe-vpcs"], "us-east-1")
+    assert api.discover_vpcs("us-east-1")["http"] == 502
 
 
 def test_discover_vpcs_and_subnets(monkeypatch):
@@ -343,26 +377,46 @@ def test_discover_workloads_and_eks(monkeypatch):
 
 
 # ---------------------------------------------------------------- doctor
+class FakeProc(object):
+    """subprocess.Popen as doctor() drives it: records the argv and the
+    keyword arguments, writes the events file on communicate() and answers
+    with the stdout, stderr and exit the test chose. `hang` raises
+    TimeoutExpired from the first communicate, as a real one does, and
+    answers the second (the reap after the kill)."""
+    def __init__(self, seen, lines, rc, out="", err="", hang=False):
+        self.seen, self.lines, self.rc, self.out, self.err, self.hang = seen, lines, rc, out, err, hang
+        self.pid = 4242
+        self.returncode = None
+
+    def __call__(self, argv, **kw):
+        self.seen["argv"], self.seen["kw"], self.seen["calls"] = argv, kw, 0
+        return self
+
+    def communicate(self, timeout=None):
+        self.seen["calls"] += 1
+        if self.hang and self.seen["calls"] == 1:
+            raise subprocess.TimeoutExpired(self.seen["argv"], timeout)
+        argv = self.seen["argv"]
+        with open(argv[argv.index("--events") + 1], "a") as fh:
+            for line in self.lines:
+                fh.write(line + "\n")
+        self.returncode = self.rc
+        return self.out, self.err
+
+
 def test_doctor_runs_the_script_and_reads_its_check_events(monkeypatch):
     seen = {}
-
-    def fake_run(argv, **kw):
-        seen["argv"], seen["kw"] = argv, kw
-        ev = argv[argv.index("--events") + 1]
-        with open(ev, "a") as fh:
-            fh.write('{"seq":1,"ts":"t","type":"check","item":"AWS CLI 2.15","status":"pass"}\n')
-            fh.write('{"seq":2,"ts":"t","type":"check","item":"No creds","status":"fail","fix":"aws sso login"}\n')
-            fh.write('{"seq":3,"ts":"t","type":"check","item":"Bucket","status":"warn","fix":"allow https"}\n')
-            fh.write('{"seq":4,"ts":"t","type":"done","status":"failed","mode":"doctor"}\n')
-        return subprocess.CompletedProcess(argv, 1, stdout="[FAIL] No creds\n", stderr="")
-
-    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    monkeypatch.setattr(api.subprocess, "Popen", FakeProc(seen, [
+        '{"seq":1,"ts":"t","type":"check","item":"AWS CLI 2.15","status":"pass"}',
+        '{"seq":2,"ts":"t","type":"check","item":"No creds","status":"fail","fix":"aws sso login"}',
+        '{"seq":3,"ts":"t","type":"check","item":"Bucket","status":"warn","fix":"allow https"}',
+        '{"seq":4,"ts":"t","type":"done","status":"failed","mode":"doctor"}'], rc=1, out="[FAIL] No creds\n"))
     r = api.doctor("eu-west-2")
     argv = seen["argv"]
     assert argv[:2] == ["bash", api.DEPLOY] and "--doctor" in argv
     assert argv[argv.index("--region") + 1] == "eu-west-2"
     assert "--prompt-pipe" not in argv, "the doctor asks nothing; a pipe would block it"
-    assert seen["kw"]["timeout"] == api.DOCTOR_TIMEOUT and seen["kw"]["stdin"] is subprocess.DEVNULL
+    assert seen["kw"]["stdin"] is subprocess.DEVNULL
     assert seen["kw"]["start_new_session"], "no controlling terminal: the script would re-attach /dev/tty"
     assert r["checks"] == [
         {"item": "AWS CLI 2.15", "status": "pass", "fix": ""},
@@ -371,28 +425,68 @@ def test_doctor_runs_the_script_and_reads_its_check_events(monkeypatch):
     assert r["ok"] is False and r["exit"] == 1
     assert not os.path.exists(argv[argv.index("--events") + 1]), "the events file is cleaned up"
 
-    def fake_ok(argv, **kw):
-        with open(argv[argv.index("--events") + 1], "a") as fh:
-            fh.write('{"seq":1,"ts":"t","type":"check","item":"x","status":"pass"}\n')
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(api.subprocess, "run", fake_ok)
+    monkeypatch.setattr(api.subprocess, "Popen", FakeProc(
+        seen, ['{"seq":1,"ts":"t","type":"check","item":"x","status":"pass"}'], rc=0))
     assert api.doctor("us-east-1")["ok"] is True
 
-    def hangs(argv, **kw):
-        raise subprocess.TimeoutExpired(argv, kw["timeout"])
-
-    monkeypatch.setattr(api.subprocess, "run", hangs)
+    # a doctor that hangs: its GROUP is killed (the pgid is the leader's pid,
+    # never the leader alone), the leader reaped, and the answer is a 504
+    killed = []
+    monkeypatch.setattr(api.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    monkeypatch.setattr(api.subprocess, "Popen", FakeProc(seen, [], rc=-9, hang=True))
     r = api.doctor("us-east-1")
     assert r["http"] == 504 and "timed out" in r["error"]
+    assert killed == [(4242, signal.SIGKILL)] and seen["calls"] == 2, "killpg on the pgid, then the reap"
 
-    def silent(argv, **kw):
-        return subprocess.CompletedProcess(argv, 2, stdout="", stderr="bash: syntax error")
-
-    monkeypatch.setattr(api.subprocess, "run", silent)
+    monkeypatch.setattr(api.subprocess, "Popen", FakeProc(seen, [], rc=2, err="bash: syntax error"))
     r = api.doctor("us-east-1")
     assert r["http"] == 502 and "syntax error" in r["error"]
     assert "region" in api.doctor("nope")["error"]
+
+
+# the doctor's shape when a probe hangs: a child (curl, the aws CLI)
+# holding the script's stdout, the script waiting on it
+SLOW_DOCTOR = r'''#!/usr/bin/env bash
+echo $$ > "$PID_FILE"
+sleep 30 &
+wait
+'''
+
+
+def _group_gone(pgid):
+    """True once no process is left in the group (ESRCH); EPERM on macOS is
+    the members still being reaped, so not yet."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def test_a_doctor_that_hangs_is_killed_with_its_children(tmp_path, monkeypatch):
+    # Reproduced before the fix: subprocess.run's timeout killed the leader
+    # alone, its child kept the stdout pipe open, and the read after the
+    # kill sat on that pipe for the child's whole life (30 s here; a probe's
+    # own timeout in the real script). Now the group gets KILL and the
+    # answer comes at the timeout, with nothing of the doctor left behind.
+    script = tmp_path / "slow-doctor.sh"
+    script.write_text(SLOW_DOCTOR)
+    script.chmod(0o755)
+    monkeypatch.setattr(api, "DEPLOY", str(script))
+    monkeypatch.setattr(api, "DOCTOR_TIMEOUT", 0.5)
+    monkeypatch.setenv("PID_FILE", str(tmp_path / "pid"))
+    t0 = time.monotonic()
+    r = api.doctor("us-east-1")
+    took = time.monotonic() - t0
+    assert r["http"] == 504 and "timed out after 0.5s" in r["error"], r
+    assert took < 5, "the doctor answered only when its child had died: %.1fs" % took
+    pid = int((tmp_path / "pid").read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not _group_gone(pid):
+        time.sleep(0.05)
+    assert _group_gone(pid), "the child outlived the kill"
 
 
 # ------------------------------------------------------------------- run
@@ -416,7 +510,9 @@ def test_run_writes_the_profile_and_starts_the_engine_with_secrets_in_env_only(t
     # the profile: the validated plan, mode 600, in the engine's cwd
     path = os.path.join(str(tmp_path), "deploy-profile-demo.env")
     assert started["cmd"][:4] == ["bash", api.DEPLOY, "--profile", path]
-    assert started["cwd"] == str(tmp_path) and r["profile_file"] == path
+    assert started["cwd"] == str(tmp_path)
+    assert r["profile_file"] == "deploy-profile-demo.env" and job.inputs["profile"] == path, \
+        "the answer names the file as plan() does, relative to the repo root; the engine gets the path"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     text = open(path).read()
     assert 'CLOUDLENS_DEPLOY_KVO="true"' in text and 'CLOUDLENS_STACK_NAME="demo"' in text
@@ -490,10 +586,16 @@ def test_run_refuses_secrets_it_does_not_know_and_bad_plans(tmp_path, monkeypatc
     start = lambda *a, **k: calls.append(a)
     # a profile key is never a secret (it would bypass the file), and an
     # unknown name is never passed through to the engine's environment
+    # a control character in a secret (a newline, a tab, not only NUL) ends
+    # the argument or the form field the script puts the value in
     for bad in ({"CLOUDLENS_REGION": "us-east-1"}, {"PATH": "/x"}, {"AWS_SECRET_ACCESS_KEY": "x"},
-                {"CLOUDLENS_MIRROR_SECRET_KEY": 5}, {"CLOUDLENS_MIRROR_SECRET_KEY": "a\x00b"}):
+                {"CLOUDLENS_MIRROR_SECRET_KEY": 5}, {"CLOUDLENS_MIRROR_SECRET_KEY": "a\x00b"},
+                {"CLOUDLENS_MIRROR_SECRET_KEY": "a\nb"}, {"CLOUDLENS_VC_PASSWORD": "pw\t"},
+                {"CLOUDLENS_KVO_ADMIN_PASS": "\x7fpw"}):
         r = api.run({"plan": GOOD, "secrets": bad}, jobs={}, start=start)
         assert r.get("errors"), bad
+    assert "control character" in api._check_secrets({"CLOUDLENS_VC_PASSWORD": "a\nb"})[1][0]
+    assert api._check_secrets({"CLOUDLENS_VC_PASSWORD": "p&ss w0rd/+="})[0] == {"CLOUDLENS_VC_PASSWORD": "p&ss w0rd/+="}
     r = api.run({"plan": GOOD, "secrets": "nope"}, jobs={}, start=start)
     assert r["errors"]
     r = api.run({"plan": GOOD, "kvo_codes": ["has space"]}, jobs={}, start=start)
@@ -502,6 +604,43 @@ def test_run_refuses_secrets_it_does_not_know_and_bad_plans(tmp_path, monkeypatc
     assert r["errors"]
     assert api.run("x", jobs={}, start=start)["errors"]
     assert not calls and not os.listdir(str(tmp_path)), "nothing written, nothing started"
+
+
+def test_a_stack_in_flight_refuses_a_second_run_and_a_teardown(tmp_path, monkeypatch):
+    # Reproduced before the fix: two POST /api/run for one stack started two
+    # engines on one profile file and one CloudFormation stack name, and a
+    # teardown could start while the deploy was still in its phases.
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    jobs, started = {}, []
+    start = lambda job, cmd, cwd, env: started.append(cmd)
+    r = api.run({"plan": GOOD}, jobs=jobs, start=start)
+    job = jobs[r["job_id"]]
+    profile = tmp_path / "deploy-profile-demo.env"
+    with open(str(profile), "a") as fh:
+        fh.write("# marker: a refused run must not rewrite this file\n")
+    job._group_open = True       # the engine's Popen has happened and its runner has not returned
+    assert job.running()
+    r2 = api.run({"plan": GOOD}, jobs=jobs, start=start)
+    assert r2 == {"error": "stack demo already has a run in progress (job %s)" % job.id, "http": 409}
+    assert "marker" in profile.read_text(), "refused before anything was written"
+    r3 = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo"}, jobs=jobs, start=start)
+    assert r3["http"] == 409 and job.id in r3["error"]
+    r4 = api.teardown({"stack": "demo", "region": "us-east-1", "orphans_only": True}, jobs=jobs, start=start)
+    assert r4["http"] == 409, "the audit is a teardown-stack.sh process on the stack too"
+    # the same name in another region, or another stack here, is not this stack
+    assert "error" not in api.run({"plan": dict(GOOD, CLOUDLENS_REGION="eu-west-2")}, jobs=jobs, start=start)
+    assert "error" not in api.run({"plan": dict(GOOD, CLOUDLENS_STACK_NAME="other")}, jobs=jobs, start=start)
+    assert len(started) == 3
+    # the runner returned: the stack is free again, and a teardown in
+    # flight blocks a run the same way
+    job._group_open = False
+    r5 = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo"}, jobs=jobs, start=start)
+    assert "error" not in r5
+    jobs[r5["job_id"]]._group_open = True
+    r6 = api.run({"plan": GOOD}, jobs=jobs, start=start)
+    assert r6["http"] == 409 and r5["job_id"] in r6["error"]
+    jobs[r5["job_id"]]._group_open = False
+    assert "error" not in api.run({"plan": GOOD}, jobs=jobs, start=start)
 
 
 def test_secret_env_names_are_the_ones_the_script_reads_and_never_profile_keys():
@@ -533,18 +672,17 @@ def test_the_real_starter_runs_the_engine_on_a_daemon_thread(monkeypatch):
 
 # -------------------------------------------------------------- teardown
 def test_teardown_requires_typed_name():
-    from cloudlens_console import api
     r = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "nope"}, start=lambda *a, **k: "j")
     assert r["error"].startswith("type the stack name")
 
 
 def _teardown_flags():
-    """The flags teardown-stack.sh's own case statement accepts."""
+    """The flags teardown-stack.sh's own case statement accepts: every
+    label of its argument parser, each alternative of an a|b) label."""
     src = open(TEARDOWN).read()
     case = re.search(r'while \[\[ \$# -gt 0 \]\]; do\n  case "\$1" in\n(.*?)\n  esac', src, re.S)
     assert case, "teardown-stack.sh arg parser not found"
-    return set(re.findall(r"(?<![\w-])(--?[a-z][a-z-]*)\)", case.group(1))) | \
-        set(f for line in case.group(1).splitlines() for f in re.findall(r"(--[a-z-]+)", line.split(")")[0]))
+    return set(f for label in re.findall(r"^\s*([-a-z|]+)\)", case.group(1), re.M) for f in label.split("|"))
 
 
 def test_teardown_speaks_the_flags_the_script_parses():
@@ -560,6 +698,10 @@ def test_teardown_speaks_the_flags_the_script_parses():
     assert r["job_id"] == job.id and jobs[job.id] is job and job.flow_id == "engine-teardown"
     assert cmd == ["bash", api.TEARDOWN, "--stack-name", "demo", "--region", "us-east-1", "--yes"]
     assert cwd == api.REPO and env is None
+    # the narrate that opens the stream shows the flags from --stack-name
+    # on: it used to skip that flag, so the name read as a stray word
+    assert job.buffer[0]["type"] == E.NARRATE
+    assert job.buffer[0]["text"] == "engine: bash deploy/teardown-stack.sh --stack-name demo --region us-east-1 --yes"
     assert "--accept-licence-loss" not in cmd, "the licence-loss flag needs a release first"
     r = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo", "licences_released": True},
                      start=start, jobs=jobs)
@@ -601,20 +743,25 @@ def test_answer_route_maps_onto_job_answer():
 # -------------------------------------------------------------- licences
 class FakeKL(object):
     """kvo_license.py's surface as the API uses it, recording every call."""
-    def __init__(self, licences=None, ents=None, states=None):
+    def __init__(self, licences=None, ents=None, states=None, eula=True):
         self.calls = []
         self.licences = licences if licences is not None else []
         self.ents = ents or {}
         self.states = states or {}
+        self.eula = eula
 
     def accept_eula(self, kvo, verify):
         self.calls.append(("eula", kvo))
-        return True
+        return self.eula
 
     def token(self, kvo, user, pw, verify):
         self.calls.append(("token", kvo, user, pw, verify))
         if pw == "wrong":
-            raise Exception("HTTP Error 401: Unauthorized")
+            # what urllib raises on the KVO's 401: an HTTPError whose code is the status
+            raise urllib.error.HTTPError("https://%s/auth/realms/keysight/protocol/openid-connect/token" % kvo,
+                                         401, "Unauthorized", {}, None)
+        if pw == "down":
+            raise urllib.error.URLError("[Errno 61] Connection refused")
         return "TOK"
 
     def _req(self, method, url, token=None, body=None, verify=False, timeout=30):
@@ -675,7 +822,9 @@ def test_licences_refuses_bad_input_and_reports_auth_without_the_password(monkey
     monkeypatch.setattr(api, "_kvo_license", lambda: kl)
     creds = {"kvo": "kvo.example.net", "password": "wrong"}
     r = api.licences(dict(creds, action="list"))
-    assert r["http"] == 502 and "login failed" in r["error"] and "wrong" not in r["error"]
+    assert r["http"] == 401 and r["error"] == "KVO rejected the username or password"
+    r = api.licences(dict(creds, action="list", password="down"))
+    assert r["http"] == 502 and "login failed" in r["error"] and "down" not in r["error"]
     n = len(kl.calls)
     assert "action" in api.licences({"kvo": "1.2.3.4"})["error"]
     assert "kvo" in api.licences({"kvo": "https://1.2.3.4/x", "action": "list"})["error"]
@@ -686,6 +835,11 @@ def test_licences_refuses_bad_input_and_reports_auth_without_the_password(monkey
     assert "quantity" in api.licences({"kvo": "1.2.3.4", "action": "release",
                                        "rows": [{"activationCode": "AAAA-1111", "quantity": 0}]})["error"]
     assert api.licences("nope")["error"]
+    assert "user and password" in api.licences({"kvo": "1.2.3.4", "action": "list", "password": "a\nb"})["error"]
+    assert "user and password" in api.licences({"kvo": "1.2.3.4", "action": "list",
+                                                "password": "x" * (api.MAX_PASSWORD + 1)})["error"]
+    assert "user and password" in api.licences({"kvo": "1.2.3.4", "action": "list",
+                                                "user": "u" * (api.MAX_USER + 1)})["error"]
     assert len(kl.calls) == n, "a refused body never reaches the KVO"
     # the failed deactivate is reported as not released
     kl2 = FakeKL(licences=[{"activationCode": "AAAA-1111", "quantity": 5}], states={"deactivate": "FAILED"})
@@ -694,10 +848,102 @@ def test_licences_refuses_bad_input_and_reports_auth_without_the_password(monkey
     assert r["released"] is False and r["clear"] is False and r["results"][0]["ok"] is False
 
 
+def test_licences_eula_and_login_refusals_have_their_own_answers(monkeypatch):
+    kl = FakeKL(eula=False)
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    creds = {"kvo": "10.1.2.3", "password": "hunter2"}
+    # accept_eula's False went unread, and the login then failed on the
+    # EULA redirect's HTML with an error that read as a broken KVO
+    r = api.licences(dict(creds, action="list", accept_eula=True))
+    assert r["http"] == 502 and r["error"] == "the KVO's EULA is pending and could not be accepted"
+    assert ("eula", "10.1.2.3") in kl.calls and not any(c[0] == "token" for c in kl.calls), "no login was tried"
+    kl.eula = True
+    assert api.licences(dict(creds, action="list", accept_eula=True))["count"] == 0
+    assert kl.calls.count(("eula", "10.1.2.3")) == 2
+    api.licences(dict(creds, action="list"))
+    assert kl.calls.count(("eula", "10.1.2.3")) == 2, "the EULA is only touched when the body asks"
+
+    # a 403 from the token endpoint is the same refusal as a 401; any other
+    # status is the 502 with the KVO's words
+    def forbidden(kvo, user, pw, verify):
+        raise urllib.error.HTTPError("https://x/token", 403, "Forbidden", {}, None)
+
+    def broken(kvo, user, pw, verify):
+        raise urllib.error.HTTPError("https://x/token", 503, "Service Unavailable", {}, None)
+
+    kl.token = forbidden
+    r = api.licences(dict(creds, action="list"))
+    assert r["http"] == 401 and r["error"] == "KVO rejected the username or password"
+    kl.token = broken
+    r = api.licences(dict(creds, action="list"))
+    assert r["http"] == 502 and "503" in r["error"] and "hunter2" not in r["error"]
+
+
+def test_a_refused_code_is_named_by_position_and_never_echoed(tmp_path, monkeypatch):
+    # a code is a secret and a near miss is most of one: the error names
+    # the entry, not the value
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "_kvo_license", _never)
+    r = api.licences({"kvo": "1.2.3.4", "action": "check", "codes": ["AAAA-1111", "1234 ABCD-5678"]})
+    assert r["error"] == "codes: entry 2 is not an activation code"
+    r = api.licences({"kvo": "1.2.3.4", "action": "release", "rows": [
+        {"activationCode": "AAAA-1111", "quantity": 1}, {"activationCode": "1234 ABCD-5678", "quantity": 1}]})
+    assert r["error"] == "rows: entry 2 is not an activation code"
+    r = api.licences({"kvo": "1.2.3.4", "action": "release", "rows": [{"activationCode": "AAAA-1111", "quantity": 0}]})
+    assert r["error"] == "rows: entry 1 needs the quantity to release (a positive integer)"
+    r = api.licences({"kvo": "1.2.3.4", "action": "release", "codes": ["AAAA-1111,2", "1234 ABCD"]})
+    assert r["error"] == "codes: entry 2 is not an activation code (CODE or CODE,QTY)"
+    # a code never starts with a hyphen: on the argv after --kvo-codes it
+    # would be a flag to the script, and --events one it acts on
+    r = api.run({"plan": GOOD, "kvo_codes": ["AAAA-1111", "--events"]}, jobs={}, start=_never)
+    assert r["errors"] == ["kvo_codes: codes: entry 2 is not an activation code (CODE or CODE,QTY)"]
+    assert not os.listdir(str(tmp_path))
+    for bad in ("-AAA-1111", "--events", "abc", "-", "AAAA 1111", "A" * 65):
+        assert not api._shape(api.CODE, bad) and not api._shape(api.CODE_QTY, bad), bad
+    for good in ("A-AA-1111", "1234", "1234-ABCD-5678-EFGH-9012", "A" * 64):
+        assert api._shape(api.CODE, good) and api._shape(api.CODE_QTY, good + ",5"), good
+    assert api.MAX_LIST == 50
+    assert "at most 50" in api._check_codes(["A123"] * 51)[1]
+    assert "at most 50" in api._release_rows({"rows": [{"activationCode": "A123", "quantity": 1}] * 51})[1]
+    assert "vpcs" in api.discover_workloads("us-east-1", "k=v", ",".join(["vpc-0a0a0a0a"] * 51))["error"]
+
+
 def test_kvo_license_imports_cleanly_from_the_scripts_dir():
     kl = api._kvo_license()
     for name in ("_req", "token", "lookup_code", "poll_op", "accept_eula"):
         assert callable(getattr(kl, name)), name
+
+
+def test_kvo_license_token_form_encodes_the_credentials(monkeypatch):
+    # scripts/kvo_license.py (shared with the CLI) built the token form by
+    # string formatting, so a password holding &, =, %, + or a non-ASCII
+    # character reached Keycloak split or mangled and the right password
+    # was refused. urlencode lets every byte through.
+    kl = api._kvo_license()
+    seen = {}
+
+    class Resp(object):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"access_token": "TOK"}'
+
+    def fake_urlopen(req, context=None, timeout=None):
+        seen["url"], seen["data"], seen["ctype"] = req.full_url, req.data, req.get_header("Content-type")
+        return Resp()
+
+    monkeypatch.setattr(kl.urllib.request, "urlopen", fake_urlopen)
+    pw = "p&ss=w+rd%25 caf\u00e9"
+    assert kl.token("10.1.2.3", "ad min", pw, False) == "TOK"
+    assert seen["url"] == "https://10.1.2.3/auth/realms/keysight/protocol/openid-connect/token"
+    assert seen["ctype"] == "application/x-www-form-urlencoded"
+    form = urllib.parse.parse_qs(seen["data"].decode("utf-8"), strict_parsing=True)
+    assert form == {"grant_type": ["password"], "client_id": ["vision-orchestrator"],
+                    "username": ["ad min"], "password": [pw]}
 
 
 # ------------------------------------------------------------------- SSE
@@ -724,11 +970,13 @@ def test_ids_are_stamped_by_emit_in_buffer_order():
     threads = [threading.Thread(target=producer, args=(t,)) for t in ("tail", "stdout")]
     for t in threads:
         t.start()
-    while len(job.buffer) < 2000:
+    deadline = time.monotonic() + 10
+    while len(job.buffer) < 2000 and time.monotonic() < deadline:
         pass
     stop.set()
     for t in threads:
         t.join(5)
+    assert len(job.buffer) >= 2000, "the producers never got going"
     ids = [e["id"] for e in job.buffer]
     assert ids == list(range(1, len(ids) + 1)), "ids are the buffer positions, both producers interleaved"
     assert [e["id"] for e in server.events_after(job, 1990)] == ids[1990:]
@@ -772,7 +1020,8 @@ def _call(port, method, path, body=None, headers=None, raw=None):
     return r.status, payload
 
 
-def test_post_routes_reject_a_foreign_host_and_origin(live):
+def test_post_routes_reject_a_foreign_host_and_origin(live, monkeypatch):
+    monkeypatch.setattr(api.subprocess, "run", _never)
     good = {"plan": GOOD}
     st, r = _call(live, "POST", "/api/plan", good, headers={"Host": "evil.example:%d" % live})
     assert st == 403 and "Host" in r["error"]
@@ -787,12 +1036,92 @@ def test_post_routes_reject_a_foreign_host_and_origin(live):
     assert st == 403 and "Origin" in r["error"]
     st, r = _call(live, "POST", "/api/plan", good, headers={"Origin": "http://localhost:%d" % live})
     assert st == 200
+    # the origin's port is the console's own: another local server's page
+    # is another origin, and no port is 80 or 443, never the console's
+    st, r = _call(live, "POST", "/api/plan", good, headers={"Origin": "http://localhost:%d" % (live + 1)})
+    assert st == 403 and "Origin" in r["error"]
+    st, r = _call(live, "POST", "/api/plan", good, headers={"Origin": "http://127.0.0.1"})
+    assert st == 403
+    assert server.origin_ok("http://localhost:8760", 8760) and server.origin_ok(None, 8760)
+    assert not server.origin_ok("http://localhost:99999", 8760) and not server.origin_ok("https://127.0.0.1:8760", 8761)
+    assert not server.origin_ok("http://localhost:8760x", 8760) and not server.origin_ok("null", 8760)
     # the guard covers the older POST routes too
     st, r = _call(live, "POST", "/stop/nope", headers={"Host": "evil.example"})
     assert st == 403
-    # GET is unaffected: the page itself is fetched by name
-    st, r = _call(live, "GET", "/flows", headers={"Host": "evil.example"})
+    # and every GET that runs a command or opens a stream (reproduced: a
+    # rebinding page could GET /api/doctor and /api/discover/* by its own
+    # name); the page itself (/, /flows, /web/) is fetched by name and
+    # runs nothing, so it stays open
+    st, r = _call(live, "GET", "/api/discover/vpcs?region=us-east-1", headers={"Host": "evil.example:%d" % live})
+    assert st == 403 and "Host" in r["error"]
+    st, r = _call(live, "GET", "/api/doctor?region=us-east-1", headers={"Host": "evil.example"})
+    assert st == 403
+    st, r = _call(live, "GET", "/events/nope", headers={"Host": "evil.example:%d" % live})
+    assert st == 403
+    for path in ("/", "/flows"):
+        st, r = _call(live, "GET", path, headers={"Host": "evil.example"})
+        assert st == 200, path
+
+
+def test_api_gets_refuse_a_cross_site_fetch(live, monkeypatch):
+    # Reproduced: a page on any origin could fire GET /api/doctor or
+    # /api/discover/* (a GET needs no preflight), and the command ran
+    # whether or not the page could read the answer. A browser names the
+    # request's provenance in Sec-Fetch-Site: the console's own page says
+    # same-origin, a typed URL says none, and curl says nothing at all.
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"Vpcs": []}', stderr="")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    path = "/api/discover/vpcs?region=us-east-1"
+    for site in ("cross-site", "same-site", "Cross-Site"):
+        st, r = _call(live, "GET", path, headers={"Sec-Fetch-Site": site})
+        assert st == 403 and "Sec-Fetch-Site" in r["error"], site
+    st, r = _call(live, "GET", "/events/nope", headers={"Sec-Fetch-Site": "cross-site"})
+    assert st == 403
+    assert not calls, "a refused fetch never reached the CLI"
+    for site in ("same-origin", "none", None):
+        st, r = _call(live, "GET", path, headers={"Sec-Fetch-Site": site} if site else None)
+        assert st == 200 and r == [], site
+    assert len(calls) == 3
+    # the page itself is open to any fetch: it runs nothing
+    st, _ = _call(live, "GET", "/", headers={"Sec-Fetch-Site": "cross-site"})
     assert st == 200
+    assert server.fetch_site_ok(None) and server.fetch_site_ok(" same-origin ") and not server.fetch_site_ok("")
+
+
+def test_a_route_that_raises_answers_500_naming_only_the_exception_type(live, monkeypatch, capsys):
+    # Reproduced: an exception in a route closed the connection with no
+    # response (the client saw a dropped socket) while the handler printed
+    # the traceback. Now every dispatch is caught: 500 JSON with the type
+    # alone, since the message can carry a path, an argv or a KVO's words,
+    # and the traceback on the console's own stderr.
+    def boom(arg):
+        raise RuntimeError("secret-bearing message: /Users/x/deploy-profile-demo.env 1234-ABCD-5678")
+
+    monkeypatch.setattr(api, "plan", boom)
+    st, r = _call(live, "POST", "/api/plan", {"plan": GOOD})
+    assert st == 500 and r == {"error": "internal error: RuntimeError"}
+    assert "RuntimeError: secret-bearing message" in capsys.readouterr().err, "the traceback went to stderr"
+
+    # a subprocess that cannot be run is an answer too, not a dropped connection
+    def denied(argv, **kw):
+        raise PermissionError(13, "Permission denied", "aws")
+
+    monkeypatch.setattr(api.subprocess, "run", denied)
+    st, r = _call(live, "GET", "/api/discover/vpcs?region=us-east-1")
+    assert st == 502 and r["error"] == "the aws CLI could not be run: Permission denied"
+    # the same net under a GET route and under the SSE route's setup
+    monkeypatch.setattr(api, "discover_vpcs", boom)
+    st, r = _call(live, "GET", "/api/discover/vpcs?region=us-east-1")
+    assert st == 500 and r == {"error": "internal error: RuntimeError"}
+    monkeypatch.setattr(server, "job_id_ok", boom)
+    st, r = _call(live, "GET", "/events/whatever")
+    assert st == 500 and r == {"error": "internal error: RuntimeError"}
+    assert capsys.readouterr().err.count("Traceback") == 2
 
 
 def test_post_bodies_are_json_objects_under_the_cap(live):
@@ -860,9 +1189,12 @@ def test_licences_route_over_http_with_kvo_license_stubbed(live, monkeypatch):
     st, r = _call(live, "POST", "/api/licences", dict(creds, action="list", kvo="10.1.2.3\n"))
     assert st == 400 and "kvo" in r["error"]
     assert len(kl.calls) == n, "a refused body never reaches the KVO"
-    # a login the KVO refuses is a 502 with the KVO's words and never the password
+    # a login the KVO refuses is a 401 without the KVO's words or the
+    # password; a KVO that cannot be reached is a 502 with its words
     st, r = _call(live, "POST", "/api/licences", dict(creds, action="list", password="wrong"))
-    assert st == 502 and "login failed" in r["error"] and "wrong" not in r["error"]
+    assert st == 401 and r["error"] == "KVO rejected the username or password"
+    st, r = _call(live, "POST", "/api/licences", dict(creds, action="list", password="down"))
+    assert st == 502 and "login failed" in r["error"] and "down" not in r["error"]
     st, r = _call(live, "GET", "/api/licences/list")
     assert st == 405
 
@@ -911,6 +1243,37 @@ def test_events_route_replays_after_last_event_id(live):
     assert got == []
 
 
+def test_every_sse_reader_of_one_job_sees_every_event(live):
+    # Reproduced before the fix: two tabs on one job took turns on the
+    # job's single queue and saw ids 1,3,5 and 2,4,6. Both readers connect
+    # to an empty job and wait, so the events below are live, not
+    # replayed; each has to see all of them, in order, and the stream has
+    # to end for both once the done is out.
+    job = O.Job("fan", "engine-deploy", {})
+    server.JOBS["fan"] = job
+    got = {}
+
+    def reader(name):
+        st, raw = _call(live, "GET", "/events/fan")
+        got[name] = (st, [int(m) for m in re.findall(r"^id: (\d+)$", raw.decode("utf-8"), re.M)])
+
+    threads = [threading.Thread(target=reader, args=(n,)) for n in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)
+    for i in range(6):
+        job.emit(E.log("line %d" % i))
+        time.sleep(0.01)
+    job.emit(E.done("engine exited 0"))
+    for t in threads:
+        t.join(10)
+    assert got == {n: (200, list(range(1, 8))) for n in ("a", "b", "c")}, got
+    # a reader that arrives after the end gets the whole buffer and the end at once
+    st, raw = _call(live, "GET", "/events/fan")
+    assert [int(m) for m in re.findall(r"^id: (\d+)$", raw.decode("utf-8"), re.M)] == list(range(1, 8))
+    assert not hasattr(job, "q"), "one buffer, no queue beside it"
+
+
 def test_run_and_answer_routes_are_wired(live, tmp_path, monkeypatch):
     monkeypatch.setattr(api, "REPO", str(tmp_path))
     started = []
@@ -919,6 +1282,14 @@ def test_run_and_answer_routes_are_wired(live, tmp_path, monkeypatch):
     assert st == 200 and r["job_id"] in server.JOBS, r
     job, cmd, env = started[0]
     assert env == {"CLOUDLENS_VC_PASSWORD": "pw"} and "--profile" in cmd
+    assert r["profile_file"] == "deploy-profile-demo.env"
+    # the stack in flight: a second run and a teardown are 409 over the route too
+    job._group_open = True
+    st, r2 = _call(live, "POST", "/api/run", {"plan": GOOD})
+    assert st == 409 and r2["error"] == "stack demo already has a run in progress (job %s)" % job.id
+    st, r2 = _call(live, "POST", "/api/teardown", {"stack": "demo", "region": "us-east-1", "confirm_name": "demo"})
+    assert st == 409
+    job._group_open = False
     # no prompt is waiting: the answer is refused with the job's own words
     st, r = _call(live, "POST", "/api/answer/" + r["job_id"], {"prompt_id": "p1", "text": "x"})
     assert st == 409 and "No prompt" in r["error"]

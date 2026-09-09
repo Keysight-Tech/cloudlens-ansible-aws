@@ -27,7 +27,7 @@ Exit: 0 all activated / already installed, 2 no codes supplied non-interactively
 5 nothing could be activated, 6 auth/backend, 130 cancelled at the prompt.
 """
 from __future__ import annotations
-import argparse, json, sys, time, urllib.request, urllib.error, ssl
+import argparse, json, sys, time, urllib.request, urllib.error, urllib.parse, ssl
 
 
 def _ctx(verify):
@@ -96,7 +96,8 @@ def accept_eula(kvo, verify):
 
 def token(kvo, user, pw, verify):
     url = f"https://{kvo}/auth/realms/keysight/protocol/openid-connect/token"
-    data = f"grant_type=password&client_id=vision-orchestrator&username={user}&password={pw}".encode()
+    data = urllib.parse.urlencode({"grant_type": "password", "client_id": "vision-orchestrator",
+                                   "username": user, "password": pw}).encode()
     r = urllib.request.Request(url, data=data, method="POST")
     r.add_header("Content-Type", "application/x-www-form-urlencoded")
     with urllib.request.urlopen(r, context=_ctx(verify), timeout=30) as resp:

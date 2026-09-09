@@ -21,9 +21,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
+import urllib.error
 import uuid
 
 from . import events as E
@@ -38,8 +40,11 @@ KVO_LICENSE = os.path.join(REPO, "scripts", "kvo_license.py")
 DOCTOR_TIMEOUT = 120    # seconds for deploy-stack.sh --doctor (it probes the network)
 AWS_TIMEOUT = 60        # seconds per aws CLI call
 MAX_ROWS = 50           # workload rows returned; the count is always the whole
+MAX_LIST = 50           # entries in one list a body carries: codes, rows, VPC ids
 MAX_ANSWER = 64 * 1024  # bytes of one prompt answer
 MAX_VALUE = 4096        # characters of one plan value or secret
+MAX_USER = 128          # characters of a KVO user name
+MAX_PASSWORD = 1024     # characters of a KVO password
 
 # ---------------------------------------------------------------- rules
 # Every rule below is applied through _shape(): a control-character check
@@ -57,9 +62,12 @@ VPC = re.compile(r"^vpc-[0-9a-f]{8,17}$")
 SUBNET = re.compile(r"^subnet-[0-9a-f]{8,17}$")
 SG = re.compile(r"^sg-[0-9a-f]{8,17}$")
 EKS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
-# an activation code, optionally with the quantity the script's --kvo-codes takes
-CODE = re.compile(r"^[A-Za-z0-9-]{4,64}$")
-CODE_QTY = re.compile(r"^([A-Za-z0-9-]{4,64})(?:,([0-9]{1,6}))?$")
+# an activation code, optionally with the quantity the script's --kvo-codes
+# takes. The first character is never a hyphen: the code rides an argv
+# after --kvo-codes, and "--events" would be a code by shape and a flag
+# to the script.
+CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{3,63}$")
+CODE_QTY = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]{3,63})(?:,([0-9]{1,6}))?$")
 # the KVO address: an IP or a hostname, never a URL, a port or a path
 HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 # the script's prompt ids are p1, p2, ...; the rule leaves room for a
@@ -131,8 +139,6 @@ SECRET_ENV = {
 # as typing `--kvo-codes` at the shell by hand; the script and the licence
 # tool print parts of them, so run() registers each code (and every secret)
 # with the job and the engine redacts them from the stream (Job.redact).
-
-LICENCE_ACTIONS = ("list", "check", "activate", "release")
 
 
 class AwsError(Exception):
@@ -247,6 +253,10 @@ def _aws(args, region, timeout=AWS_TIMEOUT):
                               errors="replace", timeout=timeout, env=dict(os.environ, AWS_PAGER=""))
     except FileNotFoundError:
         raise AwsError("the aws CLI is not installed (or not on PATH); the doctor says how to fix that")
+    except OSError as exc:
+        # a CLI on PATH that cannot run (mode, a broken interpreter line,
+        # a mount that refuses to exec) is an answer too, not a traceback
+        raise AwsError("the aws CLI could not be run: %s" % (exc.strerror or exc))
     except subprocess.TimeoutExpired:
         raise AwsError("aws %s timed out after %ds" % (" ".join(args[:2]), timeout))
     if proc.returncode != 0:
@@ -339,7 +349,7 @@ def discover_workloads(region, tag, vpcs=""):
         return _err("tag must be KEY=VALUE (a key of 1 to %d characters, a value of at most %d, no control "
                     "characters)" % (TAG_KEY_MAX, TAG_VALUE_MAX))
     ids = [v.strip() for v in (vpcs or "").split(",") if v.strip()] if isinstance(vpcs, str) else None
-    if ids is None or len(ids) > 50 or any(not _shape(VPC, v) for v in ids):
+    if ids is None or len(ids) > MAX_LIST or any(not _shape(VPC, v) for v in ids):
         return _err("vpcs must be a comma-separated list of VPC ids (vpc-...)")
     pairs = [("tag:" + kv[0], [kv[1]]), ("instance-state-name", ["running"])]
     if ids:
@@ -376,12 +386,27 @@ def discover_eks(region):
 
 
 # ----------------------------------------------------------------- doctor
+def _kill_group(proc):
+    """KILL the whole process group a Popen started with start_new_session
+    leads (its pid is the pgid), then reap it. ESRCH is the group already
+    gone; EPERM on macOS is every member a zombie awaiting the reap. The
+    leader alone was never enough: the doctor's probes (curl, the aws CLI)
+    are children holding its stdout, and a kill that left them alive left
+    the pipe open, so the read after the kill waited on them instead."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    proc.communicate()
+
+
 def doctor(region):
     """deploy-stack.sh --doctor --region R --events F, synchronously, read
     back from F: the check events as {item, status, fix}, ok when none
     failed. No --prompt-pipe: the doctor asks nothing, and a pipe with no
     writer would block it. Same rules as the engine: no stdin, no
-    controlling terminal (the script re-attaches /dev/tty when it can)."""
+    controlling terminal (the script re-attaches /dev/tty when it can),
+    its own session, and a timeout that ends the whole group."""
     bad = _check_region(region)
     if bad:
         return bad
@@ -390,20 +415,23 @@ def doctor(region):
     argv = ["bash", DEPLOY, "--doctor", "--region", region, "--events", events]
     try:
         try:
-            proc = subprocess.run(argv, cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                  errors="replace", timeout=DOCTOR_TIMEOUT, start_new_session=True)
-        except subprocess.TimeoutExpired:
-            return _err("the doctor timed out after %ds (it probes GitHub, the template bucket and AWS)"
-                        % DOCTOR_TIMEOUT, 504)
+            proc = subprocess.Popen(argv, cwd=REPO, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True)
         except OSError as exc:
             return _err("could not run deploy-stack.sh: %s" % exc, 500)
+        try:
+            out, err = proc.communicate(timeout=DOCTOR_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            return _err("the doctor timed out after %gs (it probes GitHub, the template bucket and AWS)"
+                        % DOCTOR_TIMEOUT, 504)
         _, evs = E.iter_script_events(events)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     checks = [{"item": e.get("item", ""), "status": e.get("status", ""), "fix": e.get("fix", "") or ""}
               for e in evs if e["type"] == E.CHECK]
     if not checks:
-        tail = [l for l in ((proc.stdout or "") + (proc.stderr or "")).splitlines() if l.strip()][-3:]
+        tail = [l for l in ((out or "") + (err or "")).splitlines() if l.strip()][-3:]
         return _err("the doctor produced no checks (exit %d): %s" % (proc.returncode, " | ".join(tail)), 502)
     return {"checks": checks, "ok": not any(c["status"] == "fail" for c in checks), "exit": proc.returncode}
 
@@ -434,8 +462,11 @@ def _start_teardown(job, cmd, cwd, env):
 def _check_secrets(secrets):
     """(env, errors): the secrets as the engine's extra environment. A name
     has to be one the script reads a secret from (SECRET_ENV) and can never
-    be a profile key; a value is a string the environment can hold. An empty
-    value is dropped: the script reads ${NAME:-} and treats it as unset."""
+    be a profile key; a value is a string the environment can hold, with
+    no control character: the script hands a password on to a command
+    line and a form body, and a newline or a tab inside it ends the
+    argument or the field early. An empty value is dropped: the script
+    reads ${NAME:-} and treats it as unset."""
     if not isinstance(secrets, dict):
         return {}, ["secrets must be an object of {NAME: value}"]
     env, errors = {}, {}
@@ -445,28 +476,46 @@ def _check_secrets(secrets):
             errors[name] = "%s is a profile key, not a secret: put it in the plan" % name
         elif name not in SECRET_ENV:
             errors[name] = "%s is not a secret deploy-stack.sh reads (%s)" % (name, ", ".join(sorted(SECRET_ENV)))
-        elif not _is_str(value) or "\x00" in value:
-            errors[name] = "%s: a secret is a string of at most %d characters" % (name, MAX_VALUE)
+        elif not _is_str(value) or CONTROL.search(value):
+            errors[name] = "%s: a secret is a string of at most %d characters with no control character" % (
+                name, MAX_VALUE)
         elif value:
             env[name] = value
     return env, [errors[k] for k in sorted(errors)]
 
 
 def _check_codes(codes, with_qty=True):
-    """(codes, error): activation codes as strings, optionally CODE,QTY."""
+    """(codes, error): activation codes as strings, optionally CODE,QTY. A
+    refused entry is named by its position, never echoed: a code is a
+    secret, and a near miss is most of one."""
     if codes is None:
         return [], None
-    if not isinstance(codes, list) or len(codes) > 50:
-        return [], "codes must be a list of activation codes"
+    if not isinstance(codes, list) or len(codes) > MAX_LIST:
+        return [], "codes must be a list of at most %d activation codes" % MAX_LIST
     rule = CODE_QTY if with_qty else CODE
     out = []
-    for c in codes:
+    for n, c in enumerate(codes, 1):
         # strip() forgives the whitespace a pasted code carries; what is
         # left has to be the whole code, control bytes included in "not"
         if not isinstance(c, str) or not _shape(rule, c.strip()):
-            return [], "codes: %r is not an activation code%s" % (c, " (CODE or CODE,QTY)" if with_qty else "")
+            return [], "codes: entry %d is not an activation code%s" % (n, " (CODE or CODE,QTY)" if with_qty else "")
         out.append(c.strip())
     return out, None
+
+
+def _in_flight(jobs, stack, region):
+    """The id of a registered job whose engine is still running for this
+    stack in this region, else None. Two engines on one stack would write
+    one profile file and race CloudFormation on one stack name, and a
+    teardown of a stack mid-deploy is the same race from the other side,
+    so run() and teardown() refuse the second with a 409 before they
+    write anything. running() is the engine's whole window, Popen to the
+    runner's return; a job that has not launched yet, or has ended, is
+    not in flight."""
+    for job_id, job in list(jobs.items()):
+        if job.running() and job.inputs.get("stack") == stack and job.inputs.get("region") == region:
+            return job_id
+    return None
 
 
 def run(body, jobs=None, start=None):
@@ -482,9 +531,12 @@ def run(body, jobs=None, start=None):
     before the engine starts, so a line that prints one (kvo_license.py
     prints the first 14 characters of each code; the dry run prints them
     whole) reaches the stream as [redacted]: see Job.redact. Returns
-    {job_id, profile_file, stack, region} or {errors}."""
+    {job_id, profile_file (the name, relative to the repo root, as plan()
+    gives it), stack, region}, {errors}, or a 409 {error} while a job for
+    the same stack and region is still running (_in_flight)."""
     if not isinstance(body, dict):
         return {"errors": ["body must be an object: {plan, secrets?, kvo_codes?}"]}
+    jobs = jobs if jobs is not None else _jobs()
     p = plan(body.get("plan"))
     if p.get("errors"):
         return {"errors": p["errors"]}
@@ -494,6 +546,9 @@ def run(body, jobs=None, start=None):
         errors.append("kvo_codes: " + bad)
     if errors:
         return {"errors": errors}
+    busy = _in_flight(jobs, p["stack"], p["region"])
+    if busy:
+        return _err("stack %s already has a run in progress (job %s)" % (p["stack"], busy), 409)
     path = os.path.join(REPO, p["profile_file"])
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -510,7 +565,7 @@ def run(body, jobs=None, start=None):
     for c in codes:
         job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
     job.redactions.extend(env.values())
-    (jobs if jobs is not None else _jobs())[job_id] = job
+    jobs[job_id] = job
     shown = "bash deploy/deploy-stack.sh --profile %s" % p["profile_file"]
     if codes:
         shown += " --kvo-codes ... (%d code%s)" % (len(codes), "" if len(codes) == 1 else "s")
@@ -518,7 +573,7 @@ def run(body, jobs=None, start=None):
         shown += "   [%s in the environment]" % ", ".join(sorted(env))
     job.emit(E.narrate("engine: " + shown, "note"))
     (start or _start_engine)(job, cmd, REPO, env or None)
-    return {"job_id": job_id, "profile_file": path, "stack": p["stack"], "region": p["region"]}
+    return {"job_id": job_id, "profile_file": p["profile_file"], "stack": p["stack"], "region": p["region"]}
 
 
 def answer(job, body):
@@ -555,9 +610,12 @@ def teardown(body, start=None, jobs=None):
     (Task 10 sets that after /api/licences release): without it a stack that
     holds a KVO stops at the script's own licence warning, which is the
     right outcome. orphans_only is the script's --orphans: a read-only audit
-    that deletes nothing, so it needs no typed name."""
+    that deletes nothing, so it needs no typed name. A stack with a job
+    still running (a deploy, another teardown) is refused with a 409:
+    see _in_flight."""
     if not isinstance(body, dict):
         return _err("body must be {stack, region, confirm_name, orphans_only?, licences_released?}")
+    jobs = jobs if jobs is not None else _jobs()
     stack, region = body.get("stack"), body.get("region")
     if not stack_ok(stack):
         return _err("stack must be a CloudFormation stack name (letters, digits and hyphens, starting with a letter)")
@@ -569,6 +627,9 @@ def teardown(body, start=None, jobs=None):
     # not the stack's name, whatever the stack field itself passed as
     if not audit and (not _shape(STACK, body.get("confirm_name")) or body.get("confirm_name") != stack):
         return _err("type the stack name (%s) as confirm_name to tear it down" % stack)
+    busy = _in_flight(jobs, stack, region)
+    if busy:
+        return _err("stack %s already has a run in progress (job %s)" % (stack, busy), 409)
     cmd = ["bash", TEARDOWN, "--stack-name", stack, "--region", region, "--yes"]
     if audit:
         cmd.append("--orphans")
@@ -576,8 +637,9 @@ def teardown(body, start=None, jobs=None):
         cmd.append("--accept-licence-loss")
     job_id = uuid.uuid4().hex[:12]
     job = O.Job(job_id, "engine-teardown", {"stack": stack, "region": region, "audit": audit})
-    (jobs if jobs is not None else _jobs())[job_id] = job
-    job.emit(E.narrate("engine: bash deploy/teardown-stack.sh " + " ".join(cmd[3:]), "note"))
+    jobs[job_id] = job
+    # the flags from --stack-name on: cmd[0] is bash, cmd[1] the script's path
+    job.emit(E.narrate("engine: bash deploy/teardown-stack.sh " + " ".join(cmd[2:]), "note"))
     (start or _start_teardown)(job, cmd, REPO, None)
     return {"job_id": job_id, "stack": stack, "region": region, "audit": audit}
 
@@ -598,29 +660,53 @@ def _kvo_license():
     return _KL
 
 
+class _Kvo(object):
+    """One logged-in KVO for the action functions below: kvo_license.py,
+    the address, the token and the TLS choice, so each action is a
+    function of this and its own validated input."""
+    __slots__ = ("KL", "kvo", "base", "tok", "verify")
+
+    def __init__(self, KL, kvo, tok, verify):
+        self.KL, self.kvo, self.tok, self.verify = KL, kvo, tok, verify
+        self.base = "https://%s" % kvo
+
+
 def _op_ok(state):
     """kvo_license.py's own reading of an operation's final state."""
     s = str(state or "").upper()
     return bool(state) and "FAIL" not in s and "ERROR" not in s
 
 
-def _op(KL, kvo, base, tok, verify, name, payload):
-    """POST one licensing operation and poll it to its end."""
-    _, resp = KL._req("POST", "%s/api/v2/licensing/operations/%s" % (base, name), tok, payload, verify)
-    op = KL.poll_op(kvo, tok, resp, verify)
+def _state(info):
+    return info.get("state") if isinstance(info, dict) else info
+
+
+def _ents_rows(ents):
+    return [{"product": p, "available": a, "total": t} for p, a, t in ents]
+
+
+def _op(k, name, payload):
+    """POST one licensing operation and poll it to its end: (state, result)."""
+    _, resp = k.KL._req("POST", "%s/api/v2/licensing/operations/%s" % (k.base, name), k.tok, payload, k.verify)
+    op = k.KL.poll_op(k.kvo, k.tok, resp, k.verify)
     state = op.get("state") if isinstance(op, dict) else op
     result = op.get("result") if isinstance(op, dict) else None
     return state, result
 
 
-def _list(KL, base, tok, verify):
-    _, rows = KL._req("GET", base + "/api/v2/licensing/licenses", tok, verify=verify)
+def _list(k):
+    _, rows = k.KL._req("GET", k.base + "/api/v2/licensing/licenses", k.tok, verify=k.verify)
     return rows if isinstance(rows, list) else []
+
+
+def _lookup(k, code):
+    return k.KL.lookup_code(k.kvo, k.base, k.tok, code, k.verify)
 
 
 def _release_rows(body):
     """(rows, error): [(code, quantity)] from rows [{activationCode|code,
-    quantity}] (the shape GET licenses returns) or codes ["CODE,QTY"]."""
+    quantity}] (the shape GET licenses returns) or codes ["CODE,QTY"]. As
+    _check_codes: a refused row is named by its position, never echoed."""
     rows = body.get("rows")
     if rows is None and body.get("codes") is not None:
         codes, bad = _check_codes(body.get("codes"))
@@ -630,107 +716,129 @@ def _release_rows(body):
         for c in codes:
             code, qty = CODE_QTY.fullmatch(c).groups()
             rows.append({"code": code, "quantity": int(qty) if qty else 0})
-    if not isinstance(rows, list) or not rows or len(rows) > 50:
-        return [], "rows must list what to release: [{activationCode, quantity}] as GET licenses shows them"
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_LIST:
+        return [], ("rows must list what to release, at most %d: [{activationCode, quantity}] as GET licenses "
+                    "shows them" % MAX_LIST)
     out = []
-    for r in rows:
+    for n, r in enumerate(rows, 1):
         code = r.get("activationCode", r.get("code")) if isinstance(r, dict) else None
         qty = r.get("quantity") if isinstance(r, dict) else None
         if not _shape(CODE, code):
-            return [], "rows: %r is not an activation code" % (code,)
+            return [], "rows: entry %d is not an activation code" % n
         if not isinstance(qty, int) or isinstance(qty, bool) or qty < 1:
-            return [], "rows: %s needs the quantity to release (a positive integer)" % code
+            return [], "rows: entry %d needs the quantity to release (a positive integer)" % n
         out.append((code, qty))
     return out, None
 
 
+def _lic_list(k, _):
+    """GET /api/v2/licensing/licenses -> {licences, count}."""
+    rows = _list(k)
+    return {"licences": rows, "count": len(rows)}
+
+
+def _lic_check(k, codes):
+    """retrieve-activation-code-info per code -> {codes: [...]}."""
+    out = []
+    for code in codes:
+        ents, info = _lookup(k, code)
+        out.append({"code": code, "valid": bool(ents), "state": _state(info), "entitlements": _ents_rows(ents)})
+    return {"codes": out}
+
+
+def _lic_activate(k, codes):
+    """activate per code, the available quantity unless CODE,QTY says how
+    many; a code with nothing available is skipped, as kvo_license.py does
+    -> {results, activated, licences}."""
+    results = []
+    for c in codes:
+        code, qty = CODE_QTY.fullmatch(c).groups()
+        qty = int(qty) if qty else None
+        ents, info = _lookup(k, code)
+        if not ents:
+            results.append({"code": code, "state": "invalid", "ok": False, "picks": [], "detail": _state(info)})
+            continue
+        picks = [(p, qty if qty is not None else a) for p, a, _ in ents if (qty if qty is not None else a)]
+        if not picks:
+            results.append({"code": code, "state": "nothing-available", "ok": False, "picks": [],
+                            "entitlements": _ents_rows(ents)})
+            continue
+        if len(picks) == 1:
+            payload = [{"activationCode": code, "quantity": picks[0][1]}]
+        else:
+            payload = [{"activationCode": code, "product": p, "quantity": q} for p, q in picks]
+        state, result = _op(k, "activate", payload)
+        results.append({"code": code, "state": state, "ok": _op_ok(state),
+                        "picks": [{"product": p, "quantity": q} for p, q in picks], "result": result})
+    return {"results": results, "activated": sum(1 for r in results if r["ok"]), "licences": _list(k)}
+
+
+def _lic_release(k, rows):
+    """operations/deactivate per row, polled -> {results, released (every
+    row succeeded), clear (the KVO holds no licence now), licences}."""
+    results = []
+    for code, qty in rows:
+        state, result = _op(k, "deactivate", [{"activationCode": code, "quantity": qty}])
+        results.append({"code": code, "quantity": qty, "state": state, "ok": _op_ok(state), "result": result})
+    remaining = _list(k)
+    return {"results": results, "released": all(r["ok"] for r in results), "clear": not remaining,
+            "licences": remaining}
+
+
+_LICENCE = {"list": _lic_list, "check": _lic_check, "activate": _lic_activate, "release": _lic_release}
+LICENCE_ACTIONS = tuple(_LICENCE)
+
+
 def licences(body, action=None):
     """{action, kvo, user?, password?, verify?, accept_eula?, codes?|rows?}
-    against one KVO, through kvo_license.py's own functions:
-      list      GET /api/v2/licensing/licenses -> {licences, count}
-      check     retrieve-activation-code-info per code -> {codes: [...]}
-      activate  activate per code, the available quantity unless CODE,QTY
-                says how many; a code with nothing available is skipped, as
-                kvo_license.py does -> {results, activated, licences}
-      release   operations/deactivate per row, polled -> {results, released
-                (every row succeeded), clear (the KVO holds no licence now),
-                licences}
-    The password goes into the KVO's token request and nowhere else: it is
-    never stored, never in a response, and scrubbed from any error text."""
+    against one KVO, through kvo_license.py's own functions; the actions
+    are the _lic_* functions above, one per name in LICENCE_ACTIONS. The
+    action's own input is validated before anything reaches the KVO, then
+    the EULA (when asked), then the login, then the action, each with its
+    own answer: a pending EULA that could not be accepted is a 502, a
+    login the KVO refuses (401 or 403 from its token endpoint) is a 401
+    without the KVO's words, anything else that failed on the way in or
+    mid-way is a 502 with them. The password goes into the KVO's token
+    request and nowhere else: it is never stored, never in a response,
+    and scrubbed from any error text."""
     if not isinstance(body, dict):
         return _err("body must be {action, kvo, user, password, ...}")
     action = action or body.get("action")
-    if action not in LICENCE_ACTIONS:
+    if action not in _LICENCE:
         return _err("action must be one of %s" % ", ".join(LICENCE_ACTIONS))
     kvo = body.get("kvo")
     if not _shape(HOST, kvo):
         return _err("kvo must be the KVO address: an IP or a hostname, no scheme, port or path")
     user, password = body.get("user", "admin"), body.get("password", "admin")
-    if not _tag_part(user, 128) or not _is_str(password, 1024) or CONTROL.search(password):
+    if not _tag_part(user, MAX_USER) or not _is_str(password, MAX_PASSWORD) or CONTROL.search(password):
         return _err("user and password must be plain strings")
     verify = body.get("verify") is True
-    # validate the action's own inputs before anything reaches the KVO
-    codes, rows = [], []
+    arg = None
     if action in ("check", "activate"):
-        codes, bad = _check_codes(body.get("codes"), with_qty=(action == "activate"))
-        if bad or not codes:
+        arg, bad = _check_codes(body.get("codes"), with_qty=(action == "activate"))
+        if bad or not arg:
             return _err(bad or "codes must list at least one activation code")
     elif action == "release":
-        rows, bad = _release_rows(body)
+        arg, bad = _release_rows(body)
         if bad:
             return _err(bad)
     KL = _kvo_license()
-    base = "https://%s" % kvo
-    if body.get("accept_eula") is True:
-        KL.accept_eula(kvo, verify)
+    if body.get("accept_eula") is True and not KL.accept_eula(kvo, verify):
+        # a fresh KVO redirects every request, the token endpoint included,
+        # to its EULA page until the EULA is accepted; a login attempted
+        # now would fail with a JSON error on an HTML body and read as a
+        # broken KVO rather than an unsigned agreement
+        return _err("the KVO's EULA is pending and could not be accepted", 502)
     try:
         tok = KL.token(kvo, user, password, verify)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return _err("KVO rejected the username or password", 401)
+        return _err("KVO login failed: %s" % _scrub(exc, password), 502)
     except Exception as exc:  # noqa: urllib raises several; none carries the password
         return _err("KVO login failed: %s" % _scrub(exc, password), 502)
     try:
-        if action == "list":
-            rows = _list(KL, base, tok, verify)
-            return {"licences": rows, "count": len(rows)}
-        if action == "check":
-            out = []
-            for code in codes:
-                ents, info = KL.lookup_code(kvo, base, tok, code, verify)
-                out.append({"code": code, "valid": bool(ents),
-                            "state": info.get("state") if isinstance(info, dict) else info,
-                            "entitlements": [{"product": p, "available": a, "total": t} for p, a, t in ents]})
-            return {"codes": out}
-        if action == "activate":
-            results = []
-            for c in codes:
-                code, qty = CODE_QTY.fullmatch(c).groups()
-                qty = int(qty) if qty else None
-                ents, info = KL.lookup_code(kvo, base, tok, code, verify)
-                if not ents:
-                    results.append({"code": code, "state": "invalid", "ok": False, "picks": [],
-                                    "detail": info.get("state") if isinstance(info, dict) else info})
-                    continue
-                picks = [(p, qty if qty is not None else a) for p, a, _ in ents if (qty if qty is not None else a)]
-                if not picks:
-                    results.append({"code": code, "state": "nothing-available", "ok": False, "picks": [],
-                                    "entitlements": [{"product": p, "available": a, "total": t} for p, a, t in ents]})
-                    continue
-                if len(picks) == 1:
-                    payload = [{"activationCode": code, "quantity": picks[0][1]}]
-                else:
-                    payload = [{"activationCode": code, "product": p, "quantity": q} for p, q in picks]
-                state, result = _op(KL, kvo, base, tok, verify, "activate", payload)
-                results.append({"code": code, "state": state, "ok": _op_ok(state),
-                                "picks": [{"product": p, "quantity": q} for p, q in picks], "result": result})
-            return {"results": results, "activated": sum(1 for r in results if r["ok"]),
-                    "licences": _list(KL, base, tok, verify)}
-        results = []
-        for code, qty in rows:
-            state, result = _op(KL, kvo, base, tok, verify, "deactivate",
-                                [{"activationCode": code, "quantity": qty}])
-            results.append({"code": code, "quantity": qty, "state": state, "ok": _op_ok(state), "result": result})
-        remaining = _list(KL, base, tok, verify)
-        return {"results": results, "released": all(r["ok"] for r in results), "clear": not remaining,
-                "licences": remaining}
+        return _LICENCE[action](_Kvo(KL, kvo, tok, verify), arg)
     except Exception as exc:  # noqa: a KVO that stopped answering mid-way
         return _err("KVO licensing call failed: %s" % _scrub(exc, password), 502)
 

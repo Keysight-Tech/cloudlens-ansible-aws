@@ -1,6 +1,6 @@
 """Runs a deployment and turns REAL progress into events.
 
-Two producers, merged into one per-job queue the SSE route drains:
+Two producers, merged into one per-job buffer every SSE reader drains:
   1. the deploy SUBPROCESS  - line-by-line stdout of the repo scripts
   2. the boto3 POLLER        - real CloudFormation stack events / instance state
 
@@ -15,7 +15,6 @@ import json
 import errno
 import fcntl
 import itertools
-import queue
 import shutil
 import signal
 import time
@@ -44,7 +43,6 @@ class Job:
         self.id = job_id
         self.flow_id = flow_id
         self.inputs = inputs
-        self.q = queue.Queue()
         self.buffer = []          # every event emitted, for SSE Last-Event-ID replay
         self.redactions = []      # strings redact() blanks from the stream: codes, secrets
         self._ids = itertools.count(1)  # the event ids, minted by emit under the lock
@@ -57,7 +55,8 @@ class Job:
         self._pgid = None           # the engine's process group: its pid, own session
         self._group_open = False    # True from Popen until the runner has returned
         self._script_done = None    # the done the script wrote; the runner emits it last
-        self._lock = threading.Lock()   # guards pending_prompt and _answering
+        self._lock = threading.Lock()   # guards the buffer, pending_prompt and _answering
+        self._cond = threading.Condition(self._lock)  # emit wakes every SSE reader waiting here
         self._answering = None      # the prompt id an answer() in progress has claimed
         self._t0 = time.time()
 
@@ -67,8 +66,14 @@ class Job:
         events tail, the stdout loop, the verdict) got here first. Minting
         in events.py, before the append, let two threads append out of id
         order, and a resume from the smaller id then skipped the larger;
-        the SSE route's max() watermark was the stopgap for that."""
-        with self._lock:
+        the SSE route's max() watermark was the stopgap for that.
+
+        The buffer is the one place an event lives: every SSE reader takes
+        what it holds past its own watermark and is woken here (notify_all
+        under the same lock, `done` set before it), so any number of tabs on
+        one job each see every event. The queue that used to sit beside
+        the buffer handed each live event to one reader only."""
+        with self._cond:
             ev["id"] = next(self._ids)
             self.buffer.append(ev)
             if ev["type"] == E.PROMPT:
@@ -76,9 +81,9 @@ class Job:
                 # what answer() pairs the reply with, so a reply meant for an
                 # earlier question after a reconnect cannot land on this one
                 self.pending_prompt = ev.get("prompt_id")
-        self.q.put(ev)
-        if ev["type"] in (E.DONE, E.ERROR):
-            self.done = True
+            if ev["type"] in (E.DONE, E.ERROR):
+                self.done = True
+            self._cond.notify_all()
 
     def events_since(self, last_id):
         """The buffered events with an id above last_id, in id order: what a
@@ -86,6 +91,17 @@ class Job:
         flight is either wholly in or wholly out."""
         with self._lock:
             return [ev for ev in self.buffer if ev["id"] > last_id]
+
+    def wait_for_events(self, last_id, timeout):
+        """Block until the buffer holds an event with an id above last_id or
+        the job is done, or `timeout` seconds pass: True in the first two
+        cases, False on the timeout (the SSE route's cue for a keepalive).
+        Ids are buffer positions, so "an id above last_id" is a buffer
+        longer than last_id; both conditions are read under the lock emit
+        sets them under, so a wake is never missed between the check and
+        the wait."""
+        with self._cond:
+            return self._cond.wait_for(lambda: len(self.buffer) > last_id or self.done, timeout)
 
     def redact(self, text):
         """`text` with every registered string, and the first REDACT_PREFIX
@@ -484,7 +500,10 @@ def _tail_events(job, exited, state):
 
     A done is not emitted here. It is stashed on the job for run_engine,
     which emits it after this thread has joined, so the done is the last
-    event however the stdout loop and this loop interleaved.
+    event however the stdout loop and this loop interleaved. Every other
+    frame is redacted before it is emitted: the script composes a phase's
+    reason, a check's fix or a login's text from what it saw, and what it
+    saw can be the code it activated or the password it was given.
 
     A read that raises (the file gone from under it, a disk error, a bug in
     a parser) does not end the tail: it is reported as a warn narrate (once
@@ -514,7 +533,7 @@ def _tail_events(job, exited, state):
                     if ev["type"] == E.DONE:
                         job._script_done = ev
                         continue
-                    job.emit(ev)
+                    job.emit(_redact_event(job, ev))
             except Exception as exc:  # noqa
                 text = job.redact("event tail: {}: {}".format(type(exc).__name__, exc))
                 if text != warned:
@@ -570,9 +589,14 @@ def _verdict(job, rc, state):
 
 
 def _redact_event(job, ev):
-    """The script frame with each of its string fields redacted, in place:
-    the stash is the frame the verdict emits, and emit stamps the id on
-    that same dict, so a copy here would leave the stash without one."""
+    """The script frame with each of its top-level string fields redacted,
+    in place: the stash is the frame the verdict emits, and emit stamps
+    the id on that same dict, so a copy here would leave the stash
+    without one. Top level only, and that is sufficient: the script's
+    frames are flat (emit_event writes one JSON object of string fields;
+    a number or a bool has no secret in it), so there is nothing nested
+    to descend into. Every frame the tail emits, and the stashed done,
+    comes through here."""
     for k, v in list(ev.items()):
         if isinstance(v, str):
             ev[k] = job.redact(v)
