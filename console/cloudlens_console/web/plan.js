@@ -1,0 +1,77 @@
+(function(){
+"use strict";
+/* plan.js: the plan page's rendering, as pure functions of the /api/plan
+   answer. Nothing here touches the DOM or the network; wizard.js calls
+   these and puts the HTML where it goes. Exposed as window.clPlan. */
+
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+
+/* The resolved table: one row per profile key in the file's order, as the
+   CLI prints its "Resolved configuration". A row with a value shows it; one
+   without shows the note the API gave (the script asks, or applies its own
+   default), dimmed. */
+function renderResolved(rows){
+  var h='<table class="ref resolved"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+  (rows||[]).forEach(function(r){
+    var has=r.value!==null&&r.value!==undefined;
+    h+='<tr class="'+(has?"set":"unset")+'"><td><code>'+esc(r.key)+'</code></td><td>'+
+      (has?(r.value===""?'<span class="dim">(empty)</span>':esc(r.value)):'<span class="dim">'+esc(r.note||"not in the plan")+'</span>')+
+      '</td></tr>';
+  });
+  return h+'</tbody></table>';
+}
+
+function renderErrors(errors){
+  var list=Array.isArray(errors)?errors:[errors];
+  return '<ul class="errs">'+list.map(function(e){return '<li>'+esc(e)+'</li>';}).join("")+'</ul>';
+}
+
+/* The CLI line that does what Launch does. Secrets are named, never shown:
+   the env names api.SECRET_ENV reads, and one --kvo-codes per code. */
+function cliLine(resp,secretNames,codeCount){
+  var parts=[];
+  (secretNames||[]).forEach(function(n){parts.push(n+"=<secret>");});
+  parts.push("bash deploy/deploy-stack.sh --profile "+(resp&&resp.profile_file?resp.profile_file:"deploy-profile-<stack>.env"));
+  for(var i=0;i<(codeCount||0);i++)parts.push("--kvo-codes <code"+(codeCount>1?(i+1):"")+">");
+  return parts.join(" ");
+}
+
+/* CLOUDLENS_TEST_VMS as write_profile() writes it: os:N per OS with a count,
+   comma separated, an OS with 0 left off. */
+function testVms(counts){
+  var out=[];
+  ["ubuntu","rhel","windows"].forEach(function(os){
+    var n=parseInt(counts&&counts[os],10);
+    if(n>0)out.push(os+":"+Math.min(n,10));
+  });
+  return out.join(",");
+}
+
+/* {ubuntu:N,rhel:N,windows:N} from a CLOUDLENS_TEST_VMS value. */
+function parseTestVms(text){
+  var counts={ubuntu:0,rhel:0,windows:0};
+  String(text||"").split(",").forEach(function(item){
+    var p=item.trim().toLowerCase().split(":");
+    if(p[0] in counts)counts[p[0]]=p.length>1?(parseInt(p[1],10)||0):1;
+  });
+  return counts;
+}
+
+/* Activation codes, one per line (or whitespace separated): CODE or CODE,QTY
+   as --kvo-codes takes them. The comma is part of a code's quantity, so it
+   never splits. */
+function parseCodes(text){
+  return String(text||"").split(/[\s]+/).map(function(c){return c.trim();}).filter(function(c){return c;});
+}
+
+/* The workload count line for the discovery status. */
+function workloadSummary(d){
+  if(!d||typeof d.count!=="number")return "";
+  var s=d.count+" running instance"+(d.count===1?"":"s")+" match "+(d.filter&&d.filter.tag?d.filter.tag:"the tag");
+  if(d.truncated)s+=" (first "+d.rows.length+" shown)";
+  return s;
+}
+
+window.clPlan={esc:esc,renderResolved:renderResolved,renderErrors:renderErrors,cliLine:cliLine,
+  testVms:testVms,parseTestVms:parseTestVms,parseCodes:parseCodes,workloadSummary:workloadSummary};
+})();

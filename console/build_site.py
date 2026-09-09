@@ -15,7 +15,9 @@ from cloudlens_console import flows as F
 HERE = os.path.dirname(__file__)
 WEB = os.path.join(HERE, "cloudlens_console", "web")
 FX = os.path.join(HERE, "fixtures")
-OUT = os.path.abspath(os.path.join(HERE, "..", "docs", "console.html"))
+# OUT=/some/path in the environment writes elsewhere (a build to prove the
+# page still assembles, without touching docs/).
+OUT = os.environ.get("OUT") or os.path.abspath(os.path.join(HERE, "..", "docs", "console.html"))
 
 # 1. flow metadata (same shape the /flows endpoint returns)
 FLOWS = {"order": F.ORDER, "flows": {
@@ -151,6 +153,13 @@ data = ('<script>window.__FLOWS__=' + json.dumps(FLOWS, separators=(",", ":")) +
 # The demo toggle isn't meaningful on the static site (everything is replay) - drop it.
 body = re.search(r"<body>.*?</body>", src, re.S).group(0)
 body = re.sub(r'<div class="demo-t".*?</div>\s*</div>', '</div>', body, flags=re.S)  # remove toggle from header (best-effort)
+# The operations console (pre-flight, the deploy wizard, the placeholders)
+# drives the API and has nothing to do on a static page: the block between
+# its two markers goes, and so do the scripts that only it uses. The quick
+# flows are the whole point of this page, so their fold opens.
+body = re.sub(r"<!-- ops:start -->.*?<!-- ops:end -->", "", body, flags=re.S)
+body = re.sub(r'\s*<script src="/web/(?:plan|wizard)\.js"></script>', "", body)
+body = body.replace('<details class="quick" id="quickFlows">', '<details class="quick" id="quickFlows" open>')
 body = body.replace('DEMO · REPLAYING REAL EVENTS', 'WATCH IT DEPLOY · REAL CAPTURED RUN')
 body = body.replace('<script src="/web/app.js"></script>', data + '<script>' + CLIENT_APP + '</script>')
 
