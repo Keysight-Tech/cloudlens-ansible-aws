@@ -2046,3 +2046,128 @@ def test_the_replay_route_is_wired(live, tmp_path, monkeypatch):
     server.JOBS[r["job_id"]].emit(E.done("engine exited 0"))
     st, r = _call(live, "POST", "/api/run", {"stack": "nosuch", "region": "us-east-1"})
     assert st == 400 and "deploy-profile-nosuch.env" in r["error"]
+
+
+def test_a_replay_is_refused_when_the_profile_is_for_another_stack_or_region(tmp_path, monkeypatch):
+    """--profile is the whole argv of a replay: no --region, no
+    --stack-name, so the FILE decides where the run happens.
+
+    The console asked for a stack and a region, read the status for them,
+    and then started a run that took its region from the profile instead.
+    A profile written for us-west-2 replayed under a typed us-east-1 ran
+    in us-west-2 while the Operate screen, the job's inputs and the
+    operator all said us-east-1. Worse, _in_flight keys on the TYPED
+    region, so the same profile could be replayed twice at once by typing
+    two different regions, which is the one thing the one-engine-per-stack
+    guard exists to stop.
+
+    Both keys are read out of the profile and both are refused when they
+    disagree, naming the file's value and the request's.
+    """
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    started = []
+    start = lambda job, cmd, cwd, env: started.append(cmd)
+    path = tmp_path / "deploy-profile-demo.env"
+
+    # the region disagrees
+    path.write_text('CLOUDLENS_STACK_NAME="demo"\nCLOUDLENS_REGION="us-west-2"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert r["http"] == 400, r
+    assert "CLOUDLENS_REGION" in r["error"] and "us-west-2" in r["error"] and "us-east-1" in r["error"], r
+    assert "deploy-profile-demo.env" in r["error"]
+    assert not started, "a profile for another region starts nothing"
+
+    # the stack name disagrees: the file is deploy-profile-demo.env and
+    # names another stack, which is a hand-edited or copied file
+    path.write_text('CLOUDLENS_STACK_NAME="other"\nCLOUDLENS_REGION="us-east-1"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1", "only": "license"}, jobs={}, start=start)
+    assert r["http"] == 400 and "CLOUDLENS_STACK_NAME" in r["error"], r
+    assert "other" in r["error"] and "demo" in r["error"], r
+    assert not started
+
+    # and the agreeing case still runs, quotes stripped the way the
+    # script's own loader strips them, comments and blank lines skipped
+    path.write_text("# written by the console\n\nCLOUDLENS_STACK_NAME=\"demo\"\n"
+                    'CLOUDLENS_REGION="us-east-1"\nCLOUDLENS_DEPLOY_KVO="true"\n')
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert not r.get("error") and not r.get("errors"), r
+    assert started and started[-1] == ["bash", api.DEPLOY, "--profile", str(path), "--resume"]
+
+    # a profile that says nothing about either key is not a disagreement:
+    # the script applies its own defaults and this console does not invent
+    # a refusal it cannot justify
+    started[:] = []
+    path.write_text('CLOUDLENS_DEPLOY_KVO="true"\n')
+    r = api.run({"stack": "demo", "region": "eu-west-1"}, jobs={}, start=start)
+    assert not r.get("error") and not r.get("errors"), r
+    assert started
+
+
+def test_the_profile_reader_reads_what_the_scripts_loader_reads(tmp_path):
+    """One pair of outer quotes stripped and nothing unescaped, which is
+    what deploy-stack.sh's loader does and what profile.render() writes
+    for. The last assignment wins, as it would in a shell."""
+    p = tmp_path / "profile.env"
+    p.write_text('# a comment\n\nCLOUDLENS_REGION="us-east-1"\nCLOUDLENS_STACK_NAME=demo\n'
+                 'CLOUDLENS_REGION="eu-west-1"\nNOT_A_PROFILE_KEY="x"\n')
+    says = api._profile_says(str(p), ("CLOUDLENS_REGION", "CLOUDLENS_STACK_NAME", "CLOUDLENS_ABSENT"))
+    assert says == {"CLOUDLENS_REGION": "eu-west-1", "CLOUDLENS_STACK_NAME": "demo",
+                    "CLOUDLENS_ABSENT": None}
+    # a file that cannot be read says nothing about any key, which is not
+    # the same as saying the key is absent
+    assert api._profile_says(str(tmp_path / "nowhere.env"), ("CLOUDLENS_REGION",)) == {"CLOUDLENS_REGION": None}
+
+
+class _TimedKL(FakeKL):
+    """FakeKL that records the timeout each poll was given, and lets the
+    poll itself take time on a clock the test holds."""
+    def __init__(self, clock, per_poll=0.0, **kw):
+        FakeKL.__init__(self, **kw)
+        self.clock, self.per_poll, self.timeouts = clock, per_poll, []
+
+    def poll_op(self, kvo, tok, first, verify, want_result=True, timeout=120, label=None):
+        self.timeouts.append(timeout)
+        self.clock[0] += self.per_poll
+        return FakeKL.poll_op(self, kvo, tok, first, verify, want_result, timeout, label)
+
+
+def test_one_licensing_call_is_bounded_in_rows_and_in_time(monkeypatch):
+    """A licensing request POSTs one operation per row and polls each to
+    its end, one after another, inside the one request the browser is
+    holding open.
+
+    kvo_license.py's poll_op defaults to 120 seconds PER poll, and nothing
+    here passed a timeout at all, so a 50-row body (MAX_LIST) was a single
+    synchronous request that could run for an hour and a half while the
+    page showed one static word. The budget is for the WHOLE request and
+    is shared out across the rows, so the last row cannot start a fresh
+    120 seconds; and the row count is capped, refused before anything
+    reaches the KVO.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr(api, "_now", lambda: clock[0])
+    kl = _TimedKL(clock, per_poll=100.0,
+                  licences=[{"activationCode": "AAAA-1111", "quantity": 5}])
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    rows = [{"activationCode": "AAAA-%04d" % n, "quantity": 1} for n in range(3)]
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release", "rows": rows})
+    assert len(r["results"]) == 3
+    # 180 for the first, what is left for the second, and never below 1:
+    # one budget, spent, and not three fresh ones
+    assert kl.timeouts == [api.OP_BUDGET, api.OP_BUDGET - 100, 1], kl.timeouts
+    assert sum(1 for t in kl.timeouts if t > api.OP_BUDGET) == 0
+
+    # more rows than one call may take: refused, naming the limit, before
+    # the KVO is touched at all
+    n = len(kl.calls)
+    many = [{"activationCode": "AAAA-%04d" % i, "quantity": 1} for i in range(api.MAX_OPS + 1)]
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release", "rows": many})
+    assert r.get("error") and str(api.MAX_OPS) in r["error"] and str(len(many)) in r["error"], r
+    codes = ["AAAA-%04d,1" % i for i in range(api.MAX_OPS + 1)]
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "activate", "codes": codes})
+    assert r.get("error") and str(api.MAX_OPS) in r["error"], r
+    assert len(kl.calls) == n, "a body over the limit never reaches the KVO, not even to log in"
+    # exactly the limit is allowed
+    ok = [{"activationCode": "AAAA-%04d" % i, "quantity": 1} for i in range(api.MAX_OPS)]
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release", "rows": ok})
+    assert len(r["results"]) == api.MAX_OPS

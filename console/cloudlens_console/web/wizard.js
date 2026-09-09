@@ -180,6 +180,10 @@ function showPage(name){
   rv.hidden=!RUN_PAGES[name];
   if(was&&!rv.hidden)C.relayout();
   if(name==="preflight"&&!$("pfRegion").value)$("pfRegion").value=region();
+  // the screens that live in their own files hear which page is showing:
+  // teardown.js holds an EventSource open while its audit streams, and a
+  // stream nobody is reading is a client the server keeps for nothing
+  try{document.dispatchEvent(new CustomEvent("cl-page",{detail:name}));}catch(e){}
   try{localStorage.setItem("cl-page",name);}catch(e){}
 }
 document.querySelectorAll("#opsNav [data-page]").forEach(function(b){

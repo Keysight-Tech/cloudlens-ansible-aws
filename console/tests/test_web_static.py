@@ -39,7 +39,8 @@ PKG = os.path.join(HERE, "..", "cloudlens_console")
 WEB = os.path.join(PKG, "web")
 SERVER = os.path.join(PKG, "server.py")
 DEPLOY = os.path.join(HERE, "..", "..", "deploy", "deploy-stack.sh")
-SCRIPTS = ("app.js", "wizard.js", "plan.js", "watch.js", "operate.js", "licences.js", "teardown.js")
+SCRIPTS = ("app.js", "ui.js", "wizard.js", "plan.js", "watch.js", "operate.js", "licences.js",
+           "teardown.js")
 KEY = re.compile(r"CLOUDLENS_[A-Z0-9_]+")
 
 
@@ -212,6 +213,14 @@ def test_the_licensing_screen_takes_codes_the_same_way_the_wizard_does():
     assert "codeTail" in js, "a code is shown by its last four characters, never whole"
     assert not re.search(r"localStorage\s*\.", js), (
         "the KVO password and its codes are stored nowhere: no localStorage call in this file")
+    # "0 of 3 activated. FAILED; FAILED" is a failure and is styled as one:
+    # it rendered as ordinary text, beside a successful run's own words
+    flat = js.replace(" ", "")
+    assert "ok<picked.length" in flat, "a partial or total activation failure is marked as a refusal"
+    # and the count line is rewritten THROUGH status(), so the red class a
+    # bad entry earned comes off with the entry
+    assert 'status("licCount",codes.length?' in flat, (
+        "paintCodes rewrote textContent alone, so the err class outlived the bad code")
 
 
 def test_the_teardown_screen_gates_on_the_typed_name_and_points_at_licensing():
@@ -355,7 +364,9 @@ def _script_paths(src):
 def test_every_path_a_script_calls_is_one_the_server_routes(name):
     exact, prefixes = _server_routes()
     paths = _script_paths(_read(name))
-    if name != "plan.js":
+    if name not in ("plan.js", "ui.js"):
+        # plan.js renders and ui.js is the shared surface: both are given
+        # what to call, neither names a path of its own
         assert paths, "%s calls the server" % name
     for p in sorted(paths):
         assert p in exact or any(p.startswith(x) for x in prefixes), "%s calls %s, which server.py does not route" % (
@@ -372,6 +383,88 @@ def test_the_operations_screens_use_the_routes_they_are_faces_on():
     lic = _script_paths(_read("licences.js"))
     assert lic and all(p.startswith("/api/licences") for p in lic), sorted(lic)
     assert {"/api/teardown", "/api/verify-empty", "/events/"} <= _script_paths(_read("teardown.js"))
+
+
+def test_the_operations_screens_take_their_escaper_from_one_place():
+    """Each of the three carried its own esc() that fell back to String(s)
+    with NO escaping at all when window.clPlan was absent, so a screen
+    that loaded without its dependency rendered a KVO's own words, an
+    instance name and an AWS error message as markup. An escaper fails
+    closed or it is not an escaper. There is one now, in ui.js, and the
+    screens take it from there rather than carrying a fallback: without
+    ui.js each throws on its first line and draws nothing."""
+    ui = _read("ui.js")
+    assert "window.clUi=" in ui
+    assert 'replace(/[&<>"]/g' in ui, "ui.js carries a real escaper"
+    for name in ("operate.js", "licences.js", "teardown.js"):
+        js = _read(name)
+        assert "var U=window.clUi;" in js, name
+        assert re.search(r"\besc=U\.esc\b", js), "%s takes esc from the shared surface" % name
+        assert "function esc(" not in js, "%s declares a second escaper" % name
+        assert "String(s==null" not in js, "%s still carries the fallback that escapes nothing" % name
+
+
+def test_the_shared_surface_loads_before_the_screens_that_need_it():
+    """A screen whose ui.js has not run yet is a screen that throws on its
+    first line. The page loads them in order, so the order is the
+    contract."""
+    order = re.findall(r'<script src="/web/([\w.]+)"></script>', _read("index.html"))
+    assert "ui.js" in order, "index.html loads the shared surface"
+    for name in ("operate.js", "licences.js", "teardown.js"):
+        assert order.index("ui.js") < order.index(name), name
+
+
+def test_leaving_the_teardown_screen_closes_the_audit_stream():
+    """An EventSource nobody closes is a client the server keeps open for
+    a report nobody is reading, and coming back to the screen opens a
+    second one beside it. wizard.js owns the page switch, so it says which
+    page is showing; teardown.js closes on anything that is not its own,
+    and does NOT record the audit as done, because an audit that was not
+    read to its end is not one the gate may stand on."""
+    assert 'CustomEvent("cl-page"' in _read("wizard.js"), "the page switch says which page it switched to"
+    js = _read("teardown.js")
+    assert 'document.addEventListener("cl-page"' in js
+    body = _js_function(js, "stopAudit")
+    assert "es.close()" in body and "es=null" in body, body
+    assert "auditFor" not in body
+
+
+def test_the_rerun_warns_about_a_phase_the_script_runs_and_can_supply_its_codes():
+    """--only is tested BEFORE the resume skip in deploy-stack.sh's
+    run_phase, so `--only license` re-runs licensing on a stack whose
+    resume state already calls it done, and the script says why that
+    matters in its own comment: activation codes are consumable, and
+    re-activating a spent one burns entitlement quantity.
+
+    The dropdown offered it as an ordinary option and sent no codes, and
+    the engine runs the script with stdin at DEVNULL, so kvo_license.py
+    took its "no activation codes supplied and stdin is not a TTY" branch
+    and exited 2. The phase now warns before it runs and carries the codes
+    on the argv, the way a launch does.
+
+    The list of phases that SPEND is kept in the page, because a phase the
+    server forgot to mark would arrive as an ordinary option with no
+    warning and a gate that fails open is not a gate. The phase NAMES
+    still belong to the script, so they are checked against it here."""
+    js = _read("operate.js")
+    m = re.search(r"var SPENDS=\{([^}]*)\}", js)
+    assert m, "operate.js declares var SPENDS={...}"
+    named = set(re.findall(r"(\w+)\s*:", m.group(1)))
+    order = set(api.phase_order())
+    assert named and named <= order, sorted(named - order)
+    assert "license" in named, "the licensing phase is the one that spends entitlement"
+    assert "confirm(" in js, "a phase that spends asks before it runs"
+    assert "kvo_codes=codes.slice()" in js.replace(" ", ""), "the re-run sends the codes it collected"
+    # the codes enter as they do everywhere else in this console: a password
+    # input, chips of the last four characters, and nothing stored
+    block = re.search(r'<section class="page" id="page-operate".*?</section>', _read("index.html"), re.S)
+    assert block, "index.html carries the Operate page"
+    entry = [t for t in re.findall(r"<input\b[^>]*>", block.group(0)) if 'id="opCodes"' in t]
+    assert len(entry) == 1 and 'type="password"' in entry[0] and "value=" not in entry[0], entry
+    assert "data-secret" not in entry[0], "a code rides the argv, it is not one of the script's env secrets"
+    assert "<textarea" not in block.group(0)
+    assert "codeTail" in js, "a code is shown by its last four characters, never whole"
+    assert not re.search(r"localStorage\s*\.\s*setItem", js), "nothing on this screen stores a code"
 
 
 def test_the_audit_report_listens_for_the_frames_an_unwired_run_sends():

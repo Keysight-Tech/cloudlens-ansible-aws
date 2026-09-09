@@ -5,16 +5,15 @@
      1. the read-only audit    POST /api/teardown {orphans_only:true}
                                (teardown-stack.sh --orphans, which deletes
                                nothing, ever) and its report, read here.
-     2. the licence warning    a stack with a KVO whose OWN licences have
-                               not been released in this session gets a red
-                               banner and a pointer to the Licensing
-                               screen. Deleting the KVO first strands the
-                               counts and they do not come back, and a
-                               release from a DIFFERENT appliance releases
-                               nothing of this one's: the recorded release's
-                               host is compared with this stack's KVO
-                               address, exactly, and only a match sends
-                               licences_released.
+     2. the licence warning    a stack with a KVO that is not KNOWN to be
+                               clear of licences gets a red banner and a
+                               pointer to the Licensing screen. Deleting
+                               the KVO first strands the counts and they do
+                               not come back; a release from a DIFFERENT
+                               appliance releases nothing of this one's;
+                               and a release that left licences behind
+                               released only part of them. All three are
+                               refusals here.
      3. the typed name         the stack's own name, typed back.
      4. the run                POST /api/teardown, streaming into Watch.
      5. the proof              GET /api/verify-empty.
@@ -35,28 +34,12 @@
 
    teardownGate() is pure and lives under tests/test_ops_model.py. */
 
-var $=function(id){return document.getElementById(id);};
+var U=window.clUi;                            // ui.js, loaded before this file
+var $=U.$,txt=U.txt,esc=U.esc,status=U.status,hostOf=U.hostOf;
 var enc=encodeURIComponent;
 var LOG_MAX=400;
 
 /* ------------------------------------------------------------ the model */
-
-function txt(v){return v===undefined||v===null?"":String(v);}
-
-/* The host in an address this page holds: a bare IP or name, as the
-   Licensing screen took it, or a url. Whole hosts only: 3.1.1.1 is not
-   3.1.1.10, and a pair of elastic IPs like that is ordinary. */
-function hostOf(v){
-  var s=txt(v).trim();
-  if(!s)return "";
-  var i=s.indexOf("://");
-  if(i>=0)s=s.slice(i+3);
-  s=s.split("/")[0].split("?")[0].split("#")[0];
-  var at=s.lastIndexOf("@");
-  if(at>=0)s=s.slice(at+1);
-  if(s.charAt(0)==="["){var e=s.indexOf("]");return e<0?"":s.slice(1,e).toLowerCase();}
-  return s.split(":")[0].toLowerCase();
-}
 
 /* Whether the destructive run may start, and the warning that stands over
    it. `hasKvo` is true, false, or null for "could not tell", and null is
@@ -65,17 +48,30 @@ function hostOf(v){
    licence count and the cost of being wrong the other way is one sentence
    the operator ignores.
 
-   A recorded release satisfies the warning ONLY when it came from THIS
-   stack's KVO. The session record carries the appliance it was made
-   against (licences.js noteRelease), and `kvoAddr` is the address of the
-   kvo-role instance in /api/status's own list; the two are compared as
-   hosts, not as substrings. Releasing on KVO A and then tearing down a
-   stack whose KVO is B released nothing of B's, and telling the API
-   licences_released:true would put --accept-licence-loss on the argv and
-   satisfy the script's own licence gate for the wrong appliance. That is
-   the exact failure this screen exists to prevent, so an unmatched release
-   is warned about and NOT sent. A KVO whose address the console could not
-   read cannot be matched either, and is treated the same way. */
+   A recorded release satisfies the warning only when BOTH of these hold.
+
+     it was made against THIS stack's KVO. The session record carries the
+     appliance it was made against (licences.js noteRelease, keyed by
+     host), and `kvoAddr` is the address of the kvo-role instance in
+     /api/status's own list; the two are compared as hosts, not as
+     substrings. Releasing on KVO A and then tearing down a stack whose
+     KVO is B released nothing of B's, and telling the API
+     licences_released:true would put --accept-licence-loss on the argv
+     and satisfy the script's own licence gate for the wrong appliance.
+
+     the KVO is now CLEAR. /api/licences/release answers `clear`, the
+     KVO's own reading of whether it still holds a licence, and a release
+     that succeeded on the rows it was asked about can still leave others
+     installed. A partial release used to turn this banner green and send
+     --accept-licence-loss, which is the last gate teardown-stack.sh has
+     in a non-interactive run: the stack was then deleted with licences on
+     it, which is exactly the loss this screen exists to prevent. The
+     script's own words put a previous instance of it at 1500 counts.
+
+   Either one missing is a `bad` warning, and each says which one, because
+   "release the KVO's licences" and "finish releasing this KVO's licences"
+   are different jobs. A KVO whose address the console could not read
+   cannot be matched at all, and is treated the same way. */
 function teardownGate(m){
   m=m||{};
   var stack=txt(m.stack),region=txt(m.region),typed=txt(m.typed);
@@ -83,12 +79,20 @@ function teardownGate(m){
   var named=m.kvoName?" ("+txt(m.kvoName)+")":"";
   var mine=hostOf(m.kvoAddr);                       // this stack's own KVO
   var from=released?hostOf(released.kvo):"";        // where the release was made
-  var counts=!!(released&&mine&&from&&from===mine);
+  var ours=!!(released&&mine&&from&&from===mine);   // made against this stack's KVO
+  var counts=!!(ours&&released.clear);              // and it left the KVO clear
   var warn=null;
   if(m.hasKvo===true&&counts)
     warn={level:"good",text:"Licences were released from "+from+" in this session ("+
       (released.codes||[]).join(", ")+"), which is this stack's KVO"+named+
-      ", so the teardown will run with --accept-licence-loss."};
+      ", and the KVO answered that it now holds none, so the teardown will run with "+
+      "--accept-licence-loss."};
+  else if(m.hasKvo===true&&ours)
+    warn={level:"bad",text:"A release was made against this stack's own KVO"+named+" at "+mine+
+      " in this session ("+(released.codes||[]).join(", ")+"), but the KVO answered that it STILL HOLDS "+
+      "licences: that release covered only part of them. The teardown will NOT run with "+
+      "--accept-licence-loss. Go back to the Licensing screen, list what is installed and release the "+
+      "rest: a KVO deleted with licences still installed strands those counts, and they do not come back."};
   else if(m.hasKvo===true&&released&&!mine)
     warn={level:"bad",text:"Licences were released from "+from+" in this session, but this stack's KVO"+named+
       " has no address in the console's answer, so that release cannot be shown to be this stack's. The "+
@@ -121,24 +125,52 @@ function teardownGate(m){
           licencesReleased:counts};
 }
 
-/* --------------------------------------------------------------- render */
-
-function esc(s){
-  var P=window.clPlan;
-  return P?P.esc(s):String(s==null?"":s);
+/* The session release record this stack's gate should stand on: this
+   KVO's own if the Licensing screen has one, and otherwise the most
+   recent from anywhere, which is what lets the gate say "that was another
+   appliance" instead of the weaker "nothing was released". */
+function recordFor(addr,L){
+  L=L||(typeof window!=="undefined"?window.clLicences:null);
+  if(!L)return null;
+  return L.released(addr)||L.latestRelease();
 }
 
-var model={stack:"",region:"",typed:"",auditFor:"",running:false,hasKvo:false,kvoName:"",kvoAddr:"",
+/* The kvo-role instance among the rows /api/status listed: the first one,
+   except that a running instance beats a stopped one. api.by_role picks
+   by the same rule on its side, so the address the console licenses
+   against and the address it matches a release to are one instance. */
+function kvoRow(rows){
+  var pick=null;
+  (rows||[]).forEach(function(row){
+    if(!row||row.role!=="kvo")return;
+    if(!pick||(pick.state!=="running"&&row.state==="running"))pick=row;
+  });
+  return pick;
+}
+
+/* --------------------------------------------------------------- render */
+
+/* hasKvo starts null, not false: until /api/status has answered, whether
+   this stack has a KVO is not known, and false is the one value that
+   draws no warning at all. The audit (--orphans, a handful of describe
+   calls) routinely finishes before /api/status does, because that route
+   serially does describe-instances, up to two vController calls and a 25
+   second ssh, so a false here armed the run with no banner. It is reset
+   on every audit and on every edit of the stack or the region, so a
+   previous stack's answer is never read as this one's. */
+var model={stack:"",region:"",typed:"",auditFor:"",running:false,hasKvo:null,kvoName:"",kvoAddr:"",
            kvoWhy:"",released:null};
 var auditJob="",auditLines=0,es=null;
 
-function status(id,text,bad){var el=$(id);el.textContent=text||"";el.classList.toggle("err",!!bad);}
+function forgetKvo(why){
+  model.hasKvo=null;model.kvoName="";model.kvoAddr="";model.kvoWhy=txt(why);
+}
 
 function render(){
   model.stack=$("tdStack").value.trim();
   model.region=$("tdRegion").value.trim();
   model.typed=$("tdConfirm").value;
-  model.released=window.clLicences?window.clLicences.released():null;
+  model.released=recordFor(model.kvoAddr);
   var gate=teardownGate(model);
   var banner=$("tdWarn");
   if(gate.warn){
@@ -175,15 +207,6 @@ function logLine(text){
 }
 
 /* ------------------------------------------------------------- the calls */
-
-function post(path,body,cb){
-  fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
-   .then(function(r){return r.text().then(function(t){
-     var d=null;try{d=JSON.parse(t);}catch(e){}
-     return {ok:r.ok,status:r.status,d:d};});})
-   .catch(function(){return {err:"Could not reach the console server."};})
-   .then(function(x){cb(x);});
-}
 
 /* The audit's own stream, read here. Only log frames matter: the script
    runs unwired (it has no events channel and refuses flags it does not
@@ -223,49 +246,62 @@ function followAudit(jobId){
   });
 }
 
+/* Leaving this screen mid-audit closed nothing: the EventSource stayed
+   open for the life of the page, the server kept a client for a report
+   nobody was reading, and coming back opened a second one beside it. The
+   audit itself is read-only and finishes on its own; what stops here is
+   the reading of it, and auditFor is deliberately not set, so the gate
+   goes back to asking for an audit. */
+function stopAudit(){
+  if(!es)return;
+  es.close();es=null;
+  $("tdAudit").disabled=false;
+  status("tdAuditStatus","The audit stream was closed when you left this screen, after "+auditLines+
+    " line"+(auditLines===1?"":"s")+". Nothing was deleted (--orphans deletes nothing). Run it again "+
+    "before tearing this stack down.");
+  render();
+}
+
 /* Whether this stack has a KVO and, when it has one, WHICH: the address
    of the kvo-role instance, which is what a recorded release is matched
    against. Both come from the one read-only route that knows, the
    instances it named. A failure is null, not false. */
 function checkKvo(){
   var s=model.stack,r=model.region;
-  fetch("/api/status?stack="+enc(s)+"&region="+enc(r),{headers:{"Accept":"application/json"}})
-   .then(function(resp){return resp.json();})
-   .then(function(d){
-     if(model.stack!==s||model.region!==r)return;      // the operator moved on
-     var inst=d&&d.instances;
-     if(!inst||!Object.prototype.hasOwnProperty.call(inst,"value")){
-       model.hasKvo=null;model.kvoName="";model.kvoAddr="";
-       model.kvoWhy=txt((inst&&inst.unavailable)||(d&&d.error)||"the console could not read the instances");
-     }else{
-       var kvo=null;
-       (inst.value.rows||[]).forEach(function(row){if(row.role==="kvo")kvo=row;});
-       model.hasKvo=!!kvo;
-       model.kvoName=kvo?txt(kvo.name):"";
-       // the address the Licensing screen would have been pointed at; a
-       // KVO with neither is "" and matches nothing, which is the point
-       model.kvoAddr=kvo?txt(kvo.public_ip)||txt(kvo.private_ip):"";
-       model.kvoWhy="";
-     }
-     render();
-   })
-   .catch(function(){
-     model.hasKvo=null;model.kvoWhy="the console server could not be reached";render();
-   });
+  U.get("/api/status?stack="+enc(s)+"&region="+enc(r),function(x){
+    if(model.stack!==s||model.region!==r)return;      // the operator moved on
+    var d=x.d;
+    var inst=d&&d.instances;
+    if(!inst||!Object.prototype.hasOwnProperty.call(inst,"value")){
+      forgetKvo((inst&&inst.unavailable)||U.why(x)||"the console could not read the instances");
+    }else{
+      var kvo=kvoRow(inst.value.rows);
+      model.hasKvo=!!kvo;
+      model.kvoName=kvo?txt(kvo.name):"";
+      // the address the Licensing screen would have been pointed at; a
+      // KVO with neither is "" and matches nothing, which is the point
+      model.kvoAddr=kvo?txt(kvo.public_ip)||txt(kvo.private_ip):"";
+      model.kvoWhy="";
+    }
+    render();
+  });
 }
 
 function audit(){
+  // the previous answer is this stack's only while the fields have not
+  // moved, and it is not this run's until this run's status call lands
+  forgetKvo("the console is still reading the instances");
   render();
   if(!model.stack||!model.region)return status("tdAuditStatus","Name the stack and its region.",true);
   $("tdAudit").disabled=true;
   model.auditFor="";
   status("tdAuditStatus","auditing "+model.stack+" in "+model.region+"... (read-only: --orphans deletes nothing)");
   checkKvo();
-  post("/api/teardown",{stack:model.stack,region:model.region,orphans_only:true},function(x){
-    if(x.err||!x.ok||!x.d||x.d.error){
+  U.post("/api/teardown",{stack:model.stack,region:model.region,orphans_only:true},function(x){
+    var why=U.why(x);
+    if(why){
       $("tdAudit").disabled=false;
-      var d=x.d||{};
-      return status("tdAuditStatus",x.err||d.error||("The console refused the audit (HTTP "+x.status+")."),true);
+      return status("tdAuditStatus",why,true);
     }
     followAudit(x.d.job_id);
   });
@@ -278,12 +314,12 @@ function tearDown(){
       "security groups and collector auto-scaling groups it left are swept. Nothing is rolled back."))return;
   $("tdRun").disabled=true;
   status("tdRunNote","starting the teardown...");
-  post("/api/teardown",{stack:model.stack,region:model.region,confirm_name:model.typed,
-                        licences_released:gate.licencesReleased},function(x){
-    if(x.err||!x.ok||!x.d||x.d.error){
-      var d=x.d||{};
+  U.post("/api/teardown",{stack:model.stack,region:model.region,confirm_name:model.typed,
+                          licences_released:gate.licencesReleased},function(x){
+    var why=U.why(x);
+    if(why){
       render();
-      return status("tdRunNote",x.err||d.error||("The console refused it (HTTP "+x.status+")."),true);
+      return status("tdRunNote",why,true);
     }
     status("tdRunNote","Started job "+x.d.job_id+". It runs on the Watch screen; come back here and count "+
       "what is left when it ends.");
@@ -317,32 +353,34 @@ function verify(){
   if(!r)return status("tdVerifyStatus","Name the region.",true);
   $("tdVerify").disabled=true;
   status("tdVerifyStatus","counting what is left in "+r+"...");
-  fetch("/api/verify-empty?region="+enc(r),{headers:{"Accept":"application/json"}})
-   .then(function(resp){return resp.text().then(function(t){
-     var d=null;try{d=JSON.parse(t);}catch(e){}
-     return {ok:resp.ok,status:resp.status,d:d};});})
-   .catch(function(){return {err:"Could not reach the console server."};})
-   .then(function(x){
-     $("tdVerify").disabled=false;
-     if(x.err||!x.ok||!x.d||x.d.error){
-       var d=x.d||{};
-       return status("tdVerifyStatus",x.err||d.error||("HTTP "+x.status),true);
-     }
-     renderVerify(x.d);
-     status("tdVerifyStatus",x.d.empty===true
-       ? ("Nothing of these is left in "+r+".")
-       : x.d.empty===false
-         ? ("Something is still in "+r+". These counts are the whole region, not only this stack: read the "+
-            "rows before concluding the teardown missed anything.")
-         : "At least one count could not be read, so this is not a proof either way. The rows say which.");
-   });
+  U.get("/api/verify-empty?region="+enc(r),function(x){
+    $("tdVerify").disabled=false;
+    var why=U.why(x);
+    if(why)return status("tdVerifyStatus",why,true);
+    renderVerify(x.d);
+    status("tdVerifyStatus",x.d.empty===true
+      ? ("Nothing of these is left in "+r+".")
+      : x.d.empty===false
+        ? ("Something is still in "+r+". These counts are the whole region, not only this stack: read the "+
+           "rows before concluding the teardown missed anything.")
+        : "At least one count could not be read, so this is not a proof either way. The rows say which.");
+  });
 }
 
 function init(){
   $("tdForm").addEventListener("submit",function(e){e.preventDefault();audit();});
   $("tdRun").addEventListener("click",tearDown);
   $("tdVerify").addEventListener("click",verify);
-  ["tdStack","tdRegion","tdConfirm"].forEach(function(id){$(id).addEventListener("input",render);});
+  $("tdConfirm").addEventListener("input",render);
+  // a stack or a region that changed makes the KVO answer somebody else's
+  ["tdStack","tdRegion"].forEach(function(id){
+    $(id).addEventListener("input",function(){forgetKvo("");render();});
+  });
+  // wizard.js owns the page switch and says so; the audit stream is the
+  // one thing on this screen that outlives leaving it
+  document.addEventListener("cl-page",function(e){
+    if(!e||e.detail!=="teardown")stopAudit();
+  });
   try{
     var saved=JSON.parse(localStorage.getItem("cl-plan")||"{}");
     if(saved&&typeof saved==="object"){
@@ -354,7 +392,8 @@ function init(){
 }
 
 if(typeof window!=="undefined")window.clTeardown={
-  teardownGate:teardownGate,COUNTS:COUNTS,model:function(){return model;}
+  teardownGate:teardownGate,recordFor:recordFor,kvoRow:kvoRow,COUNTS:COUNTS,
+  model:function(){return model;}
 };
 
 if(typeof document!=="undefined"&&document.getElementById("tdReport"))init();

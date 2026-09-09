@@ -638,7 +638,14 @@
       <button type="button" class="ghostbtn" id="opRerun">Re-run this phase</button>
       <button type="button" class="runbtn" id="opResume"><span class="tri"></span> Resume</button>
     </div>
-    <p class="hint">Resume is <code class="mono">deploy-stack.sh --profile deploy-profile-&lt;stack&gt;.env --resume</code>: it skips what the account proves is already done, and deletes nothing. Re-run adds <code class="mono">--only</code> and forces that one phase. The phases offered are the script's own list, served with the status. Both need the profile the Deploy screen wrote, both take the same one-engine-per-stack lock as a launch, and both stream into Watch.</p>
+    <p class="hint">Resume is <code class="mono">deploy-stack.sh --profile deploy-profile-&lt;stack&gt;.env --resume</code>: it skips what the account proves is already done, and deletes nothing. Re-run adds <code class="mono">--only</code> and forces that one phase, which is why <code class="mono">license</code> is marked: <code class="mono">--only</code> is tested before the resume skip, so it re-runs licensing on a stack the resume state already calls licensed, and re-activating a consumed code burns entitlement quantity that does not come back. The phases offered are the script's own list, served with the status. Both need the profile the Deploy screen wrote, both take the same one-engine-per-stack lock as a launch, and both stream into Watch.</p>
+    <div class="coderow">
+      <div class="field"><label for="opCodes">Activation code for a licensing re-run, or a pasted list</label><input id="opCodes" type="password" autocomplete="off" spellcheck="false" placeholder="CODE or CODE,QUANTITY"></div>
+      <button type="button" class="ghostbtn" id="opCodeAdd">Add</button>
+    </div>
+    <p class="hint">Only the <code class="mono">license</code> phase uses these, and it cannot run without them: the engine gives the script no terminal, so <code class="mono">kvo_license.py</code> exits rather than prompting. They ride the argv as <code class="mono">--kvo-codes</code>, exactly as a launch sends them, and are redacted out of the stream. A password field, because a textarea shows every code in clear on browsers that ignore the masking; each shows as its last four characters and none is stored.</p>
+    <div class="codes" id="opCodeList"></div>
+    <div class="status" id="opCodeCount" role="status" aria-live="polite"></div>
     <div class="status" id="opAction" role="status" aria-live="polite"></div>
   </div>
 </div></section>
@@ -927,6 +934,7 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity: credentials never leave the machine.</span></div></footer>
 
+<script src="/web/ui.js"></script>
 <script src="/web/plan.js"></script>
 <script src="/web/app.js"></script>
 <script src="/web/watch.js"></script>

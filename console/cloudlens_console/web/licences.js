@@ -9,6 +9,23 @@
    is what /api/licences/release does. The Teardown screen asks this file
    whether a release happened in this session and warns when it did not.
 
+   A release is recorded PER KVO, and only as far as the KVO's own answer
+   goes. Two things were one before and were both wrong:
+
+     - the record was a single bucket. `kvo` was overwritten per release
+       while `codes` accumulated, so releasing on KVO A and then on KVO B
+       left one record saying both codes came from B. The address the
+       Teardown screen matches was right; the sentence an operator reads
+       and acts on was a lie. The record is a map now, host to codes.
+     - the record said only THAT something was released, never that the
+       KVO was then clear. /api/licences/release answers `clear` ("the
+       KVO holds no licence now") and this screen already printed "Some
+       licences are still installed" when it was false, but what the
+       Teardown screen read was a green banner and --accept-licence-loss
+       on the argv of a run that deletes the KVO with those licences
+       still on it. `clear` is carried into the record and the teardown
+       gate turns on it.
+
    What this file never does:
      - store the KVO password. It is read out of its field at the moment a
        request is made, posted in the body (never a URL, never a query
@@ -20,22 +37,17 @@
        is a code somebody else can spend.
 
    The pure half (codeRows, licenceRows, releaseRow, noteRelease,
-   released) is under tests/test_ops_model.py in node. */
+   released, latestRelease) is under tests/test_ops_model.py in node. */
 
-var $=function(id){return document.getElementById(id);};
+var U=window.clUi;                            // ui.js, loaded before this file
+var $=U.$,txt=U.txt,esc=U.esc,status=U.status,codeTail=U.codeTail,hostOf=U.hostOf;
 var CODES_MAX=50;                             // api.MAX_LIST
+var OPS_MAX=10;                               // api.MAX_OPS: codes in one polled call
 var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;   // api.CODE_QTY
 
 /* ------------------------------------------------------------ the model */
 
-function txt(v){return v===undefined||v===null?"":String(v);}
 function num(v){var n=parseInt(v,10);return isNaN(n)?0:n;}
-
-/* A code, as this page is willing to display it. */
-function codeTail(c){
-  var parts=String(c||"").split(",");
-  return "****-"+parts[0].slice(-4)+(parts[1]?","+parts[1]:"");
-}
 
 /* The answer to /api/licences/check: one row per code, with what the code
    holds and the quantity the operator would activate. The default quantity
@@ -72,38 +84,62 @@ function releaseRow(row){
   return {activationCode:txt(row&&row.code),quantity:num(row&&row.quantity)};
 }
 
-/* What this session has released, and from where. In memory only: it is a
-   fact about this page's life, not something to remember for the next one,
-   and the Teardown screen's warning is deliberately about THIS session's
-   evidence rather than a claim it cannot check. */
-var record={kvo:"",codes:[],when:0};
+/* What this session has released, per KVO. In memory only: it is a fact
+   about this page's life, not something to remember for the next one, and
+   the Teardown screen's warning is deliberately about THIS session's
+   evidence rather than a claim it cannot check.
+
+   host -> {kvo (as it was typed), codes (tails), clear, when}. `clear` is
+   the KVO's own answer to "do you still hold licences", read from the
+   release response and never inferred: a release that succeeded on the
+   rows it was given still leaves the KVO holding whatever nobody asked
+   about, and that is the case this record exists to make visible. */
+var record={},seq=0;
 
 function noteRelease(kvo,resp){
+  var host=hostOf(kvo);
   var ok=((resp&&resp.results)||[]).filter(function(r){return r&&r.ok===true;});
-  if(!ok.length)return released();
-  record.kvo=txt(kvo);
-  record.when=Date.now();
+  if(!host||!ok.length)return released(kvo);
+  var rec=record[host]||(record[host]={kvo:txt(kvo),codes:[],clear:false,when:0,seq:0});
+  rec.kvo=txt(kvo);
+  rec.when=Date.now();
+  // the order releases were made in, which Date.now() does not give: two in
+  // the same millisecond is ordinary, and "the most recent" has to be an
+  // answer and not a coin toss
+  rec.seq=++seq;
+  rec.clear=resp.clear===true;
   ok.forEach(function(r){
     var tail=codeTail(r.code);
-    if(record.codes.indexOf(tail)<0)record.codes.push(tail);
+    if(rec.codes.indexOf(tail)<0)rec.codes.push(tail);
   });
-  return released();
+  return released(kvo);
 }
 
-function released(){
-  return record.kvo?{kvo:record.kvo,codes:record.codes.slice(),when:record.when}:null;
+function _copy(rec){
+  return rec?{kvo:rec.kvo,codes:rec.codes.slice(),clear:rec.clear===true,when:rec.when}:null;
+}
+
+/* The release made against one appliance, or null. An address in any of
+   the forms a screen holds it in: the host is what is compared. */
+function released(kvo){
+  return _copy(record[hostOf(kvo)]);
+}
+
+/* The most recent release made against ANY appliance, or null. The
+   Teardown screen falls back to this when it has no record of its own
+   KVO: a release from somewhere else is not evidence, and naming the
+   appliance it was actually made against is the whole warning. */
+function latestRelease(){
+  var best=null;
+  Object.keys(record).forEach(function(h){
+    if(!best||record[h].seq>best.seq)best=record[h];
+  });
+  return _copy(best);
 }
 
 /* --------------------------------------------------------------- render */
 
-function esc(s){
-  var P=window.clPlan;
-  return P?P.esc(s):String(s==null?"":s);
-}
-
 var codes=[],rows=[],installed=[],busy=false;
-
-function status(id,text,bad){var el=$(id);el.textContent=text||"";el.classList.toggle("err",!!bad);}
 
 function paintCodes(){
   var list=$("licList");list.innerHTML="";
@@ -115,7 +151,10 @@ function paintCodes(){
     rm.addEventListener("click",function(){codes.splice(i,1);paintCodes();});
     chip.appendChild(rm);list.appendChild(chip);
   });
-  $("licCount").textContent=codes.length?codes.length+" code"+(codes.length===1?"":"s"):"";
+  // status(), not textContent: addCodes marks this line as a refusal, and a
+  // line rewritten without clearing that stays red after the bad entry that
+  // earned it is gone
+  status("licCount",codes.length?codes.length+" code"+(codes.length===1?"":"s"):"",false);
   $("licCheck").disabled=busy||!codes.length;
   $("licActivate").disabled=busy||!rows.length;
 }
@@ -176,11 +215,20 @@ function renderInstalled(){
 }
 
 function renderRecord(){
-  var rec=released();
-  $("licReleased").textContent=rec
-    ? ("Released in this session from "+rec.kvo+": "+rec.codes.join(", ")+
-       ". The Teardown screen reads this, and will run with --accept-licence-loss.")
-    : "Nothing released in this session yet. Do it before the KVO goes: a KVO deleted with licences on it strands the counts.";
+  var hosts=Object.keys(record);
+  if(!hosts.length){
+    $("licReleased").textContent="Nothing released in this session yet. Do it before the KVO goes: a KVO "+
+      "deleted with licences on it strands the counts.";
+    return;
+  }
+  hosts.sort(function(a,b){return record[b].seq-record[a].seq;});
+  $("licReleased").textContent=hosts.map(function(h){
+    var r=record[h];
+    return "Released from "+r.kvo+": "+r.codes.join(", ")+". "+
+      (r.clear?"That KVO now holds no licences."
+              :"That KVO STILL holds licences, so it is not safe to delete yet.");
+  }).join(" ")+" The Teardown screen reads this per KVO, and runs with --accept-licence-loss only for a "+
+    "KVO that is this stack's own AND clear.";
 }
 
 /* ------------------------------------------------------------ the calls */
@@ -195,29 +243,27 @@ function body(action,extra){
   return b;
 }
 
+/* One licensing call. activate and release POST one operation per row and
+   poll each to its end, so a call with several codes is minutes, not
+   seconds: the status line counts the seconds while it runs rather than
+   showing one word and looking hung. The API bounds the whole request
+   (api.OP_BUDGET) and refuses more than api.MAX_OPS rows in one call, so
+   the wait has a ceiling on both sides. */
 function call(action,extra,cb){
   if(busy)return;
   if(!$("licKvo").value.trim())return status("licStatus","Name the KVO first.",true);
   busy=true;
   ["licLoad","licCheck","licActivate"].forEach(function(id){$(id).disabled=true;});
-  status("licStatus",action+"...");
-  fetch("/api/licences/"+encodeURIComponent(action),
-        {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body(action,extra))})
-   .then(function(r){return r.text().then(function(t){
-     var d=null;try{d=JSON.parse(t);}catch(e){}
-     return {ok:r.ok,status:r.status,d:d};});})
-   .catch(function(){return {err:"Could not reach the console server."};})
-   .then(function(x){
-     busy=false;
-     ["licLoad","licCheck"].forEach(function(id){$(id).disabled=false;});
-     paintCodes();
-     if(x.err||!x.ok||!x.d||x.d.error){
-       var d=x.d||{};
-       status("licStatus",x.err||d.error||("The KVO call failed (HTTP "+x.status+")."),true);
-       return;
-     }
-     cb(x.d);
-   });
+  var stop=U.ticking("licStatus",action+"...");
+  U.post("/api/licences/"+encodeURIComponent(action),body(action,extra),function(x){
+    busy=false;
+    stop();
+    ["licLoad","licCheck"].forEach(function(id){$(id).disabled=false;});
+    paintCodes();
+    var why=U.why(x);
+    if(why)return status("licStatus",why,true);
+    cb(x.d);
+  });
 }
 
 function check(){
@@ -234,14 +280,21 @@ function activate(){
   var picked=rows.filter(function(r){return r.valid&&r.quantity>0;})
                  .map(function(r){return r.code+","+r.quantity;});
   if(!picked.length)return status("licStatus","No code has a quantity to activate.",true);
+  if(picked.length>OPS_MAX)
+    return status("licStatus","That is "+picked.length+" codes in one call, and each one is a licensing "+
+      "operation polled to its end: the console takes at most "+OPS_MAX+" at a time so a single request "+
+      "cannot run for the rest of the afternoon. Set the quantity to 0 on the ones to leave for the next "+
+      "batch.",true);
   call("activate",{codes:picked},function(d){
     installed=licenceRows(d);
     renderInstalled();
     var ok=(d.activated||0);
+    // a partial or total failure is a failure: the refused codes are named
+    // here and the line is styled as the refusal it is
     status("licStatus",ok+" of "+picked.length+" activated. "+
       (d.results||[]).filter(function(r){return !r.ok;}).map(function(r){
         return codeTail(r.code)+": "+(r.state||"refused");
-      }).join("; "));
+      }).join("; "),ok<picked.length);
   });
 }
 
@@ -265,8 +318,11 @@ function release(row){
     noteRelease($("licKvo").value.trim(),d);
     renderRecord();
     status("licStatus",d.released
-      ? ("Released. "+(d.clear?"This KVO now holds no licences.":"Some licences are still installed."))
-      : "The KVO did not confirm the release; the counts are still with it.",!d.released);
+      ? ("Released. "+(d.clear
+          ? "This KVO now holds no licences."
+          : "Some licences are still installed, so this KVO is still not safe to delete: the Teardown "+
+            "screen will keep warning until it is clear."))
+      : "The KVO did not confirm the release; the counts are still with it.",!d.released||!d.clear);
   });
 }
 
@@ -293,7 +349,7 @@ function init(){
 
 if(typeof window!=="undefined")window.clLicences={
   codeRows:codeRows,licenceRows:licenceRows,releaseRow:releaseRow,codeTail:codeTail,
-  noteRelease:noteRelease,released:released
+  noteRelease:noteRelease,released:released,latestRelease:latestRelease
 };
 
 if(typeof document!=="undefined"&&document.getElementById("licRows"))init();

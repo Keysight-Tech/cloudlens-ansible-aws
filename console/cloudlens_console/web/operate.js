@@ -25,8 +25,28 @@
    deploy-stack.sh's own PHASE_ORDER. There is no copy of that list here:
    an empty answer offers nothing rather than inventing a phase. */
 
-var $=function(id){return document.getElementById(id);};
+var U=window.clUi;                            // ui.js, loaded before this file
+var $=U.$,txt=U.txt,esc=U.esc,status=U.status,codeTail=U.codeTail;
 var enc=encodeURIComponent;
+var CODES_MAX=50;                             // api.MAX_LIST
+var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;   // api.CODE_QTY
+
+/* The phases a re-run SPENDS something on, and what it spends.
+
+   deploy-stack.sh's run_phase tests --only BEFORE the resume skip, on
+   purpose, so --only license runs the licensing phase on a stack whose
+   licensing the resume state already calls done; and the script says in
+   its own comment why that matters: "Activation codes are consumable:
+   re-activating one that is already spent burns entitlement quantity."
+   That is real money and it does not come back, so this phase is not an
+   ordinary option in a dropdown.
+
+   The list is here rather than in the answer because a phase the server
+   forgot to mark would arrive as an ordinary option with no warning, and
+   a gate that fails open is not a gate. The phase NAMES still come from
+   the script alone (PHASE_ORDER, served with the status); this only says
+   which of them costs something. */
+var SPENDS={license:true};
 
 /* ------------------------------------------------------------ the model */
 
@@ -38,7 +58,6 @@ var CELLS=[
   ["vpb","vPB packet counters"]
 ];
 
-function txt(v){return v===undefined||v===null?"":String(v);}
 function has(o,k){return !!o&&Object.prototype.hasOwnProperty.call(o,k);}
 function plural(n,word){return n+" "+word+(n===1?"":"s");}
 
@@ -108,8 +127,9 @@ function operateModel(resp){
 /* Why a replay cannot be started, in words, or "" when it can. The profile
    file is the whole gate: this screen replays a deploy somebody planned,
    it never composes one. */
-function replayWhy(model,stack,region,busy){
+function replayWhy(model,stack,region,busy,reading){
   if(busy)return "starting the engine...";
+  if(reading)return "reading the status: the buttons open when the answer lands.";
   if(!stack||!region)return "Name the stack and its region, then read the status.";
   if(model.stack!==stack||model.region!==region)
     return "Read the status for "+stack+" in "+region+" first: the phases come from that answer.";
@@ -120,11 +140,6 @@ function replayWhy(model,stack,region,busy){
 }
 
 /* --------------------------------------------------------------- render */
-
-function esc(s){
-  var P=window.clPlan;
-  return P?P.esc(s):String(s==null?"":s);
-}
 
 function renderInstances(model){
   var tb=$("opInstances");
@@ -167,7 +182,9 @@ function renderPhases(model){
   }
   sel.disabled=false;
   sel.innerHTML=model.phases.map(function(p){
-    return '<option value="'+esc(p)+'">'+esc(p)+"</option>";
+    // a phase that spends says so in the option itself, so the warning is
+    // read before the dropdown closes and not only after it is picked
+    return '<option value="'+esc(p)+'">'+esc(p)+(SPENDS[p]?" (spends entitlement)":"")+"</option>";
   }).join("");
   if(model.phases.indexOf(was)>-1)sel.value=was;
 }
@@ -201,47 +218,77 @@ function render(model){
 
 /* ------------------------------------------------------------ the page */
 
-var model=operateModel(null),busy=false,reading=false;
+var model=operateModel(null),busy=false,reading=false,codes=[];
 
 function stack(){return $("opStack").value.trim();}
 function region(){return $("opRegion").value.trim();}
-function status(id,text,bad){var el=$(id);el.textContent=text||"";el.classList.toggle("err",!!bad);}
 
-function gate(){
-  var why=replayWhy(model,stack(),region(),busy);
-  $("opResume").disabled=!!why;
-  $("opRerun").disabled=!!why||!$("opPhase").value;
-  if(why)status("opAction",why);
+/* The activation codes a licensing re-run needs, as chips of their last
+   four characters. Same shape and same rule as the Licensing screen's: a
+   password input because a textarea shows every code in clear on a
+   browser that ignores the masking, and nothing here is stored. */
+function paintCodes(){
+  var list=$("opCodeList");list.innerHTML="";
+  codes.forEach(function(c,i){
+    var chip=document.createElement("span");chip.className="code";
+    chip.appendChild(document.createTextNode(codeTail(c)));
+    var rm=document.createElement("button");rm.type="button";rm.textContent="×";
+    rm.setAttribute("aria-label","Remove the code ending "+c.split(",")[0].slice(-4));
+    rm.addEventListener("click",function(){codes.splice(i,1);paintCodes();});
+    chip.appendChild(rm);list.appendChild(chip);
+  });
+  status("opCodeCount",codes.length?codes.length+" code"+(codes.length===1?"":"s")+
+    " will ride the argv as --kvo-codes":"",false);
 }
 
-function get(url,cb){
-  fetch(url,{headers:{"Accept":"application/json"}}).then(function(r){
-    return r.text().then(function(t){
-      var d=null;try{d=JSON.parse(t);}catch(e){}
-      if(!r.ok)return {err:(d&&d.error)||("HTTP "+r.status)};
-      if(d&&d.error)return {err:d.error};
-      return {d:d};
-    });
-  }).catch(function(){
-    return {err:"Could not reach the console server."};
-  }).then(function(x){cb(x.err||null,x.d);});
+function addCodes(text){
+  var P=window.clPlan,bad=0,dup=0,over=0;
+  (P?P.parseCodes(text):[]).forEach(function(c){
+    if(!CODE_QTY_RE.test(c)){bad++;return;}
+    if(codes.indexOf(c)>=0){dup++;return;}
+    if(codes.length>=CODES_MAX){over++;return;}
+    codes.push(c);
+  });
+  paintCodes();
+  var notes=[];
+  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY, a quantity of 1 to 6 digits)");
+  if(dup)notes.push(dup+" already added");
+  if(over)notes.push(over+" over the limit of "+CODES_MAX);
+  if(notes.length)status("opCodeCount",$("opCodeCount").textContent+(codes.length?"; ":"")+notes.join("; ")+".",
+    !!(bad||over));
+}
+
+function gate(){
+  var why=replayWhy(model,stack(),region(),busy,reading);
+  var only=$("opPhase").value;
+  $("opResume").disabled=!!why;
+  $("opRerun").disabled=!!why||!only;
+  if(why)return status("opAction",why);
+  if(SPENDS[only])
+    status("opAction","Re-running "+only+" spends entitlement. --only runs the phase even when the resume "+
+      "state calls it done, and re-activating a code that is already spent burns quantity that does not "+
+      "come back. The codes above ride the argv as --kvo-codes; without them the phase cannot ask for "+
+      "any, because the engine gives the script no terminal.",true);
 }
 
 function read(){
   var s=stack(),r=region();
   if(!s||!r)return status("opStatus","Name the stack and its region.",true);
   reading=true;
+  gate();
   $("opRead").disabled=true;
-  status("opStatus","reading "+s+" in "+r+"... (the vPB counters come over SSH, so this can take a few seconds)");
-  get("/api/status?stack="+enc(s)+"&region="+enc(r),function(err,d){
+  status("opStatus","reading "+s+" in "+r+"... (the sensor count is two vController calls and the vPB "+
+    "counters come over SSH, so this can take up to a couple of minutes)");
+  U.get("/api/status?stack="+enc(s)+"&region="+enc(r),function(x){
     reading=false;
     $("opRead").disabled=false;
-    if(err){
+    var why=U.why(x);
+    if(why){
       model=operateModel(null);
       render(model);
-      return status("opStatus",err,true);
+      return status("opStatus",why,true);
     }
-    model=operateModel(d);
+    model=operateModel(x.d);
     render(model);
     status("opStatus",model.error||(model.instanceNote+"."),!!model.error);
   });
@@ -251,31 +298,42 @@ function read(){
    and no plan, which is the API's replay path: it refuses without the
    profile file, it takes the same one-engine-per-stack lock as a launch,
    and the run it starts is a run like any other, so the Watch screen
-   follows it from here. */
+   follows it from here. Activation codes travel exactly as they do on a
+   launch: argv, as --kvo-codes, registered with the job so the stream
+   redacts them. */
 function replay(only){
   if(busy)return;
+  if(SPENDS[only]){
+    if(!codes.length)
+      return status("opAction","Re-running the "+only+" phase needs the activation codes. The engine runs "+
+        "the script with no terminal, and kvo_license.py refuses without codes when stdin is not a TTY "+
+        "(it prints \"no activation codes supplied and stdin is not a TTY\" and exits 2), so the phase "+
+        "would fail rather than ask. Add the codes above first.",true);
+    if(!window.confirm("Re-run the "+only+" phase with "+codes.length+" activation code"+
+        (codes.length===1?"":"s")+"?\n\ndeploy-stack.sh runs --only "+only+" even when the resume state "+
+        "says this phase is already done, and activation codes are consumable: re-activating one that is "+
+        "already spent burns entitlement quantity. That is real money, and it does not come back."))return;
+  }
   var s=stack(),r=region(),body={stack:s,region:r};
   if(only)body.only=only;
+  if(codes.length)body.kvo_codes=codes.slice();
   busy=true;gate();
   status("opAction",only?("re-running "+only+"..."):"resuming...");
-  fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
-   .then(function(resp){return resp.text().then(function(t){
-     var d=null;try{d=JSON.parse(t);}catch(e){}
-     return {ok:resp.ok,status:resp.status,d:d};});})
-   .catch(function(){return {err:"Could not reach the console server."};})
-   .then(function(x){
-     busy=false;
-     if(x.err||!x.ok||!x.d||x.d.error||x.d.errors){
-       gate();
-       var d=x.d||{};
-       return status("opAction",x.err||d.error||(d.errors||[]).join("; ")||("The console refused it (HTTP "+x.status+")."),true);
-     }
-     status("opAction","Started job "+x.d.job_id+" on "+x.d.profile_file+
-       (x.d.only?" (--only "+x.d.only+")":" (--resume)")+".");
-     if(window.clWatch)window.clWatch.attach(x.d.job_id);
-     if(window.clNav)window.clNav.show("watch");
-     gate();
-   });
+  U.post("/api/run",body,function(x){
+    busy=false;
+    var why=U.why(x);
+    if(why){
+      gate();
+      return status("opAction",why,true);
+    }
+    // the buttons come back BEFORE the line that stands: gate() writes its
+    // own message when it has one, and this is the one to leave on screen
+    gate();
+    status("opAction","Started job "+x.d.job_id+" on "+x.d.profile_file+
+      (x.d.only?" (--only "+x.d.only+")":" (--resume)")+".");
+    if(window.clWatch)window.clWatch.attach(x.d.job_id);
+    if(window.clNav)window.clNav.show("watch");
+  });
 }
 
 function init(){
@@ -284,6 +342,20 @@ function init(){
   $("opRerun").addEventListener("click",function(){replay($("opPhase").value);});
   $("opPhase").addEventListener("change",gate);
   ["opStack","opRegion"].forEach(function(id){$(id).addEventListener("input",gate);});
+  $("opCodeAdd").addEventListener("click",function(){
+    addCodes($("opCodes").value);$("opCodes").value="";
+  });
+  $("opCodes").addEventListener("keydown",function(e){
+    if(e.key==="Enter"){e.preventDefault();addCodes(this.value);this.value="";}
+  });
+  $("opCodes").addEventListener("paste",function(e){
+    // the clipboard text as it is, before a password input strips newlines
+    var text=e.clipboardData&&e.clipboardData.getData("text");
+    if(!text)return;
+    e.preventDefault();
+    addCodes((this.value?this.value+"\n":"")+text);
+    this.value="";
+  });
   // the wizard's own plan is the likeliest stack to operate, so the fields
   // open on it; nothing here writes that back
   try{
@@ -293,11 +365,12 @@ function init(){
       if(typeof saved.CLOUDLENS_REGION==="string")$("opRegion").value=saved.CLOUDLENS_REGION;
     }
   }catch(e){}
+  paintCodes();
   render(model);
 }
 
 if(typeof window!=="undefined")window.clOperate={
-  operateModel:operateModel,replayWhy:replayWhy,say:say,CELLS:CELLS,
+  operateModel:operateModel,replayWhy:replayWhy,say:say,CELLS:CELLS,SPENDS:SPENDS,
   render:render,read:read,model:function(){return model;},reading:function(){return reading;}
 };
 

@@ -31,6 +31,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +54,14 @@ MAX_ANSWER = 64 * 1024  # bytes of one prompt answer
 MAX_VALUE = 4096        # characters of one plan value or secret
 MAX_USER = 128          # characters of a KVO user name
 MAX_PASSWORD = 1024     # characters of a KVO password
+# One licensing request POSTs an operation per row and polls each to its end,
+# so its cost is rows times the poll. kvo_license.py's own default is 120
+# seconds PER poll, which made a 50-row body a request that could hold a
+# connection for an hour and a half while the page showed one static word.
+# MAX_OPS bounds the rows; OP_BUDGET bounds the whole request, shared out
+# across them, so the last row cannot start a fresh 120 seconds.
+MAX_OPS = 10            # activation codes in one polled licensing call
+OP_BUDGET = 180         # seconds for all of one licensing request's polling
 
 # ---------------------------------------------------------------- rules
 # Every rule below is applied through _shape(): a control-character check
@@ -563,6 +572,33 @@ def _in_flight(jobs, stack, region):
 # vocabulary, because only the script knows it.
 PHASE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
+# KEY="value" as deploy-stack.sh's profile loader reads a line back: one pair
+# of outer quotes stripped, nothing unescaped (profile.render() refuses the
+# two values that could not survive that).
+_PROFILE_LINE = re.compile(r'^(CLOUDLENS_[A-Z0-9_]+)="?(.*?)"?$')
+
+
+def _profile_says(path, keys):
+    """{key: value or None} for `keys`, read out of a deploy profile.
+
+    The last assignment wins, as a shell loader's would. A file that cannot
+    be opened says nothing about any key, which is not the same as saying
+    the key is absent: the caller only refuses on a value that DISAGREES,
+    so an unreadable profile is left to fail where it is used."""
+    out = dict.fromkeys(keys)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = _PROFILE_LINE.match(line)
+                if m and m.group(1) in out:
+                    out[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return out
+
 
 def _replay(body, jobs, start=None):
     """The Operate screen's two buttons: Resume, and Re-run one phase.
@@ -587,7 +623,13 @@ def _replay(body, jobs, start=None):
     phase_order(); resume adds no --only and lets the script's own resume
     decide what to skip. Secrets and activation codes travel exactly as
     they do on a launch: environment and argv, both registered with the
-    job so the stream redacts them."""
+    job so the stream redacts them.
+
+    The profile is checked against the stack and the region the request
+    named before anything starts: --profile is the whole argv, so the file
+    decides where the run happens, and a profile that disagrees is refused
+    with both values rather than run somewhere the operator is not
+    looking."""
     stack, region = body.get("stack"), body.get("region")
     if not stack_ok(stack):
         return _err("stack must be a CloudFormation stack name (letters, digits and hyphens, starting with a letter)")
@@ -616,6 +658,24 @@ def _replay(body, jobs, start=None):
             return _err("no profile for stack %s: %s is not next to the deploy script, so there is nothing to "
                         "replay. Plan and launch it on the Deploy screen first: that is what writes the file, "
                         "and this screen only replays it." % (stack, profile_file), 400)
+        # The profile has to be for the stack and the region this request
+        # named. Nothing on the command line says either: --profile is the
+        # whole argv, so the FILE decides where the run happens, while the
+        # operator read the status for, and is watching, what they typed. A
+        # profile whose region is us-west-2 replayed under a typed
+        # us-east-1 ran in us-west-2 and reported as us-east-1; and because
+        # _in_flight keys on the typed region, the same profile could be
+        # replayed twice at once by typing two regions, which is the one
+        # thing the one-engine-per-stack guard exists to stop.
+        says = _profile_says(path, ("CLOUDLENS_STACK_NAME", "CLOUDLENS_REGION"))
+        for key, asked, what in (("CLOUDLENS_STACK_NAME", stack, "stack"),
+                                 ("CLOUDLENS_REGION", region, "region")):
+            said = says.get(key)
+            if said and said != asked:
+                return _err('%s sets %s="%s" and this request names the %s %s. deploy-stack.sh takes the '
+                            "%s from the profile, so the run would be against %s while this console holds "
+                            "it as %s. Read the status for %s, or plan the deploy again on the Deploy "
+                            "screen." % (profile_file, key, said, what, asked, what, said, asked, said), 400)
         cmd = ["bash", DEPLOY, "--profile", path, "--resume"]
         for c in codes:
             cmd += ["--kvo-codes", c]
@@ -798,15 +858,34 @@ def _kvo_license():
     return _KL
 
 
+def _now():
+    """time.monotonic, behind a name a test can hold still. The licensing
+    budget is the one thing here measured in wall clock, and a test that
+    cannot move the clock can only assert that a number was passed."""
+    return time.monotonic()
+
+
 class _Kvo(object):
     """One logged-in KVO for the action functions below: kvo_license.py,
-    the address, the token and the TLS choice, so each action is a
-    function of this and its own validated input."""
-    __slots__ = ("KL", "kvo", "base", "tok", "verify")
+    the address, the token, the TLS choice and the deadline, so each action
+    is a function of this and its own validated input.
 
-    def __init__(self, KL, kvo, tok, verify):
+    The deadline is for the WHOLE request, not per operation. An action
+    that loops over rows polls each one, and kvo_license.py's own default
+    is 120 seconds per poll, so a per-row timeout is a per-row promise and
+    no promise at all about the request the browser is holding open."""
+    __slots__ = ("KL", "kvo", "base", "tok", "verify", "deadline")
+
+    def __init__(self, KL, kvo, tok, verify, budget=OP_BUDGET):
         self.KL, self.kvo, self.tok, self.verify = KL, kvo, tok, verify
         self.base = "https://%s" % kvo
+        self.deadline = _now() + budget
+
+    def left(self):
+        """Seconds still in the budget, never below 1: a poll asked for 0
+        seconds is a poll that reads nothing, and an operation the KVO has
+        already accepted deserves at least one look."""
+        return max(1, int(self.deadline - _now()))
 
 
 def _op_ok(state):
@@ -824,9 +903,10 @@ def _ents_rows(ents):
 
 
 def _op(k, name, payload):
-    """POST one licensing operation and poll it to its end: (state, result)."""
+    """POST one licensing operation and poll it to its end, within what is
+    left of the request's budget: (state, result)."""
     _, resp = k.KL._req("POST", "%s/api/v2/licensing/operations/%s" % (k.base, name), k.tok, payload, k.verify)
-    op = k.KL.poll_op(k.kvo, k.tok, resp, k.verify)
+    op = k.KL.poll_op(k.kvo, k.tok, resp, k.verify, timeout=k.left())
     state = op.get("state") if isinstance(op, dict) else op
     result = op.get("result") if isinstance(op, dict) else None
     return state, result
@@ -960,6 +1040,13 @@ def licences(body, action=None):
         arg, bad = _release_rows(body)
         if bad:
             return _err(bad)
+    if action in ("activate", "release") and len(arg) > MAX_OPS:
+        # each row is an operation POSTed and polled to its end, and they run
+        # one after another inside this one request
+        return _err("%s takes at most %d activation code%s in one call, and this asks for %d. Each one is "
+                    "a licensing operation POSTed and polled to its end, so a longer list is a single "
+                    "request held open for as long as all of them take. Send them in batches."
+                    % (action, MAX_OPS, "" if MAX_OPS == 1 else "s", len(arg)))
     KL = _kvo_license()
     if body.get("accept_eula") is True and not KL.accept_eula(kvo, verify):
         # a fresh KVO redirects every request, the token endpoint included,
@@ -1302,7 +1389,15 @@ def status(stack, region):
                        "private_ip": i.get("PrivateIpAddress", "") or "",
                        "public_ip": i.get("PublicIpAddress", "") or ""}
                 rows.append(row)
-                by_role.setdefault(row["role"], row)
+                # one instance per role: the first, except that a running
+                # one beats a stopped one. teardown.js picks the kvo row by
+                # the same rule (kvoRow), so the appliance this console
+                # licenses against and the appliance it matches a release to
+                # are the same instance; taking the first here and the last
+                # there was two answers to one question.
+                prev = by_role.get(row["role"])
+                if prev is None or (prev["state"] != "running" and state == "running"):
+                    by_role[row["role"]] = row
         out["instances"] = _cell({"count": len(rows), "rows": rows[:MAX_ROWS],
                                   "truncated": len(rows) > MAX_ROWS})
     except AwsError as exc:
@@ -1333,7 +1428,7 @@ def verify_empty(region):
         return bad
     out = {"region": region}
 
-    def count(name, args, pick, command, **detail):
+    def count(name, args, pick, command):
         try:
             data = _aws(args, region)
         except AwsError as exc:
