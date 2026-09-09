@@ -158,7 +158,9 @@ function run(){
        // two hello shapes: the console's (account, arn, region) and the
        // script's own (stack, region); the last one wins the chip
        $("idChip").hidden=false;
-       if(m.account===undefined&&m.stack!==undefined){$("idChip").innerHTML='stack <b>'+esc(m.stack)+'</b> · '+esc(m.region);}
+       if(m.account===undefined&&m.stack!==undefined){
+         // an empty stack (the script has not settled the name yet) is said, not an empty bold
+         $("idChip").innerHTML=(m.stack?'stack <b>'+esc(m.stack)+'</b>':'stack pending')+' · '+esc(m.region||"");}
        else{$("idChip").innerHTML='acct <b>'+esc(m.account)+'</b> · '+esc(m.region);}});
      es.addEventListener("log",function(e){conLine(JSON.parse(e.data).text);});
      es.addEventListener("state",function(e){var m=JSON.parse(e.data);setNode(m.node,m.status,m.label);
@@ -178,8 +180,10 @@ function run(){
          var why="Run ended: "+m.status;
          if(m.phase)why+=" in "+m.phase;
          if(m.reason)why+=" ("+m.reason+")";
+         if(m.code!==undefined&&m.code!==null&&m.code!=="")why+=" (exit "+m.code+")";
          finish("err","failed");card("err","Failed",why);return;}
-       finish("done","complete");narrate(m.summary||("Run ended: "+m.status),"good");
+       // the script's done has a status and no summary; the console's has a summary
+       finish("done","complete");narrate(m.summary||("Deploy finished ("+(m.status||"ok")+")"),"good");
        if(m.outputs&&m.outputs.note)card("","Next",m.outputs.note);});
      es.addEventListener("error",function(e){
        if(!e.data){return;} var m=JSON.parse(e.data);

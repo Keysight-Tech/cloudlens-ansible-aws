@@ -172,8 +172,10 @@ def _script_lines(chunk):
     return end, raws
 
 
-def _is_seq(value):
-    """A seq is an int; bool is an int to Python, but never a seq."""
+def is_seq(value):
+    """A seq is an int; bool is an int to Python, but never a seq. The one
+    check for both sides: the file's seq here, the tail's watermark in the
+    orchestrator."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -181,7 +183,7 @@ def _first_seq(raws):
     """The seq of the first line in a read that carries one."""
     for raw in raws:
         seq = raw.get("seq")
-        if _is_seq(seq):
+        if is_seq(seq):
             return seq
     return None
 
@@ -205,13 +207,16 @@ def iter_script_events(path, start_offset=0, last_seq=None):
     size or longer is not. The script's contract is the other half: seq is
     the line's number in its file, strictly increasing, so a seq no larger
     than the last one handled means a different file. The caller passes
-    the highest script_seq it has seen as last_seq; when the first line
-    read from the offset carries a seq <= last_seq, the file is re-read
-    from 0 and the whole of it comes back, every event with a fresh
-    console id (the browser's last-hello rule handles the second hello).
-    last_seq=None (a first call) never restarts, and neither does a read
-    that already starts at 0; a last_seq that is not an int (the same
-    guard _first_seq applies to the file's side) is ignored, not compared,
+    the seq of the LAST event it handled as last_seq (the latest, not the
+    largest it ever saw: a restarted stream begins at 1 again, and a
+    watermark stuck at an old maximum would read every later append as one
+    more replacement); when the first line read from the offset carries a
+    seq <= last_seq, the file is re-read from 0 and the whole of it comes
+    back, every event with a fresh console id (the browser's last-hello
+    rule handles the second hello). last_seq=None (a first call) never
+    restarts, and neither does a read that already starts at 0; a last_seq
+    that is not a seq by is_seq (the same guard _first_seq applies to the
+    file's side) is ignored, not compared,
     so a caller that tracked a string seq gets no restart rather than a
     TypeError in its tail thread. What this still cannot see: a replacement
     whose line at the offset already carries a larger seq (more, shorter
@@ -226,7 +231,7 @@ def iter_script_events(path, start_offset=0, last_seq=None):
                 start_offset = 0
             fh.seek(start_offset)
             end, raws = _script_lines(fh.read())
-            if start_offset and _is_seq(last_seq):
+            if start_offset and is_seq(last_seq):
                 first = _first_seq(raws)
                 if first is not None and first <= last_seq:
                     start_offset = 0

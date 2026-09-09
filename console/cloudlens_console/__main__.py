@@ -48,12 +48,20 @@ def main(argv=None):
 
 
 def _stop_jobs():
-    running = [j for j in server.JOBS.values() if j.alive()]
+    # list(): a /run request racing this shutdown may still add to JOBS.
+    # running(), not alive(): a job whose leader exited but whose subshell
+    # still holds the pipe is still a run, and its group still needs the
+    # signal.
+    running = [j for j in list(server.JOBS.values()) if j.running()]
     for j in running:
         j.stop()
-    deadline = time.time() + orchestrator.STOP_GRACE_SECS + 0.5
+    # stop() arms a daemon Timer for the KILL escalation. A daemon thread
+    # does not survive the interpreter, but this wait outlasts the grace
+    # period, so the Timer has fired (or the run ended first) before main
+    # returns; the daemon flag costs nothing here.
+    deadline = time.monotonic() + orchestrator.STOP_GRACE_SECS + 0.5
     for j in running:
-        while j.alive() and time.time() < deadline:
+        while j.running() and time.monotonic() < deadline:
             time.sleep(0.1)
     return len(running)
 

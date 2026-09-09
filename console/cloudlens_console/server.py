@@ -116,20 +116,25 @@ class Handler(BaseHTTPRequestHandler):
         last = self.headers.get("Last-Event-ID")
         try:
             # replay buffered events after Last-Event-ID (reconnect with no gaps)
+            buffered = list(job.buffer)
             if last is not None:
                 try:
                     last = int(last)
                 except ValueError:
                     last = 0
-                for ev in list(job.buffer):
+                for ev in buffered:
                     if ev["id"] > last:
                         self.wfile.write(E.to_sse(ev).encode("utf-8"))
                 self.wfile.flush()
             else:
-                for ev in list(job.buffer):
+                for ev in buffered:
                     self.wfile.write(E.to_sse(ev).encode("utf-8"))
                 self.wfile.flush()
-            sent = job.buffer[-1]["id"] if job.buffer else 0
+            # the watermark is the largest id replayed, not the last one
+            # appended: two producers (the events tail and the stdout loop)
+            # can append out of id order, and the smaller id at the end
+            # would let the queue hand the larger one out a second time
+            sent = max(ev["id"] for ev in buffered) if buffered else 0
             # live tail
             while True:
                 try:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import json
 import errno
+import fcntl
 import queue
 import shutil
 import signal
@@ -44,6 +45,11 @@ class Job:
         self.events_path = None     # the --events file run_engine gave the script
         self.pipe_path = None       # the --prompt-pipe FIFO run_engine created
         self._proc = None
+        self._pgid = None           # the engine's process group: its pid, own session
+        self._group_open = False    # True from Popen until the runner has returned
+        self._script_done = None    # the done the script wrote; the runner emits it last
+        self._lock = threading.Lock()   # guards pending_prompt and _answering
+        self._answering = None      # the prompt id an answer() in progress has claimed
         self._t0 = time.time()
 
     def emit(self, ev):
@@ -55,14 +61,25 @@ class Job:
             # the script's own id (from_script filed it as prompt_id): what
             # answer() pairs the reply with, so a reply meant for an earlier
             # question after a reconnect cannot land on this one
-            self.pending_prompt = ev.get("prompt_id")
+            with self._lock:
+                self.pending_prompt = ev.get("prompt_id")
 
     def elapsed(self):
         return int(time.time() - self._t0)
 
     def alive(self):
-        """True while the engine process is still running."""
+        """True while the engine's LEADER is still running. Not the test for
+        whether the run is over: that is running()."""
         return self._proc is not None and self._proc.poll() is None
+
+    def running(self):
+        """True from the engine's Popen until its runner has returned: the
+        whole window in which its process group can have members. This, not
+        the leader's poll(), is what stop() and the console's shutdown gate
+        on. A leader that exited while a subshell of its still holds the
+        stdout pipe is a run that has not ended, and its group is still
+        there to be signalled."""
+        return self._group_open
 
     def stop(self):
         """Cancel the run. The signal goes to the process GROUP, not the pid:
@@ -70,37 +87,46 @@ class Job:
         subshells, and a run blocked on a prompt is really that subshell
         blocked on the FIFO with bash waiting for it. A TERM to the leader
         alone leaves the subshell there, the stdout pipe open and the run
-        never ending; run_engine started the child in its own session, so
+        never ending; the runner started the child in its own session, so
         its pid is its pgid and the whole tree is one group. A run that
-        ignores TERM gets KILL after STOP_GRACE_SECS."""
+        ignores TERM gets KILL after STOP_GRACE_SECS. The runner reports the
+        stop: once the group is gone and the pipe has closed it ends the
+        stream with the stop sentence, after whatever the script said last."""
         self.stopped = True
-        if not self.alive():
+        if not self.running():
             return
-        if not self._signal_group(signal.SIGTERM):
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
+        self._signal_group(signal.SIGTERM)
         t = threading.Timer(STOP_GRACE_SECS, self._escalate)
         t.daemon = True
         t.start()
 
     def _escalate(self):
-        if self.alive() and not self._signal_group(signal.SIGKILL):
-            try:
-                self._proc.kill()
-            except Exception:
-                pass
+        if self.running():
+            self._signal_group(signal.SIGKILL)
 
     def _signal_group(self, sig):
-        # alive() first: a reaped leader's pgid may already belong to someone else
-        if not self.alive():
-            return True
-        try:
-            os.killpg(self._proc.pid, sig)
-            return True
-        except (ProcessLookupError, PermissionError):
+        """killpg the engine's group; True when the signal went out.
+
+        ESRCH is the group already gone. EPERM on macOS is the zombie
+        window: for some milliseconds after the last member died the kernel
+        will not credential-check what is left to reap, so retry briefly,
+        then let it go, it is dying. There is deliberately NO fallback to
+        the leader's pid: a TERM to the leader alone is exactly the signal
+        that does not stop a run blocked in a subshell. Nor is the pgid
+        guarded on the leader's poll(): POSIX keeps a process group, and its
+        id out of reuse, while any member lives, so a reaped leader whose
+        subshell is still there still names this run's group."""
+        if self._pgid is None:
             return False
+        for _ in range(5):
+            try:
+                os.killpg(self._pgid, sig)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                time.sleep(0.02)
+        return False
 
     def answer(self, prompt_id, text):
         """Answer the prompt the script is waiting on: open the FIFO for
@@ -110,24 +136,49 @@ class Job:
 
         prompt_id has to be the prompt that is waiting. A page that
         reconnects can replay an old question, and its answer must not be
-        taken for the current one; the API surfaces the ValueError.
+        taken for the current one; the API surfaces the ValueError. The id
+        is claimed under the lock before the write and released after it, so
+        two answers to the same prompt (a double click, two tabs) let exactly
+        one through; and the prompt is cleared afterwards only if it is still
+        the one answered, because the script may already have asked the next
+        question by then.
 
         The FIFO is opened non-blocking and retried: a blocking open would
         hang this thread forever if the script died between emitting the
         prompt and reading the pipe, and the window between those two is
-        real (ENXIO, no reader yet) even while it is alive."""
-        if self.pending_prompt is None:
-            raise ValueError("No prompt is waiting for an answer.")
-        if prompt_id != self.pending_prompt:
-            raise ValueError("The prompt waiting is {}, not {}.".format(self.pending_prompt, prompt_id))
-        if "\n" in text or "\r" in text:
-            raise ValueError("An answer is one line.")
-        if not self.pipe_path:
-            raise ValueError("This job has no engine to answer.")
-        deadline = time.time() + ANSWER_WAIT_SECS
+        real (ENXIO, no reader yet) even while it is alive. The write itself
+        blocks: O_NONBLOCK is cleared after the open, so a long answer waits
+        for the reader instead of failing part-way with EAGAIN."""
+        with self._lock:
+            if self.pending_prompt is None:
+                raise ValueError("No prompt is waiting for an answer.")
+            if prompt_id != self.pending_prompt:
+                raise ValueError("The prompt waiting is {}, not {}.".format(self.pending_prompt, prompt_id))
+            if "\n" in text or "\r" in text:
+                raise ValueError("An answer is one line.")
+            if not self.pipe_path:
+                raise ValueError("This job has no engine to answer.")
+            if self._answering == prompt_id:
+                raise ValueError("Prompt {} is already being answered.".format(prompt_id))
+            self._answering = prompt_id
+            pipe = self.pipe_path
+        try:
+            self._write_answer(pipe, text)
+        except BaseException:
+            with self._lock:
+                if self._answering == prompt_id:
+                    self._answering = None
+            raise
+        with self._lock:
+            self._answering = None
+            if self.pending_prompt == prompt_id:
+                self.pending_prompt = None
+
+    def _write_answer(self, pipe, text):
+        deadline = time.monotonic() + ANSWER_WAIT_SECS
         while True:
             try:
-                fd = os.open(self.pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                fd = os.open(pipe, os.O_WRONLY | os.O_NONBLOCK)
                 break
             except OSError as exc:
                 if exc.errno != errno.ENXIO:
@@ -135,16 +186,21 @@ class Job:
                         exc.strerror))
                 if not self.alive():
                     raise ValueError("The engine exited before it read the answer.")
-                if time.time() > deadline:
+                if time.monotonic() > deadline:
                     raise ValueError("The engine never opened the prompt pipe.")
                 time.sleep(0.05)
         try:
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
             data = (text + "\n").encode("utf-8")
             while data:
                 data = data[os.write(fd, data):]
+        except OSError:
+            # EPIPE: the reader closed (the run died) between the open and
+            # the write. Python ignores SIGPIPE, so it arrives as this error.
+            raise ValueError("The engine went away before reading the answer.")
         finally:
             os.close(fd)
-        self.pending_prompt = None
 
 
 # ---------------------------------------------------------------- preflight
@@ -223,16 +279,24 @@ def _stream_subprocess(job, cmd, cwd, on_line):
     job._proc = subprocess.Popen(
         cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, start_new_session=True,
-        text=True, bufsize=1, env=dict(os.environ, PYTHONUNBUFFERED="1"),
+        text=True, bufsize=1, errors="replace",
+        env=dict(os.environ, PYTHONUNBUFFERED="1"),
     )
-    for line in job._proc.stdout:
-        if job.stopped:
-            break
-        line = line.rstrip("\n")
-        if line:
-            job.emit(E.log(line))
-            on_line(line)
-    job._proc.wait()
+    # own session, so the pid is the pgid; stop() signals the group for as
+    # long as the run is open (Job.running), whatever the leader is doing
+    job._pgid = job._proc.pid
+    job._group_open = True
+    try:
+        for line in job._proc.stdout:
+            if job.stopped:
+                break
+            line = line.rstrip("\n")
+            if line:
+                job.emit(E.log(line))
+                on_line(line)
+        job._proc.wait()
+    finally:
+        job._group_open = False
     return job._proc.returncode
 
 
@@ -241,45 +305,77 @@ def run_engine(job, cmd, cwd=None, env=None):
     """Run a deploy-stack.sh style command with --events/--prompt-pipe wired to
     this job, tailing the events file into the stream while the process runs.
     `cmd` is the argv WITHOUT the two flags; they are appended here so every
-    caller gets them right. Process exit without a done event is terminal.
+    caller gets them right. Returns the exit code, or None when no process
+    ran (stopped before the launch, or a command that could not start).
 
     Three producers feed job.emit: the script's events file (a thread that
     re-reads it every TAIL_SECS), the merged stdout/stderr (this thread, one
-    log per line) and, once the process has exited and the tail has done its
-    last read, the closing verdict. The verdict is decided only after the
-    tail joined: a done the script wrote in its final milliseconds must win
-    over "engine exited 0", and one written before a group kill (there is
-    none: the tee dies first) would have to win over the stop sentence.
+    log per line), and the closing verdict, which this thread emits after
+    the process exited and the tail thread joined. The runner OWNS the
+    terminal event: the tail never emits a done, it stashes the script's
+    done on the job, so however the two producers interleaved the last
+    event in the buffer is the verdict. The verdict, in order:
 
-    Exit without a done is terminal because the script's contract says so:
-    after a group kill there is no done event, and a run whose console went
-    away would otherwise block forever. So the closing event is: the stop
-    sentence when the operator stopped it, an error naming the exit code
-    when it failed, and a done that says only that the engine exited when
-    it returned 0 without saying anything itself. Returns the exit code.
+      stopped      the operator stopped it. The script's own done, when it
+                   wrote one, is relayed as a note ("engine: interrupted in
+                   key (code 130)"), then the stop sentence, always last.
+      tail failed  the events file could not be read even after the exit:
+                   an error naming the exception.
+      script done  the script's own done, verbatim.
+      exit != 0    an error naming the exit code.
+      exit 0       a done that says only that the engine exited.
+
+    Process exit is terminal either way, done or no done. After a stop the
+    script usually still writes its own done (its EXIT trap fires for every
+    exit and appends to the events file directly, never through its tee),
+    but a KILL, or a shell that died before its trap ran, leaves none, and
+    a run whose console went away would otherwise block on its next prompt
+    forever. The verdict waits for the tail's read that began after the
+    exit, so a done written on the way out is never missed.
+
+    The stop is checked twice: before the launch (nothing starts) and right
+    after Popen (a stop that landed in between signals the group at once).
+    Set-up lives inside the try so a failed mkfifo or Popen leaves no
+    directory behind; a command that cannot start is the terminal error,
+    not an exception.
     """
-    work = tempfile.mkdtemp(prefix="cloudlens-console-{}-".format(job.id))
-    job.events_path = os.path.join(work, "events.jsonl")
-    job.pipe_path = os.path.join(work, "prompts.fifo")
-    with open(job.events_path, "a"):
-        pass
-    os.mkfifo(job.pipe_path, 0o600)
-    argv = list(cmd) + ["--events", job.events_path, "--prompt-pipe", job.pipe_path]
-    penv = dict(os.environ, PYTHONUNBUFFERED="1")
-    if env:
-        penv.update(env)
+    if job.stopped:
+        job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
+        return None
+    work = tail = rc = None
     exited = threading.Event()
-    tail = threading.Thread(target=_tail_events, args=(job, exited), daemon=True)
+    state = _TailState()
     try:
-        # Same rules as _stream_subprocess: no stdin (a raw read sees EOF, not
-        # a hang), no controlling terminal (the script's /dev/tty re-attach
-        # cannot happen, and the console's own Ctrl-C does not reach it), and
-        # its own session, which is what makes stop()'s group kill possible.
-        job._proc = subprocess.Popen(
-            argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, start_new_session=True,
-            text=True, bufsize=1, env=penv,
-        )
+        try:
+            work = tempfile.mkdtemp(prefix="cloudlens-console-{}-".format(job.id))
+            job.events_path = os.path.join(work, "events.jsonl")
+            job.pipe_path = os.path.join(work, "prompts.fifo")
+            with open(job.events_path, "a"):
+                pass
+            os.mkfifo(job.pipe_path, 0o600)
+            argv = list(cmd) + ["--events", job.events_path, "--prompt-pipe", job.pipe_path]
+            penv = dict(os.environ, PYTHONUNBUFFERED="1")
+            if env:
+                penv.update(env)
+            # Same rules as _stream_subprocess: no stdin (a raw read sees EOF,
+            # not a hang), no controlling terminal (the script's /dev/tty
+            # re-attach cannot happen, and the console's own Ctrl-C does not
+            # reach it), its own session (what makes the group kill possible)
+            # and bytes that are not UTF-8 replaced, never fatal.
+            job._proc = subprocess.Popen(
+                argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, start_new_session=True,
+                text=True, bufsize=1, errors="replace", env=penv,
+            )
+        except OSError as exc:
+            job.emit(E.error("could not start the engine: {}".format(exc),
+                             fix="Check that the deploy script exists and can run."))
+            return None
+        job._pgid = job._proc.pid
+        job._group_open = True
+        if job.stopped:
+            job.stop()      # arrived between the check above and the launch
+        tail = threading.Thread(target=_tail_events, args=(job, exited, state), daemon=True)
         tail.start()
         # read to EOF, stopped or not: after a group kill EOF is how the pipe
         # closes, and the lines before it are the last thing the run said
@@ -288,48 +384,122 @@ def run_engine(job, cmd, cwd=None, env=None):
             if line:
                 job.emit(E.log(line))
         rc = job._proc.wait()
+        exited.set()
+        tail.join()
+        _verdict(job, rc, state)
     finally:
         exited.set()
-        if tail.is_alive():
+        if tail is not None and tail.is_alive():
             tail.join()
-        job.pending_prompt = None
-        shutil.rmtree(work, ignore_errors=True)
-    if not job.done:
-        if job.stopped:
-            job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
-        elif rc != 0:
-            job.emit(E.error("engine exited {}".format(rc),
-                             fix="Read the console output above for the failing step."))
-        else:
-            job.emit(E.done("engine exited 0"))
+        job._group_open = False
+        with job._lock:
+            job.pending_prompt = None
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
     return rc
 
 
-def _tail_events(job, exited):
+class _TailState:
+    """What the tail thread leaves for the verdict: whether it read to the
+    end, and the exception that stopped it when it did not."""
+    ok = True
+    exc = None
+
+
+def _tail_events(job, exited, state):
     """Re-read the script's events file every TAIL_SECS and emit what is new,
     until the process has exited AND one read started after that exit: a
     read that began before the exit can miss the line the script wrote on
     its way out, so `final` is sampled before the read, never after.
 
+    A done is not emitted here. It is stashed on the job for run_engine,
+    which emits it after this thread has joined, so the done is the last
+    event however the stdout loop and this loop interleaved.
+
+    A read that raises (the file gone from under it, a disk error, a bug in
+    a parser) does not end the tail: it is reported as a warn narrate (once
+    per distinct text, not once per retry), then retried after a backoff of
+    0.5s doubling to 2s. Once the process has exited the retries are bounded
+    (three), or run_engine would wait on this thread forever; after that the
+    tail gives up and the verdict says so.
+
     last_seq is the watermark iter_script_events uses to tell a replaced
-    file from an appended one. It is the LATEST int script_seq handled, not
+    file from an appended one. It is the seq of the LAST event handled, not
     the largest ever seen: after a restart the new file's seqs begin at 1,
     and a watermark stuck at the old maximum would make every later read
     look like yet another replacement and re-read the file forever. Only an
     int (not a bool, not a string the script may have written) becomes the
-    watermark; comparing anything else would raise in this thread."""
+    watermark; comparing anything else would raise here."""
     offset, last_seq = 0, None
-    while True:
-        final = exited.is_set()
-        offset, evs = E.iter_script_events(job.events_path, offset, last_seq)
-        for ev in evs:
-            seq = ev.get("script_seq")
-            if isinstance(seq, int) and not isinstance(seq, bool):
-                last_seq = seq
-            job.emit(ev)
-        if final:
-            return
-        exited.wait(TAIL_SECS)
+    backoff, warned, after_exit = 0.5, None, 0
+    try:
+        while True:
+            final = exited.is_set()
+            try:
+                offset, evs = E.iter_script_events(job.events_path, offset, last_seq)
+                for ev in evs:
+                    seq = ev.get("script_seq")
+                    if E.is_seq(seq):
+                        last_seq = seq
+                    if ev["type"] == E.DONE:
+                        job._script_done = ev
+                        continue
+                    job.emit(ev)
+            except Exception as exc:  # noqa
+                text = "event tail: {}: {}".format(type(exc).__name__, exc)
+                if text != warned:
+                    job.emit(E.narrate(text, "warn"))
+                    warned = text
+                if final:
+                    after_exit += 1
+                    if after_exit >= 3:
+                        raise
+                    time.sleep(backoff)
+                else:
+                    exited.wait(backoff)
+                backoff = min(backoff * 2, 2.0)
+                continue
+            backoff, warned = 0.5, None
+            if final:
+                return
+            exited.wait(TAIL_SECS)
+    except Exception as exc:  # noqa
+        state.ok = False
+        state.exc = exc
+
+
+def _verdict(job, rc, state):
+    """The terminal event, emitted by run_engine once the tail has joined;
+    the order is in run_engine's docstring."""
+    script_done = job._script_done
+    if job.stopped:
+        if script_done is not None:
+            job.emit(E.narrate(_script_done_text(script_done), "note"))
+        job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
+    elif not state.ok:
+        job.emit(E.error("event tail failed: {}: {}".format(type(state.exc).__name__, state.exc),
+                         fix="The engine's events file could not be read; its own log has the run."))
+    elif script_done is not None:
+        job.emit(script_done)
+    elif rc != 0:
+        job.emit(E.error("engine exited {}".format(rc),
+                         fix="Read the console output above for the failing step."))
+    else:
+        job.emit(E.done("engine exited 0"))
+
+
+def _script_done_text(ev):
+    """The script's own done as one line of narration, for a stopped run
+    whose terminal event is the stop sentence: "engine: interrupted in key
+    (code 130): reason", each field only when the script sent it."""
+    text = "engine: {}".format(ev.get("status") or "ended")
+    if ev.get("phase"):
+        text += " in {}".format(ev["phase"])
+    if ev.get("code") not in (None, ""):
+        text += " (code {})".format(ev["code"])
+    if ev.get("reason"):
+        text += ": {}".format(ev["reason"])
+    return text
 
 
 # ---------------------------------------------------------------- cfn poller

@@ -1,11 +1,12 @@
 """Unit tests for the live console - pure logic, no AWS, no server.
-Run:  cd console && python3 -m pytest tests -q     (or: python3 tests/test_console.py)
+Run:  cd console && python3 -m pytest tests -q
+      (or, without pytest: cd console && PYTHONPATH=. python3 tests/test_console.py;
+      conftest.py puts console/ on sys.path only under pytest)
 """
 import os
 import sys
 import json
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from cloudlens_console import events as E, flows as F, orchestrator as O  # noqa
 
 

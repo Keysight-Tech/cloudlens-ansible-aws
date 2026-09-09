@@ -771,9 +771,12 @@ login_block() {
 # held-then-closed end reads as an empty answer and takes the default. A run
 # whose console goes away blocks on the next prompt forever and emits no done;
 # the console owns the process and must kill it. A TERM to the pid alone does
-# not stop a run blocked on a prompt: signal its process group. After a group
-# kill there is no done event (the tee dies first); the console must treat
-# process exit without a done as terminal.
+# not stop a run blocked on a prompt: signal its process group. After a stop
+# the script usually still writes its own done (status interrupted or failed):
+# the EXIT trap fires for every exit, TERM included, and emit_event appends to
+# the events file directly, never through the tee. A run can still exit with
+# no done (a KILL, or a shell that died before its trap ran), so the console
+# treats process exit as terminal either way, done or no done.
 # ---------------------------------------------------------------------
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
@@ -1999,9 +2002,12 @@ Toggles:
                             done; the console owns the process and must kill
                             it. A TERM to the pid alone does not stop a run
                             blocked on a prompt: signal its process group.
-                            After a group kill there is no done event (the
-                            tee dies first); the console must treat process
-                            exit without a done as terminal.
+                            After a stop the script usually still writes its
+                            own done (the EXIT trap fires for every exit and
+                            writes the events file directly, not through the
+                            tee); a run can still exit with no done, so the
+                            console treats process exit as terminal either
+                            way.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
