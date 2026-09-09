@@ -127,8 +127,10 @@ done
 # the script runs with no repo beside it; console/tests/test_profile.py holds
 # the file and the case identical. The file can only ever narrow the list: a
 # key must be CLOUDLENS_* before the file is consulted, and the file counts
-# only when it sits beside this script (under curl|bash SCRIPT_DIR falls back
-# to $PWD, and a stray profile-keys.txt in the caller's cwd is not the list).
+# only when it sits beside this script (under curl|bash BASH_SOURCE is empty
+# and SCRIPT_DIR becomes $PWD or /bin, neither of which holds deploy-stack.sh,
+# so the guard falls back to the built-in case; a stray profile-keys.txt in
+# the caller's cwd is not the list).
 PROFILE_KEYS_FILE=""
 [[ -f "$SCRIPT_DIR/profile-keys.txt" && -f "$SCRIPT_DIR/deploy-stack.sh" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
 profile_key_allowed() {

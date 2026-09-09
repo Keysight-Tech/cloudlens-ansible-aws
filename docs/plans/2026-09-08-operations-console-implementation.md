@@ -405,7 +405,7 @@ Job.answer = _answer
 
 `Job` needs `self.buffer` (list of emitted events, for SSE resume) - add in `__init__` and append in `emit`. Fake script takes `$1`/`$2` positionally in the test, so in the test call `O.run_engine(job, [str(script)])` and have the FAKE read `$ev`/`$pipe` from `--events X --prompt-pipe Y`: change FAKE to parse `while [[ $# -gt 0 ]]; do case $1 in --events) ev=$2; shift 2;; --prompt-pipe) pipe=$2; shift 2;; *) shift;; esac; done`.
 
-**Process lifecycle (from the Task 0 and Task 3 reviews):** the sketch above is the data path only; the shipped `run_job` already carries the first two points and `run_engine` must keep them.
+**Process lifecycle (from the Task 0 and Task 3 reviews):** the sketch above is the data path only. Of the five points below, the shipped `_stream_subprocess` already sets `start_new_session=True` and `run_engine` must keep it; `Job.stop()` still uses `proc.terminate()` and MUST change to `os.killpg(proc.pid, signal.SIGTERM)` in this task.
 
 - The Popen keeps `start_new_session=True`. deploy-stack.sh re-attaches /dev/tty whenever stdin is not a terminal and then treats the run as interactive; a child in its own session has no controlling terminal, so the re-attach cannot happen and every `ask()` goes to the pipe or takes its default.
 - `Job.stop()` sends `os.killpg(proc.pid, signal.SIGTERM)`, not `proc.terminate()`. A TERM to the pid alone does not stop a run blocked on a prompt: the FIFO read sits in a `$( )` child and bash defers the trapped signal until that child exits, which it never does. The group kill ends the reader, the script's own handler runs, and the tee goes with the group (deploy/tests/test_prompt_pipe.sh's EXIT trap does the same, for the same reason).
