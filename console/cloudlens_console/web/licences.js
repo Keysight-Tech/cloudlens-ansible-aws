@@ -189,6 +189,25 @@ function latestRelease(){
 
 var codes=[],rows=[],installed=[],busy=false;
 
+/* Whether Activate has anything to activate: a checked row the KVO
+   recognised, with a quantity still on it. The test was `rows.length`, so
+   a check that came back with nothing the KVO knew left the button live
+   over a table whose every row reads "nothing to activate", and pressing
+   it could only produce activate()'s own refusal. This is the one button
+   on the screen that spends entitlement that does not come back, so it is
+   offered when there is something to spend and not before. The quantity
+   counts because setting a row to 0 is how this screen is told to leave
+   that code for another batch: activate() picks rows by exactly this
+   rule, and the button now says what that rule already decided. */
+function activatable(){
+  for(var i=0;i<rows.length;i++)if(rows[i].valid&&rows[i].quantity>0)return true;
+  return false;
+}
+
+function paintActivate(){
+  $("licActivate").disabled=busy||!activatable();
+}
+
 function paintCodes(){
   var list=$("licList");list.innerHTML="";
   codes.forEach(function(c,i){
@@ -204,7 +223,7 @@ function paintCodes(){
   // earned it is gone
   status("licCount",codes.length?codes.length+" code"+(codes.length===1?"":"s"):"",false);
   $("licCheck").disabled=busy||!codes.length;
-  $("licActivate").disabled=busy||!rows.length;
+  paintActivate();
 }
 
 function addCodes(text){
@@ -225,6 +244,7 @@ function addCodes(text){
 
 function renderCodeRows(){
   var tb=$("licCodes");
+  paintActivate();          // before the early return: no rows is nothing to activate
   if(!rows.length){
     tb.innerHTML='<tr><td colspan="4"><span class="dim">Add the codes and press Check: the KVO says what each one holds before anything is spent.</span></td></tr>';
     return;
@@ -241,9 +261,11 @@ function renderCodeRows(){
   }).join("");
   rows.forEach(function(r,i){
     var el=$("licQty"+i);
-    if(el)el.addEventListener("input",function(){r.quantity=num(el.value);});
+    // the quantity decides whether this row is one Activate would
+    // send, so the button is repainted with it
+    if(el)el.addEventListener("input",function(){r.quantity=num(el.value);paintActivate();});
   });
-  $("licActivate").disabled=busy||!rows.length;
+  paintActivate();
 }
 
 function renderInstalled(){

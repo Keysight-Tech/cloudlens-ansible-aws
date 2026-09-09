@@ -49,7 +49,62 @@ console/
     web/              # the premium UI (index.html + app.js)
   fixtures/           # replay event streams (+ _build.py to regenerate)
   tests/              # unit tests (no AWS)
+  tests/browser/      # browser smoke tests (playwright + chromium; not in the default run)
 ```
+
+## Tests
+
+```bash
+cd console
+python3 -m pytest tests -q            # the fast suite: no AWS, no browser
+python3 -m pytest tests/browser -q    # the browser smoke tests
+python3 -m pytest tests tests/browser -q      # both
+```
+
+`tests/` is the default run and never touches the network, an AWS account or a
+browser. `tests/browser/` is **excluded from it** (`tests/conftest.py` collects
+that directory only when the command line names it): those tests drive a real
+chromium against a real server, they take about as long as the whole fast suite,
+and they need a browser build most machines do not have.
+
+Install what they need once:
+
+```bash
+pip install playwright && playwright install chromium
+```
+
+Without either, `python3 -m pytest tests/browser -q` **skips** with that command
+in the reason; it never fails, and `python3 -m pytest tests -q` is unaffected.
+
+### What the browser tests cover
+
+Eight things a person can do, each asserted on what is on the screen - the row
+that was drawn, the refusal under the button, the modal, the red phase:
+
+1. the wizard walks six screens of defaults to the plan, and the profile the
+   script would replay says `CLOUDLENS_INFRA="new"`
+2. an existing-VPC plan lists the account's VPCs and subnets, and will not move
+   past screen 1 until a management subnet is picked
+3. the workloads screen shows the live count and rows for the instances the
+   account answers with for the discovery tag
+4. Launch posts the plan, the page moves to Watch, and the timeline is drawn
+   from the run's own frames
+5. a `prompt` frame opens the modal; the answer goes down the prompt FIFO to the
+   engine and the modal clears
+6. a failed phase turns its row red and carries the script's own reason, and the
+   banner repeats it with the phase and the exit code
+7. the teardown stays disabled, saying so, until the stack name is typed back
+   exactly
+8. an activation code the KVO does not recognise is a row in the table, not an
+   error page, and is shown only by its last four characters
+
+They start the server on a port the OS picks (never 8760, so a console you are
+already running is untouched) and need no AWS credentials, no network and no
+KVO: the `aws` CLI is a stub executable on `PATH`, and the deploy and teardown
+scripts are fake engines that write the frames a test chose. Everything between
+those two ends is the real thing: the API, the profile writer, the engine
+runner, the events file, the prompt FIFO, the SSE stream and every line of the
+page. `tests/browser/conftest.py` says exactly what is stood in for and why.
 
 ## Regenerate demo fixtures
 
