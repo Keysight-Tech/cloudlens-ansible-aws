@@ -373,6 +373,22 @@ function audit(){
 }
 
 function tearDown(){
+  /* Read the record again before deciding, never from the last render.
+
+     recordFor() hands back a DETACHED copy of the Licensing screen's
+     record, so nothing that happens there afterwards reaches this
+     model on its own: noteHolds() sets `stale` on the record it keeps,
+     and the copy taken at the last render never learns about it.
+     Reproduced: release everything, arm the teardown, go to Licensing,
+     press "List what is installed" (which finds licences and marks the
+     record stale), come back. The banner was still green, the button
+     still armed, and the POST sent licences_released:true - which is
+     --accept-licence-loss - for a KVO that holds licences again.
+
+     render() re-reads the fields and the record and redraws the banner
+     and the button, so what the operator sees and what is sent are one
+     answer, taken now. */
+  render();
   var gate=teardownGate(model);
   if(!gate.armed)return status("tdRunNote",gate.why,true);
   if(!window.confirm("Tear down "+model.stack+" in "+model.region+"? The stack is deleted and the volumes, "+
@@ -441,10 +457,15 @@ function init(){
   ["tdStack","tdRegion"].forEach(function(id){
     $(id).addEventListener("input",function(){forgetKvo("");render();});
   });
-  // wizard.js owns the page switch and says so; the audit stream is the
-  // one thing on this screen that outlives leaving it
+  // wizard.js owns the page switch and says so. Leaving: the audit stream
+  // is the one thing on this screen that outlives it, and a stream nobody
+  // reads is a client the server keeps for nothing. Arriving: the release
+  // record may have changed on the Licensing screen since this banner was
+  // drawn, and this screen has no other way to hear about it, so the
+  // banner and the button are redrawn from what is true now.
   document.addEventListener("cl-page",function(e){
-    if(!e||e.detail!=="teardown")stopAudit();
+    if(!e||e.detail!=="teardown")return stopAudit();
+    render();
   });
   try{
     var saved=JSON.parse(localStorage.getItem("cl-plan")||"{}");

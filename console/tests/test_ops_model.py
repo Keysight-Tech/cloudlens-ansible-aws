@@ -62,6 +62,16 @@ if (IN.flight !== undefined) {
     addEventListener: function(){}
   };
   global.window.confirm = function(){ return true; };
+  // teardown.js follows the read-only audit over SSE. Enough of one to
+  // hold listeners and be closed; a test fires a named event with a
+  // {stream: "..."} step.
+  global.EventSource = function(url){
+    this.url = url; this.readyState = 1; this.on = {};
+    this.addEventListener = function(k, f){ this.on[k] = f; };
+    this.close = function(){ this.readyState = 2; };
+    global.__es = this;
+  };
+  global.EventSource.CLOSED = 2;
 }
 
 process.argv.slice(3).forEach(function(f){
@@ -104,13 +114,21 @@ if (IN.session !== undefined) out.session = IN.session.map(function(step){
    call POSTs one operation per row and polls each to its end, so the
    interesting moment is what the operator does while one is in flight. */
 if (IN.flight !== undefined) {
-  const posts = [], reads = [];
-  let pending = null;
+  const posts = [], reads = [], pendings = [];
   W.clUi.post = function(path, body, cb){
     // the codes too: what a quantity box was typed into is only proved by
-    // what the request carried out of it
-    posts.push({path: path, action: body.action, kvo: body.kvo, codes: body.codes});
-    pending = cb;                       // held, until the test answers it
+    // what the request carried out of it; and, for a teardown, the two
+    // fields that decide what the script is allowed to delete
+    posts.push({path: path, action: body.action, kvo: body.kvo, codes: body.codes,
+                orphans_only: body.orphans_only, confirm_name: body.confirm_name,
+                licences_released: body.licences_released});
+    pendings.push(cb);                  // held, until the test answers it
+  };
+  // the Teardown screen reads /api/status while its audit POST is still
+  // out, so more than one call can be in flight; answered oldest first
+  W.clUi.get = function(path, cb){
+    posts.push({path: path.split("?")[0], get: true});
+    pendings.push(cb);
   };
   IN.flight.forEach(function(step, n){
     if (step.set) Object.keys(step.set).forEach(function(id){
@@ -140,12 +158,23 @@ if (IN.flight !== undefined) {
     }
     // what the screen is OFFERING at this point, which is a fact about the
     // button and not about the handler behind it
+    if (step.submit) {
+      const el = document.getElementById(step.submit);
+      if (!el.on.submit) throw new Error("step " + n + ": #" + step.submit + " has no submit handler");
+      el.on.submit({preventDefault: function(){}});
+    }
+    // one frame of the audit's own stream, by name
+    if (step.stream) {
+      if (!global.__es) throw new Error("step " + n + ": no stream is open");
+      const f = global.__es.on[step.stream];
+      if (!f) throw new Error("step " + n + ": nothing listens for " + step.stream);
+      f({});
+    }
     if (step.button !== undefined)
       reads.push({button: step.button, disabled: document.getElementById(step.button).disabled === true});
     if (step.answer !== undefined) {
-      if (!pending) throw new Error("step " + n + ": nothing is in flight to answer");
-      const cb = pending; pending = null;
-      cb({ok: true, status: 200, d: step.answer});
+      if (!pendings.length) throw new Error("step " + n + ": nothing is in flight to answer");
+      pendings.shift()({ok: true, status: 200, d: step.answer});
     }
     if (step.read !== undefined) reads.push({kvo: step.read, record: W.clLicences.released(step.read)});
     if (step.gate !== undefined) {
@@ -158,7 +187,7 @@ if (IN.flight !== undefined) {
   });
   // an unanswered call leaves ui.js's ticking interval running, which
   // would hold node open: fail loudly instead of hanging
-  if (pending) throw new Error("a call was left in flight");
+  if (pendings.length) throw new Error("a call was left in flight");
   out.flight = {posts: posts, reads: reads};
 }
 process.stdout.write(JSON.stringify(out));
@@ -948,6 +977,82 @@ def test_the_answer_is_filed_against_the_kvo_the_question_was_sent_to(tmp_path, 
     assert gate2["licencesReleased"] is False, (
         "a KVO activated on since its release must not arm --accept-licence-loss")
     assert gate2["warn"]["level"] == "bad" and "ACTIVATED on it" in gate2["warn"]["text"]
+
+
+def test_the_teardown_reads_the_release_record_again_when_it_is_pressed(tmp_path, monkeypatch):
+    """Reproduced: release everything, arm the teardown, go to Licensing,
+    press "List what is installed", come back and press Tear down. The
+    banner was still green, the button still armed, and the POST carried
+    licences_released:true - which is --accept-licence-loss on
+    teardown-stack.sh's command line - for a KVO that holds licences
+    again.
+
+    Three things had to line up for it. render() was the only place
+    model.released was refreshed; tearDown() read teardownGate(model)
+    without refreshing; and recordFor() hands back a DETACHED copy, so the
+    `stale` flag noteHolds() sets on the Licensing screen's own record
+    never reaches a copy taken earlier. Nothing on the Teardown screen
+    heard about the list at all, because the cl-page listener only ever
+    stopped the audit stream on the way OUT.
+
+    So this drives the two screens as an operator does: the real handlers,
+    real api.py answers, and the list pressed between arming the teardown
+    and pressing it. What it watches is the request - the only thing that
+    reaches the script."""
+    status_resp = _status(monkeypatch, tmp_path)          # kvo demo-kvo at 10.0.0.9
+    assert status_resp["instances"]["value"]["by_role"]["kvo"]["private_ip"] == "10.0.0.9"
+
+    monkeypatch.setattr(api, "_kvo_license", lambda: _KL())
+    creds = {"kvo": "10.0.0.9", "user": "admin", "password": "pw"}
+    listed = api.licences(dict(creds, action="list"))     # the KVO holds one licence
+    released = api.licences(dict(creds, action="release",
+                                 rows=[{"activationCode": "AAAA-1111-BBBB", "quantity": 5}]))
+    assert released["released"] is True and released["clear"] is True
+    assert listed["licences"], "the list this test presses twice has to hold something"
+
+    ARMED = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1",
+             "hasKvo": True, "kvoAddr": "10.0.0.9", "kvoName": "demo-kvo"}
+    steps = [
+        # 1. release everything this stack's KVO holds
+        {"set": {"licKvo": "10.0.0.9", "licPass": "pw"}},
+        {"click": "licLoad"},
+        {"answer": listed},
+        {"click": "licRel0"},
+        {"answer": released},
+        # 2. audit the stack and arm the teardown
+        {"set": {"tdStack": "demo", "tdRegion": "us-east-1"}},
+        {"submit": "tdForm"},
+        {"answer": status_resp},                    # GET /api/status, out first
+        {"answer": {"job_id": "aud1"}},             # POST /api/teardown --orphans
+        {"stream": "done"},
+        {"type": {"tdConfirm": "demo"}},
+        {"button": "tdRun"},                        # 0 armed, on a released KVO
+        {"gate": ARMED},                            # 1 green, and it would say so
+        # 3. the operator goes to Licensing and lists what is installed. It
+        #    holds a licence again, so the release stops being evidence
+        {"click": "licLoad"},
+        {"answer": listed},
+        {"gate": ARMED},                            # 2 the record is stale now
+        # 4. back to Teardown, and press it
+        {"click": "tdRun"},
+        {"answer": {"job_id": "td1"}},
+    ]
+    out = _node({"flight": steps}, tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js")["flight"]
+
+    armed, before, after = out["reads"][0], out["reads"][1]["gate"], out["reads"][2]["gate"]
+    assert armed["disabled"] is False, "the teardown was armed before the list: " + str(armed)
+    assert before["licencesReleased"] is True and before["warn"]["level"] == "good"
+    assert after["licencesReleased"] is False and after["warn"]["level"] == "bad", after
+    assert "ACTIVATED on it" in after["warn"]["text"], after["warn"]["text"]
+
+    # the typed name still arms the run: the licence rule is the script's
+    # own gate, and what this screen decides is whether to LIFT it
+    destructive = [p for p in out["posts"]
+                   if p["path"] == "/api/teardown" and not p.get("orphans_only")]
+    assert len(destructive) == 1 and destructive[0]["confirm_name"] == "demo", destructive
+    assert destructive[0].get("licences_released") is False, (
+        "the request lifted teardown-stack.sh's licence gate for a KVO that holds licences again: "
+        + str(destructive[0]))
 
 
 def test_activate_is_offered_only_while_there_is_something_to_spend(tmp_path, monkeypatch):
