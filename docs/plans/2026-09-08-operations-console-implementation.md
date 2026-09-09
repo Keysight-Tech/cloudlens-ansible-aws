@@ -284,6 +284,8 @@ In bash, `profile_key_allowed()`: if `deploy/profile-keys.txt` exists next to th
 
 **Step 4: Run** -> PASS. **Step 5: Commit** `profile: one key list read by the script and the console`.
 
+**Shipped (where it differs from the sketch):** test 1 extracts the keys from the `case` block of `profile_key_allowed()` and from `write_profile()` and asserts set equality with the file in both directions, so a key added to any one of the three fails the test. Test 2 is hermetic the way deploy/tests/test_events.sh is: the AWS credential variables are unset, HOME and the AWS config files point at the temp dir, cwd is the temp dir (the state file lands in cwd) and the script is called by absolute path. `render()` raises ValueError for a value with a double quote or a line break instead of escaping it: the loader strips one pair of outer quotes and never unescapes, so `\"` would come back as two characters. In bash the file is consulted only for a `CLOUDLENS_*` name and only when it sits beside deploy-stack.sh: under curl|bash SCRIPT_DIR falls back to $PWD, and a profile-keys.txt in the caller's cwd must not become the list. Two more tests cover the fallback (the script copied out alone, run with `--profile X --help`, which exits right after the loader) and that the file governs when present (a case key missing from the file is refused; a `PATH` line in the file widens nothing).
+
 ---
 
 ### Task 5: Events v2 in the console

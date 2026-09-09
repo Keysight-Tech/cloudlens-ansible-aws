@@ -119,8 +119,25 @@ done
 # visible settings, nothing else. A prefix match was tried first and let a
 # profile choose the sensor image, the Windows installer URL, an IAM role,
 # and the ssh username (which reaches ssh as an option). Anything not listed
-# here is reported and ignored, by name.
+# is reported and ignored, by name.
+#
+# The list is deploy/profile-keys.txt, read here and by the console that
+# writes deploy-profile-<stack>.env from a form, so the two sides agree by
+# construction. The case below is the same list for a bare curl|bash, where
+# the script runs with no repo beside it; console/tests/test_profile.py holds
+# the file and the case identical. The file can only ever narrow the list: a
+# key must be CLOUDLENS_* before the file is consulted, and the file counts
+# only when it sits beside this script (under curl|bash SCRIPT_DIR falls back
+# to $PWD, and a stray profile-keys.txt in the caller's cwd is not the list).
+PROFILE_KEYS_FILE=""
+[[ -f "$SCRIPT_DIR/profile-keys.txt" && -f "$SCRIPT_DIR/deploy-stack.sh" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
 profile_key_allowed() {
+  [[ "$1" == CLOUDLENS_* ]] || return 1
+  if [[ -n "$PROFILE_KEYS_FILE" ]]; then
+    # -x: the whole line, so a comment never matches a key; -F: the key as text.
+    if grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null; then return 0; fi
+    return 1
+  fi
   case "$1" in
     CLOUDLENS_REGION|CLOUDLENS_STACK_NAME|CLOUDLENS_KEY_NAME|CLOUDLENS_IAC|\
     CLOUDLENS_ADMIN_CIDR|CLOUDLENS_ASSIGN_PUBLIC_IP|CLOUDLENS_INFRA|\
