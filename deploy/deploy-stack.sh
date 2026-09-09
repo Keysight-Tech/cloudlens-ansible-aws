@@ -125,20 +125,24 @@ done
 # writes deploy-profile-<stack>.env from a form, so the two sides agree by
 # construction. The case below is the same list for a bare curl|bash, where
 # the script runs with no repo beside it; console/tests/test_profile.py holds
-# the file and the case identical. The file can only ever narrow the list: a
-# key must be CLOUDLENS_* before the file is consulted, and the file counts
-# only when it sits beside this script (under curl|bash BASH_SOURCE is empty
-# and SCRIPT_DIR becomes $PWD or /bin, neither of which holds deploy-stack.sh,
-# so the guard falls back to the built-in case; a stray profile-keys.txt in
-# the caller's cwd is not the list).
+# the file and the case identical. The file can only ever NARROW the list,
+# never widen it: a key is accepted only when the built-in case knows it AND,
+# when a keys file is in play, the file lists it too (an intersection, so an
+# edited or planted file adds nothing from any path; for a correct repo the
+# two are equal and nothing changes). A keys file is in play only when this
+# script itself came from a file on disk: BASH_SOURCE[0] is empty under
+# `curl | bash`, `| /bin/bash` and `bash -s`, where SCRIPT_DIR is only a
+# guess ($PWD or /bin). The first guard looked for a deploy-stack.sh beside
+# the file instead, and a cwd holding a decoy of that name plus a widened
+# profile-keys.txt governed a script that never came from there.
 PROFILE_KEYS_FILE=""
-[[ -f "$SCRIPT_DIR/profile-keys.txt" && -f "$SCRIPT_DIR/deploy-stack.sh" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
+[[ -n "${BASH_SOURCE[0]:-}" && -f "$SCRIPT_DIR/profile-keys.txt" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
 profile_key_allowed() {
   [[ "$1" == CLOUDLENS_* ]] || return 1
   if [[ -n "$PROFILE_KEYS_FILE" ]]; then
     # -x: the whole line, so a comment never matches a key; -F: the key as text.
-    if grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null; then return 0; fi
-    return 1
+    # A miss is final; a hit still has to pass the built-in case below.
+    grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null || return 1
   fi
   case "$1" in
     CLOUDLENS_REGION|CLOUDLENS_STACK_NAME|CLOUDLENS_KEY_NAME|CLOUDLENS_IAC|\
@@ -202,7 +206,11 @@ if [[ -n "$PROFILE_SRC" ]]; then
   done <<< "$_profile_body"
   [[ -n "$_rejected" ]] && echo "[warn] profile: ignored keys that a profile may not set:${_rejected}" >&2
   if [[ "$_n" -eq 0 ]]; then
-    echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?)." >&2
+    # Every key refused while a keys file was in play points at the file, not
+    # the profile: a CRLF or trailing-space line never matches grep -x.
+    _hint=""
+    [[ -n "$PROFILE_KEYS_FILE" && -n "$_rejected" ]] && _hint=" (no key passed ${PROFILE_KEYS_FILE}: check its line endings)"
+    echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?).${_hint}" >&2
     exit 2
   fi
   echo "[ok] Profile ${PROFILE_SRC}: ${_n} setting(s) applied; matching questions will not be asked."

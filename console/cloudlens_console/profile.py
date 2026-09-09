@@ -24,11 +24,18 @@ _BAD_IN_VALUE = re.compile(r'["\r\n]')
 def allowed_keys():
     """The keys a profile may set, in the file's order. Comments and blank
     lines are skipped; anything else that is not a CLOUDLENS_* name is a
-    corrupted file and an error, never silently a key."""
+    corrupted file and an error, never silently a key. A line that changes
+    under strip() (a CR from a CRLF save, a trailing space, an indented key)
+    is an error too: the script matches whole lines with grep -x, so such a
+    line would refuse the key there while this side still wrote it."""
     keys = []
-    with open(KEYS_FILE) as fh:
-        for line in fh:
-            line = line.strip()
+    # newline="": line endings come back untranslated, so a CR is seen.
+    with open(KEYS_FILE, newline="") as fh:
+        for raw in fh:
+            line = raw[:-1] if raw.endswith("\n") else raw
+            if line != line.strip():
+                raise ValueError("%s: whitespace or CR around %r (LF endings, no trailing space)"
+                                 % (KEYS_FILE, line))
             if not line or line.startswith("#"):
                 continue
             if not _KEY.match(line):
@@ -44,7 +51,8 @@ def render(plan):
     and the script enforces the same list. A None value is left out (the
     script then asks, or takes its default); an empty string is written, as
     the interview does for a field it did not use. A value the loader could
-    not read back unchanged raises ValueError."""
+    not read back unchanged raises ValueError. Shape only, not vocabulary:
+    that a value is true/false, a region or a CIDR is the forms' job."""
     keys = allowed_keys()
     lines = [
         "# CloudLens deploy profile, written %s by the CloudLens console."
