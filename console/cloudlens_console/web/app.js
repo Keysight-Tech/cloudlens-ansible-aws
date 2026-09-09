@@ -36,6 +36,9 @@ var KIND_NODE={vpc:"vpc",subnet:"vpc",vcontroller:"clms",kvo:"kvo",vpb:"vpb"};
 var EMPTY_FLOW={nodes:{},wires:[]};
 
 var FLOWS={}, ORDER=[], current=null, nodeEls={}, es=null, timer=null, t0=0, conLines=0;
+// true only while the quick-flow Run button is the thing that started the
+// run: a run the wizard launched shares the instrument, not that button
+var quickRun=false;
 
 /* fetch flows */
 fetch("/flows").then(function(r){return r.json();}).then(function(d){
@@ -157,13 +160,21 @@ function promptCard(jobId,m){
     ev.preventDefault();
     if(btn.disabled)return;
     btn.disabled=true;note.textContent="sending...";
+    // the body is read as text and parsed here: r.json() on a 500 whose
+    // body is not JSON rejects, and with the catch below that read as
+    // "Could not reach", which is not what happened. One answer per
+    // request: the catch is before the then that writes the note, so a
+    // throw in that then is an unhandled rejection, not a second note.
     fetch("/api/answer/"+jobId,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({prompt_id:m.prompt_id,text:inp.value})})
-     .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+     .then(function(r){return r.text().then(function(t){
+       var j=null;try{j=JSON.parse(t);}catch(e){}
+       return {ok:r.ok,status:r.status,j:j};});})
+     .catch(function(){return {err:"Could not reach the console server."};})
      .then(function(x){
-       if(x.ok){note.textContent="answered";inp.disabled=true;inp.value="";}
-       else{note.textContent=(x.j&&x.j.error)||"refused";btn.disabled=false;}})
-     .catch(function(){note.textContent="Could not reach the console server.";btn.disabled=false;});
+       if(x.err){note.textContent=x.err;btn.disabled=false;return;}
+       if(x.ok){note.textContent="answered";inp.disabled=true;inp.value="";return;}
+       note.textContent=(x.j&&x.j.error)||("refused (HTTP "+x.status+")");btn.disabled=false;});
   });
 }
 
@@ -181,6 +192,7 @@ $("stopBtn").addEventListener("click",function(){ if(window._job) fetch("/stop/"
    counters at zero, the pill running, the clock started. The quick flows
    and the wizard's Launch both start here. */
 function begin(f,title){
+  quickRun=false;
   if(es){es.close();es=null;}
   resetInstrument();layoutDiagram(f||EMPTY_FLOW);$("narr").innerHTML="";
   if(title)$("instName").textContent=title;
@@ -190,7 +202,7 @@ function begin(f,title){
 function run(){
   var f=FLOWS[current];
   var inputs={};document.querySelectorAll("#fields input").forEach(function(i){inputs[i.dataset.k]=i.value;});
-  begin(f,f.script);
+  begin(f,f.script);quickRun=true;
   $("runBtn").disabled=true;$("runBtn").innerHTML='<span class="tri"></span> Running…';
   fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({flow:current,inputs:inputs,replay:demoOn})})
@@ -239,7 +251,7 @@ function attach(jobId){
     if(rid)bits.push(rid);if(m.ip)bits.push("ip "+m.ip);if(m.private_ip)bits.push("private "+m.private_ip);
     if(m.zone)bits.push(m.zone);if(m.count!=null)bits.push("count "+m.count);if(m.tag)bits.push("tag "+m.tag);
     if(m.cluster)bits.push("cluster "+m.cluster);if(m.mode)bits.push(m.mode);
-    narrate(bits.join(" · "),"info");});
+    narrate(bits.join(" \u00b7 "),"info");});
   es.addEventListener("check",function(e){var m=JSON.parse(e.data);
     narrate("["+String(m.status||"").toUpperCase()+"] "+(m.item||"")+(m.fix?" (fix: "+m.fix+")":""),
       m.status==="fail"?"err":m.status==="warn"?"warn":"good");});
@@ -259,7 +271,17 @@ function attach(jobId){
     finish("done","complete");narrate(m.summary||("Deploy finished ("+(m.status||"ok")+")"),"good");
     if(m.outputs&&m.outputs.note)card("","Next",m.outputs.note);});
   es.addEventListener("error",function(e){
-    if(!e.data){return;} var m=JSON.parse(e.data);
+    // an error frame with no data is the transport's, not the engine's:
+    // CONNECTING is EventSource retrying (say nothing), CLOSED is the end
+    // of the stream, and leaving the pill on "running" there would have
+    // the page claim a run that nothing is following any more
+    if(!e.data){
+      if(es&&es.readyState===EventSource.CLOSED){
+        finish("err","disconnected");
+        card("err","Lost the run","The event stream closed. Reload the page to pick the run up again: a run the console stops following carries on without it.");
+      }
+      return;}
+    var m=JSON.parse(e.data);
     if(m.node){setNode(m.node,"fail");narrate(m.text,"err");}
     else{finish("err","error");card("err","Failed",m.text);}
     if(m.fix)card("err","How to fix",m.fix);});
@@ -267,7 +289,7 @@ function attach(jobId){
 
 function finish(cls,txt){
   stopTimer();setPill(cls,txt);$("stopBtn").hidden=true;
-  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run again';
+  if(quickRun){$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run again';}
   if(es){es.close();es=null;}
 }
 
@@ -280,7 +302,6 @@ window.addEventListener("resize",function(){if(!timer&&current)layoutDiagram(FLO
 window.clConsole={
   begin:function(flowId,title){begin(FLOWS[flowId]||EMPTY_FLOW,title);},
   attach:attach,
-  narrate:narrate,card:card,finish:finish,
   relayout:function(){if(!timer&&current&&FLOWS[current])layoutDiagram(FLOWS[current]);}
 };
 })();

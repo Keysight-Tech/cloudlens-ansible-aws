@@ -106,6 +106,19 @@ echo '{"seq":1,"ts":"t","type":"done","status":"ok"}' >> "$ev"
 exit 0
 '''
 
+# a long sleeper, THEN the stdout line the redaction chokes on: a failure
+# raised on that line lands while the script is still running. The sleeper
+# is started before the line so it is certainly a member of the group when
+# the kill goes out (started after it, it would be the fork/killpg race,
+# not the branch under test), and so the group is more than its leader,
+# the shape the real script has around its subshells.
+FAKE_PRINT_THEN_SLEEP = PARSE + r'''
+echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
+sleep 30 &
+echo "a line the redaction chokes on"
+wait
+'''
+
 # a marker file when it ran at all
 FAKE_MARKER = PARSE + r'''
 : > "$MARKER"
@@ -539,6 +552,36 @@ def test_a_runner_that_fails_before_its_verdict_still_ends_the_job(tmp_path, mon
     assert "private" not in json.dumps(job.buffer), "the exception's message is for stderr, not the stream"
     assert job.events_path and not os.path.exists(os.path.dirname(job.events_path)), \
         "the temp directory outlived the run"
+
+
+def test_a_failure_while_the_engine_still_runs_kills_and_reaps_its_group(tmp_path):
+    """The other half of that finally, the branch the test above cannot
+    reach: the exception lands while the script is STILL running. That one
+    raises from _verdict, which runs after wait(), so its engine had always
+    exited and the kill was never the thing being tested. Here redact
+    raises on the first stdout line of a script that then sleeps 30:
+    nobody reads that stdout any more and running() is about to say the
+    run is over, so the group has to go, and the leader has to be waited
+    for, or it stays a zombie for as long as the console runs."""
+    script = _script(tmp_path, FAKE_PRINT_THEN_SLEEP, "printsleep.sh")
+    job = O.Job("j3g", "stack", {})
+    real = job.redact
+
+    def boom(text):
+        if isinstance(text, str) and "chokes on" in text:
+            raise RuntimeError("redaction failed")
+        return real(text)
+
+    job.redact = boom
+    with pytest.raises(RuntimeError):
+        O.run_engine(job, [script])
+    assert job.done and not job.running()
+    last = _last(job)
+    assert last["type"] == "error", _types(job)
+    assert last["text"] == "engine runner failed: RuntimeError"
+    assert job._pgid is not None
+    assert _wait_for(lambda: _group_gone(job._pgid), 5.0), "the sleep outlived the run that gave up on it"
+    assert job._proc.poll() is not None, "the engine's leader was left unreaped"
 
 
 # ------------------------------------------------------------------ stop

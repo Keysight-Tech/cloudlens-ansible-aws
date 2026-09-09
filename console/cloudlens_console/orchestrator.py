@@ -492,6 +492,14 @@ def run_engine(job, cmd, cwd=None, env=None, wired=True):
             exc = sys.exc_info()[1]
             if job._proc is not None and job._proc.poll() is None:
                 job._signal_group(signal.SIGKILL)
+                try:
+                    # reap the leader: the stdout loop that would have done
+                    # it is the thing that raised, and nobody else waits on
+                    # this child, so without this it stays a zombie for as
+                    # long as the console runs
+                    job._proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
             job.emit(E.error("engine runner failed: " + (type(exc).__name__ if exc else "unknown"),
                              fix="The console's own stderr has the traceback; start the run again."))
         job._group_open = False

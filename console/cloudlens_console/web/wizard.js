@@ -34,8 +34,26 @@ var RUN_PAGES={deploy:true,watch:true};   // the pages the instrument shows unde
 var OS=["ubuntu","rhel","windows"];
 
 /* ------------------------------------------------------------- state */
+/* The keys this file writes, and the only ones a restored plan keeps.
+   localStorage is not ours: a key retired from deploy/profile-keys.txt, or
+   anything else planted under cl-plan, would otherwise ride into /api/plan
+   and come back as "<KEY>: not a profile key" for a key no screen owns,
+   with Launch off and nothing on the page able to clear it. Only these
+   keys survive the load, and only with string values. test_web_static
+   holds this list equal to every CLOUDLENS_ literal in this file. */
+var OWN_KEYS=["CLOUDLENS_REGION","CLOUDLENS_STACK_NAME","CLOUDLENS_INFRA","CLOUDLENS_KEY_NAME",
+  "CLOUDLENS_EXISTING_VPC_ID","CLOUDLENS_EXISTING_SUBNET_ID","CLOUDLENS_DEPLOY_KVO","CLOUDLENS_DEPLOY_VPB",
+  "CLOUDLENS_VCONTROLLER_TYPE","CLOUDLENS_TAPPING","CLOUDLENS_SENSOR_MODE","CLOUDLENS_WORKLOAD_CHOICE",
+  "CLOUDLENS_DISCOVERY_TAG_KEY","CLOUDLENS_DISCOVERY_TAG_VALUE","CLOUDLENS_SOURCE_VPCS","CLOUDLENS_TEST_VMS",
+  "CLOUDLENS_COLLECTOR_ZONE","CLOUDLENS_COLLECTOR_MGMT_SUBNET","CLOUDLENS_COLLECTOR_INGRESS_SUBNET",
+  "CLOUDLENS_COLLECTOR_EGRESS_SUBNET","CLOUDLENS_DEPLOY_EKS","CLOUDLENS_EKS_CLUSTER","CLOUDLENS_EKS_SAMPLE",
+  "CLOUDLENS_EKS_MODE"];
 var plan={};
-try{var saved=JSON.parse(localStorage.getItem("cl-plan")||"{}");if(saved&&typeof saved==="object"&&!Array.isArray(saved))plan=saved;}catch(e){}
+try{
+  var saved=JSON.parse(localStorage.getItem("cl-plan")||"{}");
+  if(saved&&typeof saved==="object"&&!Array.isArray(saved))
+    OWN_KEYS.forEach(function(k){if(typeof saved[k]==="string")plan[k]=saved[k];});
+}catch(e){}
 function seed(k,v){if(!(k in plan))plan[k]=v;}
 // the interview's own defaults, so an untouched wizard plans what an
 // all-Enter interview would
@@ -93,33 +111,60 @@ function derive(){
 function status(id,text,bad){var el=$(id);el.textContent=text||"";el.classList.toggle("err",!!bad);}
 function setVal(id,v){var el=$(id);v=v==null?"":String(v);if(el.value!==v)el.value=v;}
 function setSwitch(el,on){el.setAttribute("aria-checked",on?"true":"false");}
+/* Show or hide a part of the secrets block. A part that no longer applies
+   is EMPTIED as it hides: a mirror access key typed under "both" would
+   otherwise sit in the DOM after the choice became "sensors", where
+   nothing on the page shows it and secretsNow() no longer reads it. */
+function hideSecrets(sec,hide){
+  sec.hidden=hide;
+  if(hide)sec.querySelectorAll("input").forEach(function(i){i.value="";});
+}
 function region(){return plan.CLOUDLENS_REGION||"";}
 function regionOk(){return REGION_RE.test(region());}
 
 /* GET url -> cb(error, data). An API error ({error}) and a 403 or 500 come
-   back as their message text; a body that is not JSON as its status. */
+   back as their message text; a body that is not JSON as its status.
+
+   Both of these resolve to {err,d} and call cb exactly once, in a final
+   then with nothing after it. A catch placed after the then that calls cb
+   would swallow whatever the callback threw and then call cb AGAIN with
+   "Could not reach the console server.": at Launch that read as the server
+   being unreachable while the secrets were already cleared and the run
+   already going. This way a callback that throws becomes an unhandled
+   rejection (the console's own error), never a second answer. */
 function api(url,cb){
   fetch(url,{headers:{"Accept":"application/json"}}).then(function(r){
     return r.text().then(function(t){
       var d=null;try{d=JSON.parse(t);}catch(e){}
-      if(!r.ok)return cb((d&&d.error)||("HTTP "+r.status+(t?": "+t.slice(0,160):"")));
-      if(d&&d.error)return cb(d.error);
-      cb(null,d);
+      if(!r.ok)return {err:(d&&d.error)||("HTTP "+r.status+(t?": "+t.slice(0,160):""))};
+      if(d&&d.error)return {err:d.error};
+      return {d:d};
     });
-  }).catch(function(){cb("Could not reach the console server.");});
+  }).catch(function(){
+    return {err:"Could not reach the console server."};
+  }).then(function(x){cb(x.err||null,x.d);});
 }
 function post(url,body,cb){
   fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){
     return r.text().then(function(t){
       var d=null;try{d=JSON.parse(t);}catch(e){}
-      cb(null,{ok:r.ok,status:r.status,d:d||{error:"HTTP "+r.status+(t?": "+t.slice(0,160):"")}});
+      return {d:{ok:r.ok,status:r.status,d:d||{error:"HTTP "+r.status+(t?": "+t.slice(0,160):"")}}};
     });
-  }).catch(function(){cb("Could not reach the console server.");});
+  }).catch(function(){
+    return {err:"Could not reach the console server."};
+  }).then(function(x){cb(x.err||null,x.d);});
 }
-function keyRow(tr,onPick){
-  tr.setAttribute("role","button");tr.tabIndex=0;
-  tr.addEventListener("click",onPick);
-  tr.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();onPick();}});
+/* A row of a pick table. The choice is a real <button> in the first cell:
+   a <tr role="button"> replaces the row's own semantics, and a table whose
+   rows are buttons stops being a table to a screen reader. The row keeps
+   the hover, the picked background and the mouse click, so the visual
+   language is still the row; the keyboard reaches the button. */
+function pickRow(tr,on,onPick){
+  tr.className="pickrow"+(on?" on":"");
+  var b=tr.querySelector("button.pickb");
+  b.setAttribute("aria-pressed",on?"true":"false");
+  b.addEventListener("click",onPick);
+  tr.addEventListener("click",function(e){if(e.target!==b)onPick();});
 }
 
 /* ------------------------------------------------------------- pages */
@@ -181,15 +226,18 @@ function renderVpcs(rows){
   if(!rows.length){tb.innerHTML='<tr><td colspan="3" class="dim">No VPC in '+esc(region())+'.</td></tr>';return;}
   rows.forEach(function(v){
     var tr=document.createElement("tr");
-    tr.innerHTML='<td>'+esc(v.id)+'</td><td>'+esc(v.name||"")+'</td><td>'+esc(v.cidr)+'</td>';
-    tr.setAttribute("aria-pressed",plan.CLOUDLENS_EXISTING_VPC_ID===v.id?"true":"false");
-    keyRow(tr,function(){
+    tr.innerHTML='<td><button type="button" class="pickb">'+esc(v.id)+'</button></td><td>'+esc(v.name||"")+'</td><td>'+esc(v.cidr)+'</td>';
+    pickRow(tr,plan.CLOUDLENS_EXISTING_VPC_ID===v.id,function(){
       if(plan.CLOUDLENS_EXISTING_VPC_ID!==v.id){
         set("CLOUDLENS_EXISTING_VPC_ID",v.id);
         // a new VPC: its subnets are other subnets
         unset("CLOUDLENS_EXISTING_SUBNET_ID","CLOUDLENS_COLLECTOR_ZONE","CLOUDLENS_COLLECTOR_MGMT_SUBNET","CLOUDLENS_COLLECTOR_INGRESS_SUBNET","CLOUDLENS_COLLECTOR_EGRESS_SUBNET");
       }
-      sync();showSubnets();
+      // re-rendered from the cache, so the picked row reads as picked:
+      // the pick is drawn at render time, and this table was the one that
+      // never redrew itself after a choice (showSubnets is showVpcs's own
+      // last step)
+      sync();showVpcs();
     });
     tb.appendChild(tr);
   });
@@ -208,10 +256,9 @@ function renderSubnets(rows){
   if(!rows.length){tb.innerHTML='<tr><td colspan="5" class="dim">No subnet in this VPC.</td></tr>';return;}
   rows.forEach(function(s){
     var tr=document.createElement("tr");
-    tr.innerHTML='<td>'+esc(s.id)+'</td><td>'+esc(s.name||"")+'</td><td>'+esc(s.az)+'</td><td>'+esc(s.cidr)+'</td>'+
+    tr.innerHTML='<td><button type="button" class="pickb">'+esc(s.id)+'</button></td><td>'+esc(s.name||"")+'</td><td>'+esc(s.az)+'</td><td>'+esc(s.cidr)+'</td>'+
       '<td><span class="tag'+(s.public?" on":"")+'">'+(s.public?"public IPs":"private")+'</span> <span class="tag'+(s.igw_route?" on":"")+'">'+(s.igw_route?"IGW route":"no IGW route")+'</span></td>';
-    tr.setAttribute("aria-pressed",plan.CLOUDLENS_EXISTING_SUBNET_ID===s.id?"true":"false");
-    keyRow(tr,function(){set("CLOUDLENS_EXISTING_SUBNET_ID",s.id);sync();renderSubnets(rows);});
+    pickRow(tr,plan.CLOUDLENS_EXISTING_SUBNET_ID===s.id,function(){set("CLOUDLENS_EXISTING_SUBNET_ID",s.id);sync();renderSubnets(rows);});
     tb.appendChild(tr);
   });
 }
@@ -279,6 +326,7 @@ function showCollector(){
   if(!vpc){status("colStatus","Pick the existing VPC on screen 1 first.",true);return;}
   status("colStatus","looking...");
   loadSubnets(vpc,function(err,rows){
+    if(plan.CLOUDLENS_EXISTING_VPC_ID!==vpc)return;   // another VPC was picked while this was out
     if(err){status("colStatus",err,true);return;}
     status("colStatus",rows.length+" subnet"+(rows.length===1?"":"s")+" in "+vpc+". Three DISTINCT subnets in ONE availability zone (KVO UG, AWS Cloud Configs); leave all three empty and the mirror step is skipped with instructions.");
     [["colMgmt","CLOUDLENS_COLLECTOR_MGMT_SUBNET"],["colIngress","CLOUDLENS_COLLECTOR_INGRESS_SUBNET"],["colEgress","CLOUDLENS_COLLECTOR_EGRESS_SUBNET"]].forEach(function(pair){
@@ -312,9 +360,8 @@ function showEks(){
     if(err){status("eksStatus",err,true);return;}
     status("eksStatus",rows.length?rows.length+" cluster"+(rows.length===1?"":"s")+" in "+region()+". The one you pick needs kubectl rights from this machine.":"No EKS cluster in "+region()+".",!rows.length);
     rows.forEach(function(c){
-      var tr=document.createElement("tr");tr.innerHTML='<td>'+esc(c.name)+'</td>';
-      tr.setAttribute("aria-pressed",plan.CLOUDLENS_EKS_CLUSTER===c.name?"true":"false");
-      keyRow(tr,function(){set("CLOUDLENS_EKS_CLUSTER",c.name);sync();showEks();});
+      var tr=document.createElement("tr");tr.innerHTML='<td><button type="button" class="pickb">'+esc(c.name)+'</button></td>';
+      pickRow(tr,plan.CLOUDLENS_EKS_CLUSTER===c.name,function(){set("CLOUDLENS_EKS_CLUSTER",c.name);sync();showEks();});
       tb.appendChild(tr);
     });
   });
@@ -351,7 +398,7 @@ function paint(){
   $("modeDaemon").checked=plan.CLOUDLENS_EKS_MODE!=="sidecar";$("modeSidecar").checked=plan.CLOUDLENS_EKS_MODE==="sidecar";
   $("eksPicked").textContent=eks()&&!eksSample()?("Cluster: "+(plan.CLOUDLENS_EKS_CLUSTER||"not chosen")):"";
   // 6 plan: the secrets that apply
-  $("secMirror").hidden=!hasMirror();$("secKvo").hidden=!kvo();
+  hideSecrets($("secMirror"),!hasMirror());hideSecrets($("secKvo"),!kvo());
   paintCli();
 }
 function sync(){derive();paint();}
@@ -422,8 +469,15 @@ $("eksRefresh").addEventListener("click",function(){disco.eks={};showEks();});
 $("modeDaemon").addEventListener("change",function(){if(this.checked){set("CLOUDLENS_EKS_MODE","daemonset");sync();}});
 $("modeSidecar").addEventListener("change",function(){if(this.checked){set("CLOUDLENS_EKS_MODE","sidecar");sync();}});
 
+/* The refusal under Next belongs to the answer that was refused: changing
+   any answer clears it, not only moving to another screen. Captured, so
+   Next's own click clears the old text before its handler writes the new. */
+["input","change","click"].forEach(function(type){
+  $("wizard").addEventListener(type,function(){if($("wErr").textContent)status("wErr","");},true);
+});
+
 /* ------------------------------------------------------------- screens */
-var screen=1, reached=1;
+var screen=1;
 function validate(n){
   if(n===1){
     var s=plan.CLOUDLENS_STACK_NAME||"";
@@ -457,12 +511,12 @@ function enterScreen4(){
 }
 function showScreen(n){
   n=Math.max(1,Math.min(6,n));
-  screen=n;reached=Math.max(reached,n);
+  screen=n;
   document.querySelectorAll("#wizard [data-screen]").forEach(function(s){s.hidden=parseInt(s.dataset.screen,10)!==n;});
   document.querySelectorAll("#wSteps [data-step]").forEach(function(b){
     var k=parseInt(b.dataset.step,10);
     if(k===n)b.setAttribute("aria-current","step");else b.removeAttribute("aria-current");
-    b.classList.toggle("done",k<n);b.disabled=k>reached;
+    b.classList.toggle("done",k<n);
   });
   status("wErr","");
   $("backBtn").disabled=n===1;
@@ -491,17 +545,30 @@ document.querySelectorAll("#wSteps [data-step]").forEach(function(b){
 });
 
 /* ------------------------------------------------------------- screen 6 */
-var planResp=null, planOk=false, launching=false;
-function postPlan(){
+var planResp=null, planOk=false, launching=false, planSeq=0;
+/* api.py's word for a key that is not in deploy/profile-keys.txt. No screen
+   owns such a key, so no screen can clear it: the plan drops it and asks
+   once more, rather than showing an error nobody can act on. */
+var NOT_A_KEY=/^([A-Za-z_][A-Za-z0-9_]*): not a profile key/;
+function postPlan(retried){
   derive();planOk=false;planResp=null;
+  var seq=++planSeq;
   status("planStatus","checking the plan...");
   $("planErrors").innerHTML="";$("resolvedWrap").innerHTML="";$("profileText").textContent="";
   $("profileName").textContent="";gate();
   post("/api/plan",{plan:plan},function(err,x){
+    if(seq!==planSeq)return;              // a later plan is the one that counts
     if(err)return status("planStatus",err,true);
     var d=x.d;
     if(!x.ok||d.errors||d.error){
       var list=d.errors||[d.error||("HTTP "+x.status)];
+      if(!retried){
+        var stray=[];
+        list.forEach(function(e){var m=NOT_A_KEY.exec(String(e));if(m&&has(m[1]))stray.push(m[1]);});
+        // repainted, so the earlier screens stop showing an answer the
+        // plan no longer carries (a key field with a dropped key in it)
+        if(stray.length){unset.apply(null,stray);sync();return postPlan(true);}
+      }
       $("planErrors").innerHTML=P.renderErrors(list);
       status("planStatus","The plan has "+list.length+" problem"+(list.length===1?"":"s")+": fix "+(list.length===1?"it":"them")+" on the earlier screens.",true);
       gate();return;
@@ -529,7 +596,8 @@ function secretsNow(){
    else: not the plan, not localStorage. The page shows a chip of the last
    four characters. Launch sends the array as kvo_codes. */
 var codes=[];
-var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;   // api.CODE_QTY
+// api.CODE_QTY, held to the 1 to 4 quantity digits the field asks for
+var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,4})?$/;
 var CODES_MAX=50;                                                    // api.MAX_LIST
 function codesNow(){return kvo()?codes.slice():[];}
 function codeTail(c){var parts=c.split(",");return "****-"+parts[0].slice(-4)+(parts[1]?","+parts[1]:"");}
@@ -556,7 +624,7 @@ function addCodes(text){
   });
   paintCodes();
   var notes=[];
-  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY)");
+  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY, a quantity of 1 to 4 digits)");
   if(dup)notes.push(dup+" already added");
   if(over)notes.push(over+" over the limit of "+CODES_MAX);
   if(notes.length)status("codeCount",$("codeCount").textContent+(codes.length?"; ":"")+notes.join("; ")+".",!!(bad||over));
@@ -649,7 +717,8 @@ $("pfBtn").addEventListener("click",function(){
 derive();paint();
 var page="deploy",first=1;
 try{page=localStorage.getItem("cl-page")||"deploy";first=parseInt(localStorage.getItem("cl-screen")||"1",10)||1;}catch(e){}
-reached=6;   // a saved plan may resume on any screen; the stepper still validates on the way forward
+// every step is reachable: a saved plan resumes on any screen, and a jump
+// forward validates every screen on the way (the stepper's own handler)
 showScreen(first);
 showPage(page);
 })();

@@ -240,10 +240,12 @@
   table.pick{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;font-family:var(--mono)}
   table.pick th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
   table.pick td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);white-space:nowrap}
-  table.pick tr[role="button"]{cursor:pointer}
-  table.pick tr[role="button"]:hover td{background:var(--line-soft)}
-  table.pick tr[aria-pressed="true"] td{background:var(--accent-soft);color:var(--ink)}
-  table.pick tr[role="button"]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  table.pick tr.pickrow{cursor:pointer}
+  table.pick tr.pickrow:hover td{background:var(--line-soft)}
+  table.pick tr.pickrow.on td{background:var(--accent-soft);color:var(--ink)}
+  /* the pick itself is a button in the first cell, wearing the row's type */
+  table.pick td button.pickb{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+  table.pick td button.pickb:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
   .tag{font-size:10px;font-family:var(--mono);border:1px solid var(--line);border-radius:100px;padding:1px 7px;color:var(--ink-faint)}
   .tag.on{color:var(--good);border-color:var(--good)}
   .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
@@ -302,15 +304,15 @@
 <!-- ops:start -->
 <div class="ops" id="ops">
 <div class="wrap"><nav class="opsnav" id="opsNav" role="tablist" aria-label="Console pages">
-  <button type="button" role="tab" data-page="preflight" aria-selected="false">Pre-flight</button>
-  <button type="button" role="tab" data-page="deploy" aria-selected="true">Deploy</button>
-  <button type="button" role="tab" data-page="watch" aria-selected="false">Watch</button>
-  <button type="button" role="tab" data-page="operate" aria-selected="false">Operate</button>
-  <button type="button" role="tab" data-page="licensing" aria-selected="false">Licensing</button>
-  <button type="button" role="tab" data-page="teardown" aria-selected="false">Teardown</button>
+  <button type="button" role="tab" id="tab-preflight" data-page="preflight" aria-selected="false" aria-controls="page-preflight">Pre-flight</button>
+  <button type="button" role="tab" id="tab-deploy" data-page="deploy" aria-selected="true" aria-controls="page-deploy">Deploy</button>
+  <button type="button" role="tab" id="tab-watch" data-page="watch" aria-selected="false" aria-controls="page-watch">Watch</button>
+  <button type="button" role="tab" id="tab-operate" data-page="operate" aria-selected="false" aria-controls="page-operate">Operate</button>
+  <button type="button" role="tab" id="tab-licensing" data-page="licensing" aria-selected="false" aria-controls="page-licensing">Licensing</button>
+  <button type="button" role="tab" id="tab-teardown" data-page="teardown" aria-selected="false" aria-controls="page-teardown">Teardown</button>
 </nav></div>
 
-<section class="page" data-page-body="preflight" hidden><div class="wrap">
+<section class="page" id="page-preflight" role="tabpanel" aria-labelledby="tab-preflight" tabindex="0" data-page-body="preflight" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Pre-flight</span>
     <h2>Every setup problem that ever stopped a live run, checked first.</h2>
     <p><code class="mono">deploy-stack.sh --doctor</code>, read-only: subscriptions, quotas, the key pair, tooling, network. Each failure comes with its exact fix. The wizard's Launch stays off while a FAIL stands for the plan's region.</p></div>
@@ -322,7 +324,7 @@
   <div class="tblwrap"><table class="ref checks" aria-label="Pre-flight checks"><thead><tr><th>Status</th><th>Check</th><th>Fix</th></tr></thead><tbody id="pfRows"></tbody></table></div>
 </div></section>
 
-<section class="page" data-page-body="deploy"><div class="wrap">
+<section class="page" id="page-deploy" role="tabpanel" aria-labelledby="tab-deploy" tabindex="0" data-page-body="deploy"><div class="wrap">
   <div class="wiz" id="wizard" aria-label="Deploy wizard">
     <ol class="wsteps" id="wSteps">
       <li><button type="button" data-step="1">1 · Where</button></li>
@@ -479,7 +481,7 @@
           </div>
         </div>
         <div id="secKvo" hidden>
-          <div class="field"><label for="codeEntry">KVO activation codes (CODE or CODE,QTY): type one and press Enter, or paste the whole list</label>
+          <div class="field"><label for="codeEntry">KVO activation codes, CODE or CODE,QTY (a quantity of 1 to 4 digits): type one and press Enter, or paste the whole list</label>
             <div class="coderow"><input id="codeEntry" type="password" autocomplete="off" spellcheck="false"><button type="button" class="ghostbtn" id="codeAdd">Add</button></div>
             <div class="codes" id="codeList"></div>
             <p class="hint" id="codeCount" role="status" aria-live="polite"></p>
@@ -507,22 +509,22 @@
   </div>
 </div></section>
 
-<section class="page" data-page-body="watch" hidden><div class="wrap">
+<section class="page" id="page-watch" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" data-page-body="watch" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Watch</span><h2>The run, as it happens.</h2>
     <p>A launched run streams into the instrument below: the script's phases and resources in the narration, its questions as cards you answer in place, the raw output underneath. The full watch view (a phase timeline, the login cards, reconnecting to a run after a reload) is not built yet.</p></div>
 </div></section>
 
-<section class="page" data-page-body="operate" hidden><div class="wrap">
+<section class="page" id="page-operate" role="tabpanel" aria-labelledby="tab-operate" tabindex="0" data-page-body="operate" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Operate</span><h2>A stack that is up.</h2></div>
   <div class="placeholder">Not built yet: the logins, the sensor count, re-running one phase of a deployed stack. For now the run's own login cards and the CLI's summary carry this.</div>
 </div></section>
 
-<section class="page" data-page-body="licensing" hidden><div class="wrap">
+<section class="page" id="page-licensing" role="tabpanel" aria-labelledby="tab-licensing" tabindex="0" data-page-body="licensing" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Licensing</span><h2>KVO activation codes.</h2></div>
   <div class="placeholder">Not built yet: list, check, activate and release against a KVO. Until then: <code class="mono">python3 scripts/kvo_license.py</code>, or the codes on the wizard's plan screen. Release before deleting a KVO, or the counts are stranded.</div>
 </div></section>
 
-<section class="page" data-page-body="teardown" hidden><div class="wrap">
+<section class="page" id="page-teardown" role="tabpanel" aria-labelledby="tab-teardown" tabindex="0" data-page-body="teardown" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Teardown</span><h2>Remove a stack.</h2></div>
   <div class="placeholder">Not built yet: the typed-name gate, the orphan audit and the licence-loss warning. Until then: <code class="mono">bash deploy/teardown-stack.sh --stack-name NAME --region REGION</code>.</div>
 </div></section>

@@ -60,14 +60,20 @@ function parseTestVms(text){
 /* Activation codes as typed or pasted: whitespace, newlines and commas
    separate them, except that a purely numeric piece after a comma is the
    quantity of the code before it, so CODE,QTY stays one token, the shape
-   the script's --kvo-codes takes. */
+   the script's --kvo-codes takes.
+
+   A quantity is 1 to 4 digits (what the field asks for, and what
+   wizard.js's CODE_QTY_RE accepts). A longer run of digits is folded into
+   its code all the same: it is a mistyped quantity, and joined to the code
+   it is reported as the one bad entry it is, where on its own it became a
+   chip of its own that named a code nobody typed. */
 function parseCodes(text){
   var out=[];
   String(text||"").split(/\s+/).forEach(function(word){
     var last=-1;   // index in out of the last code this word produced
     word.split(",").forEach(function(p){
       if(!p)return;
-      if(/^[0-9]{1,6}$/.test(p)&&last>=0&&out[last].indexOf(",")<0){out[last]+=","+p;return;}
+      if(/^[0-9]+$/.test(p)&&last>=0&&out[last].indexOf(",")<0){out[last]+=","+p;return;}
       out.push(p);last=out.length-1;
     });
   });

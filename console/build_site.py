@@ -157,6 +157,15 @@ body = re.sub(r'<div class="demo-t".*?</div>\s*</div>', '</div>', body, flags=re
 # drives the API and has nothing to do on a static page: the block between
 # its two markers goes, and so do the scripts that only it uses. The quick
 # flows are the whole point of this page, so their fold opens.
+#
+# The cut is an unanchored substitution over the whole body, so it is held
+# to its markers at both ends: a marker that was renamed or duplicated (or
+# a body with none) would otherwise leave the wizard, its API calls and its
+# secret fields on a public page that cannot serve them, or eat the page
+# between the wrong pair. Counted here, checked in the result below.
+for marker in ("<!-- ops:start -->", "<!-- ops:end -->"):
+    found = body.count(marker)
+    assert found == 1, "index.html carries %d of %s, expected exactly one" % (found, marker)
 body = re.sub(r"<!-- ops:start -->.*?<!-- ops:end -->", "", body, flags=re.S)
 body = re.sub(r'\s*<script src="/web/(?:plan|wizard)\.js"></script>', "", body)
 body = body.replace('<details class="quick" id="quickFlows">', '<details class="quick" id="quickFlows" open>')
@@ -168,6 +177,13 @@ html = ("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n
         "<title>CloudLens Autopilot for AWS · Deployment Console</title>\n"
         "<script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('cl-theme')||'light');}catch(e){document.documentElement.setAttribute('data-theme','light');}</script>\n"
         + style + "\n</head>\n" + body + "\n</html>\n")
+
+# What the static page must not carry: the wizard's screens, the scripts
+# that only it uses, any API path, the secret fields and the activation
+# code entry. And the one thing it must: the quick flows, opened.
+for gone in ("data-screen", "wizard.js", "plan.js", "/api/", "data-secret", "codeEntry"):
+    assert gone not in html, "the static page still carries %r: the ops block survived the cut" % gone
+assert 'quickFlows" open' in html, "the quick flows fold does not open on the static page"
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 open(OUT, "w").write(html)

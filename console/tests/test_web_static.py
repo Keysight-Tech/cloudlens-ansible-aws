@@ -62,13 +62,31 @@ def test_the_top_navigation_names_every_page_and_each_page_exists():
 
 
 # ------------------------------------------------------------------- keys
+def _own_keys(src):
+    """wizard.js declares var OWN_KEYS = [..]: the keys it writes, and the
+    only ones a plan restored from localStorage keeps."""
+    block = re.search(r"var OWN_KEYS\s*=\s*\[(.*?)\];", src, re.S)
+    assert block, "wizard.js declares var OWN_KEYS = [...]"
+    return set(re.findall(r'"(CLOUDLENS_[A-Z0-9_]+)"', block.group(1)))
+
+
 def test_every_profile_key_literal_in_wizard_js_is_a_profile_key():
     """The contract that catches a typo without a browser: a key the wizard
-    writes that is not in deploy/profile-keys.txt is one /api/plan refuses."""
+    writes that is not in deploy/profile-keys.txt is one /api/plan refuses.
+
+    And OWN_KEYS is exactly that set of literals: localStorage is not the
+    wizard's, so a restored plan keeps these keys and drops the rest. A key
+    the file writes but leaves out of OWN_KEYS would not survive a reload;
+    a key in OWN_KEYS that no screen writes any more would ride an old
+    cl-plan into /api/plan and fail it for a key nothing on the page can
+    reach."""
     keys = set(P.allowed_keys())
-    found = set(KEY.findall(_read("wizard.js")))
+    src = _read("wizard.js")
+    found = set(KEY.findall(src))
     assert found, "wizard.js writes the plan by CLOUDLENS_* keys"
     assert found <= keys, "not profile keys: %s" % sorted(found - keys)
+    own = _own_keys(src)
+    assert own == found, "OWN_KEYS and the keys the file writes differ: %s" % sorted(own ^ found)
 
 
 def _secret_fields(html):
@@ -220,10 +238,22 @@ def test_the_wizard_uses_the_discovery_plan_run_and_doctor_routes():
 
 
 # -------------------------------------------------------------------- ids
+def _ids_a_script_names(src):
+    """Every id a script names: $("x"), and any #id inside a string literal,
+    which is how the selector calls name theirs (querySelector('#opsNav
+    [data-page]'), "#wSteps [data-step]", "#secrets [data-secret]"). A
+    renamed id in one of those is as broken as one in $(), and silently:
+    querySelectorAll finds nothing and no line of the page ever runs."""
+    ids = set(re.findall(r'\$\("([^"]+)"\)', src))
+    for dq, sq in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', src):
+        ids.update(re.findall(r"#([A-Za-z][\w-]*)", dq or sq))
+    return ids
+
+
 @pytest.mark.parametrize("name", ("app.js", "wizard.js"))
 def test_every_id_a_script_looks_up_exists_in_the_page(name):
     ids = set(re.findall(r'id="([^"]+)"', _read("index.html")))
-    wanted = set(re.findall(r'\$\("([^"]+)"\)', _read(name)))
+    wanted = _ids_a_script_names(_read(name))
     assert wanted, "%s looks elements up by id" % name
     assert wanted <= ids, "%s looks up ids the page does not have: %s" % (name, sorted(wanted - ids))
 
@@ -250,6 +280,25 @@ def test_interactive_things_are_buttons_not_divs():
         assert "onclick" not in tag, tag
         if 'role="button"' in tag:
             assert False, "a clickable thing is a <button>: %s" % tag
+
+
+def test_a_pick_table_chooses_with_a_button_not_with_the_row(name="wizard.js"):
+    """A <tr role="button"> replaces the row's own role, and a table whose
+    rows are buttons stops being a table to a screen reader: the columns,
+    the headers and the row count all go. The choice is a real button in
+    the first cell instead, wearing the row's type; the row keeps the
+    hover, the picked background and the mouse click."""
+    js = _read(name)
+    assert 'setAttribute("role","button")' not in js, "a row is a row"
+    assert 'class="pickb"' in js, "the pick is a button in the first cell"
+    assert "button.pickb" in _read("index.html"), "the button wears the row's type"
+
+
+def test_each_tab_names_the_panel_it_controls():
+    html = _read("index.html")
+    for page in ("preflight", "deploy", "watch", "operate", "licensing", "teardown"):
+        assert 'aria-controls="page-%s"' % page in html, page
+        assert 'id="page-%s" role="tabpanel" aria-labelledby="tab-%s"' % (page, page) in html, page
 
 
 # ----------------------------------------------------------------- syntax
