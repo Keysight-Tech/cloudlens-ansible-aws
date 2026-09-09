@@ -1,11 +1,15 @@
 """Loopback-only HTTP server: serves the UI, starts jobs, streams SSE.
 
 Routes (nothing else is exposed):
-  GET  /                         -> the premium UI (web/index.html)
-  GET  /flows                    -> the four flows as JSON (the UI renders from this)
-  POST /run                      -> {flow, inputs, replay?}  starts a job, returns {job_id}
+  GET  /                         -> the operations console (web/index.html)
+  GET  /flows                    -> the four flows as JSON: the name, subtitle and
+                                    diagram of each, which is what the page's cards
+                                    and the published demo page are drawn from
   GET  /events/<job_id>          -> Server-Sent Events for that job (honours Last-Event-ID)
   POST /stop/<job_id>            -> cancels a running job (also POST /api/stop/<job_id>)
+
+Every run this server starts is started by the operations API below, which
+takes one engine per stack under a lock. There is no second way in.
 
   The operations API (api.py; every route a face on an existing command):
   GET  /api/doctor?region=R                           deploy-stack.sh --doctor
@@ -45,8 +49,6 @@ from __future__ import annotations
 import os
 import re
 import json
-import uuid
-import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
@@ -54,14 +56,12 @@ from urllib.parse import urlsplit, parse_qs
 from . import api as A
 from . import events as E
 from . import flows as F
-from . import orchestrator as O
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 # every job this process has started, by id. Never pruned: a finished job
 # keeps its buffer for a browser that reconnects late, and nothing yet
 # decides when that is over. Bounding it is a later task.
 JOBS = {}
-FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
 MAX_BODY = 256 * 1024     # bytes of one POST body
 KEEPALIVE_SECS = 12       # SSE comment cadence while a job is quiet
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
@@ -310,22 +310,6 @@ class Handler(BaseHTTPRequestHandler):
         if not origin_ok(self.headers.get("Origin"), self.server.server_address[1]):
             return self._send(403, {"error": ORIGIN_ERROR})
         path = urlsplit(self.path).path
-        if path == "/run":
-            b, sent = self._read_json()
-            if sent:
-                return
-            fid = b.get("flow")
-            if fid not in F.FLOWS:
-                return self._send(400, {"error": "unknown flow"})
-            job_id = uuid.uuid4().hex[:12]
-            job = O.Job(job_id, fid, b.get("inputs", {}))
-            JOBS[job_id] = job
-            replay = None
-            if b.get("replay"):
-                fx = os.path.join(FIXTURES, "{}.json".format(fid))
-                replay = fx if os.path.exists(fx) else None
-            threading.Thread(target=O.run_job, args=(job,), kwargs={"replay": replay}, daemon=True).start()
-            return self._send(200, {"job_id": job_id, "replay": bool(replay)})
         if path.startswith("/stop/") or path.startswith("/api/stop/"):
             job_id = path.rsplit("/", 1)[-1]
             if not job_id_ok(job_id):

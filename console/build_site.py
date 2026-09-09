@@ -31,6 +31,55 @@ FIXTURES = {fid: json.load(open(os.path.join(FX, fid + ".json"))) for fid in F.O
 src = open(os.path.join(WEB, "index.html")).read()
 style = re.search(r"<style>.*?</style>", src, re.S).group(0)
 
+# The instrument and the flow picker this page IS. They used to live in
+# index.html, where the console served them too: a Run button beside the
+# real deploy wizard, posting to a route that started a real run with no
+# one-engine-per-stack lock and no redaction, under a badge that said the
+# page was replaying. The route and the markup are gone from the console;
+# this page keeps both, because here the replay is the truth - CLIENT_APP
+# below drives it from the captured fixtures and makes no request at all.
+#
+# The rules that dress it are still in the console's stylesheet, which this
+# build takes whole, and most of them are shared with the Watch screen.
+DEMO_MARKUP = """\
+<div class="wrap" id="runView">
+  <div class="instrument">
+    <div class="inst-bar">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
+      <span class="id-chip" id="idChip" hidden>acct <b>-</b></span>
+      <div class="inst-right">
+        <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
+        <div class="metric">created<b id="mCreated">0</b></div>
+        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
+        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
+      </div>
+    </div>
+    <div class="inst-body">
+      <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
+      <div class="rightcol">
+        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs, with the why behind it.</div></div>
+        <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
+        <div class="console" id="console"></div>
+      </div>
+    </div>
+  </div>
+
+  <details class="quick" id="quickFlows" open>
+    <summary>Quick flows (advanced)</summary>
+    <div class="rig">
+      <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
+      <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+    </div>
+
+    <div class="cfg">
+      <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
+      <div class="fields" id="fields"></div>
+    </div>
+  </details>
+</div>
+"""
+
 CLIENT_APP = r"""
 (function(){
 "use strict";
@@ -150,13 +199,13 @@ setTimeout(function(){if(!reduce)run();},900);
 data = ('<script>window.__FLOWS__=' + json.dumps(FLOWS, separators=(",", ":")) +
         ';window.__FIXTURES__=' + json.dumps(FIXTURES, separators=(",", ":")) + ';</script>')
 
-# The demo toggle isn't meaningful on the static site (everything is replay) - drop it.
 body = re.search(r"<body>.*?</body>", src, re.S).group(0)
-body = re.sub(r'<div class="demo-t".*?</div>\s*</div>', '</div>', body, flags=re.S)  # remove toggle from header (best-effort)
-# The operations console (pre-flight, the deploy wizard, the placeholders)
-# drives the API and has nothing to do on a static page: the block between
-# its two markers goes, and so do the scripts that only it uses. The quick
-# flows are the whole point of this page, so their fold opens.
+
+# The operations console (pre-flight, the deploy wizard, Watch, Operate,
+# Licensing, Teardown) drives the API and has nothing to do on a static
+# page: the block between its two markers goes, and so do the scripts that
+# only it uses. DEMO_MARKUP takes its place, so the instrument this page is
+# about stands exactly where the screens it replaces stood.
 #
 # The cut is an unanchored substitution over the whole body, so it is held
 # to its markers at both ends: a marker that was renamed or duplicated (or
@@ -166,10 +215,22 @@ body = re.sub(r'<div class="demo-t".*?</div>\s*</div>', '</div>', body, flags=re
 for marker in ("<!-- ops:start -->", "<!-- ops:end -->"):
     found = body.count(marker)
     assert found == 1, "index.html carries %d of %s, expected exactly one" % (found, marker)
-body = re.sub(r"<!-- ops:start -->.*?<!-- ops:end -->", "", body, flags=re.S)
+body = re.sub(r"<!-- ops:start -->.*?<!-- ops:end -->", DEMO_MARKUP.replace("\\", "\\\\"), body, flags=re.S)
 body = re.sub(r'\s*<script src="/web/(?:ui|plan|wizard|watch|operate|licences|teardown)\.js"></script>', "", body)
-body = body.replace('<details class="quick" id="quickFlows">', '<details class="quick" id="quickFlows" open>')
-body = body.replace('DEMO · REPLAYING REAL EVENTS', 'WATCH IT DEPLOY · REAL CAPTURED RUN')
+# The console's hero describes the console: every screen there runs against
+# the real account. This page runs against nothing, so it says so, in the
+# badge and in the sentence under it. Both are held by test_build_site.py:
+# a page that replays must never be dressed as one that deploys, and the
+# console must never be dressed as one that replays.
+body = body.replace('LIVE · YOUR AWS ACCOUNT', 'WATCH IT DEPLOY · REAL CAPTURED RUN')
+body = body.replace(
+    "Plan a deploy, watch the engine run it, and operate what it built. Every screen here runs "
+    "against your own AWS account and your own appliances: the phases are the deploy script's own, "
+    "the addresses are the ones it reported, and its raw output is underneath.",
+    "Pick a flow and press Run. This page replays real captured events from live deploys, in the "
+    "browser and with no AWS calls: the diagram wires itself up, the narration explains each step, "
+    "and the console shows the raw output underneath. The tool that runs these for real is the "
+    "console you install, and it is the one thing on this page that is not here.")
 body = body.replace('<script src="/web/app.js"></script>', data + '<script>' + CLIENT_APP + '</script>')
 
 html = ("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
@@ -185,6 +246,14 @@ for gone in ("data-screen", "ui.js", "wizard.js", "plan.js", "watch.js", "operat
              "teardown.js", "/api/", "/events/", "data-secret", "codeEntry", "licEntry", "opCodes"):
     assert gone not in html, "the static page still carries %r: the ops block survived the cut" % gone
 assert 'quickFlows" open' in html, "the quick flows fold does not open on the static page"
+# and the markup this build supplies is all there, since index.html no
+# longer carries any of it: a DEMO_MARKUP that lost an element would be a
+# page whose script throws on its first line and draws nothing
+for needed in ('id="diagram"', 'id="narr"', 'id="console"', 'id="flows"', 'id="runBtn"',
+               'id="fields"', 'id="instName"', 'id="statusTxt"', 'id="mElapsed"'):
+    assert needed in html, "the demo instrument is missing %s" % needed
+assert "WATCH IT DEPLOY" in html and "DEMO" not in html.replace("DEMO_MARKUP", ""), \
+    "the badge on a page that replays must say what it is"
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 open(OUT, "w").write(html)

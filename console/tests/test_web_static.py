@@ -14,11 +14,12 @@ and hold them to the same lists the server reads:
              the page's CODE,QTY rule is api.CODE_QTY, quantity digits and all
   values     the vocabularies wizard.js offers for the choice keys are the
              words deploy-stack.sh accepts (parsed from its own messages)
-  routes     every /api/..., /events/, /run, /stop/ and /flows literal in the
-             three scripts is a path server.py routes (parsed from its source)
+  routes     every /api/..., /events/, /stop/ and /flows literal in the
+             scripts is a path server.py routes (parsed from its source)
   ids        every id app.js, wizard.js and watch.js look up exists in index.html
-  buttons    begin() hands the quick-flow Run button back, so a wizard launch
-             does not strand it disabled and reading "Running..."
+  live       nothing on this page says it is a demo: the quick flows and the
+             route that ran them are gone, and the Launch button must never
+             sit under a badge that says the page is replaying
   labels     every static input, select and textarea has a label or an aria-label
   syntax     node --check on each script (skipped, with the reason, without node)
   style      no em dash in any web file
@@ -265,25 +266,53 @@ def _js_function(src, name):
     raise AssertionError("%s() has unbalanced braces" % name)
 
 
-def test_a_wizard_launch_hands_the_quick_flow_run_button_back():
-    """Reproduced: click Run on a quick flow, then launch a run from the
-    wizard. The wizard's run finishes, the pill reads complete, and the Run
-    button is still disabled reading "Running...". finish() is right not to
-    relabel it (the button did not start that run: quickRun is false), so the
-    restore belongs where begin() clears quickRun, on the way in.
+def test_nothing_on_the_console_page_says_it_is_a_demo():
+    """The hero badge read "DEMO . REPLAYING REAL EVENTS", the Demo switch
+    beside it defaulted ON, and Deploy is the tab the page opens on. The
+    switch was consulted in exactly one place - the quick flows' POST /run
+    - while the wizard's Launch posted /api/run and started a real deploy
+    against the real account, under that badge, with no live indicator
+    anywhere near it. The badge belonged to four demo flows; the screens
+    underneath it were built later and nothing reconciled them.
 
-    Read as text because the fault only shows across two runs in a browser."""
-    src = _read("app.js")
-    body = _js_function(src, "begin")
-    assert "quickRun=false" in body, "begin() clears quickRun"
-    assert "armRunBtn()" in body, (
-        "begin() restores the Run button where it clears quickRun, or a wizard "
-        "launch strands it: " + body)
-    arm = _js_function(src, "armRunBtn")
-    assert '$("runBtn").disabled=false' in arm, arm
-    assert "Run this flow" in arm, "the button goes back to its own label: " + arm
-    fin = _js_function(src, "finish")
-    assert "if(quickRun)" in fin, "finish() relabels only the button that started the run"
+    The quick flows and their route are gone, so the console has no demo
+    mode at all and says so. The published demo page, which really does
+    replay, gets its own badge from build_site.py; test_build_site holds
+    that end.
+    """
+    html = _read("index.html")
+    badge = re.search(r'id="modeBadge">([^<]*)<', html)
+    assert badge, "the hero badge is gone: it has to say something, and this test reads it"
+    assert badge.group(1).startswith("LIVE"), badge.group(1)
+    for word in ("DEMO ", "REPLAY", "replaying"):
+        assert word not in html, "the console page says %r somewhere" % word
+    for gone in ('id="demoSw"', 'class="demo-t"', 'id="runView"', 'id="quickFlows"',
+                 'id="runBtn"', 'id="flows"'):
+        assert gone not in html, "the quick-flow surface is still in the page: " + gone
+    # and no script left behind that could turn one on
+    for name in SCRIPTS:
+        js = _read(name)
+        assert "demoOn" not in js and "quickRun" not in js, name
+    # the Launch button is still there, on the screen the page opens on
+    assert 'id="launchBtn"' in html
+    assert 'data-page="deploy" aria-selected="true"' in html, "Deploy is the tab the page opens on"
+
+
+def test_the_server_has_one_way_to_start_a_run():
+    """POST /run built `bash deploy/deploy-stack.sh --stack-name <input>
+    --region <input>` and started it with no _ENGINE_LOCK, no _in_flight
+    check, no validation and no redaction. Launch a stack from the wizard,
+    type the same name into the quick flows, press Run, and two engines
+    raced one CloudFormation stack, which is exactly what the
+    one-engine-per-stack lock exists to prevent.
+
+    There is one door now, and it is the one with the lock on it."""
+    src = _read(os.path.basename(SERVER), os.path.dirname(SERVER))
+    exact, prefixes = _server_routes()
+    assert "/run" not in exact and "/run/" not in prefixes, sorted(exact | prefixes)
+    assert "/api/run" in exact, "the operations API still starts runs"
+    assert "run_job" not in src and "O.Job" not in src, (
+        "server.py mints a job of its own: every run belongs to api.py, which takes the lock")
 
 
 # ----------------------------------------------------------------- values
@@ -357,7 +386,7 @@ def _server_routes():
 
 
 def _script_paths(src):
-    return set(re.findall(r"""["'](/(?:api|events|flows|run|stop)(?:/[^"'?\s]*)?)["'?]""", src))
+    return set(re.findall(r"""["'](/(?:api|events|flows|stop)(?:/[^"'?\s]*)?)["'?]""", src))
 
 
 @pytest.mark.parametrize("name", SCRIPTS)

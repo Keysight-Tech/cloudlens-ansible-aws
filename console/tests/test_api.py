@@ -1663,14 +1663,16 @@ def test_the_page_routes_that_raise_answer_500_too(live, monkeypatch, capsys):
 
 
 def test_the_scripts_are_served_with_the_charset_their_glyphs_need(live):
-    # app.js carries its glyphs as themselves: the middot between the account
-    # and the region, the check and the cross of the narration tones. Served
-    # as application/javascript with no charset, an external script is decoded
-    # in the document's encoding or the browser's default, and those UTF-8
-    # bytes read as mojibake. index.html has said charset=utf-8 all along;
-    # the scripts say it now too, which also covers whatever glyph lands next.
+    # The scripts carry their glyphs as themselves: the middot between the
+    # fields of the Watch chip, the check and the cross of its phase marks.
+    # Served as application/javascript with no charset, an external script
+    # is decoded in the document's encoding or the browser's default, and
+    # those UTF-8 bytes read as mojibake. index.html has said charset=utf-8
+    # all along; the scripts say it now too, which also covers whatever
+    # glyph lands next. watch.js is the one read here because it is the one
+    # with the most of them; the header is the same for every /web/ script.
     c = http.client.HTTPConnection("127.0.0.1", live, timeout=5)
-    c.request("GET", "/web/app.js", headers={"Host": "127.0.0.1:%d" % live})
+    c.request("GET", "/web/watch.js", headers={"Host": "127.0.0.1:%d" % live})
     r = c.getresponse()
     status, ctype, body = r.status, r.getheader("Content-Type"), r.read()
     c.close()

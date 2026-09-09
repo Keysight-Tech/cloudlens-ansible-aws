@@ -45,7 +45,6 @@
   .topnav a{font-size:13px;color:var(--ink-soft);text-decoration:none;padding:7px 11px;border-radius:8px;font-weight:500}
   .topnav a:hover{background:var(--line-soft);color:var(--ink)}
   @media(max-width:860px){.topnav{display:none}}
-  .demo-t{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
   .sw{width:38px;height:22px;border-radius:20px;background:var(--line);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s}
   .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.2s}
   .sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
@@ -62,7 +61,12 @@
   h1.title em{font-style:normal;color:var(--accent)}
   .lede{font-size:clamp(15px,1.8vw,18px);color:var(--ink-soft);max-width:52ch;margin:16px 0 0}
 
-  /* instrument */
+  /* The instrument: the diagram, the narration and the raw-output pane.
+     build_site.py takes this whole stylesheet for the published demo page
+     (docs/console.html) and supplies the markup these rules dress, which
+     this page stopped carrying when the quick flows were removed. Several
+     of them - .console, .card-in, .pill, .node - are also what the Watch
+     screen draws with, so this block is not dead here either. */
   .instrument{background:var(--screen);border-radius:var(--r);box-shadow:var(--shadow-lg);border:1px solid #000;overflow:hidden;position:relative}
   .instrument::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 80% at 50% -10%,rgba(255,255,255,.05),transparent 55%);z-index:3}
   .inst-bar{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--screen-line);background:linear-gradient(var(--screen-2),var(--screen));flex-wrap:wrap}
@@ -354,16 +358,13 @@
     <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
   </nav>
   <div class="sp"></div>
-  <div class="demo-t" title="Replay real captured events - no AWS calls">
-    <span>Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true" tabindex="0"></div>
-  </div>
   <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
 </div></header>
 
 <div class="hero"><div class="wrap">
-  <span class="badge"><span class="live"></span> <span id="modeBadge">DEMO · REPLAYING REAL EVENTS</span></span>
+  <span class="badge"><span class="live"></span> <span id="modeBadge">LIVE · YOUR AWS ACCOUNT</span></span>
   <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
-  <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
+  <p class="lede">Plan a deploy, watch the engine run it, and operate what it built. Every screen here runs against your own AWS account and your own appliances: the phases are the deploy script's own, the addresses are the ones it reported, and its raw output is underneath.</p>
 </div></div>
 
 <!-- ops:start -->
@@ -743,48 +744,11 @@
 </div>
 <!-- ops:end -->
 
-<div class="wrap" id="runView">
-  <div class="instrument">
-    <div class="inst-bar">
-      <div class="traffic"><i></i><i></i><i></i></div>
-      <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
-      <span class="id-chip" id="idChip" hidden>acct <b>-</b></span>
-      <div class="inst-right">
-        <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
-        <div class="metric">created<b id="mCreated">0</b></div>
-        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
-        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
-      </div>
-    </div>
-    <div class="inst-body">
-      <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
-      <div class="rightcol">
-        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs, with the why behind it.</div></div>
-        <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
-        <div class="console" id="console"></div>
-      </div>
-    </div>
-  </div>
-
-  <details class="quick" id="quickFlows">
-    <summary>Quick flows (advanced)</summary>
-    <div class="rig">
-      <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
-      <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
-    </div>
-
-    <div class="cfg">
-      <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
-      <div class="fields" id="fields"></div>
-    </div>
-  </details>
-</div>
-
 <section id="paths">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Four paths, one console</span>
       <h2>From an empty account to live packets on a tool.</h2>
-      <p>Each path runs the exact automation an SE runs from the CLI, wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
+      <p>Each path runs the exact automation an SE runs from the CLI, wrapped so you can watch it, explain it, and hand it to a customer. The detail for each is below.</p></div>
     <div class="cards" id="flowCards"></div>
   </div>
 </section>

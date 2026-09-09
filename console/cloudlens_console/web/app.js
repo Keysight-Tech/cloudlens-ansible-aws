@@ -1,6 +1,24 @@
 (function(){
 "use strict";
-var reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+/* app.js: the two things this page needs before any screen loads - the
+   theme, and the node icon set.
+
+   It used to be the quick flows: four tabs, a Run button, POST /run, and
+   an instrument that drew the diagram and the narration. That whole
+   surface is gone. It was a second, unlocked way to start a real deploy
+   (no one-engine-per-stack lock, no input validation, no redaction) sitting
+   under a badge that said the page was replaying, and three of its four
+   commands could not run at all. The operations screens above are the way
+   in now, and the replay it offered lives on the published demo page,
+   which build_site.py assembles and which replays client-side.
+
+   What is left here is what the rest of the page still reads:
+     the theme button, which belongs to no screen
+     window.clConsole.icons, the node icon set watch.js draws its topology
+       with, so that screen speaks the diagram's language instead of
+       inventing a second one
+     the four cards under the screens, drawn from GET /flows, which is the
+       same data the published page is built from */
 var $=function(id){return document.getElementById(id);};
 
 /* theme */
@@ -10,13 +28,6 @@ $("themeBtn").addEventListener("click",function(){
   document.documentElement.setAttribute("data-theme",nxt);
   try{localStorage.setItem("cl-theme",nxt);}catch(e){}
 });
-
-/* demo toggle */
-var demoOn=true, demoSw=$("demoSw");
-function setDemo(v){demoOn=v;demoSw.setAttribute("aria-checked",v?"true":"false");
-  $("modeBadge").textContent=v?"DEMO · REPLAYING REAL EVENTS":"LIVE · YOUR AWS ACCOUNT";}
-demoSw.addEventListener("click",function(){setDemo(!demoOn);});
-demoSw.addEventListener("keydown",function(e){if(e.key===" "||e.key==="Enter"){e.preventDefault();setDemo(!demoOn);}});
 
 /* icons */
 var IC={
@@ -29,295 +40,23 @@ var IC={
  mirror:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>',
  coll:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a4 4 0 0 0-4 4H6a3 3 0 0 0 0 6h12a3 3 0 0 0 0-6h-2a4 4 0 0 0-4-4z"/><path d="M9 17l3 4 3-4"/></svg>'
 };
-var TONE={info:"i",good:"✓",note:"·",warn:"!",err:"✕"};
-// the diagram node each engine resource lights (the script's resource
-// events, Events v2, on the stack flow's nodes); the rest only narrate
-var KIND_NODE={vpc:"vpc",subnet:"vpc",vcontroller:"clms",kvo:"kvo",vpb:"vpb"};
-var EMPTY_FLOW={nodes:{},wires:[]};
 
-var FLOWS={}, ORDER=[], current=null, nodeEls={}, es=null, timer=null, t0=0, conLines=0;
-// true only while the quick-flow Run button is the thing that started the
-// run: a run the wizard launched shares the instrument, not that button
-var quickRun=false;
-
-/* fetch flows */
-fetch("/flows").then(function(r){return r.json();}).then(function(d){
-  FLOWS=d.flows; ORDER=d.order;
-  var tabs=$("flows"), cards=$("flowCards");
-  ORDER.forEach(function(id,i){
-    var f=FLOWS[id];
-    var b=document.createElement("button");b.className="flow";b.setAttribute("role","tab");
-    b.setAttribute("aria-selected",i===0?"true":"false");b.dataset.flow=id;
-    b.innerHTML='<div class="fn">FLOW 0'+(i+1)+'</div><div class="ft">'+f.name+'</div>';
-    b.addEventListener("click",function(){selectFlow(id);});
-    tabs.appendChild(b);
-    var c=document.createElement("div");c.className="card";
-    c.innerHTML='<div class="k">FLOW 0'+(i+1)+'</div><h3>'+f.name+'</h3><p>'+f.subtitle+'</p>';
-    cards.appendChild(c);
-  });
-  selectFlow(ORDER[0]);
-}).catch(function(){$("narr").innerHTML='<div class="empty">Could not load flows. Is the console server running?</div>';});
-
-/* The quick-flow Run button as the page offers it: enabled, its own label.
-   selectFlow arms it for a new flow; begin() hands it back, because a run
-   the wizard started leaves it disabled and reading "Running..." forever
-   otherwise (finish() deliberately relabels nothing after a wizard launch). */
-function armRunBtn(){$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
-
-function selectFlow(id){
-  if(es){es.close();es=null;} stopTimer();
-  current=id; var f=FLOWS[id];
-  document.querySelectorAll(".flow").forEach(function(b){b.setAttribute("aria-selected",b.dataset.flow===id?"true":"false");});
-  $("instName").textContent=f.script;
-  $("cfgTitle").textContent="Inputs"; $("cfgSub").textContent="· "+f.name;
-  var fl=$("fields");fl.innerHTML="";
-  f.inputs.forEach(function(fd){
-    var d=document.createElement("div");d.className="field";
-    d.innerHTML='<label>'+fd.label+'</label><input data-k="'+fd.key+'" value="'+(fd.default||"")+'" placeholder="'+(fd.placeholder||"")+'" spellcheck="false">';
-    fl.appendChild(d);
-  });
-  resetInstrument();
-  layoutDiagram(f);
-  $("narr").innerHTML='<div class="empty">Press ▸ Run: the narration explains each step as it happens.</div>';
-  armRunBtn();
-}
-
-function resetInstrument(){
-  $("console").innerHTML="";conLines=0;$("conCount").textContent="";
-  setPill("idle","");$("mElapsed").textContent="0:00";$("mCreated").textContent="0";
-  $("idChip").hidden=true;$("stopBtn").hidden=true;
-}
-function setPill(cls,txt){var p=$("statusPill");p.className="pill"+(cls&&cls!=="idle"?" "+cls:"");$("statusTxt").textContent=txt||cls;}
-
-function layoutDiagram(f){
-  var dg=$("diagram"),sv=$("wires");
-  dg.querySelectorAll(".node").forEach(function(n){n.remove();});sv.innerHTML="";nodeEls={};
-  var W=dg.clientWidth,H=dg.clientHeight;
-  Object.keys(f.nodes).forEach(function(id){
-    var n=f.nodes[id],el=document.createElement("div");el.className="node";
-    el.style.left=n.x+"%";el.style.top=n.y+"%";
-    el.innerHTML='<div class="chip">'+(IC[n.ic]||"")+'</div><div class="nlab">'+n.lab+'</div><div class="nsub" data-sub>'+n.sub+'</div>';
-    dg.appendChild(el);nodeEls[id]=el;
-  });
-  f.wires.forEach(function(w){
-    var a=f.nodes[w[0]],b=f.nodes[w[1]];
-    var l=document.createElementNS("http://www.w3.org/2000/svg","line");
-    l.setAttribute("x1",a.x/100*W);l.setAttribute("y1",a.y/100*H);
-    l.setAttribute("x2",b.x/100*W);l.setAttribute("y2",b.y/100*H);
-    l.setAttribute("class","dwire");l.dataset.pair=w[0]+"-"+w[1];sv.appendChild(l);
-  });
-  Object.keys(f.nodes).forEach(function(id,i){setTimeout(function(){if(nodeEls[id])nodeEls[id].classList.add("show");},reduce?0:70*i);});
-}
-
-function setNode(id,status,label){
-  var el=nodeEls[id];if(!el)return;
-  el.classList.remove("show","busy","live","fail");
-  if(status==="ghost")el.classList.add("show");
-  else el.classList.add(status);
-  if(label){var s=el.querySelector("[data-sub]");if(s)s.textContent=label;}
-  if(status==="live"){
-    $("wires").querySelectorAll(".dwire").forEach(function(l){
-      var p=l.dataset.pair.split("-");
-      if(p.indexOf(id)>-1){var o=p[0]===id?p[1]:p[0];
-        if(nodeEls[o]&&nodeEls[o].classList.contains("live"))l.classList.add("on");}
-    });
-    $("mCreated").textContent=countLive();
-  }
-}
-function countLive(){var n=0;Object.keys(nodeEls).forEach(function(k){if(nodeEls[k].classList.contains("live"))n++;});return n;}
-
-/* narration + console */
-function narrate(text,tone){
-  var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
-  var d=document.createElement("div");d.className="nline "+(tone||"info");
-  d.innerHTML='<span class="ni">'+(TONE[tone]||"i")+'</span><div class="nt">'+esc(text)+'</div>';
-  n.appendChild(d);n.scrollTop=n.scrollHeight;
-}
-function card(kind,head,body){
-  var n=$("narr");
-  var d=document.createElement("div");d.className="card-in "+(kind||"");
-  d.innerHTML='<div class="h">'+esc(head)+'</div><div class="b">'+esc(body)+'</div>';
-  n.appendChild(d);n.scrollTop=n.scrollHeight;
-}
-function conLine(text){
-  var c=$("console");var d=document.createElement("div");d.className="cln";d.textContent=text;
-  c.appendChild(d);c.scrollTop=c.scrollHeight;conLines++;$("conCount").textContent=conLines+" lines";
-  while(c.childNodes.length>400)c.removeChild(c.firstChild);
-}
+/* the four cards, from the server's own flow data. A page that cannot
+   reach the server says so where the cards would have been, rather than
+   leaving an empty strip that reads as "there are none". */
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
 
-/* A prompt from the engine (the script's ask, relayed as a prompt event):
-   the question, an input, Send. The answer goes to POST /api/answer/<job>
-   as {prompt_id, text}; an empty answer takes the script's default, as
-   Enter does at a terminal. A secret prompt gets a password field. */
-function promptCard(jobId,m){
-  var n=$("narr");var e=n.querySelector(".empty");if(e)e.remove();
-  var d=document.createElement("div");d.className="card-in prompt";
-  var secret=m.kind==="secret", fid="ans-"+jobId+"-"+(m.prompt_id||"");
-  var hint=m["default"]!==undefined&&m["default"]!==null&&m["default"]!==""?"Enter = "+m["default"]:"";
-  d.innerHTML='<div class="h">'+esc(m.question||"The engine asks")+'</div>'+
-    '<form class="ans"><label class="vh" for="'+esc(fid)+'">Answer</label>'+
-    '<input id="'+esc(fid)+'" type="'+(secret?"password":"text")+'" autocomplete="off" spellcheck="false" placeholder="'+esc(hint)+'">'+
-    '<button type="submit" class="stopbtn">Send</button><span class="b" data-note></span></form>';
-  n.appendChild(d);n.scrollTop=n.scrollHeight;
-  var form=d.querySelector("form"),inp=d.querySelector("input"),note=d.querySelector("[data-note]"),btn=d.querySelector("button");
-  inp.focus();
-  form.addEventListener("submit",function(ev){
-    ev.preventDefault();
-    if(btn.disabled)return;
-    btn.disabled=true;note.textContent="sending...";
-    // the body is read as text and parsed here: r.json() on a 500 whose
-    // body is not JSON rejects, and with the catch below that read as
-    // "Could not reach", which is not what happened. One answer per
-    // request: the catch is before the then that writes the note, so a
-    // throw in that then is an unhandled rejection, not a second note.
-    fetch("/api/answer/"+jobId,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({prompt_id:m.prompt_id,text:inp.value})})
-     .then(function(r){return r.text().then(function(t){
-       var j=null;try{j=JSON.parse(t);}catch(e){}
-       return {ok:r.ok,status:r.status,j:j};});})
-     .catch(function(){return {err:"Could not reach the console server."};})
-     .then(function(x){
-       if(x.err){note.textContent=x.err;btn.disabled=false;return;}
-       if(x.ok){note.textContent="answered";inp.disabled=true;inp.value="";return;}
-       note.textContent=(x.j&&x.j.error)||("refused (HTTP "+x.status+")");btn.disabled=false;});
+fetch("/flows").then(function(r){return r.json();}).then(function(d){
+  var cards=$("flowCards");
+  d.order.forEach(function(id,i){
+    var f=d.flows[id];
+    var c=document.createElement("div");c.className="card";
+    c.innerHTML='<div class="k">FLOW 0'+(i+1)+'</div><h3>'+esc(f.name)+'</h3><p>'+esc(f.subtitle)+'</p>';
+    cards.appendChild(c);
   });
-}
+}).catch(function(){
+  $("flowCards").innerHTML='<div class="card"><p>Could not load the flow list. Is the console server running?</p></div>';
+});
 
-/* timer */
-function startTimer(){t0=Date.now();stopTimer();timer=setInterval(function(){
-  var s=Math.floor((Date.now()-t0)/1000);$("mElapsed").textContent=Math.floor(s/60)+":"+("0"+(s%60)).slice(-2);
-},1000);}
-function stopTimer(){if(timer){clearInterval(timer);timer=null;}}
-
-/* run */
-$("runBtn").addEventListener("click",run);
-$("stopBtn").addEventListener("click",function(){ if(window._job) fetch("/stop/"+window._job,{method:"POST"}); });
-
-/* The instrument, ready for a run: the flow's diagram as ghosts, the
-   counters at zero, the pill running, the clock started. The quick flows
-   and the wizard's Launch both start here. */
-function begin(f,title){
-  quickRun=false;armRunBtn();
-  if(es){es.close();es=null;}
-  resetInstrument();layoutDiagram(f||EMPTY_FLOW);$("narr").innerHTML="";
-  if(title)$("instName").textContent=title;
-  setPill("run","running");$("stopBtn").hidden=false;startTimer();
-}
-
-function run(){
-  var f=FLOWS[current];
-  var inputs={};document.querySelectorAll("#fields input").forEach(function(i){inputs[i.dataset.k]=i.value;});
-  begin(f,f.script);quickRun=true;
-  $("runBtn").disabled=true;$("runBtn").innerHTML='<span class="tri"></span> Running…';
-  fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({flow:current,inputs:inputs,replay:demoOn})})
-   .then(function(r){return r.json();})
-   .then(function(d){
-     if(d.error){finish("err","error");narrate(d.error,"err");return;}
-     attach(d.job_id);
-   })
-   .catch(function(){finish("err","error");narrate("Could not reach the console server.","err");});
-}
-
-/* Follow one job's stream into the instrument. The console's own events
-   (hello, log, state, narrate, stat, done, error) and the script's (hello,
-   phases, phase, resource, check, prompt, login, done): every frame the
-   engine relays is rendered somewhere, nothing is dropped on the floor.
-   The Watch screen (watch.js) draws the same frames as a timeline and a
-   topology; this instrument stays the quick flows' own rendering. */
-function attach(jobId){
-  if(es){es.close();es=null;}
-  window._job=jobId;
-  es=new EventSource("/events/"+jobId);
-  es.addEventListener("hello",function(e){var m=JSON.parse(e.data);
-    // two hello shapes: the console's (account, arn, region) and the
-    // script's own (stack, region); the last one wins the chip
-    $("idChip").hidden=false;
-    if(m.account===undefined&&m.stack!==undefined){
-      // an empty stack (the script has not settled the name yet) is said, not an empty bold
-      $("idChip").innerHTML=(m.stack?'stack <b>'+esc(m.stack)+'</b>':'stack pending')+' · '+esc(m.region||"");}
-    else{$("idChip").innerHTML='acct <b>'+esc(m.account)+'</b> · '+esc(m.region);}});
-  es.addEventListener("log",function(e){conLine(JSON.parse(e.data).text);});
-  es.addEventListener("state",function(e){var m=JSON.parse(e.data);setNode(m.node,m.status,m.label);});
-  es.addEventListener("narrate",function(e){var m=JSON.parse(e.data);narrate(m.text,m.tone);});
-  es.addEventListener("stat",function(e){var m=JSON.parse(e.data);
-    if(m.created!=null)$("mCreated").textContent=m.created;
-    // m.waiting going false has to clear the note, or the pill keeps saying
-    // "waiting for the stack to appear" for the whole deploy: the stack turns
-    // up seconds later and every stat after that carries no note at all.
-    if(m.waiting){setPill("run",m.note||"waiting on AWS");}
-    else{setPill("run","running");}});
-  es.addEventListener("phases",function(e){var m=JSON.parse(e.data);
-    // the script's whole phase list, once, at the start: said here as the one
-    // line it is, and drawn as pending rows on the Watch screen
-    var list=String(m.order||"").split(/\s+/).filter(function(p){return !!p;});
-    if(list.length)narrate("Phases this run can go through: "+list.join(", "),"note");});
-  es.addEventListener("phase",function(e){var m=JSON.parse(e.data);
-    var tone=m.status==="done"?"good":m.status==="failed"?"err":"note";
-    narrate("Phase "+(m.name||"")+": "+(m.status||"")+(m.reason?" ("+m.reason+")":""),tone);});
-  es.addEventListener("resource",function(e){var m=JSON.parse(e.data);
-    // the script's own id arrives as resource_id: the frame's id is the console's
-    var rid=m.resource_id||"", node=KIND_NODE[m.kind];
-    if(node)setNode(node,"live",rid||m.kind);
-    var bits=[m.kind||"resource"];
-    if(rid)bits.push(rid);if(m.ip)bits.push("ip "+m.ip);if(m.private_ip)bits.push("private "+m.private_ip);
-    if(m.zone)bits.push(m.zone);if(m.count!=null)bits.push("count "+m.count);if(m.tag)bits.push("tag "+m.tag);
-    if(m.cluster)bits.push("cluster "+m.cluster);if(m.mode)bits.push(m.mode);
-    narrate(bits.join(" · "),"info");});
-  es.addEventListener("check",function(e){var m=JSON.parse(e.data);
-    narrate("["+String(m.status||"").toUpperCase()+"] "+(m.item||"")+(m.fix?" (fix: "+m.fix+")":""),
-      m.status==="fail"?"err":m.status==="warn"?"warn":"good");});
-  es.addEventListener("login",function(e){var m=JSON.parse(e.data);
-    card("","Log in: "+(m.component||""),(m.url||"")+"  user "+(m.user||"")+"  password: "+(m.password_in||""));});
-  es.addEventListener("prompt",function(e){promptCard(jobId,JSON.parse(e.data));});
-  es.addEventListener("done",function(e){var m=JSON.parse(e.data);
-    // the script's done carries status (ok|failed|interrupted|declined);
-    // anything but a success is the run ending badly, not completing
-    if(m.status!==undefined&&m.status!=="ok"&&m.status!=="dry-run"){
-      var why="Run ended: "+m.status;
-      if(m.phase)why+=" in "+m.phase;
-      if(m.reason)why+=" ("+m.reason+")";
-      if(m.code!==undefined&&m.code!==null&&m.code!=="")why+=" (exit "+m.code+")";
-      finish("err","failed");card("err","Failed",why);return;}
-    // the script's done has a status and no summary; the console's has a summary
-    finish("done","complete");narrate(m.summary||("Deploy finished ("+(m.status||"ok")+")"),"good");
-    if(m.outputs&&m.outputs.note)card("","Next",m.outputs.note);});
-  es.addEventListener("error",function(e){
-    // an error frame with no data is the transport's, not the engine's:
-    // CONNECTING is EventSource retrying (say nothing), CLOSED is the end
-    // of the stream, and leaving the pill on "running" there would have
-    // the page claim a run that nothing is following any more
-    if(!e.data){
-      if(es&&es.readyState===EventSource.CLOSED){
-        finish("err","disconnected");
-        card("err","Lost the run","The event stream closed. Reload the page to pick the run up again: a run the console stops following carries on without it.");
-      }
-      return;}
-    var m=JSON.parse(e.data);
-    if(m.node){setNode(m.node,"fail");narrate(m.text,"err");}
-    else{finish("err","error");card("err","Failed",m.text);}
-    if(m.fix)card("err","How to fix",m.fix);});
-}
-
-function finish(cls,txt){
-  stopTimer();setPill(cls,txt);$("stopBtn").hidden=true;
-  if(quickRun){$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run again';}
-  if(es){es.close();es=null;}
-}
-
-window.addEventListener("resize",function(){if(!timer&&current)layoutDiagram(FLOWS[current]);});
-
-/* What the rest of the page drives: begin(flowId, title) readies the
-   instrument with that flow's diagram (the "stack" one for deploy-stack.sh),
-   attach(jobId) follows the job, relayout() redraws a diagram that was laid
-   out while hidden (a hidden page has no width), and icons is the node icon
-   set, so the Watch screen draws its topology in this diagram's language
-   instead of inventing a second one. */
-window.clConsole={
-  begin:function(flowId,title){begin(FLOWS[flowId]||EMPTY_FLOW,title);},
-  attach:attach,
-  relayout:function(){if(!timer&&current&&FLOWS[current])layoutDiagram(FLOWS[current]);},
-  icons:IC
-};
+window.clConsole={icons:IC};
 })();

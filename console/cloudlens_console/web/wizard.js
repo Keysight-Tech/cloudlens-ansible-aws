@@ -11,7 +11,7 @@
    carries a stale key. Secrets never enter the plan or localStorage: they
    are read from their password fields at Launch and cleared. */
 var $=function(id){return document.getElementById(id);};
-var P=window.clPlan, C=window.clConsole, W=window.clWatch, esc=P.esc;
+var P=window.clPlan, W=window.clWatch, esc=P.esc;
 // codeTail is a rule three screens have to agree on exactly, so there is one
 // of it, in ui.js, and this file takes it from there rather than keeping a
 // second copy that can drift from the other two
@@ -34,11 +34,6 @@ var REGION_RE=/^[a-z]{2}(-[a-z]+)+-\d$/;
 var STACK_RE=/^[A-Za-z][A-Za-z0-9-]*$/, STACK_MAX=128;   // deploy-stack.sh valid_stack_name()
 var DEBOUNCE=400;
 var PAGES=["preflight","deploy","watch","operate","licensing","teardown"];
-/* The pages the quick-flow instrument shows under. Watch is not one of them
-   any more: watch.js owns that screen, and a run launched here streams into
-   it. The instrument stays on the Deploy page, where the quick flows it
-   belongs to live. */
-var RUN_PAGES={deploy:true};
 var OS=["ubuntu","rhel","windows"];
 
 /* ------------------------------------------------------------- state */
@@ -180,9 +175,6 @@ function showPage(name){
   if(PAGES.indexOf(name)<0)name="deploy";
   document.querySelectorAll("#opsNav [data-page]").forEach(function(b){b.setAttribute("aria-selected",b.dataset.page===name?"true":"false");b.tabIndex=b.dataset.page===name?0:-1;});
   document.querySelectorAll("[data-page-body]").forEach(function(s){s.hidden=s.dataset.pageBody!==name;});
-  var rv=$("runView"),was=rv.hidden;
-  rv.hidden=!RUN_PAGES[name];
-  if(was&&!rv.hidden)C.relayout();
   if(name==="preflight"&&!$("pfRegion").value)$("pfRegion").value=region();
   // the screens that live in their own files hear which page is showing:
   // teardown.js holds an EventSource open while its audit streams, and a
