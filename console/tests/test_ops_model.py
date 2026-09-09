@@ -107,18 +107,41 @@ if (IN.flight !== undefined) {
   const posts = [], reads = [];
   let pending = null;
   W.clUi.post = function(path, body, cb){
-    posts.push({path: path, action: body.action, kvo: body.kvo});
+    // the codes too: what a quantity box was typed into is only proved by
+    // what the request carried out of it
+    posts.push({path: path, action: body.action, kvo: body.kvo, codes: body.codes});
     pending = cb;                       // held, until the test answers it
   };
   IN.flight.forEach(function(step, n){
     if (step.set) Object.keys(step.set).forEach(function(id){
       document.getElementById(id).value = step.set[id];
     });
+    // typing into a field, which is not the same as setting its value:
+    // the quantity inputs decide what Activate would send, and they say so
+    // by repainting the button from their own input handler
+    if (step.type) Object.keys(step.type).forEach(function(id){
+      const el = document.getElementById(id);
+      el.value = step.type[id];
+      if (!el.on.input) throw new Error("step " + n + ": #" + id + " has no input handler");
+      el.on.input();
+    });
     if (step.click) {
       const el = document.getElementById(step.click);
       if (!el.on.click) throw new Error("step " + n + ": #" + step.click + " has no click handler");
+      // A browser ignores a click on a disabled control, and so does this:
+      // calling the handler regardless made `disabled` unobservable here,
+      // so a screen that offered a button it should have withheld passed
+      // every test in this file. Activate spends entitlement that does not
+      // come back; a harness that cannot see the button withheld cannot
+      // test the one rule that matters about it.
+      if (el.disabled) throw new Error("step " + n + ": #" + step.click + " is disabled: a browser would " +
+                                       "have ignored this click and so does the harness");
       el.on.click();
     }
+    // what the screen is OFFERING at this point, which is a fact about the
+    // button and not about the handler behind it
+    if (step.button !== undefined)
+      reads.push({button: step.button, disabled: document.getElementById(step.button).disabled === true});
     if (step.answer !== undefined) {
       if (!pending) throw new Error("step " + n + ": nothing is in flight to answer");
       const cb = pending; pending = null;
@@ -142,7 +165,16 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
-def _node(payload, tmp_path, *files):
+def _node(payload, tmp_path, *files, **kw):
+    """Run the harness over `files` and return what it printed.
+
+    must_fail=True inverts it: the run is expected to die and its stderr
+    comes back instead. That is how the harness's own refusals are tested,
+    and one of them - a click on a disabled control - is the only thing
+    standing between this file and a screen offering a button it should
+    have withheld."""
+    must_fail = kw.pop("must_fail", False)
+    assert not kw, kw
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed: running the screen models needs it")
@@ -152,6 +184,9 @@ def _node(payload, tmp_path, *files):
     data.write_text(json.dumps(payload), encoding="utf-8")
     argv = [node, str(harness), str(data)] + [os.path.join(WEB, f) for f in files]
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    if must_fail:
+        assert proc.returncode != 0, "the harness went through with it: " + proc.stdout
+        return proc.stderr
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -913,6 +948,84 @@ def test_the_answer_is_filed_against_the_kvo_the_question_was_sent_to(tmp_path, 
     assert gate2["licencesReleased"] is False, (
         "a KVO activated on since its release must not arm --accept-licence-loss")
     assert gate2["warn"]["level"] == "bad" and "ACTIVATED on it" in gate2["warn"]["text"]
+
+
+def test_activate_is_offered_only_while_there_is_something_to_spend(tmp_path, monkeypatch):
+    """The one button on the console that spends entitlement which does not
+    come back, watched through the whole of a batch.
+
+    activatable() picks the rows activate() would send - checked, VALID,
+    and with a quantity still on them - and the button says so. Every part
+    of that rule had rested on one browser assertion, on the !valid half
+    only, because this harness called handlers directly and could not see a
+    button withheld at all. It refuses a disabled click now, so the button
+    is a thing this file can be wrong about.
+
+    Two halves were untested and both are here: the quantity, which is how
+    the screen is told to leave a code for another batch, and the repaint
+    that has to follow typing one. So is the moment after the answer lands:
+    the rows and their quantities survive the call, so the button used to
+    come back live over codes that had just been spent, and a second press
+    would have spent them again."""
+    monkeypatch.setattr(api, "_kvo_license", lambda: _KL())
+    creds = {"kvo": "10.1.2.3", "user": "admin", "password": "pw"}
+    check = api.licences(dict(creds, action="check", codes=["BBBB-2222-CCCC"]))
+    activated = api.licences(dict(creds, action="activate", codes=["BBBB-2222-CCCC,4"]))
+    assert activated["activated"] == 1
+
+    steps = [
+        {"set": {"licKvo": "10.1.2.3", "licPass": "pw"}},
+        {"button": "licActivate"},                     # 0 no codes at all
+        {"set": {"licEntry": "BBBB-2222-CCCC"}},
+        {"click": "licAdd"},
+        {"button": "licActivate"},                     # 1 a code, but nothing checked yet
+        {"click": "licCheck"},
+        {"answer": check},
+        {"button": "licActivate"},                     # 2 VALID, and the entitlement's own 10
+        {"type": {"licQty0": "0"}},                    #   left for another batch
+        {"button": "licActivate"},                     # 3
+        {"type": {"licQty0": "4"}},                    #   and put back, at a quantity
+        {"button": "licActivate"},                     # 4
+        {"click": "licActivate"},
+        {"button": "licActivate"},                     # 5 the call is in flight
+        {"answer": activated},
+        {"button": "licActivate"},                     # 6 and that entitlement is gone
+    ]
+    out = _node({"flight": steps}, tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js")["flight"]
+
+    withheld = [r["disabled"] for r in out["reads"]]
+    assert withheld == [True, True, False, True, False, True, True], withheld
+    assert withheld[2] is False, "a checked, valid code with a quantity is something to spend"
+    assert withheld[3] is True, (
+        "quantity 0 is how this screen is told to leave a code for the next batch, and activate() "
+        "would send nothing: the button must not offer to")
+    assert withheld[4] is False, "typing a quantity back in repaints the button with it"
+    assert withheld[6] is True, (
+        "the rows kept their quantities across the call, so Activate came back live over entitlement "
+        "that had just been spent: pressing it again would spend it again")
+
+    # and the quantity typed into the box is the quantity that went out
+    assert [p["action"] for p in out["posts"]] == ["check", "activate"]
+    assert out["posts"][1]["codes"] == ["BBBB-2222-CCCC,4"], out["posts"][1]
+
+
+def test_a_click_on_a_disabled_control_is_refused_the_way_a_browser_ignores_one(tmp_path):
+    """The harness's own rule, tested, because everything above rests on
+    it: calling the click handler regardless of `disabled` made the button
+    state unobservable, so a screen that offered Activate when it should
+    have withheld it passed this file unchanged.
+
+    Activate at the top of the screen, with nothing added and nothing
+    checked, is the case: a browser would ignore that click and so does
+    this."""
+    steps = [
+        {"set": {"licKvo": "10.1.2.3", "licPass": "pw"}},
+        {"button": "licActivate"},
+        {"click": "licActivate"},
+    ]
+    err = _node({"flight": steps}, tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js",
+                must_fail=True)
+    assert "#licActivate is disabled" in err, err
 
 
 def test_the_plan_pages_escaper_is_the_shared_one(tmp_path):

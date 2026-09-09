@@ -35,6 +35,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -233,6 +234,34 @@ def test_plan_resolved_rows_come_from_the_plan_only():
 
 
 # -------------------------------------------------------------- discover
+def test_this_suite_never_inherits_the_browser_suites_stub_aws():
+    """The fast suite's environment is its own, whichever way it was run.
+
+    tests/browser puts a stub executable named `aws` first on PATH and
+    points api.VC_CREDS_FILE at a file of its choosing. Both used to be set
+    by a session-scoped fixture and put back only at session teardown, and
+    tests/browser sorts before the modules beside it, so `pytest tests
+    tests/browser` ran all of THIS suite with that stub in front of the
+    real CLI. Nothing here shells out to aws today, which is why it never
+    showed; a suite whose environment depends on how it was invoked is a
+    suite that can start showing it at any time.
+
+    Run either way, this holds. The stub is recognised by its own contents,
+    since a machine with no aws installed has nothing else to compare."""
+    assert os.environ.get("CLOUDLENS_TEST_AWS") is None, (
+        "the browser suite's answers file is still pointed at from this suite's environment")
+    found = shutil.which("aws")
+    if found:
+        with open(found, "rb") as fh:
+            head = fh.read(4096)
+        assert b"CLOUDLENS_TEST_AWS" not in head, (
+            "the aws on PATH is tests/browser's stub, not the CLI: " + found)
+    default = (os.environ.get("CLOUDLENS_VC_CREDS_FILE")
+               or os.path.join(os.path.expanduser("~"), ".cloudlens-vcontroller-creds.json"))
+    assert api.VC_CREDS_FILE == default, (
+        "api.VC_CREDS_FILE is still where a fixture put it: " + api.VC_CREDS_FILE)
+
+
 def test_aws_is_an_argv_list_with_json_output_never_a_shell(monkeypatch):
     calls = []
 

@@ -65,7 +65,10 @@ AWS_STUB = '''#!/usr/bin/env python3
 """Stands in for the aws CLI. Prints the JSON the test in hand put under
 this subcommand in $CLOUDLENS_TEST_AWS, and {} for one it did not name.
 Every argv is appended to aws.log beside it, so a test can prove which
-call the console actually made."""
+call the console actually made.
+That log is ONE file, shared by the whole session and only ever appended
+to: the `aws` fixture truncates it before each test, which is what makes
+aws.calls() this test's own calls and not the session's."""
 import json
 import os
 import sys
@@ -122,6 +125,11 @@ exit "${CLOUDLENS_TEST_EXIT:-0}"
 # teardown-stack.sh has no events channel: it runs unwired and its stdout
 # IS the report the audit shows. This one refuses --events for that reason,
 # as the real script does with any flag it does not know.
+#
+# It prints the directory it was started in, which the audit then shows on
+# the screen. That line is the only way a test can see the cwd api._launch
+# handed the destructive script, and it is the one worth seeing: a fake
+# teardown run in the repository is a real teardown's blast radius.
 FAKE_TEARDOWN = r'''#!/usr/bin/env bash
 for arg in "$@"; do
   case $arg in
@@ -129,6 +137,7 @@ for arg in "$@"; do
   esac
 done
 echo "teardown-stack.sh $*"
+echo "cwd: $(pwd -P)"
 cat "$CLOUDLENS_TEST_REPORT"
 exit 0
 '''
@@ -210,16 +219,42 @@ def page(browser, console):
 @pytest.fixture(scope="session")
 def instruments(tmp_path_factory):
     """The stand-ins, written once: the aws stub, the engine, the teardown
-    script and the kvo_license module."""
+    script and the kvo_license module. Writing them is all this does;
+    putting any of them in front of the console is per test, in
+    stubs_on_path below."""
     d = tmp_path_factory.mktemp("instruments")
     return {
         "dir": str(d),
         "answers": str(d / "answers.json"),
         "aws_log": str(d / "aws.log"),
+        "aws": _write_exec(str(d / "aws"), AWS_STUB),
         "engine": _write_exec(str(d / "fake-deploy.sh"), FAKE_ENGINE),
         "teardown": _write_exec(str(d / "fake-teardown.sh"), FAKE_TEARDOWN),
         "kvo_license": _write_exec(str(d / "fake_kvo_license.py"), FAKE_KVO_LICENSE),
     }
+
+
+@pytest.fixture(autouse=True)
+def stubs_on_path(instruments, monkeypatch):
+    """The stub aws first on PATH, and api.VC_CREDS_FILE pointed at a file
+    that does not exist, for the length of ONE test.
+
+    Both used to be set by the session-scoped `console` fixture below and
+    put back only at session teardown. tests/browser sorts before the
+    modules beside it, so in a combined run (`pytest tests tests/browser`)
+    the whole fast suite then ran with a stub `aws` first on PATH and with
+    api pointing at a credentials path of this suite's choosing. Nothing
+    in the fast suite shells out to the CLI today, so nothing was wrong on
+    the day; what was wrong is that the fast suite's environment depended
+    on how it had been invoked. monkeypatch puts both back after each test
+    that asked for them, which is every test in this directory.
+
+    api._aws reads PATH at the moment it runs, in a request thread, so a
+    fixture that holds it for the length of the test holds it for every
+    call that test causes."""
+    monkeypatch.setenv("PATH", instruments["dir"] + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("CLOUDLENS_TEST_AWS", instruments["answers"])
+    monkeypatch.setattr(api, "VC_CREDS_FILE", os.path.join(instruments["dir"], "no-such-creds.json"))
 
 
 @pytest.fixture(scope="session")
@@ -228,18 +263,11 @@ def console(instruments):
     one: another console may be running on this machine). Yields its base
     URL and stops it cleanly.
 
-    The stub aws goes first on PATH for the life of the session, so every
-    api._aws call in every request thread finds it; api.VC_CREDS_FILE is
-    pointed at a path that does not exist, so no test can read the
-    operator's own vController credentials file.
+    The server is all this fixture owns. What the console FINDS while it
+    runs - the stub aws on PATH, the credentials path it is allowed to
+    read - is per test, in stubs_on_path above, so none of it outlives the
+    directory that asked for it.
     """
-    _write_exec(os.path.join(instruments["dir"], "aws"), AWS_STUB)
-    was = {k: os.environ.get(k) for k in ("PATH", "CLOUDLENS_TEST_AWS")}
-    os.environ["PATH"] = instruments["dir"] + os.pathsep + os.environ.get("PATH", "")
-    os.environ["CLOUDLENS_TEST_AWS"] = instruments["answers"]
-    creds_was = api.VC_CREDS_FILE
-    api.VC_CREDS_FILE = os.path.join(instruments["dir"], "no-such-creds.json")
-
     httpd = server.serve("127.0.0.1", 0)
     port = httpd.server_address[1]
     assert port and port != 8760, "the test server must never take the console's own port"
@@ -252,12 +280,6 @@ def console(instruments):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
-        api.VC_CREDS_FILE = creds_was
-        for k, v in was.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
 
 def _wait_for_port(port, timeout=5.0):
@@ -341,7 +363,16 @@ def engine(instruments, tmp_path, monkeypatch):
 @pytest.fixture
 def teardown_script(instruments, tmp_path, monkeypatch):
     """Point the console's teardown script at the fake one and give it the
-    report to print: teardown_script(["...", "..."])."""
+    report to print: teardown_script(["...", "..."]).
+
+    api.REPO moves to a temporary directory with it, exactly as the engine
+    fixture does. api._launch passes the module global as the cwd for both
+    scripts, so patching only TEARDOWN left the fake teardown running in
+    the checkout: the destructive path was the one path that missed the
+    promise the engine fixture makes in words. `says.cwd` is where it must
+    have run, and test 7 asserts the script's own answer against it.
+    """
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
     monkeypatch.setattr(api, "TEARDOWN", instruments["teardown"])
     report = tmp_path / "orphans-report.txt"
 
@@ -351,6 +382,10 @@ def teardown_script(instruments, tmp_path, monkeypatch):
         monkeypatch.setenv("CLOUDLENS_TEST_REPORT", str(report))
         return str(report)
 
+    # `pwd -P` in the script, os.path.realpath here: on this machine the
+    # temporary directory is reached through a symlink, and the two sides
+    # of the assertion have to be the same kind of path
+    says.cwd = os.path.realpath(str(tmp_path))
     return says
 
 

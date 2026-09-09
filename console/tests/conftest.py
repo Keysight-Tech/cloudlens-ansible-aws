@@ -41,3 +41,12 @@ def pytest_ignore_collect(collection_path, config):
     if path != BROWSER and not path.startswith(BROWSER + os.sep):
         return None
     return None if _asked_for(config) else True
+
+
+def pytest_report_header(config):
+    """Say it in the header, so a run that quietly left the browser tests
+    out says so at the top rather than being read as the whole suite."""
+    if _asked_for(config):
+        return "browser tests: collected (tests/browser was named on the command line)"
+    return ("browser tests: NOT collected (tests/browser is left out unless it is named: "
+            "run `python3 -m pytest tests tests/browser -q` for both)")

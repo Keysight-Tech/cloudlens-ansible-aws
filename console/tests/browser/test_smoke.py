@@ -157,16 +157,22 @@ def test_the_workloads_screen_counts_the_instances_the_account_answers_with(page
 
 
 # 4 ------------------------------------------------------------------------
+# The order below is a subset of deploy-stack.sh's own PHASE_ORDER
+# ("stack wait bootstrap key license adopt sensors eks vpb mirror path
+# prove"), in that order, so the fixture is something the engine could
+# actually emit. It was "preflight key stack wait vpb prove", which the
+# script could not: preflight is not one of its phases at all, and the
+# three it does have were in an order it never sends them in.
 LAUNCH_EVENTS = [
     {"type": "hello", "stack": "cloudlens-stack", "region": "us-east-1", "dry_run": "false"},
-    {"type": "phases", "order": "preflight key stack wait vpb prove"},
-    {"type": "phase", "name": "preflight", "status": "done", "reason": "the account answered"},
-    {"type": "phase", "name": "key", "status": "done", "reason": "key pair cloudlens-stack-key created"},
+    {"type": "phases", "order": "stack wait bootstrap key vpb prove"},
+    {"type": "phase", "name": "stack", "status": "done", "reason": "CREATE_COMPLETE"},
     {"type": "resource", "kind": "vcontroller", "id": "i-0aaa111bbb222ccc9", "ip": "203.0.113.10"},
     {"type": "login", "component": "vcontroller", "url": "https://203.0.113.10/cloudlens/login",
      "user": "admin", "password_in": "~/.cloudlens-vcontroller-creds.json"},
-    {"type": "phase", "name": "stack", "status": "done", "reason": "CREATE_COMPLETE"},
     {"type": "phase", "name": "wait", "status": "skipped", "reason": "no vController wait was asked for"},
+    {"type": "phase", "name": "bootstrap", "status": "done", "reason": "the account answered"},
+    {"type": "phase", "name": "key", "status": "done", "reason": "key pair cloudlens-stack-key created"},
     {"type": "done", "status": "ok", "profile": "deploy-profile-cloudlens-stack.env"},
 ]
 
@@ -178,11 +184,17 @@ def test_launch_starts_a_run_and_the_watch_screen_draws_its_timeline(page, engin
     launch_the_default_plan(page)
     expect(page.locator("#wChip")).to_contain_text("cloudlens-stack")
 
-    # the phase list the run sent, every name in the script's own order
+    # The phase list the run sent, in the order the RUN sent it, which is
+    # what the assertion is written against and not deploy-stack.sh's
+    # PHASE_ORDER. The page's job is to draw the list it was handed; a page
+    # that drew its own idea of the order instead would still pass an
+    # assertion copied from the script, and be wrong. The fixture is a real
+    # subset in the script's order (see above) so the two agree here, but
+    # it is the fixture that is being checked.
     expect(page.locator("#wPhases li")).to_have_count(6)
     expect(page.locator("#wPhases .tlname")).to_have_text(
-        ["preflight", "key", "stack", "wait", "vpb", "prove"])
-    expect(phase_row(page, "preflight")).to_have_class("tlrow done")
+        ["stack", "wait", "bootstrap", "key", "vpb", "prove"])
+    expect(phase_row(page, "stack")).to_have_class("tlrow done")
     expect(phase_row(page, "key")).to_contain_text("key pair cloudlens-stack-key created")
     expect(phase_row(page, "wait")).to_have_class("tlrow skipped")
     expect(phase_row(page, "vpb")).to_have_class("tlrow pending")
@@ -202,7 +214,7 @@ def test_launch_starts_a_run_and_the_watch_screen_draws_its_timeline(page, engin
 # 5 ------------------------------------------------------------------------
 PROMPT_EVENTS = [
     {"type": "hello", "stack": "cloudlens-stack", "region": "us-east-1"},
-    {"type": "phases", "order": "key stack"},
+    {"type": "phases", "order": "stack key"},
     {"type": "prompt", "id": "p1", "question": "EC2 key pair to use?", "default": "cloudlens-stack-key",
      "kind": "text"},
     {"type": "phase", "name": "key", "status": "done", "reason": "using lab-key"},
@@ -238,14 +250,34 @@ def test_a_question_opens_the_modal_and_answering_it_clears_the_modal(page, engi
 # 6 ------------------------------------------------------------------------
 FAILURE = ("no EC2 key pair named lab-key in us-east-1: create it, or leave the key field empty "
            "and the run will list yours and ask")
+# a real subset of deploy-stack.sh's PHASE_ORDER, in its order, as above
 FAILED_EVENTS = [
     {"type": "hello", "stack": "cloudlens-stack", "region": "us-east-1"},
-    {"type": "phases", "order": "preflight key stack"},
-    {"type": "phase", "name": "preflight", "status": "done", "reason": "the account answered"},
+    {"type": "phases", "order": "stack key vpb"},
+    {"type": "phase", "name": "stack", "status": "done", "reason": "CREATE_COMPLETE"},
     {"type": "phase", "name": "key", "status": "failed", "reason": FAILURE},
     {"type": "done", "status": "failed", "phase": "key", "reason": FAILURE, "code": "3"},
 ]
-KEYSIGHT_RED = "rgb(228, 0, 43)"
+
+
+def accent_of(page):
+    """The colour --accent resolves to on this page, in the rgb() form
+    getComputedStyle answers with, read through a probe element because the
+    token itself computes to the hex it was written as.
+
+    Read rather than written down: what is under test is that a failed row
+    takes the console's accent, and the shade the accent happens to be is
+    a token in index.html that may be retuned. It was hardcoded as
+    rgb(228, 0, 43), so retuning the palette would have failed this test
+    without anything on the screen being wrong."""
+    return page.evaluate("""() => {
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent)';
+        document.body.appendChild(probe);
+        const c = getComputedStyle(probe).color;
+        probe.remove();
+        return c;
+    }""")
 
 
 def test_a_failed_phase_turns_its_row_red_and_says_what_to_do_about_it(page, engine):
@@ -254,18 +286,19 @@ def test_a_failed_phase_turns_its_row_red_and_says_what_to_do_about_it(page, eng
     code. The phases before and after it are untouched."""
     engine(FAILED_EVENTS, exit_code=3)
     launch_the_default_plan(page)
+    accent = accent_of(page)
 
     row = phase_row(page, "key")
     expect(row).to_have_class("tlrow failed")
     expect(row.locator(".tlmark")).to_have_text("✕")
     expect(row.locator(".tlwhy")).to_have_text(FAILURE)
-    assert row.locator(".tlname").evaluate("el => getComputedStyle(el).color") == KEYSIGHT_RED
-    assert row.locator(".tlmark").evaluate("el => getComputedStyle(el).color") == KEYSIGHT_RED
+    assert row.locator(".tlname").evaluate("el => getComputedStyle(el).color") == accent
+    assert row.locator(".tlmark").evaluate("el => getComputedStyle(el).color") == accent
 
     # the phase that passed is not red, and the one that never ran is pending
-    assert phase_row(page, "preflight").locator(".tlname").evaluate(
-        "el => getComputedStyle(el).color") != KEYSIGHT_RED
-    expect(phase_row(page, "stack")).to_have_class("tlrow pending")
+    assert phase_row(page, "stack").locator(".tlname").evaluate(
+        "el => getComputedStyle(el).color") != accent
+    expect(phase_row(page, "vpb")).to_have_class("tlrow pending")
 
     banner = page.locator("#wBanner")
     expect(banner).to_have_class("banner bad")
@@ -297,6 +330,15 @@ def test_the_teardown_stays_disarmed_until_the_stack_name_is_typed_back(page, aw
     expect(page.locator("#tdAuditStatus")).to_contain_text("The audit finished")
     expect(page.locator("#tdReport")).to_contain_text("orphaned volume vol-0aaa111bbb222ccc1")
     expect(page.locator("#tdReport")).to_contain_text("--orphans")
+
+    # and it ran where the fixtures promise every fake engine runs: the
+    # test's own directory, never the checkout. api._launch hands both
+    # scripts the same module global as their cwd, so the fake teardown
+    # used to run in the repository while the fake deploy ran in tmp_path.
+    # The script prints the directory it was started in; this is the only
+    # assertion that can see it, and the destructive path is the one that
+    # has to be seen.
+    expect(page.locator("#tdReport")).to_contain_text("cwd: " + teardown_script.cwd)
 
     # audited, and still refused: nothing has been typed
     expect(page.locator("#tdRun")).to_be_disabled()
@@ -344,5 +386,9 @@ def test_a_code_the_kvo_does_not_recognise_is_a_row_and_not_an_error_page(page, 
     expect(page.locator("#page-licensing")).to_be_visible()
     expect(page.locator("#opsNav")).to_be_visible()
     expect(page.locator("#licActivate")).to_be_disabled()
-    # and the code itself is nowhere on the page, only its tail
-    assert "LAB-CODE-ABCD" not in page.locator("#page-licensing").inner_text()
+    # and the code itself is nowhere on the page, only its tail. The whole
+    # served document, not the licensing section's inner_text(): a code
+    # that leaked into a title, an aria-label, a data- attribute or an
+    # input's value is a code on a shared screen just the same, and none of
+    # those are text a person can select.
+    assert "LAB-CODE-ABCD" not in page.content()

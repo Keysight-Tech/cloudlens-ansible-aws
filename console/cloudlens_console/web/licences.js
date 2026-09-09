@@ -378,8 +378,10 @@ function check(){
 }
 
 function activate(){
-  var picked=rows.filter(function(r){return r.valid&&r.quantity>0;})
-                 .map(function(r){return r.code+","+r.quantity;});
+  // the ROWS, not just the strings built from them: what was sent has to
+  // be retired when the answer lands, and a string cannot be
+  var sending=rows.filter(function(r){return r.valid&&r.quantity>0;});
+  var picked=sending.map(function(r){return r.code+","+r.quantity;});
   if(!picked.length)return status("licStatus","No code has a quantity to activate.",true);
   if(picked.length>OPS_MAX)
     return status("licStatus","That is "+picked.length+" codes in one call, and each one is a licensing "+
@@ -394,6 +396,21 @@ function activate(){
     // the evidence the Teardown screen may arm on
     noteHolds(kvo);
     renderRecord();
+    // Every row this call SENT stops being one Activate offers. The rows
+    // and their quantities survive the call, and call()'s own handler
+    // repaints before this callback runs, so the button came back live
+    // over entitlement that had just been spent: press it a second time
+    // and the same codes go again. Zeroing, not removing: the row keeps
+    // saying what the KVO holds, and typing a quantity back into it is the
+    // deliberate act that offers it again.
+    //
+    // The refused rows are zeroed with the rest on purpose. A refusal is
+    // not something to re-send by the accident of a button staying live,
+    // and a row still running is the case that matters most: the console
+    // stopped polling before the KVO finished, so whether that code was
+    // spent is unknown, and unknown is not a thing to spend again blind.
+    sending.forEach(function(r){r.quantity=0;});
+    renderCodeRows();
     var ok=(d.activated||0);
     // a row still running is not a row that failed and not a row that
     // worked: the console stopped polling before the KVO finished, and
