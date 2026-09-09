@@ -31,8 +31,12 @@ and a GET here runs a command (the doctor, the aws CLI) whether or not
 the page that fired it may read the answer. The page itself (/, /flows,
 /web/) stays open: it is fetched by name and runs nothing.
 
-A route that raises answers 500 with the exception's type and nothing
-else; the message and the traceback go to the console's own stderr.
+Any route that raises, the page and its files included, answers 500 with
+the exception's type and nothing else; the message and the traceback go
+to the console's own stderr. A client that hangs up while its answer is
+going out (BrokenPipeError, ConnectionResetError: a tab closed, a fetch
+aborted) is not an event on this side: the connection is dropped and
+nothing is logged.
 """
 from __future__ import annotations
 import os
@@ -220,9 +224,33 @@ class Handler(BaseHTTPRequestHandler):
             return None, True
         return body, None
 
+    def _dispatch(self, route):
+        """Run one request through `route` and answer whatever it left
+        unanswered. A client that closed its end (BrokenPipeError,
+        ConnectionResetError: a tab closed, a fetch aborted) is not an
+        event on this side: the connection is dropped and nothing is
+        logged, where a traceback here would be socketserver's own, for
+        an operator who did nothing. Anything else a route did not
+        foresee is _internal's 500; a client that leaves while that goes
+        out gets the same drop. Every route is under this, the page and
+        its files included: a raise in _file used to drop the connection
+        with no status line at all."""
+        self._started = False
+        try:
+            route()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as exc:  # noqa: whatever a route did not foresee
+            try:
+                self._internal(exc)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+
     # ---- GET ----
     def do_GET(self):
-        self._started = False
+        self._dispatch(self._get)
+
+    def _get(self):
         parts = urlsplit(self.path)
         path = parts.path
         if path == "/":
@@ -239,12 +267,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": HOST_ERROR})
             if not fetch_site_ok(self.headers.get("Sec-Fetch-Site")):
                 return self._send(403, {"error": FETCH_SITE_ERROR})
-            try:
-                if path.startswith("/events/"):
-                    return self._sse(path[len("/events/"):])
-                return self._api_get(path, parse_qs(parts.query, keep_blank_values=True))
-            except Exception as exc:  # noqa: whatever a route did not foresee
-                return self._internal(exc)
+            if path.startswith("/events/"):
+                return self._sse(path[len("/events/"):])
+            return self._api_get(path, parse_qs(parts.query, keep_blank_values=True))
         return self._send(404, {"error": "not found"})
 
     def _api_get(self, path, query):
@@ -268,17 +293,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
-        self._started = False
+        self._dispatch(self._post)
+
+    def _post(self):
         if not host_ok(self.headers.get("Host")):
             return self._send(403, {"error": HOST_ERROR})
         if not origin_ok(self.headers.get("Origin"), self.server.server_address[1]):
             return self._send(403, {"error": ORIGIN_ERROR})
-        try:
-            return self._post(urlsplit(self.path).path)
-        except Exception as exc:  # noqa: whatever a route did not foresee
-            return self._internal(exc)
-
-    def _post(self, path):
+        path = urlsplit(self.path).path
         if path == "/run":
             b, sent = self._read_json()
             if sent:

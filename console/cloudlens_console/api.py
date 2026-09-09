@@ -459,6 +459,29 @@ def _start_teardown(job, cmd, cwd, env):
     return t
 
 
+def _launch(start, job, cmd, env):
+    """Hand a registered job to its starter. The job holds its stack from
+    registration to its terminal event (_in_flight), and run_engine emits
+    that event on every path; a starter that raises before run_engine
+    runs (a thread the OS refused) would leave the job registered and
+    never done, the stack held until the console restarts. The failure
+    becomes the job's terminal event first; the exception then goes on to
+    the caller as it did."""
+    try:
+        start(job, cmd, REPO, env)
+    except Exception as exc:
+        job.emit(E.error("could not start the engine: " + type(exc).__name__,
+                         fix="Restart the console and try again."))
+        raise
+
+
+# Held while run() and teardown() decide that a stack is free and register
+# the job that takes it (run() writes the profile in between). The decision
+# and the registration have to be one step: two requests for one stack that
+# both looked before either had registered both found it free.
+_ENGINE_LOCK = threading.Lock()
+
+
 def _check_secrets(secrets):
     """(env, errors): the secrets as the engine's extra environment. A name
     has to be one the script reads a secret from (SECRET_ENV) and can never
@@ -504,16 +527,25 @@ def _check_codes(codes, with_qty=True):
 
 
 def _in_flight(jobs, stack, region):
-    """The id of a registered job whose engine is still running for this
-    stack in this region, else None. Two engines on one stack would write
-    one profile file and race CloudFormation on one stack name, and a
-    teardown of a stack mid-deploy is the same race from the other side,
-    so run() and teardown() refuse the second with a 409 before they
-    write anything. running() is the engine's whole window, Popen to the
-    runner's return; a job that has not launched yet, or has ended, is
-    not in flight."""
+    """The id of a registered job that holds this stack in this region,
+    else None. Two engines on one stack would write one profile file and
+    race CloudFormation on one stack name, and a teardown of a stack
+    mid-deploy is the same race from the other side, so run() and
+    teardown() refuse the second with a 409 before they write anything.
+
+    An engine job (engine-deploy, engine-teardown) holds the stack from
+    the moment it is registered until its terminal event. run_engine emits
+    that event on every path (stopped before the launch, a Popen that
+    failed, or the verdict after the exit), so `not done` is exact.
+    running() alone was not: it begins at the engine thread's Popen, 5-20
+    ms after run() had registered the job, and a second request in that
+    window found the stack free. running() still counts on its own, for
+    any job whose process group is open. The callers hold _ENGINE_LOCK
+    across this check and their own registration."""
     for job_id, job in list(jobs.items()):
-        if job.running() and job.inputs.get("stack") == stack and job.inputs.get("region") == region:
+        if job.inputs.get("stack") != stack or job.inputs.get("region") != region:
+            continue
+        if job.running() or (job.flow_id.startswith("engine-") and not job.done):
             return job_id
     return None
 
@@ -532,8 +564,12 @@ def run(body, jobs=None, start=None):
     prints the first 14 characters of each code; the dry run prints them
     whole) reaches the stream as [redacted]: see Job.redact. Returns
     {job_id, profile_file (the name, relative to the repo root, as plan()
-    gives it), stack, region}, {errors}, or a 409 {error} while a job for
-    the same stack and region is still running (_in_flight)."""
+    gives it), stack, region}, {errors}, or a 409 {error} while a job
+    holds the same stack in the same region (_in_flight). That check, the
+    profile write and the registration happen under _ENGINE_LOCK, so two
+    requests for one stack yield one job and one 409, whichever came
+    first; the starter runs outside it, the registered job already holds
+    the stack."""
     if not isinstance(body, dict):
         return {"errors": ["body must be an object: {plan, secrets?, kvo_codes?}"]}
     jobs = jobs if jobs is not None else _jobs()
@@ -546,33 +582,34 @@ def run(body, jobs=None, start=None):
         errors.append("kvo_codes: " + bad)
     if errors:
         return {"errors": errors}
-    busy = _in_flight(jobs, p["stack"], p["region"])
-    if busy:
-        return _err("stack %s already has a run in progress (job %s)" % (p["stack"], busy), 409)
-    path = os.path.join(REPO, p["profile_file"])
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(p["profile_text"])
-        os.chmod(path, 0o600)
-    except OSError as exc:
-        return {"errors": ["could not write %s: %s" % (path, exc.strerror or exc)]}
-    cmd = ["bash", DEPLOY, "--profile", path]
-    for c in codes:
-        cmd += ["--kvo-codes", c]
-    job_id = uuid.uuid4().hex[:12]
-    job = O.Job(job_id, "engine-deploy", {"stack": p["stack"], "region": p["region"], "profile": path})
-    for c in codes:
-        job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
-    job.redactions.extend(env.values())
-    jobs[job_id] = job
+    with _ENGINE_LOCK:
+        busy = _in_flight(jobs, p["stack"], p["region"])
+        if busy:
+            return _err("stack %s already has a run in progress (job %s)" % (p["stack"], busy), 409)
+        path = os.path.join(REPO, p["profile_file"])
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(p["profile_text"])
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            return {"errors": ["could not write %s: %s" % (path, exc.strerror or exc)]}
+        cmd = ["bash", DEPLOY, "--profile", path]
+        for c in codes:
+            cmd += ["--kvo-codes", c]
+        job_id = uuid.uuid4().hex[:12]
+        job = O.Job(job_id, "engine-deploy", {"stack": p["stack"], "region": p["region"], "profile": path})
+        for c in codes:
+            job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
+        job.redactions.extend(env.values())
+        jobs[job_id] = job
     shown = "bash deploy/deploy-stack.sh --profile %s" % p["profile_file"]
     if codes:
         shown += " --kvo-codes ... (%d code%s)" % (len(codes), "" if len(codes) == 1 else "s")
     if env:
         shown += "   [%s in the environment]" % ", ".join(sorted(env))
     job.emit(E.narrate("engine: " + shown, "note"))
-    (start or _start_engine)(job, cmd, REPO, env or None)
+    _launch(start or _start_engine, job, cmd, env or None)
     return {"job_id": job_id, "profile_file": p["profile_file"], "stack": p["stack"], "region": p["region"]}
 
 
@@ -610,9 +647,10 @@ def teardown(body, start=None, jobs=None):
     (Task 10 sets that after /api/licences release): without it a stack that
     holds a KVO stops at the script's own licence warning, which is the
     right outcome. orphans_only is the script's --orphans: a read-only audit
-    that deletes nothing, so it needs no typed name. A stack with a job
-    still running (a deploy, another teardown) is refused with a 409:
-    see _in_flight."""
+    that deletes nothing, so it needs no typed name. A stack a job still
+    holds (a deploy, another teardown) is refused with a 409: see
+    _in_flight. The check and the registration happen under _ENGINE_LOCK,
+    as in run()."""
     if not isinstance(body, dict):
         return _err("body must be {stack, region, confirm_name, orphans_only?, licences_released?}")
     jobs = jobs if jobs is not None else _jobs()
@@ -627,20 +665,21 @@ def teardown(body, start=None, jobs=None):
     # not the stack's name, whatever the stack field itself passed as
     if not audit and (not _shape(STACK, body.get("confirm_name")) or body.get("confirm_name") != stack):
         return _err("type the stack name (%s) as confirm_name to tear it down" % stack)
-    busy = _in_flight(jobs, stack, region)
-    if busy:
-        return _err("stack %s already has a run in progress (job %s)" % (stack, busy), 409)
-    cmd = ["bash", TEARDOWN, "--stack-name", stack, "--region", region, "--yes"]
-    if audit:
-        cmd.append("--orphans")
-    elif body.get("licences_released") is True:
-        cmd.append("--accept-licence-loss")
-    job_id = uuid.uuid4().hex[:12]
-    job = O.Job(job_id, "engine-teardown", {"stack": stack, "region": region, "audit": audit})
-    jobs[job_id] = job
+    with _ENGINE_LOCK:
+        busy = _in_flight(jobs, stack, region)
+        if busy:
+            return _err("stack %s already has a run in progress (job %s)" % (stack, busy), 409)
+        cmd = ["bash", TEARDOWN, "--stack-name", stack, "--region", region, "--yes"]
+        if audit:
+            cmd.append("--orphans")
+        elif body.get("licences_released") is True:
+            cmd.append("--accept-licence-loss")
+        job_id = uuid.uuid4().hex[:12]
+        job = O.Job(job_id, "engine-teardown", {"stack": stack, "region": region, "audit": audit})
+        jobs[job_id] = job
     # the flags from --stack-name on: cmd[0] is bash, cmd[1] the script's path
     job.emit(E.narrate("engine: bash deploy/teardown-stack.sh " + " ".join(cmd[2:]), "note"))
-    (start or _start_teardown)(job, cmd, REPO, None)
+    _launch(start or _start_teardown, job, cmd, None)
     return {"job_id": job_id, "stack": stack, "region": region, "audit": audit}
 
 

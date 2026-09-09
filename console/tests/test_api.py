@@ -13,7 +13,9 @@ What these hold:
              the events file; never --prompt-pipe
   run        writes deploy-profile-<stack>.env from the validated plan (mode
              600, no secret in it), starts the engine with the secrets as
-             environment only, and registers the job
+             environment only, and registers the job; one engine per stack,
+             decided under a lock, so two requests at once yield one job
+             and one 409
   teardown   the typed-name gate, the exact flags teardown-stack.sh parses,
              the licence-loss flag only when the body says licences were
              released, --orphans for the read-only audit
@@ -23,7 +25,9 @@ What these hold:
              buffer order, every reader of one job seeing every event, the
              Host guard on every POST and on the /api/ and /events/ GETs, the
              Sec-Fetch-Site guard on those GETs, the origin's port, body caps,
-             JSON errors and the 500 that names only the exception's type
+             JSON errors, the 500 that names only the exception's type (the
+             page routes included) and the silent drop of a client that
+             hung up
 
 Run:  cd console && python3 -m pytest tests/test_api.py -q
 """
@@ -389,11 +393,12 @@ class FakeProc(object):
         self.returncode = None
 
     def __call__(self, argv, **kw):
-        self.seen["argv"], self.seen["kw"], self.seen["calls"] = argv, kw, 0
+        self.seen["argv"], self.seen["kw"], self.seen["calls"], self.seen["timeouts"] = argv, kw, 0, []
         return self
 
     def communicate(self, timeout=None):
         self.seen["calls"] += 1
+        self.seen["timeouts"].append(timeout)
         if self.hang and self.seen["calls"] == 1:
             raise subprocess.TimeoutExpired(self.seen["argv"], timeout)
         argv = self.seen["argv"]
@@ -418,6 +423,7 @@ def test_doctor_runs_the_script_and_reads_its_check_events(monkeypatch):
     assert "--prompt-pipe" not in argv, "the doctor asks nothing; a pipe would block it"
     assert seen["kw"]["stdin"] is subprocess.DEVNULL
     assert seen["kw"]["start_new_session"], "no controlling terminal: the script would re-attach /dev/tty"
+    assert seen["timeouts"] == [api.DOCTOR_TIMEOUT], "the wait is bounded by DOCTOR_TIMEOUT, nothing else"
     assert r["checks"] == [
         {"item": "AWS CLI 2.15", "status": "pass", "fix": ""},
         {"item": "No creds", "status": "fail", "fix": "aws sso login"},
@@ -437,6 +443,7 @@ def test_doctor_runs_the_script_and_reads_its_check_events(monkeypatch):
     r = api.doctor("us-east-1")
     assert r["http"] == 504 and "timed out" in r["error"]
     assert killed == [(4242, signal.SIGKILL)] and seen["calls"] == 2, "killpg on the pgid, then the reap"
+    assert seen["timeouts"] == [api.DOCTOR_TIMEOUT, None], "the reap after the kill has no timeout to hit"
 
     monkeypatch.setattr(api.subprocess, "Popen", FakeProc(seen, [], rc=2, err="bash: syntax error"))
     r = api.doctor("us-east-1")
@@ -482,7 +489,15 @@ def test_a_doctor_that_hangs_is_killed_with_its_children(tmp_path, monkeypatch):
     took = time.monotonic() - t0
     assert r["http"] == 504 and "timed out after 0.5s" in r["error"], r
     assert took < 5, "the doctor answered only when its child had died: %.1fs" % took
-    pid = int((tmp_path / "pid").read_text())
+    # the script writes its pid on its first line; a slow bash can still be
+    # between the redirect's open and the write when the doctor answers,
+    # and int("") on that empty file was a flake, not a finding
+    pid_file = tmp_path / "pid"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not (pid_file.exists() and pid_file.read_text().strip()):
+        time.sleep(0.05)
+    assert pid_file.exists() and pid_file.read_text().strip(), "the doctor never wrote its pid"
+    pid = int(pid_file.read_text().strip())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not _group_gone(pid):
         time.sleep(0.05)
@@ -618,8 +633,10 @@ def test_a_stack_in_flight_refuses_a_second_run_and_a_teardown(tmp_path, monkeyp
     profile = tmp_path / "deploy-profile-demo.env"
     with open(str(profile), "a") as fh:
         fh.write("# marker: a refused run must not rewrite this file\n")
-    job._group_open = True       # the engine's Popen has happened and its runner has not returned
-    assert job.running()
+    # held from the registration on: the engine thread has not reached its
+    # Popen (this stub never does), and that window is exactly where a
+    # second request used to slip through
+    assert not job.running() and not job.done
     r2 = api.run({"plan": GOOD}, jobs=jobs, start=start)
     assert r2 == {"error": "stack demo already has a run in progress (job %s)" % job.id, "http": 409}
     assert "marker" in profile.read_text(), "refused before anything was written"
@@ -631,16 +648,78 @@ def test_a_stack_in_flight_refuses_a_second_run_and_a_teardown(tmp_path, monkeyp
     assert "error" not in api.run({"plan": dict(GOOD, CLOUDLENS_REGION="eu-west-2")}, jobs=jobs, start=start)
     assert "error" not in api.run({"plan": dict(GOOD, CLOUDLENS_STACK_NAME="other")}, jobs=jobs, start=start)
     assert len(started) == 3
-    # the runner returned: the stack is free again, and a teardown in
-    # flight blocks a run the same way
-    job._group_open = False
+    # a job whose group is open holds the stack whatever its flow: the
+    # running() half of the rule, for a job the engine did not register
+    flow = O.Job("flow", "stack", {"stack": "third", "region": "us-east-1"})
+    flow._group_open = True
+    jobs["flow"] = flow
+    assert api.run({"plan": dict(GOOD, CLOUDLENS_STACK_NAME="third")}, jobs=jobs, start=start)["http"] == 409
+    # the runner's verdict is the release: the stack is free again, and a
+    # teardown in flight blocks a run the same way
+    job.emit(E.done("engine exited 0"))
     r5 = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo"}, jobs=jobs, start=start)
     assert "error" not in r5
-    jobs[r5["job_id"]]._group_open = True
     r6 = api.run({"plan": GOOD}, jobs=jobs, start=start)
     assert r6["http"] == 409 and r5["job_id"] in r6["error"]
-    jobs[r5["job_id"]]._group_open = False
-    assert "error" not in api.run({"plan": GOOD}, jobs=jobs, start=start)
+    jobs[r5["job_id"]].emit(E.error("engine exited 1"))
+    assert "error" not in api.run({"plan": GOOD}, jobs=jobs, start=start), "an error is terminal too"
+
+
+def _race(tmp_path, monkeypatch, calls):
+    """Run `calls` (each a callable taking jobs and a starter) on threads at
+    once, with a starter that blocks every launched job in the window
+    between its registration and the engine's Popen, and return the
+    answers once all of them are in. The blocked starter is the window
+    itself: nothing sets running() until it returns."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    jobs, results, launched = {}, [], []
+    release = threading.Event()
+
+    def start(job, cmd, cwd, env):
+        launched.append(job)
+        release.wait(5)
+
+    ts = [threading.Thread(target=lambda c=c: results.append(c(jobs, start))) for c in calls]
+    for t in ts:
+        t.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not launched:
+        time.sleep(0.01)
+    assert launched, "no call reached its starter"
+    release.set()
+    for t in ts:
+        t.join(5)
+    assert len(results) == len(calls) and not any(t.is_alive() for t in ts)
+    return jobs, results, launched
+
+
+def _one_job_one_409(jobs, results, launched):
+    ok = [r for r in results if "job_id" in r]
+    refused = [r for r in results if r.get("http") == 409]
+    assert len(ok) == 1 and len(refused) == 1, results
+    assert refused[0]["error"] == "stack demo already has a run in progress (job %s)" % ok[0]["job_id"]
+    assert list(jobs) == [ok[0]["job_id"]] and launched == [jobs[ok[0]["job_id"]]], "one job, started once"
+
+
+def test_two_simultaneous_runs_for_one_stack_yield_one_job_and_one_409(tmp_path, monkeypatch):
+    # Reproduced before the fix: _in_flight keyed on running(), which the
+    # engine thread sets at its Popen, 5-20 ms after run() had registered
+    # the job. A second POST /api/run in that window passed the guard, and
+    # both wrote the profile and started an engine on one stack. The
+    # decision and the registration are one step under a lock now, and a
+    # registered engine job holds its stack until its terminal event.
+    run = lambda jobs, start: api.run({"plan": GOOD}, jobs=jobs, start=start)
+    _one_job_one_409(*_race(tmp_path, monkeypatch, [run, run]))
+
+
+def test_a_run_and_a_teardown_launched_together_yield_one_job_and_one_409(tmp_path, monkeypatch):
+    # the same window from the other side: a teardown that arrives while
+    # the deploy's engine thread has not reached its Popen
+    run = lambda jobs, start: api.run({"plan": GOOD}, jobs=jobs, start=start)
+    tear = lambda jobs, start: api.teardown(
+        {"stack": "demo", "region": "us-east-1", "confirm_name": "demo"}, jobs=jobs, start=start)
+    _one_job_one_409(*_race(tmp_path, monkeypatch, [run, tear]))
+    _one_job_one_409(*_race(tmp_path, monkeypatch, [tear, run]))
 
 
 def test_secret_env_names_are_the_ones_the_script_reads_and_never_profile_keys():
@@ -703,9 +782,13 @@ def test_teardown_speaks_the_flags_the_script_parses():
     assert job.buffer[0]["type"] == E.NARRATE
     assert job.buffer[0]["text"] == "engine: bash deploy/teardown-stack.sh --stack-name demo --region us-east-1 --yes"
     assert "--accept-licence-loss" not in cmd, "the licence-loss flag needs a release first"
+    # each job holds the stack until its verdict (see _in_flight), so the
+    # next teardown of demo waits on a done here
+    job.emit(E.done("engine exited 0"))
     r = api.teardown({"stack": "demo", "region": "us-east-1", "confirm_name": "demo", "licences_released": True},
                      start=start, jobs=jobs)
     assert started[-1][1][-2:] == ["--yes", "--accept-licence-loss"]
+    started[-1][0].emit(E.done("engine exited 0"))
     # the read-only audit needs no typed name and carries --orphans
     r = api.teardown({"stack": "demo", "region": "us-east-1", "orphans_only": True}, start=start, jobs=jobs)
     assert not r.get("error") and r["audit"] is True
@@ -1124,6 +1207,52 @@ def test_a_route_that_raises_answers_500_naming_only_the_exception_type(live, mo
     assert capsys.readouterr().err.count("Traceback") == 2
 
 
+def test_the_page_routes_that_raise_answer_500_too(live, monkeypatch, capsys):
+    # Reproduced: the catch-all covered /api/ and /events/ only. A raise in
+    # _file (the page, its css and js) left the try, and the browser saw a
+    # dropped connection with no status line. Every route is under it now.
+    def boom(self, rel, ctype):
+        raise RuntimeError("cannot read /Users/x/web/" + rel)
+
+    monkeypatch.setattr(server.Handler, "_file", boom)
+    for path in ("/", "/web/app.css", "/web/app.js"):
+        st, r = _call(live, "GET", path)
+        assert st == 500 and r == {"error": "internal error: RuntimeError"}, path
+    err = capsys.readouterr().err
+    assert err.count("Traceback") == 3 and "cannot read" in err, "the message stays on the console's stderr"
+
+
+def test_a_client_that_hung_up_is_dropped_without_a_word(live, monkeypatch, capsys):
+    # A closed tab or an aborted fetch surfaces as BrokenPipeError (or
+    # ConnectionResetError) from the write. That is not an operator event:
+    # before, it escaped the handler and socketserver printed a traceback
+    # for every one; now the connection is dropped and nothing is said.
+    real_send, gone = server.Handler._send, {"on": True}
+
+    def send(self, *a, **kw):
+        if gone["on"]:
+            raise BrokenPipeError(32, "Broken pipe")
+        return real_send(self, *a, **kw)
+
+    monkeypatch.setattr(server.Handler, "_send", send)
+    for method, path, body in (("GET", "/flows", None), ("GET", "/events/nope", None),
+                               ("POST", "/api/plan", {"plan": GOOD})):
+        c = http.client.HTTPConnection("127.0.0.1", live, timeout=5)
+        h = {"Host": "127.0.0.1:%d" % live}
+        if body is not None:
+            h["Content-Type"] = "application/json"
+        c.request(method, path, body=json.dumps(body) if body is not None else None, headers=h)
+        with pytest.raises(ConnectionResetError):    # RemoteDisconnected: no status line, the socket closed
+            c.getresponse()
+        c.close()
+    out = capsys.readouterr()
+    assert out.err == "" and out.out == "", "a client that left is nothing to report"
+    # the handler returned and the server is still there for the next request
+    gone["on"] = False
+    st, r = _call(live, "GET", "/flows")
+    assert st == 200 and r["order"] == ["stack", "sensors", "kvo", "mirror"]
+
+
 def test_post_bodies_are_json_objects_under_the_cap(live):
     st, r = _call(live, "POST", "/api/plan", raw=b"{not json", headers={"Content-Type": "application/json"})
     assert st == 400 and "JSON" in r["error"]
@@ -1283,13 +1412,13 @@ def test_run_and_answer_routes_are_wired(live, tmp_path, monkeypatch):
     job, cmd, env = started[0]
     assert env == {"CLOUDLENS_VC_PASSWORD": "pw"} and "--profile" in cmd
     assert r["profile_file"] == "deploy-profile-demo.env"
-    # the stack in flight: a second run and a teardown are 409 over the route too
-    job._group_open = True
+    # the stack is held from the registration on (the stubbed starter never
+    # reaches a Popen): a second run and a teardown are 409 over the route too
     st, r2 = _call(live, "POST", "/api/run", {"plan": GOOD})
     assert st == 409 and r2["error"] == "stack demo already has a run in progress (job %s)" % job.id
     st, r2 = _call(live, "POST", "/api/teardown", {"stack": "demo", "region": "us-east-1", "confirm_name": "demo"})
     assert st == 409
-    job._group_open = False
+    job.emit(E.done("engine exited 0"))     # the verdict frees it
     # no prompt is waiting: the answer is refused with the job's own words
     st, r = _call(live, "POST", "/api/answer/" + r["job_id"], {"prompt_id": "p1", "text": "x"})
     assert st == 409 and "No prompt" in r["error"]
