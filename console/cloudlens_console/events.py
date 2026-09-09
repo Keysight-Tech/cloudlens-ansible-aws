@@ -27,7 +27,9 @@ Events v2: the script's own side channel.
   phase    - name, status (done|failed|skipped), reason
   resource - kind (vpc|subnet|vcontroller|kvo|vpb|workloads|eks) plus what
              that kind has: id, role, zone, ip, private_ip, ingress_ip,
-             egress_ip, count, tag, cluster, mode
+             egress_ip, count, tag, mode, filter, created, cluster
+             (workloads carries count, tag, mode, filter and, when the
+             script tagged them itself, created=true)
   check    - item, status (pass|warn|fail), fix                  (--doctor)
   prompt   - question, default, kind (text|secret); the script's own id
              ("p3", what the prompt pipe answers to) arrives as prompt_id
@@ -139,40 +141,25 @@ def from_script(raw):
     resource's "vpc-...") becomes <type>_id, because _mk applies the data
     over the console id and the script's would replace it. A frame that
     already went through here (a replay fixture: script_seq, prompt_id) is
-    accepted as it is. An unknown type becomes a log of the raw line."""
+    accepted as it is. An unknown type becomes a log of the raw line; so does
+    a type that is not a string at all (a list or an object cannot even be
+    looked up in SCRIPT_TYPES, and one such line must not end the tail)."""
     data = dict(raw)
     data["script_seq"] = data.pop("seq", data.get("script_seq"))
     typ = data.pop("type", None)
-    if typ not in SCRIPT_TYPES:
+    if not isinstance(typ, str) or typ not in SCRIPT_TYPES:
         return _mk(LOG, text=json.dumps(raw), stream="script", script_seq=data["script_seq"])
     if "id" in data:
         data[typ + "_id"] = data.pop("id")
     return _mk(typ, **data)
 
 
-def iter_script_events(path, start_offset=0):
-    """Read the script's events file from a byte offset for the tail loop:
-    returns (new_offset, [events]), each event a from_script() result.
-
-    Only newline-terminated lines are consumed; the line the writer is still
-    on stays for the next call, so the offset never lands mid-line. A
-    terminated line that is not a JSON object (the fragment a killed run
-    left, which the next run terminates before its own hello) is skipped,
-    not read as the end of the stream. Bytes that are not UTF-8 are replaced
-    (errors="replace"), never fatal. A file that is not there yet (the
-    script creates it at startup) or shorter than the offset (replaced)
-    reads as a new stream from 0."""
-    try:
-        with open(path, "rb") as fh:
-            size = fh.seek(0, os.SEEK_END)
-            if start_offset > size:
-                start_offset = 0
-            fh.seek(start_offset)
-            chunk = fh.read()
-    except FileNotFoundError:
-        return 0, []
+def _script_lines(chunk):
+    """The complete lines of one read as parsed JSON objects, plus the offset
+    one past the last newline. A line that is not a JSON object is dropped
+    here; the writer's unterminated last line is not consumed at all."""
     end = chunk.rfind(b"\n") + 1          # one past the last complete line
-    events = []
+    raws = []
     for line in chunk[:end].split(b"\n"):
         if not line.strip():
             continue
@@ -181,5 +168,69 @@ def iter_script_events(path, start_offset=0):
         except ValueError:
             continue
         if isinstance(raw, dict):
+            raws.append(raw)
+    return end, raws
+
+
+def _first_seq(raws):
+    """The seq of the first line in a read that carries one (bool is an int
+    to Python, but never a seq)."""
+    for raw in raws:
+        seq = raw.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            return seq
+    return None
+
+
+def iter_script_events(path, start_offset=0, last_seq=None):
+    """Read the script's events file from a byte offset for the tail loop:
+    returns (new_offset, [events]), each event a from_script() result.
+
+    Only newline-terminated lines are consumed; the line the writer is still
+    on stays for the next call, so the offset never lands mid-line. A
+    terminated line that is not a JSON object (the fragment a killed run
+    left, which the next run terminates before its own hello) is skipped,
+    not read as the end of the stream; so is a line from_script() raises
+    on, whatever it raises: one bad line never ends the tail. Bytes that
+    are not UTF-8 are replaced (errors="replace"), never fatal. A file
+    that is not there yet (the script creates it at startup) reads as
+    (0, []).
+
+    A replaced file is a new stream, and the offset alone cannot tell: a
+    file shorter than the offset is caught by its size, but one the same
+    size or longer is not. The script's contract is the other half: seq is
+    the line's number in its file, strictly increasing, so a seq no larger
+    than the last one handled means a different file. The caller passes
+    the highest script_seq it has seen as last_seq; when the first line
+    read from the offset carries a seq <= last_seq, the file is re-read
+    from 0 and the whole of it comes back, every event with a fresh
+    console id (the browser's last-hello rule handles the second hello).
+    last_seq=None (a first call) never restarts, and neither does a read
+    that already starts at 0. What this still cannot see: a replacement
+    whose line at the offset already carries a larger seq (more, shorter
+    lines than the old file had there) reads as an append, and one the
+    reader had fully caught up with is an empty read until the new writer
+    reaches the offset."""
+    start_offset = max(0, start_offset)
+    try:
+        with open(path, "rb") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            if start_offset > size:
+                start_offset = 0
+            fh.seek(start_offset)
+            end, raws = _script_lines(fh.read())
+            if start_offset and last_seq is not None:
+                first = _first_seq(raws)
+                if first is not None and first <= last_seq:
+                    start_offset = 0
+                    fh.seek(0)
+                    end, raws = _script_lines(fh.read())
+    except FileNotFoundError:
+        return 0, []
+    events = []
+    for raw in raws:
+        try:
             events.append(from_script(raw))
+        except Exception:
+            continue
     return start_offset + end, events

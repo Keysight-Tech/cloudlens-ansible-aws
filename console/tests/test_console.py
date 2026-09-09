@@ -431,25 +431,33 @@ def test_script_resource_id_is_not_the_sse_id_either():
 def test_iter_script_events_skips_junk_and_holds_the_offset(tmp_path):
     # The file as a killed-and-resumed run leaves it: a fragment the next run
     # terminated (line 1, never valid), a line that is JSON but no event, a
-    # hello, a resource whose tag holds a byte that is not UTF-8, and an
-    # unterminated line the writer is still on.
+    # hello whose stack name is two bytes for one character, a resource whose
+    # tag holds a byte that is not UTF-8, a line whose type is not even a
+    # string, and an unterminated line the writer is still on.
     path = str(tmp_path / "events.jsonl")
     lines = [
         b'{"seq":1,"ts":"2026-09-08T10:00:00Z","ty\n',
         b'42\n',
-        b'{"seq":2,"ts":"2026-09-08T10:00:00Z","type":"hello","stack":"st","region":"us-east-1","dry_run":"false"}\n',
+        b'{"seq":2,"ts":"2026-09-08T10:00:00Z","type":"hello","stack":"caf\xc3\xa9","region":"us-east-1","dry_run":"false"}\n',
         b'{"seq":3,"ts":"2026-09-08T10:00:00Z","type":"resource","kind":"workloads","count":"2","tag":"a\xffb"}\n',
+        b'{"seq":9,"ts":"t","type":["hello"]}\n',
     ]
     tail = b'{"seq":4,"ts":"2026-09-08T10:00:00Z","type":"phase","name":"stack"'
     with open(path, "wb") as fh:
         fh.write(b"".join(lines) + tail)
 
     offset, evs = E.iter_script_events(path)
-    assert [e["type"] for e in evs] == ["hello", "resource"], evs
-    assert [e["script_seq"] for e in evs] == [2, 3]
+    assert [e["type"] for e in evs] == ["hello", "resource", "log"], evs
+    assert [e["script_seq"] for e in evs] == [2, 3, 9]
+    assert evs[0]["stack"] == "café", "a multibyte character arrives whole"
     assert evs[1]["tag"] == "a�b", "a non-UTF-8 byte is replaced, never fatal"
+    assert evs[2]["stream"] == "script" and json.loads(evs[2]["text"])["type"] == ["hello"], \
+        "a type that is not a string is a log of the raw line, not a TypeError"
     assert all(isinstance(e["id"], int) for e in evs)
-    assert offset == len(b"".join(lines)), "the unterminated tail waits for the next read"
+    consumed = b"".join(lines)
+    assert len(consumed) != len(consumed.decode("utf-8", "replace")), \
+        "bytes and characters differ here, so the next line settles which one the offset counts"
+    assert offset == len(consumed), "a BYTE offset, and the unterminated tail waits for the next read"
 
     # the writer finishes the line: only the new line comes back, nothing repeats
     with open(path, "ab") as fh:
@@ -466,8 +474,128 @@ def test_iter_script_events_skips_junk_and_holds_the_offset(tmp_path):
     assert offset3 == len(lines[2]) and [e["script_seq"] for e in evs3] == [2]
 
     # a file that is not there yet (the script creates it at startup) is an
-    # empty read that starts from the beginning once it appears
+    # empty read that starts from the beginning once it appears; an offset
+    # below zero is a caller bug read as 0, not an OSError from seek
     assert E.iter_script_events(str(tmp_path / "nope.jsonl"), 5) == (0, [])
+    offset4, evs4 = E.iter_script_events(path, -7)
+    assert offset4 == offset3 and [e["script_seq"] for e in evs4] == [2]
+
+
+def test_one_line_from_script_chokes_on_never_ends_the_read(tmp_path, monkeypatch):
+    # iter_script_events is the tail thread's whole read. If from_script
+    # raises on one line (a shape nobody foresaw), that line is skipped and
+    # the rest of the read still arrives; the thread never dies on it.
+    path = str(tmp_path / "events.jsonl")
+    with open(path, "wb") as fh:
+        for seq, name in ((1, "stack"), (2, "poison"), (3, "kvo")):
+            fh.write(json.dumps(_script_line(seq, E.PHASE, name=name, status="done")).encode() + b"\n")
+    real = E.from_script
+
+    def poisoned(raw):
+        if raw.get("name") == "poison":
+            raise RuntimeError("a from_script bug on this line")
+        return real(raw)
+    monkeypatch.setattr(E, "from_script", poisoned)
+    offset, evs = E.iter_script_events(path)
+    assert [e["script_seq"] for e in evs] == [1, 3], "the poison line alone is missing"
+    assert offset == os.path.getsize(path), "and the read still consumed the whole file"
+
+
+# The script's seq is the line's number in its file, so a seq no larger than
+# the last one handled means the file was replaced (deploy-stack.sh, the
+# comment above emit_event). These four hold iter_script_events to that: a
+# replaced file the size check cannot see is caught by seq, and a genuine
+# append never is.
+def _padded(seq, typ, width, **fields):
+    """One script line padded to exactly `width` bytes (newline included),
+    so a test can make two files the same size on purpose."""
+    line = json.dumps(_script_line(seq, typ, pad="", **fields), separators=(",", ":"))
+    assert len(line) + 1 <= width, (len(line), width)
+    line = line.replace('"pad":""', '"pad":"%s"' % ("x" * (width - len(line) - 1)))
+    out = line.encode() + b"\n"
+    assert len(out) == width
+    return out
+
+
+def test_a_same_size_replacement_is_caught_by_seq_not_size(tmp_path):
+    path = str(tmp_path / "events.jsonl")
+    old = [_padded(1, "hello", 100, stack="st"), _padded(2, E.PHASE, 100, name="stack"),
+           _padded(3, E.PHASE, 100, name="kvo")]
+    with open(path, "wb") as fh:
+        fh.write(b"".join(old[:2]))
+    offset, evs = E.iter_script_events(path)
+    last_seq = max(e["script_seq"] for e in evs)
+    assert (offset, last_seq) == (200, 2)
+    with open(path, "ab") as fh:              # the old run wrote on...
+        fh.write(old[2])
+    # ...and between two polls the file was replaced by a new run's, of
+    # exactly the old size: the size check sees nothing. Its line at the
+    # offset carries seq 2, and 2 <= 2 says: new stream.
+    new = [_padded(1, "hello", 200, stack="other"), _padded(2, E.PHASE, 100, name="stack")]
+    with open(path, "wb") as fh:
+        fh.write(b"".join(new))
+    assert os.path.getsize(path) == 300 == len(b"".join(old)), "same size as the old file"
+    offset2, evs2 = E.iter_script_events(path, offset, last_seq=last_seq)
+    assert [e["script_seq"] for e in evs2] == [1, 2], "the whole new file, from 0"
+    assert evs2[0]["type"] == "hello" and evs2[0]["stack"] == "other"
+    assert offset2 == 300
+    blind = E.iter_script_events(path, offset, last_seq=None)
+    assert (blind[0], [e["script_seq"] for e in blind[1]]) == (300, [2]), \
+        "without last_seq the same read passes as an append of seq 2: the old blind spot"
+
+
+def test_a_longer_replacement_is_caught_by_seq(tmp_path):
+    path = str(tmp_path / "events.jsonl")
+    with open(path, "wb") as fh:
+        fh.write(_padded(1, "hello", 100, stack="st") + _padded(2, E.PHASE, 100, name="stack"))
+    offset, evs = E.iter_script_events(path)
+    assert offset == 200 and [e["script_seq"] for e in evs] == [1, 2]
+    # replaced by a longer file whose hello alone spans the old offset: the
+    # read from 200 starts mid-hello (a fragment, skipped) and the first
+    # complete line is seq 2 <= 2
+    new = [_padded(1, "hello", 250, stack="other"), _padded(2, E.PHASE, 100, name="stack"),
+           _padded(3, E.PHASE, 100, name="kvo")]
+    with open(path, "wb") as fh:
+        fh.write(b"".join(new))
+    offset2, evs2 = E.iter_script_events(path, offset, last_seq=2)
+    assert [e["script_seq"] for e in evs2] == [1, 2, 3] and evs2[0]["stack"] == "other"
+    assert offset2 == 450 == os.path.getsize(path)
+    assert all(isinstance(e["id"], int) for e in evs2), "fresh console ids, as any event"
+
+
+def test_a_genuine_append_is_never_a_restart(tmp_path):
+    path = str(tmp_path / "events.jsonl")
+    with open(path, "wb") as fh:
+        fh.write(_padded(1, "hello", 100, stack="st") + _padded(2, E.PHASE, 100, name="stack"))
+    offset, evs = E.iter_script_events(path)
+    ids_before = [e["id"] for e in evs]
+    # the same run keeps writing: seq climbs, the read resumes at the offset
+    with open(path, "ab") as fh:
+        fh.write(_padded(3, E.PHASE, 100, name="kvo") + _padded(4, E.DONE, 100, status="ok"))
+    offset2, evs2 = E.iter_script_events(path, offset, last_seq=2)
+    assert [e["script_seq"] for e in evs2] == [3, 4], "only the new lines, nothing re-read"
+    assert offset2 == 400 == os.path.getsize(path)
+    assert min(e["id"] for e in evs2) > max(ids_before), "and no id was spent re-reading"
+    assert E.iter_script_events(path, offset2, last_seq=4) == (400, [])
+
+
+def test_the_first_read_never_restarts_and_a_read_from_zero_cannot(tmp_path):
+    # A file whose seq regresses inside it (two runs, the second after a
+    # truncation the reader never saw). With last_seq=None there is nothing
+    # to compare against: the read is what is at the offset, no more.
+    path = str(tmp_path / "events.jsonl")
+    with open(path, "wb") as fh:
+        fh.write(_padded(5, E.PHASE, 100, name="old") + _padded(2, E.PHASE, 100, name="new"))
+    offset, evs = E.iter_script_events(path, 100)
+    assert (offset, [e["script_seq"] for e in evs]) == (200, [2])
+    offset, evs = E.iter_script_events(path, 100, last_seq=None)
+    assert (offset, [e["script_seq"] for e in evs]) == (200, [2])
+    # the same read with the old run's last seq is the restart
+    offset, evs = E.iter_script_events(path, 100, last_seq=5)
+    assert (offset, [e["script_seq"] for e in evs]) == (200, [5, 2])
+    # and a read that already starts at 0 has nothing to restart from
+    offset, evs = E.iter_script_events(path, 0, last_seq=99)
+    assert (offset, [e["script_seq"] for e in evs]) == (200, [5, 2])
 
 
 def test_replay_rebuilds_script_events_as_themselves():
@@ -482,6 +610,11 @@ def test_replay_rebuilds_script_events_as_themselves():
     assert ev["prompt_id"] == "p3" and isinstance(ev["id"], int)
     ev = O._rebuild(E.DONE, {"status": "interrupted", "phase": "kvo", "script_seq": 9})
     assert ev["status"] == "interrupted" and ev["script_seq"] == 9
+    # a fixture frame still carrying the console id it was recorded with:
+    # from_script would read that "id" as the script's own and file it as
+    # <type>_id, so _rebuild drops it first, as the STAT branch does
+    ev = O._rebuild(E.PHASE, {"id": 999, "name": "stack", "status": "done", "script_seq": 10})
+    assert ev["id"] != 999 and "phase_id" not in ev
     # the console's own frames still take their own constructors
     ev = O._rebuild(E.DONE, {"summary": "ok", "outputs": {}})
     assert ev["summary"] == "ok" and "script_seq" not in ev
