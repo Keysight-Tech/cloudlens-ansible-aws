@@ -9,6 +9,8 @@ and hold them to the same lists the server reads:
   keys       every CLOUDLENS_* literal in wizard.js is in profile.allowed_keys();
              the secret fields in index.html are named after api.SECRET_ENV and
              nothing else in the page names a key outside the allowlist
+  codes      activation codes enter through a password input, never a textarea,
+             and reach /api/run as kvo_codes from an array wizard.js closes over
   values     the vocabularies wizard.js offers for the choice keys are the
              words deploy-stack.sh accepts (parsed from its own messages)
   routes     every /api/..., /events/, /run, /stop/ and /flows literal in the
@@ -94,6 +96,36 @@ def test_secret_fields_are_named_after_the_secrets_the_script_reads():
         assert "value=" not in tag, "a secret field never carries a value in the page"
     others = set(KEY.findall(html)) - names
     assert others <= set(P.allowed_keys()), sorted(others - set(P.allowed_keys()))
+
+
+# ------------------------------------------------------------------ codes
+def _secrets_block(html):
+    m = re.search(r'<div class="subsec" id="secrets">(.*?)<div class="launch">', html, re.S)
+    assert m, "index.html carries the secrets block before the Launch row"
+    return m.group(1)
+
+
+def test_activation_codes_enter_through_a_password_input_never_a_textarea():
+    """A textarea masked by -webkit-text-security shows every code in clear
+    on Firefox, which ignores that property. The codes go in through a
+    password input, which every browser masks, one at a time or pasted as
+    a list; each shows as a chip of its last four characters, with a
+    remove button and a count line. The input carries no data-secret: a
+    code is not environment, it rides the argv as --kvo-codes, and no
+    secret field ever carries a value in the page."""
+    html = _read("index.html")
+    block = _secrets_block(html)
+    assert "<textarea" not in block, "a textarea shows the codes in clear on Firefox"
+    entry = [t for t in re.findall(r"<input\b[^>]*>", block) if 'id="codeEntry"' in t]
+    assert len(entry) == 1, entry
+    assert 'type="password"' in entry[0], entry[0]
+    assert "data-secret" not in entry[0] and "value=" not in entry[0], entry[0]
+    for i in ("codeAdd", "codeList", "codeCount"):
+        assert 'id="%s"' % i in block, i
+    assert "text-security" not in html, "the masking is the input type, never a CSS property"
+    js = _read("wizard.js")
+    assert "kvo_codes:codesNow()" in js, "Launch sends the codes as kvo_codes"
+    assert 'getData("text")' in js, "a paste is read from the clipboard before the input sanitises it"
 
 
 # ----------------------------------------------------------------- values
@@ -240,4 +272,4 @@ def test_each_script_is_a_strict_iife(name):
 # ------------------------------------------------------------------ style
 @pytest.mark.parametrize("name", sorted(os.listdir(WEB)))
 def test_no_em_dash_in_any_web_file(name):
-    assert "—" not in _read(name), "%s carries an em dash" % name
+    assert "\u2014" not in _read(name), "%s carries an em dash" % name

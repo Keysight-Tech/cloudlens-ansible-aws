@@ -522,11 +522,63 @@ function secretsNow(){
   });
   return out;
 }
-function codesNow(){return kvo()?P.parseCodes($("kvoCodes").value):[];}
+/* Activation codes never appear whole on the page. Each one is typed or
+   pasted into a password input (masked by every browser: a textarea under
+   -webkit-text-security showed them in clear on Firefox, which ignores
+   that property) and moves into this array, closed over here and nowhere
+   else: not the plan, not localStorage. The page shows a chip of the last
+   four characters. Launch sends the array as kvo_codes. */
+var codes=[];
+var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;   // api.CODE_QTY
+var CODES_MAX=50;                                                    // api.MAX_LIST
+function codesNow(){return kvo()?codes.slice():[];}
+function codeTail(c){var parts=c.split(",");return "****-"+parts[0].slice(-4)+(parts[1]?","+parts[1]:"");}
+function paintCodes(){
+  var list=$("codeList");list.innerHTML="";
+  codes.forEach(function(c,i){
+    var chip=document.createElement("span");chip.className="code";
+    chip.appendChild(document.createTextNode(codeTail(c)));
+    var rm=document.createElement("button");rm.type="button";rm.textContent="\u00d7";
+    rm.setAttribute("aria-label","Remove the code ending "+c.split(",")[0].slice(-4));
+    rm.addEventListener("click",function(){codes.splice(i,1);paintCodes();});
+    chip.appendChild(rm);list.appendChild(chip);
+  });
+  $("codeCount").textContent=codes.length?codes.length+" code"+(codes.length===1?"":"s"):"";
+  paintCli();
+}
+function addCodes(text){
+  var bad=0,dup=0,over=0;
+  P.parseCodes(text).forEach(function(c){
+    if(!CODE_QTY_RE.test(c)){bad++;return;}          // the API's rule, said here instead of at Launch
+    if(codes.indexOf(c)>=0){dup++;return;}
+    if(codes.length>=CODES_MAX){over++;return;}
+    codes.push(c);
+  });
+  paintCodes();
+  var notes=[];
+  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY)");
+  if(dup)notes.push(dup+" already added");
+  if(over)notes.push(over+" over the limit of "+CODES_MAX);
+  if(notes.length)status("codeCount",$("codeCount").textContent+(codes.length?"; ":"")+notes.join("; ")+".",!!(bad||over));
+  else $("codeCount").classList.remove("err");
+}
+function takeCodeEntry(){addCodes($("codeEntry").value);$("codeEntry").value="";$("codeEntry").focus();}
+$("codeAdd").addEventListener("click",takeCodeEntry);
+$("codeEntry").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();takeCodeEntry();}});
+$("codeEntry").addEventListener("paste",function(e){
+  // the clipboard text as it is, read before the password input strips
+  // its newlines: a pasted list adds every code in it, plus whatever was
+  // already typed
+  var text=e.clipboardData&&e.clipboardData.getData("text");
+  if(!text)return;
+  e.preventDefault();
+  addCodes(($("codeEntry").value?$("codeEntry").value+"\n":"")+text);
+  $("codeEntry").value="";
+});
 function paintCli(){
   $("cliLine").textContent=P.cliLine(planResp,Object.keys(secretsNow()).sort(),codesNow().length);
 }
-document.querySelectorAll("#secrets [data-secret], #kvoCodes").forEach(function(i){i.addEventListener("input",paintCli);});
+document.querySelectorAll("#secrets [data-secret]").forEach(function(i){i.addEventListener("input",paintCli);});
 
 /* Launch: disabled while the plan has errors, a run is being started, or
    the doctor's last verdict for this region carries a FAIL; the note
@@ -556,7 +608,7 @@ $("launchBtn").addEventListener("click",function(){
     }
     // the secrets have gone to the engine's environment; nothing keeps them here
     document.querySelectorAll("#secrets [data-secret]").forEach(function(i){i.value="";});
-    $("kvoCodes").value="";paintCli();
+    codes.length=0;$("codeEntry").value="";paintCodes();
     status("launchStatus","Started job "+d.job_id+" on "+d.profile_file+".");
     C.begin("stack","deploy-stack.sh --profile "+d.profile_file);
     C.attach(d.job_id);

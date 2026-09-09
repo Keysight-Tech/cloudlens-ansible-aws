@@ -213,7 +213,11 @@
   .wiz .hint{font-size:11.5px;color:var(--ink-faint);margin:4px 0 0;line-height:1.5}
   .wiz .field select,.wiz .field textarea{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
   .wiz .field select:focus,.wiz .field textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
-  .masked{-webkit-text-security:disc}
+  .coderow{display:flex;gap:8px}.coderow input{flex:1 1 auto;min-width:0}.coderow .ghostbtn{flex:0 0 auto;padding:0 16px}
+  .codes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.codes:empty{display:none}
+  .code{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;color:var(--ink-soft);background:var(--panel);border:1px solid var(--line);border-radius:100px;padding:4px 6px 4px 12px}
+  .code button{appearance:none;border:0;background:transparent;color:var(--ink-faint);font:inherit;font-size:14px;line-height:1;padding:2px 6px;border-radius:100px;cursor:pointer}
+  .code button:hover,.code button:focus-visible{color:var(--accent);background:var(--accent-soft)}
   .opts{display:grid;gap:8px;margin-top:12px}
   .opt{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border:1px solid var(--line);border-radius:11px;cursor:pointer;background:var(--paper)}
   .opt:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -475,7 +479,11 @@
           </div>
         </div>
         <div id="secKvo" hidden>
-          <div class="field"><label for="kvoCodes">KVO activation codes, one per line (CODE or CODE,QTY)</label><textarea id="kvoCodes" class="masked" rows="3" data-codes autocomplete="off" spellcheck="false"></textarea><p class="hint">An unlicensed KVO refuses every write. The codes ride the engine's command line as --kvo-codes and are redacted from the stream.</p></div>
+          <div class="field"><label for="codeEntry">KVO activation codes (CODE or CODE,QTY): type one and press Enter, or paste the whole list</label>
+            <div class="coderow"><input id="codeEntry" type="password" autocomplete="off" spellcheck="false"><button type="button" class="ghostbtn" id="codeAdd">Add</button></div>
+            <div class="codes" id="codeList"></div>
+            <p class="hint" id="codeCount" role="status" aria-live="polite"></p>
+            <p class="hint">An unlicensed KVO refuses every write. A code never appears whole on the page: each one becomes a chip of its last four characters. The codes ride the engine's command line as --kvo-codes and are redacted from the stream.</p></div>
         </div>
         <details class="fold"><summary>Passwords (optional: the script has its defaults)</summary>
           <div class="fields">

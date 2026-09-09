@@ -57,11 +57,21 @@ function parseTestVms(text){
   return counts;
 }
 
-/* Activation codes, one per line (or whitespace separated): CODE or CODE,QTY
-   as --kvo-codes takes them. The comma is part of a code's quantity, so it
-   never splits. */
+/* Activation codes as typed or pasted: whitespace, newlines and commas
+   separate them, except that a purely numeric piece after a comma is the
+   quantity of the code before it, so CODE,QTY stays one token, the shape
+   the script's --kvo-codes takes. */
 function parseCodes(text){
-  return String(text||"").split(/[\s]+/).map(function(c){return c.trim();}).filter(function(c){return c;});
+  var out=[];
+  String(text||"").split(/\s+/).forEach(function(word){
+    var last=-1;   // index in out of the last code this word produced
+    word.split(",").forEach(function(p){
+      if(!p)return;
+      if(/^[0-9]{1,6}$/.test(p)&&last>=0&&out[last].indexOf(",")<0){out[last]+=","+p;return;}
+      out.push(p);last=out.length-1;
+    });
+  });
+  return out;
 }
 
 /* The workload count line for the discovery status. */
