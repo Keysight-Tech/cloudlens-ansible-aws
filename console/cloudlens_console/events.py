@@ -172,12 +172,16 @@ def _script_lines(chunk):
     return end, raws
 
 
+def _is_seq(value):
+    """A seq is an int; bool is an int to Python, but never a seq."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _first_seq(raws):
-    """The seq of the first line in a read that carries one (bool is an int
-    to Python, but never a seq)."""
+    """The seq of the first line in a read that carries one."""
     for raw in raws:
         seq = raw.get("seq")
-        if isinstance(seq, int) and not isinstance(seq, bool):
+        if _is_seq(seq):
             return seq
     return None
 
@@ -206,7 +210,10 @@ def iter_script_events(path, start_offset=0, last_seq=None):
     from 0 and the whole of it comes back, every event with a fresh
     console id (the browser's last-hello rule handles the second hello).
     last_seq=None (a first call) never restarts, and neither does a read
-    that already starts at 0. What this still cannot see: a replacement
+    that already starts at 0; a last_seq that is not an int (the same
+    guard _first_seq applies to the file's side) is ignored, not compared,
+    so a caller that tracked a string seq gets no restart rather than a
+    TypeError in its tail thread. What this still cannot see: a replacement
     whose line at the offset already carries a larger seq (more, shorter
     lines than the old file had there) reads as an append, and one the
     reader had fully caught up with is an empty read until the new writer
@@ -219,7 +226,7 @@ def iter_script_events(path, start_offset=0, last_seq=None):
                 start_offset = 0
             fh.seek(start_offset)
             end, raws = _script_lines(fh.read())
-            if start_offset and last_seq is not None:
+            if start_offset and _is_seq(last_seq):
                 first = _first_seq(raws)
                 if first is not None and first <= last_seq:
                     start_offset = 0

@@ -155,7 +155,11 @@ function run(){
      window._job=d.job_id;
      es=new EventSource("/events/"+d.job_id);
      es.addEventListener("hello",function(e){var m=JSON.parse(e.data);
-       $("idChip").hidden=false;$("idChip").innerHTML='acct <b>'+m.account+'</b> · '+m.region;});
+       // two hello shapes: the console's (account, arn, region) and the
+       // script's own (stack, region); the last one wins the chip
+       $("idChip").hidden=false;
+       if(m.account===undefined&&m.stack!==undefined){$("idChip").innerHTML='stack <b>'+esc(m.stack)+'</b> · '+esc(m.region);}
+       else{$("idChip").innerHTML='acct <b>'+esc(m.account)+'</b> · '+esc(m.region);}});
      es.addEventListener("log",function(e){conLine(JSON.parse(e.data).text);});
      es.addEventListener("state",function(e){var m=JSON.parse(e.data);setNode(m.node,m.status,m.label);
        if(m.status==="live"){var n=0;Object.keys(nodeEls).forEach(function(k){if(nodeEls[k].classList.contains("live"))n++;});$("mCreated").textContent=n;}});
@@ -168,7 +172,14 @@ function run(){
        if(m.waiting){setPill("run",m.note||"waiting on AWS");}
        else{setPill("run","running");}});
      es.addEventListener("done",function(e){var m=JSON.parse(e.data);
-       finish("done","complete");narrate(m.summary,"good");
+       // the script's done carries status (ok|failed|interrupted|declined);
+       // anything but a success is the run ending badly, not completing
+       if(m.status!==undefined&&m.status!=="ok"&&m.status!=="dry-run"){
+         var why="Run ended: "+m.status;
+         if(m.phase)why+=" in "+m.phase;
+         if(m.reason)why+=" ("+m.reason+")";
+         finish("err","failed");card("err","Failed",why);return;}
+       finish("done","complete");narrate(m.summary||("Run ended: "+m.status),"good");
        if(m.outputs&&m.outputs.note)card("","Next",m.outputs.note);});
      es.addEventListener("error",function(e){
        if(!e.data){return;} var m=JSON.parse(e.data);

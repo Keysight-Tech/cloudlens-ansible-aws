@@ -12,8 +12,12 @@ AWS calls, for offline demo/dev/test; it is real data, just replayed.
 from __future__ import annotations
 import os
 import json
+import errno
 import queue
+import shutil
+import signal
 import time
+import tempfile
 import threading
 import subprocess
 
@@ -22,6 +26,9 @@ from . import flows as F
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 POLL_SECS = 4
+TAIL_SECS = 0.25        # how often run_engine re-reads the script's events file
+STOP_GRACE_SECS = 3.0   # TERM to the process group, then KILL after this long
+ANSWER_WAIT_SECS = 10.0  # how long answer() waits for the script to open the FIFO
 
 
 class Job:
@@ -30,9 +37,12 @@ class Job:
         self.flow_id = flow_id
         self.inputs = inputs
         self.q = queue.Queue()
-        self.buffer = []          # for SSE Last-Event-ID replay
+        self.buffer = []          # every event emitted, for SSE Last-Event-ID replay
         self.done = False
         self.stopped = False
+        self.pending_prompt = None  # the script's id of the prompt waiting for an answer
+        self.events_path = None     # the --events file run_engine gave the script
+        self.pipe_path = None       # the --prompt-pipe FIFO run_engine created
         self._proc = None
         self._t0 = time.time()
 
@@ -41,17 +51,100 @@ class Job:
         self.q.put(ev)
         if ev["type"] in (E.DONE, E.ERROR):
             self.done = True
+        elif ev["type"] == E.PROMPT:
+            # the script's own id (from_script filed it as prompt_id): what
+            # answer() pairs the reply with, so a reply meant for an earlier
+            # question after a reconnect cannot land on this one
+            self.pending_prompt = ev.get("prompt_id")
 
     def elapsed(self):
         return int(time.time() - self._t0)
 
+    def alive(self):
+        """True while the engine process is still running."""
+        return self._proc is not None and self._proc.poll() is None
+
     def stop(self):
+        """Cancel the run. The signal goes to the process GROUP, not the pid:
+        deploy-stack.sh asks its questions from inside x="$(ask ...)"
+        subshells, and a run blocked on a prompt is really that subshell
+        blocked on the FIFO with bash waiting for it. A TERM to the leader
+        alone leaves the subshell there, the stdout pipe open and the run
+        never ending; run_engine started the child in its own session, so
+        its pid is its pgid and the whole tree is one group. A run that
+        ignores TERM gets KILL after STOP_GRACE_SECS."""
         self.stopped = True
-        if self._proc and self._proc.poll() is None:
+        if not self.alive():
+            return
+        if not self._signal_group(signal.SIGTERM):
             try:
                 self._proc.terminate()
             except Exception:
                 pass
+        t = threading.Timer(STOP_GRACE_SECS, self._escalate)
+        t.daemon = True
+        t.start()
+
+    def _escalate(self):
+        if self.alive() and not self._signal_group(signal.SIGKILL):
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+
+    def _signal_group(self, sig):
+        # alive() first: a reaped leader's pgid may already belong to someone else
+        if not self.alive():
+            return True
+        try:
+            os.killpg(self._proc.pid, sig)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    def answer(self, prompt_id, text):
+        """Answer the prompt the script is waiting on: open the FIFO for
+        writing, write exactly one line, close. That is the script's contract
+        (the comment above ask() in deploy-stack.sh): a write end held open
+        between answers reads as an empty answer and takes the default.
+
+        prompt_id has to be the prompt that is waiting. A page that
+        reconnects can replay an old question, and its answer must not be
+        taken for the current one; the API surfaces the ValueError.
+
+        The FIFO is opened non-blocking and retried: a blocking open would
+        hang this thread forever if the script died between emitting the
+        prompt and reading the pipe, and the window between those two is
+        real (ENXIO, no reader yet) even while it is alive."""
+        if self.pending_prompt is None:
+            raise ValueError("No prompt is waiting for an answer.")
+        if prompt_id != self.pending_prompt:
+            raise ValueError("The prompt waiting is {}, not {}.".format(self.pending_prompt, prompt_id))
+        if "\n" in text or "\r" in text:
+            raise ValueError("An answer is one line.")
+        if not self.pipe_path:
+            raise ValueError("This job has no engine to answer.")
+        deadline = time.time() + ANSWER_WAIT_SECS
+        while True:
+            try:
+                fd = os.open(self.pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as exc:
+                if exc.errno != errno.ENXIO:
+                    raise ValueError("The prompt pipe is gone ({}); the run has ended.".format(
+                        exc.strerror))
+                if not self.alive():
+                    raise ValueError("The engine exited before it read the answer.")
+                if time.time() > deadline:
+                    raise ValueError("The engine never opened the prompt pipe.")
+                time.sleep(0.05)
+        try:
+            data = (text + "\n").encode("utf-8")
+            while data:
+                data = data[os.write(fd, data):]
+        finally:
+            os.close(fd)
+        self.pending_prompt = None
 
 
 # ---------------------------------------------------------------- preflight
@@ -141,6 +234,102 @@ def _stream_subprocess(job, cmd, cwd, on_line):
             on_line(line)
     job._proc.wait()
     return job._proc.returncode
+
+
+# ---------------------------------------------------------------- engine
+def run_engine(job, cmd, cwd=None, env=None):
+    """Run a deploy-stack.sh style command with --events/--prompt-pipe wired to
+    this job, tailing the events file into the stream while the process runs.
+    `cmd` is the argv WITHOUT the two flags; they are appended here so every
+    caller gets them right. Process exit without a done event is terminal.
+
+    Three producers feed job.emit: the script's events file (a thread that
+    re-reads it every TAIL_SECS), the merged stdout/stderr (this thread, one
+    log per line) and, once the process has exited and the tail has done its
+    last read, the closing verdict. The verdict is decided only after the
+    tail joined: a done the script wrote in its final milliseconds must win
+    over "engine exited 0", and one written before a group kill (there is
+    none: the tee dies first) would have to win over the stop sentence.
+
+    Exit without a done is terminal because the script's contract says so:
+    after a group kill there is no done event, and a run whose console went
+    away would otherwise block forever. So the closing event is: the stop
+    sentence when the operator stopped it, an error naming the exit code
+    when it failed, and a done that says only that the engine exited when
+    it returned 0 without saying anything itself. Returns the exit code.
+    """
+    work = tempfile.mkdtemp(prefix="cloudlens-console-{}-".format(job.id))
+    job.events_path = os.path.join(work, "events.jsonl")
+    job.pipe_path = os.path.join(work, "prompts.fifo")
+    with open(job.events_path, "a"):
+        pass
+    os.mkfifo(job.pipe_path, 0o600)
+    argv = list(cmd) + ["--events", job.events_path, "--prompt-pipe", job.pipe_path]
+    penv = dict(os.environ, PYTHONUNBUFFERED="1")
+    if env:
+        penv.update(env)
+    exited = threading.Event()
+    tail = threading.Thread(target=_tail_events, args=(job, exited), daemon=True)
+    try:
+        # Same rules as _stream_subprocess: no stdin (a raw read sees EOF, not
+        # a hang), no controlling terminal (the script's /dev/tty re-attach
+        # cannot happen, and the console's own Ctrl-C does not reach it), and
+        # its own session, which is what makes stop()'s group kill possible.
+        job._proc = subprocess.Popen(
+            argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True,
+            text=True, bufsize=1, env=penv,
+        )
+        tail.start()
+        # read to EOF, stopped or not: after a group kill EOF is how the pipe
+        # closes, and the lines before it are the last thing the run said
+        for line in job._proc.stdout:
+            line = line.rstrip("\n")
+            if line:
+                job.emit(E.log(line))
+        rc = job._proc.wait()
+    finally:
+        exited.set()
+        if tail.is_alive():
+            tail.join()
+        job.pending_prompt = None
+        shutil.rmtree(work, ignore_errors=True)
+    if not job.done:
+        if job.stopped:
+            job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
+        elif rc != 0:
+            job.emit(E.error("engine exited {}".format(rc),
+                             fix="Read the console output above for the failing step."))
+        else:
+            job.emit(E.done("engine exited 0"))
+    return rc
+
+
+def _tail_events(job, exited):
+    """Re-read the script's events file every TAIL_SECS and emit what is new,
+    until the process has exited AND one read started after that exit: a
+    read that began before the exit can miss the line the script wrote on
+    its way out, so `final` is sampled before the read, never after.
+
+    last_seq is the watermark iter_script_events uses to tell a replaced
+    file from an appended one. It is the LATEST int script_seq handled, not
+    the largest ever seen: after a restart the new file's seqs begin at 1,
+    and a watermark stuck at the old maximum would make every later read
+    look like yet another replacement and re-read the file forever. Only an
+    int (not a bool, not a string the script may have written) becomes the
+    watermark; comparing anything else would raise in this thread."""
+    offset, last_seq = 0, None
+    while True:
+        final = exited.is_set()
+        offset, evs = E.iter_script_events(job.events_path, offset, last_seq)
+        for ev in evs:
+            seq = ev.get("script_seq")
+            if isinstance(seq, int) and not isinstance(seq, bool):
+                last_seq = seq
+            job.emit(ev)
+        if final:
+            return
+        exited.wait(TAIL_SECS)
 
 
 # ---------------------------------------------------------------- cfn poller
