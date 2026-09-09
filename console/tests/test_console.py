@@ -74,10 +74,12 @@ def test_the_fixtures_are_frames_the_published_page_can_replay():
     had a server-side replay route. That route and its player are gone
     with the quick flows, so the fixtures are held to the contract of the
     one thing that still reads them."""
-    import build_site
-
-    fx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtures"))
-    played = set(re.findall(r'ev\.type===?"(\w+)"', build_site.CLIENT_APP))
+    here = os.path.abspath(os.path.dirname(__file__))
+    fx_dir = os.path.join(here, "..", "fixtures")
+    # read, never imported: build_site.py is a script, and importing it
+    # would write docs/console.html as a side effect of running the tests
+    with open(os.path.join(here, "..", "build_site.py"), encoding="utf-8") as fh:
+        played = set(re.findall(r'ev\.type===?"(\w+)"', fh.read()))
     assert played == {E.LOG, E.STATE, E.NARRATE, E.STAT, E.DONE}, sorted(played)
     for fid in F.ORDER:
         frames = json.load(open(os.path.join(fx_dir, fid + ".json")))
