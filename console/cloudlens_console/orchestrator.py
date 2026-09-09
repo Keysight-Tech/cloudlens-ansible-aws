@@ -41,6 +41,26 @@ MASKED = "********"
 # registered string longer than this is redacted by its first 14 characters
 # as well as whole
 REDACT_PREFIX = 14
+# The shortest string that may be registered as a redaction.
+#
+# redact() is a blind substring replace over every string it is given, and
+# _redact_event runs it over every string field of every frame the script
+# writes. A short needle therefore rewrites words that are not the secret.
+# Reproduced: a two-character typo at a secret prompt registered "on", and
+# from the next frame on {"type":"done"} went out as
+# {"type":"d[redacted]e"}. emit()'s terminal test reads ev["type"], so it
+# never fired: the job never went done, _verdict's finally overwrote a
+# successful deploy's verdict with an error, and the frame reached the
+# browser as an SSE event with no listener for it.
+#
+# Six characters is the floor. Every secret the console actually carries is
+# longer (a vController or KVO password, an AWS secret access key, an
+# activation code), and no field name, status word or type in the event
+# contract is six characters of a real secret by accident. Anything shorter
+# is REFUSED, never dropped: a secret the stream cannot blank safely is one
+# the operator has to be told about, because dropping it silently would
+# leave it printed in the log.
+MIN_REDACTION = 6
 
 
 class Job:
@@ -111,6 +131,26 @@ class Job:
         the wait."""
         with self._cond:
             return self._cond.wait_for(lambda: len(self.buffer) > last_id or self.done, timeout)
+
+    def add_redaction(self, value):
+        """Register `value` as a string redact() blanks from the stream.
+
+        The one door in: nothing appends to self.redactions directly, so
+        the MIN_REDACTION floor cannot be walked around. A value under it
+        raises rather than being ignored - see MIN_REDACTION for the run
+        that was reported as failed because "on" was registered. An empty
+        value is a no-op (there is nothing to blank) and a non-string is
+        not a needle."""
+        if not isinstance(value, str) or not value:
+            return
+        if len(value) < MIN_REDACTION:
+            raise ValueError(
+                "A secret of {} characters cannot be blanked from this run's output: "
+                "redaction replaces it wherever it appears, and a string that short "
+                "also appears inside the words the console's own frames are made of. "
+                "Secrets of at least {} characters are accepted.".format(
+                    len(value), MIN_REDACTION))
+        self.redactions.append(value)
 
     def redact(self, text):
         """`text` with every registered string, and the first REDACT_PREFIX
@@ -252,11 +292,9 @@ class Job:
                 raise ValueError("This job has no engine to answer.")
             if self._answering == prompt_id:
                 raise ValueError("Prompt {} is already being answered.".format(prompt_id))
-            self._answering = prompt_id
-            pipe = self.pipe_path
-            # read while the claim is taken: by the time the write returns the
-            # script may have asked the next question, and pending_kind would
-            # then be that one's
+            # read under the lock the claim is taken under: by the time the
+            # write returns the script may have asked the next question, and
+            # pending_kind would then be that one's
             secret = self.pending_kind == "secret"
             # A secret typed here is registered exactly like the ones that
             # came in with the launch (api.run registers those), because the
@@ -267,8 +305,17 @@ class Job:
             # Registered BEFORE the write, not after: the script can echo the
             # value the moment it reads it, and an answer the engine never
             # took was still typed as a secret.
+            #
+            # A secret too short to blank is refused here, BEFORE the claim
+            # is taken and before anything is written to the pipe: the
+            # operator gets the refusal on the prompt card, the question
+            # stays open, and they can type the real value. A two-character
+            # typo used to be registered and go on to rewrite the type field
+            # of every later frame (see MIN_REDACTION).
             if secret and text:
-                self.redactions.append(text)
+                self.add_redaction(text)
+            self._answering = prompt_id
+            pipe = self.pipe_path
         try:
             self._write_answer(pipe, text)
         except BaseException:
@@ -654,17 +701,54 @@ def _verdict(job, rc, state):
         job.emit(E.done(job.redact("engine exited 0")))
 
 
+# The fields of a frame that are STRUCTURE, not content: every one of them
+# holds either a closed vocabulary this console switches on, or an
+# identifier the console or the script minted. None of them can carry a
+# secret, and rewriting any of them breaks a renderer rather than
+# protecting anybody:
+#
+#   type        emit() reads it to decide a frame is terminal, and the SSE
+#               stream names the event after it. A mangled type is a run
+#               that never finishes and a frame no listener hears.
+#   id          the console's own counter, what Last-Event-ID resumes on
+#   script_seq  the script's line number, the tail's watermark
+#   prompt_id   what an answer is paired with, so a reply cannot land on
+#               the wrong question
+#   status      pass|warn|fail, done|failed|skipped, ok|interrupted|...
+#   kind        text|secret on a prompt (this one decides whether an
+#               answer is ever shown), vpc|kvo|vpb|... on a resource
+#   name        the phase's name, out of the script's own PHASE_ORDER
+#   node        a diagram node id
+#   tone        info|good|note|warn|err
+#   stream      out|err
+#   component   vcontroller|kvo|vpb on a login card
+#   role        the instance role the deploy tagged
+#
+# Everything else - question, reason, text, fix, item, url, summary, an
+# address, a resource id - is content and stays redacted.
+STRUCTURAL = frozenset((
+    "type", "id", "script_seq", "prompt_id", "status", "kind", "name",
+    "node", "tone", "stream", "component", "role",
+))
+
+
 def _redact_event(job, ev):
     """The script frame with each of its top-level string fields redacted,
-    in place: the stash is the frame the verdict emits, and emit stamps
-    the id on that same dict, so a copy here would leave the stash
-    without one. Top level only, and that is sufficient: the script's
-    frames are flat (emit_event writes one JSON object of string fields;
-    a number or a bool has no secret in it), so there is nothing nested
-    to descend into. Every frame the tail emits, and the stashed done,
-    comes through here."""
+    in place, STRUCTURAL fields excepted: the stash is the frame the
+    verdict emits, and emit stamps the id on that same dict, so a copy
+    here would leave the stash without one. Top level only, and that is
+    sufficient: the script's frames are flat (emit_event writes one JSON
+    object of string fields; a number or a bool has no secret in it), so
+    there is nothing nested to descend into. Every frame the tail emits,
+    and the stashed done, comes through here.
+
+    The STRUCTURAL exception is the second half of the fix MIN_REDACTION
+    is the first half of. A floor on the needle makes the collision
+    unlikely; leaving the fields the console DECIDES on out of the
+    substitution makes a run's outcome independent of what a secret
+    happens to spell."""
     for k, v in list(ev.items()):
-        if isinstance(v, str):
+        if isinstance(v, str) and k not in STRUCTURAL:
             ev[k] = job.redact(v)
     return ev
 

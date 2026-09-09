@@ -398,6 +398,82 @@ def test_tail_frames_are_redacted_before_they_are_emitted(tmp_path):
         assert leak not in blob, leak
 
 
+def test_a_needle_too_short_to_redact_is_refused_not_ignored(tmp_path):
+    """redact() replaces a registered string wherever it appears, so a very
+    short one rewrites words that are not the secret. Reproduced: a
+    two-character typo at a secret prompt registered "on", and from the next
+    frame on {"type":"done"} went out as {"type":"d[redacted]e"} - emit()
+    never saw a terminal type, the run never went done, and the verdict for
+    a successful deploy was overwritten with an error.
+
+    The floor is a refusal, not a silent drop: dropping it would leave the
+    typed value printable in the log while the operator believed it was
+    blanked. The question stays open, so the real value can be typed."""
+    assert O.MIN_REDACTION == 6
+    job = O.Job("short", "engine-deploy", {})
+    for tiny in ("on", "a", "admin"):
+        with pytest.raises(ValueError) as exc:
+            job.add_redaction(tiny)
+        assert str(O.MIN_REDACTION) in str(exc.value), exc.value
+    assert job.redactions == [], "nothing under the floor is ever registered"
+    # not a needle at all: no value to blank, no refusal to make
+    job.add_redaction("")
+    job.add_redaction(None)
+    assert job.redactions == []
+    job.add_redaction("secret")
+    assert job.redactions == ["secret"], "the floor itself is accepted"
+
+    # and the same refusal on the path an operator actually reaches it by
+    live = O.Job("short-live", "engine-deploy", {})
+    t = _start(live, [_script(tmp_path, FAKE_SECRET_PROMPT, "short.sh")])
+    assert _wait_for(lambda: live.pending_prompt == "p1"), _types(live)
+    with pytest.raises(ValueError) as exc:
+        live.answer("p1", "on")
+    assert str(O.MIN_REDACTION) in str(exc.value), exc.value
+    assert live.redactions == [] and live.pending_prompt == "p1", \
+        "a refused answer registers nothing and leaves the question open"
+    assert not any(e["type"] == E.ANSWERED for e in live.buffer), \
+        "nothing was written to the pipe, so nothing was answered"
+    live.answer("p1", "the-real-password")
+    t.join(5)
+    assert not t.is_alive() and live.done, _types(live)
+
+
+def test_redaction_never_rewrites_the_fields_the_console_decides_on():
+    """A needle at or above the floor can still be a whole structural word:
+    `secret` is exactly six characters and is the value of a prompt's
+    `kind`. Registering a password of "secret" used to turn
+    kind:"secret" into kind:"[redacted]", which is not a cosmetic loss -
+    watch.js reads that field to decide whether a typed answer may be
+    shown, and orchestrator reads it to decide whether to mask the
+    `answered` frame. The same substitution over `type` is the reported
+    bug: emit()'s terminal test reads ev["type"].
+
+    So the fields the console SWITCHES ON are out of the substitution.
+    Everything the script composed from what it saw stays in it."""
+    job = O.Job("struct", "engine-deploy", {})
+    job.add_redaction("secret")
+
+    prompt = O._redact_event(job, {"type": E.PROMPT, "kind": "secret", "prompt_id": "p3",
+                                   "script_seq": 4, "question": "The KVO secret: "})
+    assert prompt["type"] == E.PROMPT and prompt["kind"] == "secret" and prompt["prompt_id"] == "p3"
+    assert prompt["question"] == "The KVO [redacted]: ", "the question is content and is redacted"
+
+    done = O._redact_event(job, {"type": E.DONE, "status": "failed", "name": "kvo",
+                                 "reason": "the secret was refused"})
+    assert done["type"] == E.DONE and done["status"] == "failed" and done["name"] == "kvo"
+    assert done["reason"] == "the [redacted] was refused"
+    # the whole point: the frame is still terminal, so the run ends
+    job.emit(done)
+    assert job.done and _last(job)["type"] == E.DONE
+
+    # every field named structural, held against the frames that carry them
+    assert O.STRUCTURAL >= {"type", "id", "script_seq", "status", "kind", "prompt_id", "name"}
+    for field in O.STRUCTURAL:
+        job.redactions[:] = ["vcontroller"]
+        assert O._redact_event(job, {field: "vcontroller"})[field] == "vcontroller", field
+
+
 def test_stdout_lines_become_log_events(tmp_path):
     script = _script(tmp_path, FAKE_STDOUT)
     job = O.Job("j8", "stack", {})

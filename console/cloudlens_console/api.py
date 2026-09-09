@@ -557,6 +557,46 @@ def _check_codes(codes, with_qty=True):
     return out, None
 
 
+def _unredactable(env, codes):
+    """The secrets and activation codes this run could not blank from its
+    own output, as errors ready for the caller's list.
+
+    Everything registered with a job is replaced wherever it appears in
+    that run's stream, so a very short one rewrites words that are not the
+    secret: orchestrator.MIN_REDACTION carries the run this cost. The
+    floor is enforced there too (Job.add_redaction raises), but a raise
+    inside the launch would be a 500 for a typo. Checked here, beside the
+    other validation and before the engine lock, it is a 400 that names
+    the field and says what to do.
+
+    Neither the secret nor the code is echoed: a refusal that quotes a
+    near-miss is most of a secret."""
+    bad = []
+    for name in sorted(env):
+        if len(env[name]) < O.MIN_REDACTION:
+            bad.append("%s: a secret of %d characters is refused. The console blanks every secret from "
+                       "the run's own output, and a string that short also appears inside the words the "
+                       "console's frames are made of, so blanking it would corrupt them. Send the real "
+                       "value (at least %d characters)." % (name, len(env[name]), O.MIN_REDACTION))
+    for n, c in enumerate(codes, 1):
+        if len(CODE_QTY.fullmatch(c).group(1)) < O.MIN_REDACTION:
+            bad.append("kvo_codes: entry %d is an activation code of under %d characters. The console blanks "
+                       "every code from the run's own output, and one that short cannot be blanked without "
+                       "corrupting the console's own frames." % (n, O.MIN_REDACTION))
+    return bad
+
+
+def _register(job, env, codes):
+    """Register a launch's secrets and activation codes with the job, so
+    the stream blanks them. The quantity on a CODE,QTY is not part of the
+    secret and is not registered. _unredactable() has already refused
+    anything add_redaction would raise on."""
+    for c in codes:
+        job.add_redaction(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
+    for value in env.values():
+        job.add_redaction(value)
+
+
 def _in_flight(jobs, stack, region):
     """The id of a registered job that holds this stack in this region,
     else None. Two engines on one stack would write one profile file and
@@ -695,6 +735,9 @@ def _replay(body, jobs, start=None):
     codes, bad = _check_codes(body.get("kvo_codes"))
     if bad:
         errors.append("kvo_codes: " + bad)
+    else:
+        # only when every code parsed: _unredactable reads the CODE half
+        errors += _unredactable(env, codes)
     if errors:
         return {"errors": errors}
     profile_file = "deploy-profile-%s.env" % stack
@@ -733,9 +776,7 @@ def _replay(body, jobs, start=None):
         job_id = uuid.uuid4().hex[:12]
         job = O.Job(job_id, "engine-deploy",
                     {"stack": stack, "region": region, "profile": path, "only": only})
-        for c in codes:
-            job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
-        job.redactions.extend(env.values())
+        _register(job, env, codes)
         jobs[job_id] = job
     shown = "bash deploy/deploy-stack.sh --profile %s --resume" % profile_file
     if codes:
@@ -783,6 +824,9 @@ def run(body, jobs=None, start=None):
     codes, bad = _check_codes(body.get("kvo_codes"))
     if bad:
         errors.append("kvo_codes: " + bad)
+    else:
+        # only when every code parsed: _unredactable reads the CODE half
+        errors += _unredactable(env, codes)
     if errors:
         return {"errors": errors}
     with _ENGINE_LOCK:
@@ -802,9 +846,7 @@ def run(body, jobs=None, start=None):
             cmd += ["--kvo-codes", c]
         job_id = uuid.uuid4().hex[:12]
         job = O.Job(job_id, "engine-deploy", {"stack": p["stack"], "region": p["region"], "profile": path})
-        for c in codes:
-            job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
-        job.redactions.extend(env.values())
+        _register(job, env, codes)
         jobs[job_id] = job
     shown = "bash deploy/deploy-stack.sh --profile %s" % p["profile_file"]
     if codes:

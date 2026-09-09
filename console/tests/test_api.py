@@ -645,6 +645,33 @@ def test_run_registers_codes_and_secrets_and_the_engine_redacts_them(tmp_path, m
     assert job.buffer[0]["type"] == E.NARRATE and "1234" not in job.buffer[0]["text"]
 
 
+def test_run_refuses_a_secret_or_a_code_the_stream_could_not_blank(tmp_path, monkeypatch):
+    """Everything registered with a job is replaced wherever it appears in
+    that run's output, so a very short one rewrites words that are not the
+    secret: orchestrator.MIN_REDACTION carries the run this cost. The
+    refusal belongs here, next to the other validation and before the
+    engine lock, so a typo at the launch is a 400 that names the field
+    rather than a raise inside the launch or, worse, a run whose frames
+    are being rewritten.
+
+    Neither value is echoed back: a refusal that quotes a near-miss is
+    most of a secret."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    jobs = {}
+    r = api.run({"plan": GOOD, "secrets": {"CLOUDLENS_VC_PASSWORD": "pw"}}, jobs=jobs, start=_never)
+    assert r["errors"] and "CLOUDLENS_VC_PASSWORD" in r["errors"][0], r
+    assert "pw" not in r["errors"][0].replace("password", ""), "the value is never echoed"
+    assert jobs == {} and not os.listdir(str(tmp_path)), "nothing was started and no profile was written"
+
+    r = api.run({"plan": GOOD, "kvo_codes": ["A123", "AAAA-BBBB-CCCC-DDDD"]}, jobs={}, start=_never)
+    assert r["errors"] == ["kvo_codes: entry 1 is an activation code of under 6 characters. The console "
+                           "blanks every code from the run's own output, and one that short cannot be "
+                           "blanked without corrupting the console's own frames."], r
+    # the quantity is not part of the code and is not measured with it
+    assert api._unredactable({}, ["A12345,999999"]) == [], "six characters of code is enough"
+    assert api._unredactable({"CLOUDLENS_KVO_ADMIN_PASS": "admin"}, [])
+
+
 def test_run_refuses_secrets_it_does_not_know_and_bad_plans(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "REPO", str(tmp_path))
     calls = []
@@ -1837,10 +1864,12 @@ def test_run_and_answer_routes_are_wired(live, tmp_path, monkeypatch):
     monkeypatch.setattr(api, "REPO", str(tmp_path))
     started = []
     monkeypatch.setattr(api, "_start_engine", lambda job, cmd, cwd, env: started.append((job, cmd, env)))
-    st, r = _call(live, "POST", "/api/run", {"plan": GOOD, "secrets": {"CLOUDLENS_VC_PASSWORD": "pw"}})
+    # a real-length secret: anything under orchestrator.MIN_REDACTION is
+    # refused before the launch, because the stream could not blank it
+    st, r = _call(live, "POST", "/api/run", {"plan": GOOD, "secrets": {"CLOUDLENS_VC_PASSWORD": "pw-not-real"}})
     assert st == 200 and r["job_id"] in server.JOBS, r
     job, cmd, env = started[0]
-    assert env == {"CLOUDLENS_VC_PASSWORD": "pw"} and "--profile" in cmd
+    assert env == {"CLOUDLENS_VC_PASSWORD": "pw-not-real"} and "--profile" in cmd
     assert r["profile_file"] == "deploy-profile-demo.env"
     # the stack is held from the registration on (the stubbed starter never
     # reaches a Popen): a second run and a teardown are 409 over the route too
