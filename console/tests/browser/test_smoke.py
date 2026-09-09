@@ -1,5 +1,5 @@
-"""The eight things a person can do with the console, driven in a real
-browser against the real server.
+"""What a person can do with the console, and what they read while doing
+it, driven in a real browser against the real server.
 
 Every assertion here is about what is ON THE SCREEN: the row that was
 drawn, the refusal under the Next button, the modal that opened and then
@@ -74,6 +74,42 @@ def an_instance(instance_id, name, platform="Linux/UNIX", ip="10.0.1.20"):
 
 
 # 1 ------------------------------------------------------------------------
+def test_the_deploy_screen_never_sits_under_a_badge_that_says_demo(page):
+    """The page opened on Deploy with a Demo switch ON in its header and a
+    hero badge reading "DEMO . REPLAYING REAL EVENTS" over it. The switch
+    was consulted in exactly one place, the quick flows' own route; the
+    Launch button under that badge posted /api/run and started a real
+    deploy against the real account.
+
+    So this reads what a person reads: the badge over the screen the page
+    opens on, and that no switch beside it offers to make the page a
+    demo. Everything in this console is live, and the badge says so on
+    every screen.
+    """
+    page.goto("/")
+    expect(page.locator("#page-deploy")).to_be_visible()
+    expect(page.locator('#opsNav [data-page="deploy"]')).to_have_attribute("aria-selected", "true")
+
+    badge = page.locator("#modeBadge")
+    expect(badge).to_be_visible()
+    expect(badge).to_have_text("LIVE · YOUR AWS ACCOUNT")
+    expect(page.locator("#demoSw")).to_have_count(0)
+    expect(page.locator("#quickFlows")).to_have_count(0)
+
+    # and with the Launch button itself on the screen, which is the thing
+    # that was sitting under a banner saying the page was replaying
+    for n in (2, 3, 4, 5, 6):
+        go_to_screen(page, n)
+    expect(page.locator("#launchBtn")).to_be_visible()
+    expect(badge).to_have_text("LIVE · YOUR AWS ACCOUNT")
+
+    # and on every other screen, because the badge stands over all of them
+    for name in ("preflight", "watch", "operate", "licensing", "teardown"):
+        page.click('#opsNav [data-page="%s"]' % name)
+        expect(page.locator("#page-" + name)).to_be_visible()
+        expect(badge).to_have_text("LIVE · YOUR AWS ACCOUNT")
+
+
 def test_the_wizard_reaches_the_plan_and_the_profile_says_the_vpc_is_new(page):
     """Six screens of defaults, and the profile the script would replay is
     on the last one with CLOUDLENS_INFRA="new" in it."""
