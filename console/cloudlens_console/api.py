@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -1097,6 +1098,32 @@ def _dig(obj, *names):
 _SENSOR_KEYS = ("agentcount", "sensorcount", "agents", "sensors", "agent_count", "sensor_count")
 
 
+def _url_host(url):
+    """The host a credentials file's url names, or None when it names none.
+
+    An EXACT host is the only safe comparison here. The test used to be
+    `vc_ip not in creds["url"]`, and a substring is not a host: a file for
+    https://3.1.1.10/cloudlens/login passed the check against a stack whose
+    vController is 3.1.1.1, so that file's password would have been POSTed
+    to the other box and the other box's sensor count reported as this
+    stack's. Consecutive elastic IPs make that exact pair ordinary.
+
+    A url with no scheme, one with no host, or one urlsplit cannot parse
+    names no host: this returns None and the caller refuses rather than
+    guessing which part of the string is an address and sending a password
+    to it.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        if not parts.scheme or not parts.netloc:
+            return None
+        return parts.hostname or None
+    except ValueError:      # a malformed authority: a bad IPv6 literal, a bad port
+        return None
+
+
 def _creds():
     """(creds, error): the CLI's vController credentials file as a dict."""
     path = VC_CREDS_FILE
@@ -1126,7 +1153,12 @@ def _sensors_cell(vc_ip):
     creds, bad = _creds()
     if bad:
         return _blind(bad, look)
-    if vc_ip not in str(creds.get("url", "")):
+    host = _url_host(creds.get("url"))
+    if not host:
+        return _blind("the credentials file's url names no vController host (%s), so there is nothing to "
+                      "match against this stack's %s and its password is not sent anywhere"
+                      % (str(creds.get("url", ""))[:MAX_VALUE], vc_ip), look)
+    if host != vc_ip:
         return _blind("the credentials file is for another vController (%s), not this stack's %s"
                       % (creds.get("url", ""), vc_ip), look)
     base = "https://%s%s" % (vc_ip, VC_API)
@@ -1206,17 +1238,25 @@ def _vpb_cell(vpb):
             "-o", "BatchMode=yes",          # a key that does not fit must fail, never ask for a password
             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=8", "%s@%s" % (VPB_USER, ip), VPB_COUNTERS]
+    # the same shape as doctor(): its own session, so the timeout ends the
+    # WHOLE group and not the leader alone. ssh starts no grandchild today,
+    # but a leader-only kill leaves anything it did start holding the pipe
+    # this reads, and that is the bug doctor() already carries a test for
     try:
-        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              errors="replace", timeout=SSH_TIMEOUT)
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, errors="replace",
+                                start_new_session=True)
     except OSError as exc:
         return _blind("ssh could not be run: %s" % (getattr(exc, "strerror", None) or exc), shown)
+    try:
+        out, err = proc.communicate(timeout=SSH_TIMEOUT)
     except subprocess.TimeoutExpired:
+        _kill_group(proc)
         return _blind("the vPB did not answer within %ds" % SSH_TIMEOUT, shown)
     if proc.returncode != 0:
-        lines = [l for l in ((proc.stderr or "") + (proc.stdout or "")).splitlines() if l.strip()]
+        lines = [l for l in ((err or "") + (out or "")).splitlines() if l.strip()]
         return _blind(lines[-1].strip() if lines else "ssh exited %d" % proc.returncode, shown)
-    return _cell({"text": (proc.stdout or "").strip()[:MAX_TEXT], "command": shown})
+    return _cell({"text": (out or "").strip()[:MAX_TEXT], "command": shown})
 
 
 def _role(name, stack):

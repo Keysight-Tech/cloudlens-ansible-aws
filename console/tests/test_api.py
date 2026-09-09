@@ -409,6 +409,27 @@ class FakeProc(object):
         return self.out, self.err
 
 
+class FakeSsh(object):
+    """subprocess.Popen as _vpb_cell drives it, which is doctor()'s shape:
+    the argv and the keyword arguments recorded, one communicate() that
+    answers with the stdout, stderr and exit the test chose. `hang` raises
+    TimeoutExpired from it, as a real one does when the box says nothing."""
+    def __init__(self, ran, rc=0, out="", err="", hang=False):
+        self.ran, self.rc, self.out, self.err, self.hang = ran, rc, out, err, hang
+        self.pid = 4343
+        self.returncode = None
+
+    def __call__(self, argv, **kw):
+        self.ran.append((argv, kw))
+        return self
+
+    def communicate(self, timeout=None):
+        if self.hang:
+            raise subprocess.TimeoutExpired(self.ran[-1][0], timeout)
+        self.returncode = self.rc
+        return self.out, self.err
+
+
 def test_doctor_runs_the_script_and_reads_its_check_events(monkeypatch):
     seen = {}
     monkeypatch.setattr(api.subprocess, "Popen", FakeProc(seen, [
@@ -1620,7 +1641,9 @@ def test_status_carries_a_state_per_field_and_never_invents_a_count(tmp_path, mo
         raise AssertionError(args)
 
     monkeypatch.setattr(api, "_aws", fake_aws)
-    monkeypatch.setattr(api.subprocess, "run", _never)   # no .pem on this machine: no ssh is tried
+    # no .pem on this machine: no ssh is tried, by either door
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
     r = api.status("demo", "us-east-1")
     assert r["stack"] == "demo" and r["region"] == "us-east-1"
     assert r["phases"] == api.phase_order(), "the script's own list, served so nothing copies it"
@@ -1665,6 +1688,7 @@ def test_status_says_what_the_cli_said_when_it_could_not_answer(tmp_path, monkey
 def test_status_validates_before_it_reads_anything(monkeypatch):
     monkeypatch.setattr(api, "_aws", _never)
     monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
     assert "stack" in api.status("bad name", "us-east-1")["error"]
     assert "stack" in api.status("", "us-east-1")["error"]
     assert "region" in api.status("demo", "nowhere")["error"]
@@ -1683,6 +1707,7 @@ def test_status_reads_the_sensor_count_through_the_creds_file(tmp_path, monkeypa
     monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
                         _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
     monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
     seen = []
 
     def fake_vc(method, url, token=None, body=None, timeout=None):
@@ -1726,6 +1751,47 @@ def test_status_reads_the_sensor_count_through_the_creds_file(tmp_path, monkeypa
     assert "another vController" in r["sensors"]["unavailable"] and "9.9.9.9" in r["sensors"]["unavailable"]
 
 
+def test_a_creds_file_whose_host_only_looks_like_this_stacks_is_refused(tmp_path, monkeypatch):
+    """The host is compared EXACTLY, never as a substring.
+
+    `vc_ip not in creds["url"]` passed a file for https://3.1.1.10/... on a
+    stack whose vController is 3.1.1.1, so that file's password would have
+    been POSTed to https://3.1.1.1/... and the OTHER box's sensor count
+    reported as this stack's. Consecutive elastic IPs make that exact pair
+    ordinary. A url this cannot resolve to a host is refused the same way:
+    nothing is guessed at and no password leaves the machine."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    creds = tmp_path / "creds.json"
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(creds))
+    monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
+                        _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
+
+    def no_call(*a, **k):
+        raise AssertionError("the saved password was sent to a vController that is not this stack's")
+
+    monkeypatch.setattr(api, "_vc_call", no_call)
+    creds.write_text(json.dumps({"url": "https://3.1.1.10/cloudlens/login", "username": "admin",
+                                 "password": "s3cr3t", "project": "autopilot"}))
+    r = api.status("demo", "us-east-1")      # this stack's vController is 3.1.1.1
+    cell = r["sensors"]
+    assert "value" not in cell, cell
+    assert "another vController" in cell["unavailable"], cell
+    assert "3.1.1.10" in cell["unavailable"] and "3.1.1.1" in cell["unavailable"]
+    assert cell["command"].startswith("open https://3.1.1.1/cloudlens/login"), cell["command"]
+    assert "s3cr3t" not in json.dumps(r), "a file that is not this stack's leaks nothing of itself"
+
+    # a url with no host to compare is refused too, not guessed at: no
+    # scheme, nothing at all, no authority, not a url, a broken literal
+    for url in ("3.1.1.1/cloudlens/login", "   ", "https://", "not a url", "https://[oops/x"):
+        creds.write_text(json.dumps({"url": url, "username": "admin", "password": "s3cr3t"}))
+        cell = api.status("demo", "us-east-1")["sensors"]
+        assert "value" not in cell, url
+        assert cell["unavailable"] and cell["command"], url
+        assert "s3cr3t" not in json.dumps(cell), url
+
+
 def test_status_runs_the_vpb_counters_over_ssh_when_the_key_is_there(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "REPO", str(tmp_path))
     monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "not-here.json"))
@@ -1737,24 +1803,31 @@ def test_status_runs_the_vpb_counters_over_ssh_when_the_key_is_there(tmp_path, m
     monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
                         _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
     ran = []
-
-    def fake_run(argv, **kw):
-        ran.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="rule-1  packets 145037\n", stderr="")
-
-    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    monkeypatch.setattr(api.subprocess, "Popen", FakeSsh(ran, out="rule-1  packets 145037\n"))
     r = api.status("demo", "us-east-1")
     assert r["vpb"]["value"]["text"] == "rule-1  packets 145037"
-    assert ran[0][0] == "ssh" and "-i" in ran[0] and str(pem) in ran[0]
-    assert "admin@3.1.1.3" in ran[0] and "9022" in ran[0]
-    assert ran[0][-1] == 'sudo vpb -c "show traffic-rule-packet-counters"'
-    assert "-o" in ran[0] and "BatchMode=yes" in ran[0], "no password prompt on a console's GET"
+    argv, kw = ran[0]
+    assert argv[0] == "ssh" and "-i" in argv and str(pem) in argv
+    assert "admin@3.1.1.3" in argv and "9022" in argv
+    assert argv[-1] == 'sudo vpb -c "show traffic-rule-packet-counters"'
+    assert "-o" in argv and "BatchMode=yes" in argv, "no password prompt on a console's GET"
+    # the doctor's own shape: its own session, so a timeout can end the
+    # whole group and not the leader alone
+    assert kw.get("start_new_session") is True and kw.get("stdin") == subprocess.DEVNULL
     # an ssh that fails says so with its own last line, and never a count
-    monkeypatch.setattr(api.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
-        argv, 255, stdout="", stderr="ssh: connect to host 3.1.1.3 port 9022: Operation timed out\n"))
+    monkeypatch.setattr(api.subprocess, "Popen", FakeSsh(
+        ran, rc=255, err="ssh: connect to host 3.1.1.3 port 9022: Operation timed out\n"))
     r = api.status("demo", "us-east-1")
     assert "value" not in r["vpb"] and "timed out" in r["vpb"]["unavailable"]
     assert r["vpb"]["command"].startswith("ssh -i ")
+    # an ssh that says nothing is ended as a GROUP, the way the doctor ends
+    # one: a leader-only kill leaves whatever it started holding this pipe
+    killed = []
+    monkeypatch.setattr(api, "_kill_group", lambda proc: killed.append(proc.pid))
+    monkeypatch.setattr(api.subprocess, "Popen", FakeSsh(ran, hang=True))
+    r = api.status("demo", "us-east-1")
+    assert killed == [4343], "the timeout killed the leader alone"
+    assert "value" not in r["vpb"] and "did not answer within" in r["vpb"]["unavailable"]
 
 
 # -------------------------------------------------------- verify-empty
@@ -1851,6 +1924,31 @@ def test_a_re_run_names_one_phase_the_script_knows(tmp_path, monkeypatch):
     assert len(started) == n, "a refused phase starts nothing"
 
 
+def test_a_re_run_is_refused_for_every_phase_when_the_script_names_none(tmp_path, monkeypatch):
+    """phase_order() is [] for a script with no PHASE_ORDER line, and for
+    one that is not there at all. The vocabulary belongs to the script, so
+    with no vocabulary there is no phase a re-run may name: EVERY --only is
+    refused, the refusal says the script names none rather than printing an
+    empty list, and nothing starts. A resume names no phase, so it is still
+    allowed: that is the script's own resume, not this console's list."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    _profile_for(tmp_path)
+    script = tmp_path / "no-phases.sh"
+    script.write_text("#!/usr/bin/env bash\necho hi\n")
+    started = []
+    start = lambda job, cmd, cwd, env: started.append(cmd)
+    for deploy in (str(script), str(tmp_path / "nowhere.sh")):
+        monkeypatch.setattr(api, "DEPLOY", deploy)
+        assert api.phase_order() == []
+        for phase in ("license", "stack", "sensors"):
+            r = api.run({"stack": "demo", "region": "us-east-1", "only": phase}, jobs={}, start=start)
+            assert "the script names none" in r["error"], (deploy, phase, r)
+        assert not started, "a refused phase starts nothing"
+    r = api.run({"stack": "demo", "region": "us-east-1"}, jobs={}, start=start)
+    assert not r.get("error") and not r.get("errors"), r
+    assert started and "--only" not in started[-1], started
+
+
 def test_a_replay_without_a_profile_is_refused_and_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "REPO", str(tmp_path))
     started = []
@@ -1914,6 +2012,7 @@ def test_the_status_and_verify_routes_are_guarded_gets(live, tmp_path, monkeypat
     monkeypatch.setattr(api, "_aws", lambda args, region, **kw:
                         _stack_instances() if args[1] == "describe-instances" else {"TrafficMirrorSessions": []})
     monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
     st, r = _call(live, "GET", "/api/status?stack=demo&region=us-east-1")
     assert st == 200 and r["instances"]["value"]["count"] == 3
     st, r = _call(live, "GET", "/api/status?stack=bad!&region=us-east-1")

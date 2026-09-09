@@ -74,6 +74,23 @@ def _node(payload, tmp_path, *files):
     return json.loads(proc.stdout)
 
 
+class _Ssh(object):
+    """subprocess.Popen as api._vpb_cell drives it: one communicate() with
+    the output and exit the test chose. It runs in its own session there,
+    the way the doctor's child does, so a timeout can end the whole group."""
+    def __init__(self, out="", err="", rc=0):
+        self.out, self.err, self.rc = out, err, rc
+        self.returncode, self.pid = None, 4343
+
+    def __call__(self, argv, **kw):
+        assert kw.get("start_new_session") is True, kw
+        return self
+
+    def communicate(self, timeout=None):
+        self.returncode = self.rc
+        return self.out, self.err
+
+
 # ------------------------------------------------------------ operate.js
 def _status(monkeypatch, tmp_path, aws=None, creds=None, ssh=None):
     """A real api.status() answer, against stubs."""
@@ -101,7 +118,8 @@ def _status(monkeypatch, tmp_path, aws=None, creds=None, ssh=None):
     def no_ssh(*a, **k):
         raise AssertionError("no ssh was expected")
 
-    monkeypatch.setattr(api.subprocess, "run", ssh or no_ssh)
+    monkeypatch.setattr(api.subprocess, "run", no_ssh)
+    monkeypatch.setattr(api.subprocess, "Popen", ssh or no_ssh)
     resp = api.status("demo", "us-east-1")
     # api.subprocess IS the subprocess module this file runs node with, so
     # the stubs come off before the harness starts
@@ -142,8 +160,7 @@ def test_operate_model_says_the_sensor_and_vpb_numbers_it_did_read(tmp_path, mon
     pem = tmp_path / ".ssh" / "lab.pem"
     pem.parent.mkdir()
     pem.write_text("k")
-    resp = _status(monkeypatch, tmp_path, creds=str(creds),
-                   ssh=lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="rule-1 packets 42\n", stderr=""))
+    resp = _status(monkeypatch, tmp_path, creds=str(creds), ssh=_Ssh(out="rule-1 packets 42\n"))
     (tmp_path / "deploy-profile-demo.env").write_text('CLOUDLENS_STACK_NAME="demo"\n')
     resp["profile"]["present"] = True
     out = _node({"status": resp, "stack": "demo", "region": "us-east-1"}, tmp_path, "plan.js", "operate.js")
@@ -254,25 +271,77 @@ def test_the_teardown_gate_is_the_order_the_screen_promises(tmp_path):
     assert all(g["warn"] is None for g in out), "no KVO, no licence warning"
 
 
-def test_the_licence_warning_stands_until_a_release_is_recorded(tmp_path):
+def test_the_licence_warning_stands_until_this_stacks_own_kvo_is_released(tmp_path):
+    """A release counts only for the appliance it was made against.
+
+    licences_released:true is what puts --accept-licence-loss on
+    teardown-stack.sh's argv, and /api/teardown trusts the body by design,
+    so this page is the only place the session's release record can be tied
+    to the KVO that is about to be deleted. Releasing on KVO A and then
+    tearing down a stack whose KVO is B released nothing of B's, and
+    satisfying the script's licence gate on that evidence is exactly the
+    stranding this screen exists to prevent. The recorded host and the
+    kvo-role instance's address are compared as whole hosts: 10.1.2.3 is
+    not 10.1.2.30.
+    """
     armed = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1"}
+    mine = {"kvo": "10.1.2.3", "codes": ["****-BBBB"]}
     gates = [
-        dict(armed, hasKvo=True),                                                    # 0 KVO, nothing released
-        dict(armed, hasKvo=True, released={"kvo": "10.1.2.3", "codes": ["****-BBBB"]}),  # 1 released
-        dict(armed, hasKvo=None, kvoWhy="AccessDenied"),                             # 2 could not tell
-        dict(armed, hasKvo=False),                                                   # 3 no KVO
+        dict(armed, hasKvo=True, kvoAddr="10.1.2.3"),                                   # 0 KVO, nothing released
+        dict(armed, hasKvo=True, kvoAddr="10.1.2.3", released=mine),                    # 1 this stack's own KVO
+        dict(armed, hasKvo=True, kvoAddr="10.1.2.30", kvoName="demo-kvo",
+             released=mine),                                                            # 2 another appliance
+        dict(armed, hasKvo=True, kvoAddr="", kvoName="demo-kvo", released=mine),        # 3 KVO with no address
+        dict(armed, hasKvo=None, kvoWhy="AccessDenied", released=mine),                 # 4 could not tell
+        dict(armed, hasKvo=False, released=mine),                                       # 5 no KVO at all
     ]
     out = _node({"gates": gates}, tmp_path, "plan.js", "teardown.js")["gates"]
+    assert [g["armed"] for g in out] == [True] * 6, "the warning warns; the typed name is what arms it"
+    # exactly one of these six may tell the API the licences were released
+    assert [g["licencesReleased"] for g in out] == [False, True, False, False, False, False]
+
+    # 0 a KVO and no release at all: the original warning, word for word
     assert out[0]["warn"]["level"] == "bad"
     assert out[0]["warn"]["text"].startswith("This stack has a KVO and"), (
         "no empty brackets where the instance name is not known: " + out[0]["warn"]["text"])
-    named = _node({"gate": dict(armed, hasKvo=True, kvoName="demo-kvo")}, tmp_path, "plan.js", "teardown.js")["gate"]
-    assert named["warn"]["text"].startswith("This stack has a KVO (demo-kvo) and")
     assert "Licensing screen" in out[0]["warn"]["text"] and "do not come back" in out[0]["warn"]["text"]
-    assert out[0]["licencesReleased"] is False
-    assert out[0]["armed"] is True, "the warning warns; the typed name is what arms it"
-    assert out[1]["warn"]["level"] == "good" and "--accept-licence-loss" in out[1]["warn"]["text"]
-    assert out[1]["licencesReleased"] is True
-    # a KVO that could not be checked is warned about, not assumed away
-    assert out[2]["warn"]["level"] == "warn" and "AccessDenied" in out[2]["warn"]["text"]
-    assert out[3]["warn"] is None
+
+    # 1 the release was made against this stack's own KVO: it counts
+    assert out[1]["warn"]["level"] == "good"
+    assert "released from 10.1.2.3" in out[1]["warn"]["text"]
+    assert "which is this stack's KVO," in out[1]["warn"]["text"]
+    assert "--accept-licence-loss" in out[1]["warn"]["text"]
+
+    # 2 a release from a host that only LOOKS like this one's: named, both
+    # of them, and not counted
+    assert out[2]["warn"]["level"] == "bad"
+    assert ("came from 10.1.2.3, not from this stack's KVO (demo-kvo) at 10.1.2.30"
+            in out[2]["warn"]["text"]), out[2]["warn"]["text"]
+    assert "NOT run with --accept-licence-loss" in out[2]["warn"]["text"]
+
+    # 3 a KVO whose address the console could not read cannot be matched
+    assert out[3]["warn"]["level"] == "bad"
+    assert "has no address in the console's answer" in out[3]["warn"]["text"]
+    assert "NOT run with --accept-licence-loss" in out[3]["warn"]["text"]
+
+    # 4 a KVO that could not be checked is warned about, not assumed away
+    assert out[4]["warn"]["level"] == "warn" and "AccessDenied" in out[4]["warn"]["text"]
+
+    # 5 no KVO: nothing to strand, so nothing to say
+    assert out[5]["warn"] is None
+
+    # the instance's own name is shown when the console read one, on the
+    # matching case as well as the refusing ones
+    named = _node({"gate": dict(armed, hasKvo=True, kvoName="demo-kvo", kvoAddr="10.1.2.3")},
+                  tmp_path, "plan.js", "teardown.js")["gate"]
+    assert named["warn"]["text"].startswith("This stack has a KVO (demo-kvo) and")
+
+    # the record's host is compared, not the string: a url and a bare
+    # address for the same box are the same box
+    urls = _node({"gates": [dict(armed, hasKvo=True, kvoAddr="10.1.2.3",
+                                 released={"kvo": "https://10.1.2.3:8443/", "codes": ["****-BBBB"]}),
+                            dict(armed, hasKvo=True, kvoAddr="10.1.2.3",
+                                 released={"kvo": "https://10.1.2.33/", "codes": ["****-BBBB"]})]},
+                 tmp_path, "plan.js", "teardown.js")["gates"]
+    assert [g["licencesReleased"] for g in urls] == [True, False]
+    assert urls[0]["warn"]["level"] == "good" and urls[1]["warn"]["level"] == "bad"

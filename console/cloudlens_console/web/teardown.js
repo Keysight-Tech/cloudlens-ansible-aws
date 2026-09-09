@@ -5,11 +5,16 @@
      1. the read-only audit    POST /api/teardown {orphans_only:true}
                                (teardown-stack.sh --orphans, which deletes
                                nothing, ever) and its report, read here.
-     2. the licence warning    a stack with a KVO whose licences have not
-                               been released in this session gets a red
+     2. the licence warning    a stack with a KVO whose OWN licences have
+                               not been released in this session gets a red
                                banner and a pointer to the Licensing
                                screen. Deleting the KVO first strands the
-                               counts and they do not come back.
+                               counts and they do not come back, and a
+                               release from a DIFFERENT appliance releases
+                               nothing of this one's: the recorded release's
+                               host is compared with this stack's KVO
+                               address, exactly, and only a match sends
+                               licences_released.
      3. the typed name         the stack's own name, typed back.
      4. the run                POST /api/teardown, streaming into Watch.
      5. the proof              GET /api/verify-empty.
@@ -38,24 +43,66 @@ var LOG_MAX=400;
 
 function txt(v){return v===undefined||v===null?"":String(v);}
 
+/* The host in an address this page holds: a bare IP or name, as the
+   Licensing screen took it, or a url. Whole hosts only: 3.1.1.1 is not
+   3.1.1.10, and a pair of elastic IPs like that is ordinary. */
+function hostOf(v){
+  var s=txt(v).trim();
+  if(!s)return "";
+  var i=s.indexOf("://");
+  if(i>=0)s=s.slice(i+3);
+  s=s.split("/")[0].split("?")[0].split("#")[0];
+  var at=s.lastIndexOf("@");
+  if(at>=0)s=s.slice(at+1);
+  if(s.charAt(0)==="["){var e=s.indexOf("]");return e<0?"":s.slice(1,e).toLowerCase();}
+  return s.split(":")[0].toLowerCase();
+}
+
 /* Whether the destructive run may start, and the warning that stands over
    it. `hasKvo` is true, false, or null for "could not tell", and null is
    never treated as false: a stack whose KVO could not be checked gets the
    warning too, because the cost of being wrong that way is a stranded
    licence count and the cost of being wrong the other way is one sentence
-   the operator ignores. */
+   the operator ignores.
+
+   A recorded release satisfies the warning ONLY when it came from THIS
+   stack's KVO. The session record carries the appliance it was made
+   against (licences.js noteRelease), and `kvoAddr` is the address of the
+   kvo-role instance in /api/status's own list; the two are compared as
+   hosts, not as substrings. Releasing on KVO A and then tearing down a
+   stack whose KVO is B released nothing of B's, and telling the API
+   licences_released:true would put --accept-licence-loss on the argv and
+   satisfy the script's own licence gate for the wrong appliance. That is
+   the exact failure this screen exists to prevent, so an unmatched release
+   is warned about and NOT sent. A KVO whose address the console could not
+   read cannot be matched either, and is treated the same way. */
 function teardownGate(m){
   m=m||{};
   var stack=txt(m.stack),region=txt(m.region),typed=txt(m.typed);
   var released=m.released||null;
+  var named=m.kvoName?" ("+txt(m.kvoName)+")":"";
+  var mine=hostOf(m.kvoAddr);                       // this stack's own KVO
+  var from=released?hostOf(released.kvo):"";        // where the release was made
+  var counts=!!(released&&mine&&from&&from===mine);
   var warn=null;
-  if(m.hasKvo===true&&!released)
-    warn={level:"bad",text:"This stack has a KVO"+(m.kvoName?" ("+txt(m.kvoName)+")":"")+
+  if(m.hasKvo===true&&counts)
+    warn={level:"good",text:"Licences were released from "+from+" in this session ("+
+      (released.codes||[]).join(", ")+"), which is this stack's KVO"+named+
+      ", so the teardown will run with --accept-licence-loss."};
+  else if(m.hasKvo===true&&released&&!mine)
+    warn={level:"bad",text:"Licences were released from "+from+" in this session, but this stack's KVO"+named+
+      " has no address in the console's answer, so that release cannot be shown to be this stack's. The "+
+      "teardown will NOT run with --accept-licence-loss. Check on the Licensing screen which appliance those "+
+      "counts came from: a KVO deleted with licences still installed strands them, and they do not come back."};
+  else if(m.hasKvo===true&&released)
+    warn={level:"bad",text:"The licences released in this session came from "+from+", not from this stack's "+
+      "KVO"+named+" at "+mine+". A release from another appliance releases nothing of this one's, so the "+
+      "teardown will NOT run with --accept-licence-loss. Release "+mine+"'s licences on the Licensing screen "+
+      "FIRST: a KVO deleted with licences still installed strands those counts, and they do not come back."};
+  else if(m.hasKvo===true)
+    warn={level:"bad",text:"This stack has a KVO"+named+
       " and nothing has been released in this session. Release its licences on the Licensing screen "+
       "FIRST: a KVO deleted with licences still installed strands those counts, and they do not come back."};
-  else if(m.hasKvo===true&&released)
-    warn={level:"good",text:"Licences were released from "+txt(released.kvo)+" in this session ("+
-      (released.codes||[]).join(", ")+"), so the teardown will run with --accept-licence-loss."};
   else if(m.hasKvo===null)
     warn={level:"warn",text:"Whether this stack has a KVO could not be checked"+
       (m.kvoWhy?" ("+txt(m.kvoWhy)+")":"")+". If it has one, release its licences on the Licensing screen "+
@@ -68,8 +115,10 @@ function teardownGate(m){
   else if(typed!==stack)why="Type "+stack+" to arm the teardown.";
   return {armed:!why,why:why,warn:warn,
           // what POST /api/teardown is told, which is what decides
-          // --accept-licence-loss on the script's command line
-          licencesReleased:!!released};
+          // --accept-licence-loss on the script's command line. The API
+          // trusts this by design, so this page is the only place the
+          // release can be tied to the appliance it was made against.
+          licencesReleased:counts};
 }
 
 /* --------------------------------------------------------------- render */
@@ -79,7 +128,8 @@ function esc(s){
   return P?P.esc(s):String(s==null?"":s);
 }
 
-var model={stack:"",region:"",typed:"",auditFor:"",running:false,hasKvo:false,kvoName:"",kvoWhy:"",released:null};
+var model={stack:"",region:"",typed:"",auditFor:"",running:false,hasKvo:false,kvoName:"",kvoAddr:"",
+           kvoWhy:"",released:null};
 var auditJob="",auditLines=0,es=null;
 
 function status(id,text,bad){var el=$(id);el.textContent=text||"";el.classList.toggle("err",!!bad);}
@@ -173,8 +223,10 @@ function followAudit(jobId){
   });
 }
 
-/* Whether this stack has a KVO, from the one read-only route that knows:
-   the instances it named. A failure is null, not false. */
+/* Whether this stack has a KVO and, when it has one, WHICH: the address
+   of the kvo-role instance, which is what a recorded release is matched
+   against. Both come from the one read-only route that knows, the
+   instances it named. A failure is null, not false. */
 function checkKvo(){
   var s=model.stack,r=model.region;
   fetch("/api/status?stack="+enc(s)+"&region="+enc(r),{headers:{"Accept":"application/json"}})
@@ -183,13 +235,16 @@ function checkKvo(){
      if(model.stack!==s||model.region!==r)return;      // the operator moved on
      var inst=d&&d.instances;
      if(!inst||!Object.prototype.hasOwnProperty.call(inst,"value")){
-       model.hasKvo=null;
+       model.hasKvo=null;model.kvoName="";model.kvoAddr="";
        model.kvoWhy=txt((inst&&inst.unavailable)||(d&&d.error)||"the console could not read the instances");
      }else{
        var kvo=null;
        (inst.value.rows||[]).forEach(function(row){if(row.role==="kvo")kvo=row;});
        model.hasKvo=!!kvo;
        model.kvoName=kvo?txt(kvo.name):"";
+       // the address the Licensing screen would have been pointed at; a
+       // KVO with neither is "" and matches nothing, which is the point
+       model.kvoAddr=kvo?txt(kvo.public_ip)||txt(kvo.private_ip):"";
        model.kvoWhy="";
      }
      render();
