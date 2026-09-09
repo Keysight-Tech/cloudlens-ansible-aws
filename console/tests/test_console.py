@@ -345,6 +345,149 @@ def test_replay_needs_no_boto3(monkeypatch=None):
     assert hasattr(O, "run_job") and hasattr(O, "_rebuild")
 
 
+# ------------------------------------------------------------ events v2
+# deploy-stack.sh --events FILE writes one JSON object per line, {"seq":N,
+# "ts":"...","type":T,...} with T in hello/phase/resource/check/prompt/login/
+# done. Task 6 tails that file into the job stream through E.from_script and
+# E.iter_script_events; these tests hold both to the file as the script
+# writes it (deploy/deploy-stack.sh, the comment above emit_event).
+
+SCRIPT_TS = "2026-09-08T10:00:00Z"
+
+
+def _script_line(seq, typ, **fields):
+    raw = {"seq": seq, "ts": SCRIPT_TS, "type": typ}
+    raw.update(fields)
+    return raw
+
+
+def test_script_events_pass_through_with_console_ids():
+    raw = {"seq": 7, "ts": "2026-09-08T10:00:00Z", "type": "phase", "name": "stack", "status": "done"}
+    ev = E.from_script(raw)
+    assert ev["type"] == "phase" and ev["name"] == "stack" and ev["script_seq"] == 7
+    assert isinstance(ev["id"], int)   # the console's own monotonic id for SSE resume
+
+
+def test_unknown_script_type_becomes_a_log_of_the_raw_line():
+    raw = _script_line(3, "mystery", extra="x")
+    assert "mystery" not in E.SCRIPT_TYPES
+    ev = E.from_script(raw)
+    assert ev["type"] == E.LOG
+    assert json.loads(ev["text"]) == raw, "the raw JSON, not a summary of it"
+    assert ev["script_seq"] == 3, "still a script line: the tail loop tracks seq on every one"
+
+
+def test_every_script_type_round_trips_through_sse():
+    samples = {
+        "hello": dict(stack="st", region="us-east-1", dry_run="false"),
+        E.PHASE: dict(name="stack", status="done", reason=""),
+        E.RESOURCE: dict(kind="vpc", id="vpc-0abc"),
+        E.CHECK: dict(item="aws cli", status="pass"),
+        E.PROMPT: dict(id="p1", question="Deploy KVO?", default="y", kind="text"),
+        E.LOGIN: dict(component="kvo", url="https://1.2.3.4/", user="admin", password_in="creds file"),
+        E.DONE: dict(status="ok"),
+    }
+    assert set(samples) == E.SCRIPT_TYPES, "a script type with no sample here"
+    for seq, (typ, fields) in enumerate(sorted(samples.items()), start=11):
+        ev = E.from_script(_script_line(seq, typ, **fields))
+        frame = E.to_sse(ev)
+        assert frame.startswith("id: %d\n" % ev["id"]) and ("event: %s\n" % typ) in frame
+        data = json.loads(frame.split("data: ", 1)[1].strip())
+        assert data["type"] == typ and data["script_seq"] == seq and data["id"] == ev["id"]
+
+
+def test_script_ts_is_preserved():
+    ev = E.from_script(_script_line(1, E.CHECK, item="x", status="warn", fix="y"))
+    assert ev["ts"] == SCRIPT_TS and ev["fix"] == "y"
+
+
+def test_script_done_keeps_its_status():
+    # The console's own done says summary/outputs; the script's says how the
+    # run ended. Both are type "done", so the status must survive as-is.
+    ev = E.from_script(_script_line(9, "done", status="failed", phase="stack", reason="boom"))
+    assert ev["type"] == E.DONE
+    assert ev["status"] == "failed" and ev["phase"] == "stack" and ev["reason"] == "boom"
+
+
+def test_script_prompt_keeps_its_id_and_the_console_keeps_its_own():
+    # _mk applies the data over {"id": <counter>}, so a script "id" left in
+    # place would replace the SSE resume id with "p3".
+    raw = _script_line(5, "prompt", id="p3", question="Deploy KVO?", default="y", kind="text")
+    ev = E.from_script(raw)
+    assert isinstance(ev["id"], int), "a script id must never replace the SSE resume id"
+    assert ev["prompt_id"] == "p3"
+    assert ev["question"] == "Deploy KVO?" and ev["kind"] == "text" and ev["default"] == "y"
+    assert E.log("after")["id"] > ev["id"], "the counter kept going"
+
+
+def test_script_resource_id_is_not_the_sse_id_either():
+    # prompt is not the only script type carrying "id": a resource's id is
+    # the AWS id (emit_event resource kind=vpc id=...). One rule, <type>_id.
+    ev = E.from_script(_script_line(6, "resource", kind="vpc", id="vpc-0abc"))
+    assert isinstance(ev["id"], int) and ev["resource_id"] == "vpc-0abc"
+    assert ev["kind"] == "vpc"
+
+
+def test_iter_script_events_skips_junk_and_holds_the_offset(tmp_path):
+    # The file as a killed-and-resumed run leaves it: a fragment the next run
+    # terminated (line 1, never valid), a line that is JSON but no event, a
+    # hello, a resource whose tag holds a byte that is not UTF-8, and an
+    # unterminated line the writer is still on.
+    path = str(tmp_path / "events.jsonl")
+    lines = [
+        b'{"seq":1,"ts":"2026-09-08T10:00:00Z","ty\n',
+        b'42\n',
+        b'{"seq":2,"ts":"2026-09-08T10:00:00Z","type":"hello","stack":"st","region":"us-east-1","dry_run":"false"}\n',
+        b'{"seq":3,"ts":"2026-09-08T10:00:00Z","type":"resource","kind":"workloads","count":"2","tag":"a\xffb"}\n',
+    ]
+    tail = b'{"seq":4,"ts":"2026-09-08T10:00:00Z","type":"phase","name":"stack"'
+    with open(path, "wb") as fh:
+        fh.write(b"".join(lines) + tail)
+
+    offset, evs = E.iter_script_events(path)
+    assert [e["type"] for e in evs] == ["hello", "resource"], evs
+    assert [e["script_seq"] for e in evs] == [2, 3]
+    assert evs[1]["tag"] == "a�b", "a non-UTF-8 byte is replaced, never fatal"
+    assert all(isinstance(e["id"], int) for e in evs)
+    assert offset == len(b"".join(lines)), "the unterminated tail waits for the next read"
+
+    # the writer finishes the line: only the new line comes back, nothing repeats
+    with open(path, "ab") as fh:
+        fh.write(b',"status":"done","reason":""}\n')
+    offset2, evs2 = E.iter_script_events(path, offset)
+    assert [e["script_seq"] for e in evs2] == [4] and evs2[0]["type"] == E.PHASE
+    assert offset2 == os.path.getsize(path)
+    assert E.iter_script_events(path, offset2) == (offset2, [])
+
+    # a file shorter than the offset was replaced: read it as a new stream
+    with open(path, "wb") as fh:
+        fh.write(lines[2])
+    offset3, evs3 = E.iter_script_events(path, offset2)
+    assert offset3 == len(lines[2]) and [e["script_seq"] for e in evs3] == [2]
+
+    # a file that is not there yet (the script creates it at startup) is an
+    # empty read that starts from the beginning once it appears
+    assert E.iter_script_events(str(tmp_path / "nope.jsonl"), 5) == (0, [])
+
+
+def test_replay_rebuilds_script_events_as_themselves():
+    # A fixture recorded from a real run holds v2 frames, already in console
+    # shape (script_seq, prompt_id). They fell through _rebuild to a log line,
+    # so a replay lost the type; and a script done went through the console's
+    # done() and lost its status.
+    ev = O._rebuild(E.PHASE, {"ts": SCRIPT_TS, "name": "stack", "status": "done", "script_seq": 7})
+    assert ev["type"] == E.PHASE and ev["name"] == "stack" and ev["script_seq"] == 7
+    assert isinstance(ev["id"], int)
+    ev = O._rebuild(E.PROMPT, {"prompt_id": "p3", "question": "q", "kind": "text", "script_seq": 8})
+    assert ev["prompt_id"] == "p3" and isinstance(ev["id"], int)
+    ev = O._rebuild(E.DONE, {"status": "interrupted", "phase": "kvo", "script_seq": 9})
+    assert ev["status"] == "interrupted" and ev["script_seq"] == 9
+    # the console's own frames still take their own constructors
+    ev = O._rebuild(E.DONE, {"summary": "ok", "outputs": {}})
+    assert ev["summary"] == "ok" and "script_seq" not in ev
+
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:

@@ -93,6 +93,9 @@ def _run_replay(job, fixture_path):
 
 def _rebuild(typ, data):
     # reconstruct a typed event through events.py so ids are freshly sequenced
+    if typ in E.SCRIPT_TYPES and "script_seq" in data:
+        # a frame deploy-stack.sh wrote (events v2): keep every field as it is
+        return E.from_script(dict(data, type=typ))
     if typ == E.LOG:
         return E.log(data.get("text", ""), data.get("stream", "out"))
     if typ == E.STATE:
