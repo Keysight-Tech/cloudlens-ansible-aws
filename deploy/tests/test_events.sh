@@ -23,17 +23,31 @@ shells=(/bin/bash)
 other=$(command -v bash 2>/dev/null || true)
 if [[ -n "$other" && -x "$other" && ! "$other" -ef /bin/bash ]]; then shells+=("$other"); fi
 
+# No run in this file may reach STS or a real account: the profile, static
+# keys, the container and web-identity credential sources CloudShell, ECS and
+# CodeBuild inject, the config and credential files, and IMDS are all cleared.
+nocreds=(-u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+         -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+         -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+         -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN
+         AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true)
+
 rc=0
 for B in "${shells[@]}"; do
   echo "== $B ($("$B" -c 'echo "$BASH_VERSION"'))"
-  rm -f "$S"/*.jsonl
+  # A fresh slate per shell, the state file included, so its assertion below
+  # is about this shell's run and not the previous one's leftover.
+  rm -f "$S"/*.jsonl "$S"/.cloudlens-deploy-*.state
 
-  # 1. A full dry run. --dry-run touches no AWS and needs no credentials or
-  #    profile; the events file must still describe the whole run. It runs
-  #    twice: once with nothing optional (no kvo or vpb rows may appear) and
-  #    once with KVO and vPB, the only way every login event is emitted.
+  # 1. A full dry run. --dry-run touches no AWS resources, and with no
+  #    credentials at all it cannot even sign in (it used to spend seconds on
+  #    a real STS call from the machine's profile); the events file must
+  #    still describe the whole run and the exit code stay 0. It runs twice:
+  #    once with nothing optional (no kvo or vpb rows may appear) and once
+  #    with KVO and vPB, the only way every login event is emitted.
+  #    (env wants every -u before the first NAME=VALUE, hence the order.)
   dry=(env -u CLOUDLENS_VC_PASSWORD -u CLOUDLENS_KVO_ADMIN_PASS -u CLOUDLENS_KEY_PEM -u CLOUDLENS_VC_CREDS_FILE \
-       HOME="$S" "$B" "$REPO/deploy/deploy-stack.sh")
+       "${nocreds[@]}" HOME="$S" "$B" "$REPO/deploy/deploy-stack.sh")
   "${dry[@]}" --dry-run --region us-east-1 --key-name k --stack-name evt \
     --tapping none --no-kvo --no-vpb --events "$S/events.jsonl" </dev/null >/dev/null 2>&1
   code=$?
@@ -132,19 +146,11 @@ assert done["type"] == "done" and done["seq"] == 3, done
 print("PASS newline guard: fragment finished, hello is line 2 with seq 2, done seq 3")
 PY
 
-  # 3. --doctor with no usable AWS credentials (the profile, static keys and
-  #    the container and web-identity credential sources CloudShell, ECS and
-  #    CodeBuild inject are unset, the config and credential files are stubbed
-  #    out and IMDS is off, so this never reaches STS or a real account). The doctor
-  #    still runs every check it can: the CLI-present one passes, the
+  # 3. --doctor with no usable AWS credentials (the nocreds set above). The
+  #    doctor still runs every check it can: the CLI-present one passes, the
   #    credentials one fails. Each check is an event with a status, and every
   #    check that is not a pass names its fix.
-  env -u AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-    -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
-    -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE \
-    -u AWS_WEB_IDENTITY_TOKEN_FILE -u AWS_ROLE_ARN \
-    AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
-    AWS_EC2_METADATA_DISABLED=true \
+  env "${nocreds[@]}" \
     "$B" "$REPO/deploy/deploy-stack.sh" --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true
   python3 - "$S/doctor.jsonl" <<'PY' || rc=1
 import json, sys

@@ -154,18 +154,18 @@ git commit -m "deploy: --events writes the structured side channel the console r
 **Step 3: Implement**
 
 - In `run_doctor`'s three helpers: `_pass` -> `emit_event check item="$1" status=pass`; `_warn` -> `emit_event check item="$1" status=warn fix="$2"`; `_fail` -> `emit_event check item="$1" status=fail fix="$2"`.
-- In `discover_stack_facts`, after the IPs are known:
+- A new `emit_stack_resources`, called once the facts are known (a dry run emits its placeholders; `hello.dry_run` says so). The CLI prints `None` for a null field, which becomes `""`, and every subnet row is guarded on its id, the mgmt one included:
   ```bash
-  emit_event resource kind=vpc id="$STACK_VPC_ID"
-  emit_event resource kind=subnet id="$MGMT_SUBNET_ID" role=mgmt zone="$STACK_ZONE"
-  [[ -n "$INGRESS_SUBNET_ID" ]] && emit_event resource kind=subnet id="$INGRESS_SUBNET_ID" role=ingress
-  [[ -n "$EGRESS_SUBNET_ID" ]]  && emit_event resource kind=subnet id="$EGRESS_SUBNET_ID" role=egress
-  emit_event resource kind=vcontroller ip="$CLMS_PUBLIC_IP" private_ip="$CLMS_PRIVATE_IP"
-  [[ "$DEPLOY_KVO" == "true" ]] && emit_event resource kind=kvo ip="$KVO_PUBLIC_IP" private_ip="$KVO_PRIVATE_IP"
-  [[ "$DEPLOY_VPB" == "true" ]] && emit_event resource kind=vpb ip="$VPB_PUBLIC_IP" ingress_ip="${VPB_INGRESS_IP:-}" egress_ip="${VPB_EGRESS_IP:-}"
+  emit_event resource kind=vpc id="$vpc"
+  if [[ -n "$mgmt" ]]; then emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"; fi
+  if [[ -n "$ing" ]]; then emit_event resource kind=subnet id="$ing" role=ingress; fi
+  if [[ -n "$eg"  ]]; then emit_event resource kind=subnet id="$eg"  role=egress;  fi
+  emit_event resource kind=vcontroller ip="$vc_ip" private_ip="$vc_priv"
+  if [[ "$DEPLOY_KVO" == "true" ]]; then emit_event resource kind=kvo ip="$kvo_ip" private_ip="$kvo_priv"; fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then emit_event resource kind=vpb ip="$vpb_ip" ingress_ip="$vpb_in" egress_ip="$vpb_out"; fi
   ```
-- In the logins block (the "Log in now and watch the rest happen" prints for vController, KVO, vPB): beside each print, `emit_event login component=vcontroller url="https://${CLMS_PUBLIC_IP}/cloudlens/login" user="$VC_ADMIN_USER" password_in="$VC_CREDS_FILE"` (KVO: `user=admin password_in="admin (default)"`; vPB: `url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}" password_in="${KEY_NAME}.pem"`). Never the password itself.
-- Where the workloads are counted (`Matching running EC2s`): `emit_event resource kind=workloads count="$TAGGED_COUNT" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"`.
+- In the three `announce_*_login` functions, beside each print, a `login` event whose `password_in` says WHERE the password lives, never what it is: vController is the creds file, `CLOUDLENS_VC_PASSWORD (environment)`, or a "vController factory default ..." sentence when phase 9 recorded none; KVO is `CLOUDLENS_KVO_ADMIN_PASS (environment)` or `KVO factory default` (never the word `admin`: the test forbids every factory password as a substring); vPB is `url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${ip}"` with `password_in="${KEY_PEM:-${KEY_NAME}.pem} (EC2 key pair, no password)"`.
+- Where the workloads are counted (`Matching running EC2s`): `emit_event resource kind=workloads count="$_wl_count" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}"`, where a count the CLI could not produce (`?`) becomes `""`. The same row is emitted again with `created=true` (and `count="${TAGGED_COUNT:-}"`) after `deploy_test_workloads_now` stands up throwaway workloads, so the console stops drawing an empty stack while the sensors install.
 - In the EKS phase after `deploy-eks-tapping.sh` succeeds: `emit_event resource kind=eks cluster="${EKS_CLUSTER:-${STACK_NAME}-eks}" mode="$EKS_MODE"`.
 
 **Step 4: Run** `bash deploy/tests/test_events.sh` -> PASS. **Step 5: Commit** `deploy: resources, logins and doctor checks are events`.

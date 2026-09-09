@@ -726,17 +726,57 @@ login_block() {
 # with no controlling terminal) stdin is not a TTY and there is nobody to
 # answer, so every prompt below skips the read entirely and takes its default.
 # That is the single check: -t 0 AFTER the re-attach.
+#
+# The operations console is the third case. With --prompt-pipe FIFO the page
+# is the terminal: every question goes out as a prompt event on the --events
+# file and the run blocks until the console writes one line to the FIFO. The
+# parser forces INTERACTIVE=true for it, whatever stdin is.
 # ---------------------------------------------------------------------
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
+PROMPT_PIPE="${CLOUDLENS_PROMPT_PIPE:-}"
 
 # ask "prompt" "default" -> echoes the answer (default when not interactive)
 ask() {
-  local prompt="$1" def="${2:-}" ans=""
+  local prompt="$1" def="${2:-}" ans="" n=""
+  if [[ -n "$PROMPT_PIPE" ]]; then
+    # The console owns this FIFO. Emit the question, block on the reply. The
+    # prompt id lets the page pair an answer with its question after a
+    # reconnect. Nearly every caller is x="$(ask ...)", a subshell where a
+    # counter would never advance, so the id is the number of prompts already
+    # in the events file, not a shell variable.
+    n=$(grep -c '"type":"prompt"' "$EVENTS_FILE" 2>/dev/null) || true
+    emit_event prompt id="p$(( ${n:-0} + 1 ))" question="$prompt" default="$def" kind=text
+    IFS= read -r ans < "$PROMPT_PIPE" || true
+    ans="${ans%$'\r'}"
+    # The transcript still reads like a terminal session: question, answer.
+    printf '%s%s\n' "$prompt" "$ans" >&2
+    printf '%s' "${ans:-$def}"
+    return 0
+  fi
   if [[ "$INTERACTIVE" == "true" ]]; then
     read -rp "$prompt" ans || true
   fi
   printf '%s' "${ans:-$def}"
+}
+
+# ask_secret "prompt" -> like ask, but the answer never echoes (not to the
+# terminal, not to the log, not to the events) and there is no default.
+ask_secret() {
+  local prompt="$1" ans="" n=""
+  if [[ -n "$PROMPT_PIPE" ]]; then
+    n=$(grep -c '"type":"prompt"' "$EVENTS_FILE" 2>/dev/null) || true
+    emit_event prompt id="p$(( ${n:-0} + 1 ))" question="$prompt" kind=secret
+    IFS= read -r ans < "$PROMPT_PIPE" || true
+    ans="${ans%$'\r'}"
+    printf '%s\n' "$prompt" >&2
+    printf '%s' "$ans"
+    return 0
+  fi
+  if [[ "$INTERACTIVE" == "true" ]]; then
+    read -rsp "$prompt" ans || true; echo >&2
+  fi
+  printf '%s' "$ans"
 }
 
 # ask_yn "prompt" "y|n"  -> returns 0 for yes, 1 for no
@@ -1908,6 +1948,11 @@ Toggles:
                             (phase changes, discovered resources, the end) to
                             FILE. The operations console reads it; the terminal
                             output does not change.
+  --prompt-pipe FIFO        Take every answer from FIFO instead of the terminal.
+                            Each question is written to the --events file as a
+                            prompt event and the run waits for one line on the
+                            pipe. The operations console creates the pipe and
+                            answers from the page. Needs --events.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
@@ -2087,6 +2132,7 @@ while [[ $# -gt 0 ]]; do
     --doctor) RUN_DOCTOR=true; shift ;;
     --profile) shift 2 ;;   # consumed at the top of the script, before defaults
     --events) EVENTS_FILE="$2"; shift 2 ;;
+    --prompt-pipe) PROMPT_PIPE="$2"; shift 2 ;;
     --with-eks) DEPLOY_EKS=true; shift ;;
     --no-eks) DEPLOY_EKS=false; shift ;;
     --eks-cluster) DEPLOY_EKS=true; EKS_CLUSTER="$2"; shift 2 ;;
@@ -2191,6 +2237,16 @@ fi
 # The console's first line. Stack and region may still be empty here (the
 # interview fills them in Phase 3); a second hello follows once they are known.
 emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
+
+# --prompt-pipe: the console is the terminal. The questions travel as events,
+# so it needs --events; the answers come back on a FIFO the console created.
+# Forced here, after the parser, because the tty check above ran before the
+# flag was seen; nothing between the two consults INTERACTIVE.
+if [[ -n "$PROMPT_PIPE" ]]; then
+  [[ -n "$EVENTS_FILE" ]] || fail "--prompt-pipe needs --events: the questions are delivered as prompt events"
+  [[ -p "$PROMPT_PIPE" ]] || fail "--prompt-pipe: ${PROMPT_PIPE} is not a named pipe (mkfifo it first)"
+  INTERACTIVE=true
+fi
 
 if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
   fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
@@ -2514,7 +2570,7 @@ elif [[ "$KERNEL" == MINGW* ]] || [[ "$KERNEL" == MSYS* ]] || [[ "$KERNEL" == CY
   echo "    2. WSL                  (Windows Subsystem for Linux: 'wsl --install')"
   echo "    3. Linux jumpbox EC2    (small EC2 you SSH into)"
   echo
-  read -rp "Continue anyway in this Windows shell? [y/N]: " yn || true
+  yn="$(ask "Continue anyway in this Windows shell? [y/N]: " "")"
   yn_lc=$(to_lower "${yn:-n}")
   if [[ "$yn_lc" != "y" && "$yn_lc" != "yes" ]]; then
     fail "Aborted. Open AWS CloudShell and rerun the curl line there for the smoothest experience."
@@ -2725,7 +2781,7 @@ install_aws_cli() {
     note "Windows shell detected ($os). AWS CLI v2 ships as an MSI."
     echo "    Download: https://awscli.amazonaws.com/AWSCLIV2.msi"
     if command -v msiexec >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
-      read -rp "    Download and run the MSI installer now? [Y/n]: " yn || true
+      yn="$(ask "    Download and run the MSI installer now? [Y/n]: " "")"
       if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
         curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "$TMPDIR/AWSCLIV2.msi" 2>/dev/null \
           || curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "./AWSCLIV2.msi"
@@ -2752,7 +2808,7 @@ if ! command -v aws >/dev/null 2>&1; then
     warn "aws CLI not installed (dry-run continues)"
   else
     warn "AWS CLI not installed."
-    read -rp "Install it now? Pulls the official AWS CLI v2. [Y/n]: " yn || true
+    yn="$(ask "Install it now? Pulls the official AWS CLI v2. [Y/n]: " "")"
     yn_lc=$(to_lower "${yn:-y}")
     if [[ "$yn_lc" == "n" || "$yn_lc" == "no" ]]; then
       fail "AWS CLI required. Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
@@ -2840,10 +2896,10 @@ else
     echo "    2) Access key + secret         (runs: aws configure)"
     echo "    3) I will sort it out myself   (exit)"
     echo
-    read -rp "  Choose 1-3 [1]: " auth_choice || true
+    auth_choice="$(ask "  Choose 1-3 [1]: " "")"
     case "${auth_choice:-1}" in
       1)
-        read -rp "  AWS profile name (blank = default): " auth_profile || true
+        auth_profile="$(ask "  AWS profile name (blank = default): " "")"
         if [[ -n "$auth_profile" ]]; then
           export AWS_PROFILE="$auth_profile"
           aws sso login --profile "$auth_profile" || true
@@ -3080,7 +3136,7 @@ select_key_pair() {
 
   if [[ ${#existing[@]} -eq 0 ]]; then
     warn "No EC2 key pairs exist in ${REGION}."
-    read -rp "Name for a new key pair to create [${default_new}]: " pick || true
+    pick="$(ask "Name for a new key pair to create [${default_new}]: " "")"
     KEY_NAME="${pick:-$default_new}"
     ensure_key_pair "$KEY_NAME"
     return 0
@@ -3110,7 +3166,7 @@ select_key_pair() {
   # Default to creating a new pair. Defaulting to the FIRST existing pair meant
   # pressing Enter picked a key whose .pem was on a different machine entirely,
   # which is how a full deploy reached the sensor step and died UNREACHABLE.
-  read -rp "Choose 1-${i}, or type a key pair name [${i}]: " pick || true
+  pick="$(ask "Choose 1-${i}, or type a key pair name [${i}]: " "")"
   pick="${pick:-$i}"
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
@@ -3135,7 +3191,7 @@ select_key_pair() {
     note "sensor install both need it. If you continue, those SSH steps fail here"
     note "until you upload ${KEY_NAME}.pem to ~/.ssh/ yourself."
     if ask_yn "  Create a NEW key pair instead, so the .pem is written here? [Y/n]: " "y"; then
-      read -rp "Name for the new key pair [${default_new}]: " pick || true
+      pick="$(ask "Name for the new key pair [${default_new}]: " "")"
       pick="${pick:-$default_new}"
       KEY_NAME="$pick"; ensure_key_pair "$KEY_NAME"; return 0
     fi
@@ -3145,7 +3201,7 @@ select_key_pair() {
   fi
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick == i )); then
-    read -rp "Name for the new key pair [${default_new}]: " pick || true
+    pick="$(ask "Name for the new key pair [${default_new}]: " "")"
     pick="${pick:-$default_new}"
   fi
 
@@ -3216,7 +3272,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
   echo "  1) Build a NEW VPC for it. Clean lab or demo; teardown removes everything. Default."
   echo "  2) Deploy INTO infrastructure you already run (your VPC and subnet;"
   echo "     nothing network-level is created, and teardown never touches your VPC)."
-  read -rp "Choose 1-2 [1]: " infra_choice || true
+  infra_choice="$(ask "Choose 1-2 [1]: " "")"
   INFRA_CHOICE="new"
   if [[ "${infra_choice:-1}" == "2" ]]; then
     INFRA_CHOICE="existing"
@@ -3224,7 +3280,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
     aws ec2 describe-vpcs --region "$REGION" \
       --query 'Vpcs[].[VpcId,CidrBlock,Tags[?Key==`Name`]|[0].Value]' \
       --output table 2>/dev/null | sed 's/^/  /' || true
-    read -rp "  VPC id for the CloudLens appliances: " EXISTING_VPC_ID || true
+    EXISTING_VPC_ID="$(ask "  VPC id for the CloudLens appliances: " "")"
     if [[ -n "$EXISTING_VPC_ID" ]]; then
       EXISTING_SUBNET_ID="$(pick_subnet "$EXISTING_VPC_ID" "Management subnet (appliances live here)")"
       [[ -z "$EXISTING_SUBNET_ID" ]] && { warn "An existing VPC needs a subnet; falling back to a NEW VPC."; EXISTING_VPC_ID=""; }
@@ -3236,7 +3292,7 @@ fi
 
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then
-  read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn || true
+  yn="$(ask "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " "")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_KVO=true || DEPLOY_KVO=false
 fi
@@ -3244,7 +3300,7 @@ ok "Deploy KVO: ${DEPLOY_KVO}"
 
 # Deploy vPB?
 if [[ -z "$DEPLOY_VPB" ]]; then
-  read -rp "Deploy vPB alongside vController? [y/N]: " yn || true
+  yn="$(ask "Deploy vPB alongside vController? [y/N]: " "")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_VPB=true || DEPLOY_VPB=false
 fi
@@ -3264,7 +3320,7 @@ if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
     echo "                only; needs KVO and an AWS access key for it."
     echo "  3) both       sensors where possible plus the mirror fabric."
     echo "  4) none       infrastructure only, no tapping."
-    read -rp "Choose 1-4 [1]: " tap_choice || true
+    tap_choice="$(ask "Choose 1-4 [1]: " "")"
     case "${tap_choice:-1}" in
       2) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
       3) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
@@ -3289,7 +3345,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  1) standalone   register straight to the vController project"
   echo "  2) KVO-managed  register to the project KVO provisions, so KVO is the"
   echo "                  single pane of glass (licensing and adoption run first)"
-  read -rp "Choose 1-2 [1]: " _sm || true
+  _sm="$(ask "Choose 1-2 [1]: " "")"
   [[ "${_sm:-1}" == "2" ]] && SENSOR_MODE="kvo" || SENSOR_MODE="standalone"
 fi
 
@@ -3308,17 +3364,17 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  2) Throwaway TEST workloads created with the stack (you choose how many"
   echo "     of Ubuntu / RHEL / Windows). Right for demos and first runs. Default."
   echo "  3) Decide later (tag instances afterwards and re-run the sensor step)."
-  read -rp "Choose 1-3 [2]: " wl_choice || true
+  wl_choice="$(ask "Choose 1-3 [2]: " "")"
   case "${wl_choice:-2}" in
     1)
       WORKLOAD_CHOICE="existing"
-      read -rp "  Tag that marks them, key=value [${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}]: " _wt || true
+      _wt="$(ask "  Tag that marks them, key=value [${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}]: " "")"
       if [[ -n "$_wt" && "$_wt" == *=* ]]; then
         DISCOVERY_TAG_KEY="${_wt%%=*}"; DISCOVERY_TAG_VALUE="${_wt#*=}"
         DISCOVERY_TAG_EXPLICIT=true
       fi
       _wl_default_vpc="${EXISTING_VPC_ID:-the new VPC this deploy builds}"
-      read -rp "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " _wv || true
+      _wv="$(ask "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " "")"
       if [[ -n "$_wv" ]]; then
         for _v in ${_wv//,/ }; do SOURCE_VPC_SPECS+=("$_v"); done
       fi
@@ -3343,13 +3399,13 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     *)
       WORKLOAD_CHOICE="test"
       TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes
-      read -rp "  How many Ubuntu VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many Ubuntu VMs? [1, 0 skips]: " "")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_UBUNTU=no || UBUNTU_COUNT="${_c:-1}"
-      read -rp "  How many RHEL VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many RHEL VMs? [1, 0 skips]: " "")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_RHEL=no || RHEL_COUNT="${_c:-1}"
-      read -rp "  How many Windows VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many Windows VMs? [1, 0 skips]: " "")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_WINDOWS=no || WINDOWS_COUNT="${_c:-1}"
       ;;
@@ -3367,7 +3423,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "     kubectl rights on it)."
   echo "  3) Yes, create a small SAMPLE cluster to see it work (2x t3.medium,"
   echo "     ~15 extra minutes, plus a demo app generating pod-to-pod HTTP)."
-  read -rp "Choose 1-3 [1]: " eks_choice || true
+  eks_choice="$(ask "Choose 1-3 [1]: " "")"
   case "${eks_choice:-1}" in
     2) DEPLOY_EKS=true ;;
     3) DEPLOY_EKS=true; EKS_SAMPLE=true ;;
@@ -3381,7 +3437,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     echo "    2) Sidecar    a sensor container inside each tapped pod. Pod-"
     echo "                  selective, but adding it restarts the pod, so your"
     echo "                  apps get a rendered snippet to apply yourselves."
-    read -rp "  Choose 1-2 [1]: " eks_mode_choice || true
+    eks_mode_choice="$(ask "  Choose 1-2 [1]: " "")"
     [[ "${eks_mode_choice:-1}" == "2" ]] && EKS_MODE="sidecar" || EKS_MODE="daemonset"
   fi
 fi
@@ -3686,7 +3742,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
   echo "  Already subscribed on this account? Nothing to do."
   echo "  Check anytime: https://console.aws.amazon.com/marketplace/home#/subscriptions"
   echo
-  read -rp "Press Enter to continue (Ctrl+C to abort and subscribe first): " _ || true
+  ask "Press Enter to continue (Ctrl+C to abort and subscribe first): " "" >/dev/null
 fi
 
 # ---------------------------------------------------------------------
@@ -3755,7 +3811,7 @@ check_eip_headroom() {
   echo "    Or deploy without public IPs and reach the stack privately:"
   echo "      re-run with --no-public-ip"
   echo
-  read -rp "    Continue anyway? [y/N]: " yn || true
+  yn="$(ask "    Continue anyway? [y/N]: " "")"
   [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
 }
 # Only when we are actually going to create the stack. A resume against an
@@ -4397,7 +4453,7 @@ else
   elif ! python3 -c "import requests" 2>/dev/null; then
     # The one dependency. Offer to install rather than silently degrading.
     warn "The python 'requests' module is missing (needed to talk to the vController API)."
-    read -rp "  Install it now with pip? [Y/n]: " yn || true
+    yn="$(ask "  Install it now with pip? [Y/n]: " "")"
     if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
       python3 -m pip install --quiet --user requests 2>/dev/null \
         || python3 -m pip install --quiet --break-system-packages --user requests 2>/dev/null \
@@ -5128,7 +5184,7 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
       # The workloads row above said count=0 and nothing updated it, so the
       # console kept drawing an empty stack while the sensors installed onto
       # the machines just created. Say what exists now, and that we made it.
-      emit_event resource kind=workloads count="${TAGGED_COUNT:-0}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+      emit_event resource kind=workloads count="${TAGGED_COUNT:-}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
         mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}" created=true
     else
       echo "    Tag your workloads first (see the command above), then run:"
@@ -5138,7 +5194,7 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
 
   if [[ -n "$sensor_blocker" ]]; then
     echo
-    read -rp "Skip the sensor step for now? [Y/n]: " skip_yn || true
+    skip_yn="$(ask "Skip the sensor step for now? [Y/n]: " "")"
     if [[ "$(to_lower "${skip_yn:-y}")" != "n" ]]; then
       warn "Skipping sensor deployment. Infrastructure is deployed and ready."
       # Do not end here without saying how to come back. The stack is built and
@@ -5374,9 +5430,8 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
     echo "The project key is a secret. It is written to customer_input.yaml"
     echo "(git-ignored, permissions 600) so Ansible can read it."
     if [[ "$INTERACTIVE" == "true" ]]; then
-      # -s: do not echo the secret to the terminal or the log.
-      read -rsp "Paste project key (or press Enter to skip sensor deployment): " SENSOR_PROJECT_KEY || true
-      echo
+      # ask_secret: the value never reaches the terminal, the log or the events.
+      SENSOR_PROJECT_KEY="$(ask_secret "Paste project key (or press Enter to skip sensor deployment): ")"
     fi
     if [[ -z "$SENSOR_PROJECT_KEY" ]]; then
       warn "No project key supplied. Skipping sensor chain."
@@ -6080,9 +6135,8 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       MIRROR_ACCESS_KEY="$(ask "  AWS access key id: " "")"
     fi
     if [[ -z "$MIRROR_SECRET_KEY" && "$INTERACTIVE" == "true" && -n "$MIRROR_ACCESS_KEY" ]]; then
-      # -s: the secret must not reach the terminal or the log.
-      read -rsp "  AWS secret access key: " MIRROR_SECRET_KEY || true
-      echo
+      # ask_secret: the value never reaches the terminal, the log or the events.
+      MIRROR_SECRET_KEY="$(ask_secret "  AWS secret access key: ")"
     fi
 
     # The collector spec (awsConfiguration.availabilityZones) needs the zone AND
