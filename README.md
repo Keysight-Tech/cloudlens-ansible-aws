@@ -29,7 +29,7 @@ cd cloudlens-ansible-aws/console
 python3 -m cloudlens_console      # http://localhost:8760
 ```
 
-It binds loopback only, uses your shell's AWS identity, and needs Python 3.9+ and the AWS CLI. What the wizard writes is a `deploy-profile-<stack>.env` the CLI replays with `--profile`, so anything you click through reproduces in a terminal and the UI can never produce a plan the CLI would refuse. Screens, contracts and limits: [`console/README.md`](console/README.md).
+It binds loopback only, uses your shell's AWS identity, and needs Python 3.9+ plus the AWS CLI, `bash` (it runs `deploy-stack.sh`) and `ssh` (Operate reads the vPB's counters over it). No secret is stored in the browser: `localStorage` keeps the plan, the page and screen you were on, the last run's id and the light/dark choice, and nothing else. What the wizard writes is a `deploy-profile-<stack>.env` the CLI replays with `--profile`, so anything you click through reproduces in a terminal and the UI can never produce a plan the CLI would refuse. Screens, contracts and limits: [`console/README.md`](console/README.md).
 
 The CLI below is that engine, unchanged. If the terminal is where you live, start there.
 

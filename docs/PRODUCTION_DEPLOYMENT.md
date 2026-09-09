@@ -114,14 +114,28 @@ the collectors, which forward it (L2GRE/VXLAN) to a destination tool.
    ```
    plus KVO: Visibility Fabric > Cloud Configs / Tools / Monitoring Policies.
 
-**KNOWN OPEN ITEM (Keysight):** in the reference test env the collector SVM
-never bootstrapped: its launch-template user-data was empty and KVO made no
-8443 push, so it never registered and no sessions were created, **even with the
-whole fabric (tool + policy) correctly committed.** The automation and config are
-complete; the collector-provisioning handshake is the missing link. Question for
-Keysight: how does the AWS collector SVM receive its CLMS IP + project key
-(user-data vs 8443 push vs SVM polling)? See
-`~/keysight-kb/digests/kvo-clms-adoption-api.md`.
+**THE ONE MANUAL STEP:** the collector does bootstrap and register, and the
+sessions do get created - but not until the **Cloud Collection is committed a
+second time**, by hand, after the collector has registered its mirror target.
+Until then a stack sits at zero sessions with a complete, correct fabric and
+nothing reporting an error: no alert, no open change request, no failed task.
+Confirmed on four separate stacks, and confirmed through the vPB as well, with
+`Passed 12,526` on the traffic rule and `eth2 TX 16,542` packets leaving toward
+the tool.
+
+Wait 10 to 15 minutes for `aws ec2 describe-traffic-mirror-targets` to show the
+collector's target, then re-edit the collection in KVO (Cloud Fabric > Cloud
+Collections) and commit that ONE change request; the sessions appear about a
+minute later. It has to be a single change request: clearing the selector in one
+commit and restoring it in another leaves the collection empty in between, the
+monitoring policy fails validation, and the stuck change request wedges every
+later commit on that KVO.
+
+This is not automated on purpose. It was, briefly, and automating the
+clear-then-restore produced exactly that wedge on a live deployment.
+
+Full sequence, the ordering behind it, and the vPB numbers:
+[`AWS_ZONE_TAPPING.md`](AWS_ZONE_TAPPING.md).
 
 ---
 

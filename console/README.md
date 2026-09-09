@@ -24,9 +24,14 @@ python3 -m cloudlens_console --no-open    # start it, leave the browser alone
 - It inherits your shell's AWS identity: `~/.aws`, the environment, an SSO
   session, a CloudShell or instance role. It never asks for a credential, never
   stores one, and never sends one anywhere.
-- Requirements: Python 3.9+ and its standard library, plus the `aws` CLI, which
-  is what every operations screen shells out to. `boto3` is needed only by the
-  legacy quick flows' CloudFormation poller, and the replay demo needs neither.
+- Requirements: Python 3.9+ and its standard library, plus three things on the
+  PATH. The `aws` CLI, which Pre-flight, the wizard's discovery, Operate and
+  Teardown all shell out to. `bash`, which runs `deploy-stack.sh` and
+  `teardown-stack.sh`: those are the engine, and the console starts no other
+  kind of process. And `ssh`, which Operate uses to read the vPB's counters
+  with your EC2 key pair; without it that one card carries the command instead
+  of a number and nothing else is affected. No `boto3`, no pip install, no
+  build step.
 
 Ctrl-C stops the server and every run it started. Each engine runs in a session
 of its own, so the terminal's Ctrl-C stops at the console; the shutdown then
@@ -35,8 +40,9 @@ otherwise outlive the page that was going to answer it.
 
 ## The six screens
 
-Every screen is a face on a command that already exists. None of them knows AWS
-on its own.
+Every screen is a face on something that already exists, and none of them knows
+AWS or a CloudLens appliance on its own. Five shell out to a command; Licensing
+is the exception, and it is named as one below.
 
 | Screen | The command underneath |
 |---|---|
@@ -44,7 +50,7 @@ on its own.
 | **Deploy** | the `aws` CLI for discovery, then `deploy-stack.sh --profile` |
 | **Watch** | the `--events` file and the `--prompt-pipe` FIFO of the run in progress |
 | **Operate** | the `aws` CLI, the vController REST API, ssh to the vPB; then `--profile --resume` |
-| **Licensing** | `scripts/kvo_license.py`'s own functions against the KVO REST API |
+| **Licensing** | `scripts/kvo_license.py` imported, not run: its functions, in process, against the KVO REST API over HTTPS |
 | **Teardown** | `teardown-stack.sh --orphans`, then `teardown-stack.sh --yes` |
 
 **Pre-flight** is `--doctor` as a page: subscriptions, quotas, the key pair,
@@ -89,9 +95,14 @@ give it back.
 leave loose, release its licences if it has a KVO, type the name back, run, then
 count what is left in the region.
 
-The **quick flows** fold above the screens is the older four-flow demo, and the
-Demo switch in the header replays real captured event streams with no AWS calls
-at all. It is what the public page at `docs/console.html` is built from.
+Every screen here is live: it talks to your AWS account and your appliances, and
+the badge over them says so. There is no demo mode and no second way to start a
+run. The four "quick flows" that used to sit under these screens - a Run button
+that posted to a route with no one-engine-per-stack lock, under a badge that
+said the page was replaying - are gone. What they demonstrated lives on the
+public page at `docs/console.html`, which `build_site.py` assembles from this
+page's stylesheet, the flow data in `flows.py` and the captured fixtures, and
+which replays them in the browser with no server behind it.
 
 ## The profile contract
 
@@ -156,11 +167,14 @@ carries the script's own reason and exit code.
   engine gives it none, which is why the licence phase cannot run without them.
 - Every code and every secret is registered with the job, and the engine redacts
   them out of the stream before a byte reaches the browser.
-- Nothing is stored in the browser. A code is shown only by its last four
-  characters, in a password field (a textarea shows the whole list in clear on
-  browsers that ignore the masking). The KVO address and password on the
-  Licensing screen are posted in the request body and kept nowhere, so a reload
-  asks again.
+- No secret is stored in the browser. `localStorage` holds the plan (the profile
+  keys the wizard has filled in), which page and which wizard screen you were on,
+  the id of the last run so a reload can pick it up, and the light/dark choice.
+  It never holds a password, an activation code or a KVO address. A code is shown
+  only by its last four characters, in a password field (a textarea shows the
+  whole list in clear on browsers that ignore the masking). The KVO address and
+  password on the Licensing screen are posted in the request body and kept
+  nowhere, so a reload asks again.
 
 ## Licences, and what the teardown gate requires
 
@@ -180,9 +194,16 @@ The Teardown screen enforces the order:
 - The destructive run needs the stack name typed back exactly, character for
   character. It runs with `--yes`, because the engine has no terminal to confirm
   on.
-- `--accept-licence-loss` is added only when this session actually released that
-  stack's KVO licences, from that KVO. Without it a stack holding a KVO stops at
-  the script's own licence warning, which is the right outcome.
+- `--accept-licence-loss` is added only when the Teardown SCREEN can show that
+  this session released that stack's own KVO's licences, that the KVO answered
+  it now holds none, and that nothing has been put back on it since. That rule
+  lives in the page (`web/teardown.js`, `teardownGate`, under
+  `tests/test_ops_model.py`): `POST /api/teardown` takes
+  `licences_released` from the body and trusts it, because only the page knows
+  which appliance a release in this session was made against. Without the flag
+  a stack holding a KVO stops at the script's own licence warning, which is the
+  right outcome, and that warning is the gate that actually stands between a
+  scripted run and a stranded count.
 - Afterwards, a region-wide count of what is left. Region-wide on purpose: a
   teardown's own sweep is what ties a resource to a stack, so this is the
   independent check that it worked.
@@ -282,19 +303,23 @@ console/
     server.py         # stdlib HTTP + SSE: the pages, /api/*, /events/<job>
     api.py            # every route, each one a face on an existing command
     profile.py        # deploy-profile-<stack>.env, from the one allowlist
-    orchestrator.py   # the engine: --events tail, --prompt-pipe, redaction, replay
+    orchestrator.py   # the engine: --events tail, --prompt-pipe, redaction, the verdict
     events.py         # the typed event contract, both directions
-    flows.py          # the legacy four quick flows as data
+    flows.py          # the four deployment paths as data: name, inputs, diagram
     web/              # the UI: index.html plus one script per screen, no build step
-  fixtures/           # captured event streams for the replay demo (+ _build.py)
-  build_site.py       # writes docs/console.html: this page with the operations block cut out
+  fixtures/           # the event streams the public page replays (+ _build.py, which writes them)
+  build_site.py       # writes docs/console.html: this page's stylesheet, the flow data,
+                      #   the fixtures, and its own instrument markup and player
   tests/              # the fast suite
   tests/browser/      # the browser smoke tests (not in the default run)
 ```
 
-Regenerate the demo fixtures with `python3 fixtures/_build.py`, and the public
-page with `python3 build_site.py` after any change to `web/index.html`. The
-build asserts that what it publishes carries none of the operations screens, no
-`/api/` path and no secret field: GitHub Pages serves no backend, so a wizard
-that survived the cut would be a page of dead buttons and password fields with
-nowhere to send what is typed into them.
+Regenerate the fixtures with `python3 fixtures/_build.py`, and the public page
+with `python3 build_site.py` after any change to `web/index.html`. The fixtures
+are written by that script from the sequences real deploys produced; they are
+not a recording taken off a wire, and `tests/test_console.py` holds them to the
+contract of the player that reads them. The build asserts that what it
+publishes carries none of the operations screens, no `/api/` path and no secret
+field, and that the instrument it supplies is complete: GitHub Pages serves no
+backend, so a wizard that survived the cut would be a page of dead buttons and
+password fields with nowhere to send what is typed into them.
