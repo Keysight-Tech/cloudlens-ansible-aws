@@ -749,6 +749,27 @@ exit 0
     assert not os.path.exists(pipe), "the FIFO does not outlive the run"
 
 
+def test_an_unwired_run_gets_no_flags_and_cannot_be_answered(tmp_path):
+    # teardown-stack.sh rejects any flag it does not know, so a run that is
+    # not wired gets none: the fake exits 9 on any argument at all. Its
+    # stdout is the stream, its exit the verdict, and there is no FIFO for
+    # an answer to go to.
+    body = r'''#!/usr/bin/env bash
+[[ $# -eq 0 ]] || { echo "Unknown argument: $1"; exit 9; }
+echo "deleting nothing"
+exit 0
+'''
+    script = _script(tmp_path, body)
+    job = O.Job("j10", "teardown", {})
+    t = _start(job, [script], wired=False)
+    t.join(5)
+    assert [e["text"] for e in job.buffer if e["type"] == "log"] == ["deleting nothing"]
+    assert _last(job)["type"] == E.DONE and _last(job)["summary"] == "engine exited 0"
+    assert job.pipe_path is None
+    with pytest.raises(ValueError, match="No prompt is waiting"):
+        job.answer("p1", "x")
+
+
 # ------------------------------------------------------------------ events.py
 def test_iter_script_events_ignores_a_str_last_seq(tmp_path):
     """The guard on last_seq is the same shape as _first_seq's: an int that is

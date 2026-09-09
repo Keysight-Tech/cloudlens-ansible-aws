@@ -7,22 +7,39 @@ import os
 import sys
 import json
 
+import pytest
+
 from cloudlens_console import events as E, flows as F, orchestrator as O  # noqa
 
 
+def _emitted(*evs):
+    """The frames as a job's stream carries them: a frame has no id until a
+    Job emits it (emit stamps the next one under the job's lock)."""
+    job = O.Job("t", "stack", {})
+    for ev in evs:
+        assert "id" not in ev, "no frame carries an id before it is emitted"
+        job.emit(ev)
+    return evs
+
+
 def test_event_contract_roundtrip():
-    for ev in (E.hello("1", "arn", "us-east-1"), E.log("hi"), E.state("vpc", E.LIVE, "live"),
-               E.narrate("why", "good"), E.stat(created=3, elapsed=9), E.done("ok"),
-               E.error("boom", node="kvo", fix="do x")):
+    for ev in _emitted(E.hello("1", "arn", "us-east-1"), E.log("hi"), E.state("vpc", E.LIVE, "live"),
+                       E.narrate("why", "good"), E.stat(created=3, elapsed=9), E.done("ok"),
+                       E.error("boom", node="kvo", fix="do x")):
         frame = E.to_sse(ev)
         assert frame.startswith("id: ") and "event: " in frame and frame.endswith("\n\n")
         data = json.loads(frame.split("data: ", 1)[1].strip())
         assert data["type"] == ev["type"] and data["id"] == ev["id"]
+    # an un-emitted frame has no place in a stream: to_sse refuses it
+    with pytest.raises(KeyError):
+        E.to_sse(E.log("never emitted"))
 
 
 def test_event_ids_monotonic():
-    a, b = E.log("a"), E.log("b")
+    a, b = _emitted(E.log("a"), E.log("b"))
     assert b["id"] > a["id"]
+    # per job, from 1: the id is the buffer position
+    assert (a["id"], b["id"]) == (1, 2)
 
 
 def test_flow_pattern_matching():
@@ -366,6 +383,8 @@ def test_script_events_pass_through_with_console_ids():
     raw = {"seq": 7, "ts": "2026-09-08T10:00:00Z", "type": "phase", "name": "stack", "status": "done"}
     ev = E.from_script(raw)
     assert ev["type"] == "phase" and ev["name"] == "stack" and ev["script_seq"] == 7
+    assert "id" not in ev, "the console's id is the job's to stamp, at emit"
+    _emitted(ev)
     assert isinstance(ev["id"], int)   # the console's own monotonic id for SSE resume
 
 
@@ -390,7 +409,7 @@ def test_every_script_type_round_trips_through_sse():
     }
     assert set(samples) == E.SCRIPT_TYPES, "a script type with no sample here"
     for seq, (typ, fields) in enumerate(sorted(samples.items()), start=11):
-        ev = E.from_script(_script_line(seq, typ, **fields))
+        ev, = _emitted(E.from_script(_script_line(seq, typ, **fields)))
         frame = E.to_sse(ev)
         assert frame.startswith("id: %d\n" % ev["id"]) and ("event: %s\n" % typ) in frame
         data = json.loads(frame.split("data: ", 1)[1].strip())
@@ -411,22 +430,26 @@ def test_script_done_keeps_its_status():
 
 
 def test_script_prompt_keeps_its_id_and_the_console_keeps_its_own():
-    # _mk applies the data over {"id": <counter>}, so a script "id" left in
-    # place would replace the SSE resume id with "p3".
+    # emit stamps the console's id over "id", so a script "id" left in place
+    # would be lost (and, until emit, "p3" would pass for a resume id).
     raw = _script_line(5, "prompt", id="p3", question="Deploy KVO?", default="y", kind="text")
     ev = E.from_script(raw)
-    assert isinstance(ev["id"], int), "a script id must never replace the SSE resume id"
+    assert "id" not in ev, "a script id must never pass for the SSE resume id"
     assert ev["prompt_id"] == "p3"
     assert ev["question"] == "Deploy KVO?" and ev["kind"] == "text" and ev["default"] == "y"
-    assert E.log("after")["id"] > ev["id"], "the counter kept going"
+    ev, after = _emitted(ev, E.log("after"))
+    assert isinstance(ev["id"], int) and ev["prompt_id"] == "p3"
+    assert after["id"] > ev["id"], "the counter kept going"
 
 
 def test_script_resource_id_is_not_the_sse_id_either():
     # prompt is not the only script type carrying "id": a resource's id is
     # the AWS id (emit_event resource kind=vpc id=...). One rule, <type>_id.
     ev = E.from_script(_script_line(6, "resource", kind="vpc", id="vpc-0abc"))
-    assert isinstance(ev["id"], int) and ev["resource_id"] == "vpc-0abc"
+    assert "id" not in ev and ev["resource_id"] == "vpc-0abc"
     assert ev["kind"] == "vpc"
+    _emitted(ev)
+    assert isinstance(ev["id"], int) and ev["resource_id"] == "vpc-0abc"
 
 
 def test_iter_script_events_skips_junk_and_holds_the_offset(tmp_path):
@@ -454,7 +477,7 @@ def test_iter_script_events_skips_junk_and_holds_the_offset(tmp_path):
     assert evs[1]["tag"] == "a�b", "a non-UTF-8 byte is replaced, never fatal"
     assert evs[2]["stream"] == "script" and json.loads(evs[2]["text"])["type"] == ["hello"], \
         "a type that is not a string is a log of the raw line, not a TypeError"
-    assert all(isinstance(e["id"], int) for e in evs)
+    assert all("id" not in e for e in evs), "ids are the job's, stamped at emit"
     consumed = b"".join(lines)
     assert len(consumed) != len(consumed.decode("utf-8", "replace")), \
         "bytes and characters differ here, so the next line settles which one the offset counts"
@@ -561,7 +584,7 @@ def test_a_longer_replacement_is_caught_by_seq(tmp_path):
     offset2, evs2 = E.iter_script_events(path, offset, last_seq=2)
     assert [e["script_seq"] for e in evs2] == [1, 2, 3] and evs2[0]["stack"] == "other"
     assert offset2 == 450 == os.path.getsize(path)
-    assert all(isinstance(e["id"], int) for e in evs2), "fresh console ids, as any event"
+    assert all("id" not in e for e in evs2), "no id yet, as any event: the job stamps one at emit"
 
 
 def test_a_genuine_append_is_never_a_restart(tmp_path):
@@ -569,14 +592,13 @@ def test_a_genuine_append_is_never_a_restart(tmp_path):
     with open(path, "wb") as fh:
         fh.write(_padded(1, "hello", 100, stack="st") + _padded(2, E.PHASE, 100, name="stack"))
     offset, evs = E.iter_script_events(path)
-    ids_before = [e["id"] for e in evs]
+    assert [e["script_seq"] for e in evs] == [1, 2]
     # the same run keeps writing: seq climbs, the read resumes at the offset
     with open(path, "ab") as fh:
         fh.write(_padded(3, E.PHASE, 100, name="kvo") + _padded(4, E.DONE, 100, status="ok"))
     offset2, evs2 = E.iter_script_events(path, offset, last_seq=2)
     assert [e["script_seq"] for e in evs2] == [3, 4], "only the new lines, nothing re-read"
     assert offset2 == 400 == os.path.getsize(path)
-    assert min(e["id"] for e in evs2) > max(ids_before), "and no id was spent re-reading"
     assert E.iter_script_events(path, offset2, last_seq=4) == (400, [])
 
 
@@ -606,16 +628,16 @@ def test_replay_rebuilds_script_events_as_themselves():
     # done() and lost its status.
     ev = O._rebuild(E.PHASE, {"ts": SCRIPT_TS, "name": "stack", "status": "done", "script_seq": 7})
     assert ev["type"] == E.PHASE and ev["name"] == "stack" and ev["script_seq"] == 7
-    assert isinstance(ev["id"], int)
+    assert "id" not in ev, "a rebuilt frame takes its id from the replaying job, at emit"
     ev = O._rebuild(E.PROMPT, {"prompt_id": "p3", "question": "q", "kind": "text", "script_seq": 8})
-    assert ev["prompt_id"] == "p3" and isinstance(ev["id"], int)
+    assert ev["prompt_id"] == "p3" and "id" not in ev
     ev = O._rebuild(E.DONE, {"status": "interrupted", "phase": "kvo", "script_seq": 9})
     assert ev["status"] == "interrupted" and ev["script_seq"] == 9
     # a fixture frame still carrying the console id it was recorded with:
     # from_script would read that "id" as the script's own and file it as
     # <type>_id, so _rebuild drops it first, as the STAT branch does
     ev = O._rebuild(E.PHASE, {"id": 999, "name": "stack", "status": "done", "script_seq": 10})
-    assert ev["id"] != 999 and "phase_id" not in ev
+    assert "id" not in ev and "phase_id" not in ev
     # the console's own frames still take their own constructors
     ev = O._rebuild(E.DONE, {"summary": "ok", "outputs": {}})
     assert ev["summary"] == "ok" and "script_seq" not in ev

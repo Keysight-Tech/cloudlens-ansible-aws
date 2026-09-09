@@ -43,18 +43,21 @@ Events v2: the script's own side channel.
 
   What every script event carries once it is a console event:
   id         - the console's own counter, the one every console event uses,
-               so Last-Event-ID resumes across both sources without gaps
+               so Last-Event-ID resumes across both sources without gaps.
+               No frame has one until a Job emits it: Job.emit stamps the
+               next id under the job's lock, in buffer order, so ids and
+               buffer positions agree however many producers interleave
   script_seq - the script's seq: its line number in the file, strictly
                increasing within one file (a smaller one means the file was
                replaced and this is a new stream, not a gap)
   <type>_id  - the script's own "id" field when it had one (prompt_id,
-               resource_id). It cannot stay as "id": _mk applies the data
-               over {"id": counter}, so it would replace the resume id.
+               resource_id). It cannot stay as "id": emit stamps the
+               console's id over the frame, so the script's would be lost,
+               and until then a lookalike would pass for a resume id.
   ts         - the script's timestamp, untouched
 """
 from __future__ import annotations
 import json
-import itertools
 import os
 
 _HELLO = "hello"
@@ -75,11 +78,13 @@ BUSY = "busy"     # creating now (amber pulse)
 LIVE = "live"     # created / healthy (green glow, wires flow)
 FAIL = "fail"     # failed (red)
 
-_seq = itertools.count(1)
-
-
 def _mk(_type, **data):
-    ev = {"id": next(_seq), "type": _type}
+    """A frame with no id yet. The id is the job's to give: Job.emit stamps
+    it under the job's lock as the frame is appended to the buffer, so two
+    producer threads can never mint out of buffer order (they did, when the
+    counter lived here, and a resume from the smaller id skipped the larger).
+    """
+    ev = {"type": _type}
     ev.update(data)
     return ev
 
@@ -126,8 +131,10 @@ def error(text, node=None, fix=None):
 
 
 def to_sse(ev):
-    """Serialize one event as an SSE frame. The `id:` lets a reconnecting browser
-    resume with Last-Event-ID without gaps or duplicates."""
+    """Serialize one EMITTED event as an SSE frame. The `id:` lets a
+    reconnecting browser resume with Last-Event-ID without gaps or
+    duplicates; a frame no job has emitted has no id, and sending one would
+    be a bug, so this raises (KeyError) rather than invent one."""
     return "id: {id}\nevent: {type}\ndata: {data}\n\n".format(
         id=ev["id"], type=ev["type"], data=json.dumps(ev, separators=(",", ":"))
     )
@@ -136,10 +143,10 @@ def to_sse(ev):
 # ---------------------------------------------------------------- events v2
 def from_script(raw):
     """One parsed JSON line from deploy-stack.sh --events as a console event,
-    re-stamped with the console's own id so SSE resume works across both
-    sources. seq becomes script_seq; a script "id" (a prompt's "p3", a
-    resource's "vpc-...") becomes <type>_id, because _mk applies the data
-    over the console id and the script's would replace it. A frame that
+    ready for the console's own id (Job.emit stamps it) so SSE resume works
+    across both sources. seq becomes script_seq; a script "id" (a prompt's
+    "p3", a resource's "vpc-...") becomes <type>_id, because emit writes the
+    console id over "id" and the script's would be lost. A frame that
     already went through here (a replay fixture: script_seq, prompt_id) is
     accepted as it is. An unknown type becomes a log of the raw line; so does
     a type that is not a string at all (a list or an object cannot even be

@@ -14,6 +14,7 @@ import os
 import json
 import errno
 import fcntl
+import itertools
 import queue
 import shutil
 import signal
@@ -40,6 +41,7 @@ class Job:
         self.inputs = inputs
         self.q = queue.Queue()
         self.buffer = []          # every event emitted, for SSE Last-Event-ID replay
+        self._ids = itertools.count(1)  # the event ids, minted by emit under the lock
         self.done = False
         self.stopped = False
         self.pending_prompt = None  # the script's id of the prompt waiting for an answer
@@ -54,16 +56,30 @@ class Job:
         self._t0 = time.time()
 
     def emit(self, ev):
-        self.buffer.append(ev)
+        """Stamp the next id on the frame and append it, both under the lock:
+        the id IS the buffer position, whichever of the producers (the
+        events tail, the stdout loop, the verdict) got here first. Minting
+        in events.py, before the append, let two threads append out of id
+        order, and a resume from the smaller id then skipped the larger;
+        the SSE route's max() watermark was the stopgap for that."""
+        with self._lock:
+            ev["id"] = next(self._ids)
+            self.buffer.append(ev)
+            if ev["type"] == E.PROMPT:
+                # the script's own id (from_script filed it as prompt_id):
+                # what answer() pairs the reply with, so a reply meant for an
+                # earlier question after a reconnect cannot land on this one
+                self.pending_prompt = ev.get("prompt_id")
         self.q.put(ev)
         if ev["type"] in (E.DONE, E.ERROR):
             self.done = True
-        elif ev["type"] == E.PROMPT:
-            # the script's own id (from_script filed it as prompt_id): what
-            # answer() pairs the reply with, so a reply meant for an earlier
-            # question after a reconnect cannot land on this one
-            with self._lock:
-                self.pending_prompt = ev.get("prompt_id")
+
+    def events_since(self, last_id):
+        """The buffered events with an id above last_id, in id order: what a
+        reconnecting browser missed. Snapshot under the lock, so an emit in
+        flight is either wholly in or wholly out."""
+        with self._lock:
+            return [ev for ev in self.buffer if ev["id"] > last_id]
 
     def elapsed(self):
         return int(time.time() - self._t0)
@@ -243,12 +259,13 @@ def _run_replay(job, fixture_path):
         ev = dict(fr["event"])
         typ = ev.pop("type")
         ev.pop("id", None)
-        # rebuild through events.py so ids stay freshly sequenced for SSE replay
+        # rebuild through events.py; emit stamps this job's own id on it
         job.emit(_rebuild(typ, ev))
 
 
 def _rebuild(typ, data):
-    # reconstruct a typed event through events.py so ids are freshly sequenced
+    # reconstruct a typed event through events.py, with no id: the job's
+    # emit stamps a fresh one, so a replay resumes like any other stream
     if typ in E.SCRIPT_TYPES and "script_seq" in data:
         # a frame deploy-stack.sh wrote (events v2): keep every field as it
         # is, minus a console id the fixture may still carry: from_script
@@ -308,12 +325,18 @@ def _stream_subprocess(job, cmd, cwd, on_line):
 
 
 # ---------------------------------------------------------------- engine
-def run_engine(job, cmd, cwd=None, env=None):
+def run_engine(job, cmd, cwd=None, env=None, wired=True):
     """Run a deploy-stack.sh style command with --events/--prompt-pipe wired to
     this job, tailing the events file into the stream while the process runs.
     `cmd` is the argv WITHOUT the two flags; they are appended here so every
     caller gets them right. Returns the exit code, or None when no process
     ran (stopped before the launch, or a command that could not start).
+
+    wired=False runs a script that has no events channel yet
+    (teardown-stack.sh rejects any flag it does not know): nothing is
+    appended, no FIFO is made so answer() says the job has no engine to
+    answer, its stdout is the stream and process exit is the verdict. The
+    same session, group and stop rules apply.
 
     Three producers feed job.emit: the script's events file (a thread that
     re-reads it every TAIL_SECS), the merged stdout/stderr (this thread, one
@@ -362,11 +385,13 @@ def run_engine(job, cmd, cwd=None, env=None):
         try:
             work = tempfile.mkdtemp(prefix="cloudlens-console-{}-".format(job.id))
             job.events_path = os.path.join(work, "events.jsonl")
-            job.pipe_path = os.path.join(work, "prompts.fifo")
             with open(job.events_path, "a"):
                 pass
-            os.mkfifo(job.pipe_path, 0o600)
-            argv = list(cmd) + ["--events", job.events_path, "--prompt-pipe", job.pipe_path]
+            argv = list(cmd)
+            if wired:
+                job.pipe_path = os.path.join(work, "prompts.fifo")
+                os.mkfifo(job.pipe_path, 0o600)
+                argv += ["--events", job.events_path, "--prompt-pipe", job.pipe_path]
             penv = dict(os.environ, PYTHONUNBUFFERED="1")
             if env:
                 penv.update(env)
