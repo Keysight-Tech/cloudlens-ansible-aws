@@ -73,6 +73,8 @@ for name, evs in runs.items():
     assert types[0] == "hello", (name, types[:3])
     # The phase list, once, second: a console cannot draw the phases still to
     # come from the phase events, which only ever report one that has ended.
+    # These runs pass no --from/--only, so the list is the whole PHASE_ORDER;
+    # 1b below is the scoped runs, where it is the selected phases instead.
     assert types[1] == "phases", (name, types[:3])
     assert types.count("phases") == 1, (name, types)
     assert evs[1]["order"].split() == order, (name, evs[1], order)
@@ -115,6 +117,45 @@ vc = [l for l in logins if l["component"] == "vcontroller"]
 assert vc and all("factory default" in l["password_in"] for l in vc), vc
 print("PASS dry-run: %d lines, %d phases announced, %d phase events, %d resources, one done; %d logins name no password, vcontroller is factory-default"
       % (len(evs), len(order), types.count("phase"), len(res), len(logins)))
+PY
+
+  # 1b. A phase-scoped run announces the phases it can reach and no others.
+  #     The phase list is emitted after the --from/--only resolution, so a
+  #     scoped run does not promise a console a timeline of phases it will
+  #     never run, and a selector naming a phase that does not exist ends the
+  #     run before anything is announced at all.
+  "${dry[@]}" --dry-run --region us-east-1 --key-name k --stack-name evtonly \
+    --tapping none --no-kvo --no-vpb --only stack --events "$S/only.jsonl" </dev/null >/dev/null 2>&1
+  code=$?
+  if [[ $code -ne 0 ]]; then echo "FAIL --only dry run: exit $code, expected 0"; rc=1; fi
+  "${dry[@]}" --dry-run --region us-east-1 --key-name k --stack-name evtfrom \
+    --tapping none --no-kvo --no-vpb --from vpb --events "$S/from.jsonl" </dev/null >/dev/null 2>&1
+  code=$?
+  if [[ $code -ne 0 ]]; then echo "FAIL --from dry run: exit $code, expected 0"; rc=1; fi
+  "${dry[@]}" --dry-run --region us-east-1 --only nosuchphase --events "$S/badphase.jsonl" </dev/null >/dev/null 2>&1
+  code=$?
+  if [[ $code -ne 1 ]]; then echo "FAIL --only nosuchphase: exit $code, expected 1"; rc=1; fi
+  python3 - "$S/only.jsonl" "$S/from.jsonl" "$S/badphase.jsonl" "$REPO/deploy/deploy-stack.sh" <<'PY' || rc=1
+import json, re, sys
+order = re.search(r'^PHASE_ORDER="([^"]+)"', open(sys.argv[4]).read(), re.M).group(1).split()
+def announced(path):
+    evs = [json.loads(line) for line in open(path)]
+    types = [e["type"] for e in evs]
+    assert types[0] == "hello", types[:3]
+    return evs, types, [e for e in evs if e["type"] == "phases"]
+evs, types, phases = announced(sys.argv[1])
+assert len(phases) == 1, "the list is said exactly once: %r" % types
+assert phases[0]["order"].split() == ["stack"], phases[0]
+evs, types, phases = announced(sys.argv[2])
+assert len(phases) == 1, types
+assert phases[0]["order"].split() == order[order.index("vpb"):], (phases[0], order)
+# an unknown phase: the run ends on it, and nothing was announced
+evs, types, phases = announced(sys.argv[3])
+assert not phases, "a run that cannot start announces no phases: %r" % types
+assert types == ["hello", "done"], types
+assert evs[-1]["status"] == "failed" and "nosuchphase" in evs[-1]["reason"], evs[-1]
+print("PASS phase selectors: --only announces 1 phase, --from announces %d, an unknown phase announces none"
+      % len(order[order.index("vpb"):]))
 PY
 
   # 2. A parse-time fail() after the sink exists, with every byte JSON hates in

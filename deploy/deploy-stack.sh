@@ -844,6 +844,28 @@ phase_index() {
   return 1
 }
 
+# The phases a selector leaves in this run, in PHASE_ORDER's own order:
+# --only names the one, --from cuts everything before it, and with neither it
+# is the whole list. This is what the console is told, so the timeline it
+# draws is the run that was asked for and not the run the script can do.
+# A phase run_phase later skips for its OWN reasons (resume state, a component
+# this stack has not got) still belongs here: it is announced, then reported
+# when it is reached, which is exactly the story the timeline tells. Only the
+# selector narrows the list, because only the selector is settled by now.
+selected_phases() {
+  local p idx want out=""
+  if [[ -n "$ONLY_PHASE" ]]; then printf '%s' "$ONLY_PHASE"; return 0; fi
+  want="$(phase_index "$FROM_PHASE" 2>/dev/null || true)"
+  # no --from, or one this script does not know: the whole list. The unknown
+  # name is the validation's to reject, and it does, before this is called.
+  if [[ -z "$FROM_PHASE" || -z "$want" ]]; then printf '%s' "$PHASE_ORDER"; return 0; fi
+  for p in $PHASE_ORDER; do
+    idx="$(phase_index "$p")"
+    if (( idx >= want )); then out="${out:+$out }$p"; fi
+  done
+  printf '%s' "$out"
+}
+
 phase_label() {
   case "$1" in
     stack)   printf '%s' "Deploy the stack" ;;
@@ -2292,11 +2314,30 @@ fi
 # The console's first line. Stack and region may still be empty here (the
 # interview fills them in Phase 3); a second hello follows once they are known.
 emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
+
+# Phase selectors use the stable short names, not numbers. Resolved here,
+# before the phase list is announced: a selector naming a phase that does not
+# exist ends the run, and a run scoped to some of the phases must not announce
+# the ones it will never reach.
+if [[ -n "$FROM_PHASE" && -n "$ONLY_PHASE" ]]; then
+  fail "--from and --only are mutually exclusive."
+fi
+for _p in "$FROM_PHASE" "$ONLY_PHASE"; do
+  [[ -z "$_p" ]] && continue
+  phase_index "$_p" >/dev/null \
+    || fail "Unknown phase '${_p}'. Valid phases: ${PHASE_ORDER}."
+done
+if [[ "$RESUME_MODE" == "fresh" && ( -n "$FROM_PHASE" || -n "$ONLY_PHASE" ) ]]; then
+  note "--fresh with --from/--only: the selector still limits which phases run."
+fi
+
 # The phases this run can go through, in this script's own order, said once
 # and early. A console that has only seen the phases that already ended
 # cannot draw the ones still to come, and a copy of the list on its side
-# drifts the day a phase is added here.
-emit_event phases order="$PHASE_ORDER"
+# drifts the day a phase is added here. It is the SELECTED list (see
+# selected_phases): under --from or --only the console is told the phases
+# this run can reach, not every phase the script has.
+emit_event phases order="$(selected_phases)"
 
 # --prompt-pipe: the console is the terminal. The questions travel as events,
 # so it needs --events; the answers come back on a FIFO the console created.
@@ -2310,19 +2351,6 @@ fi
 
 if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
   fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
-fi
-
-# Phase selectors use the stable short names, not numbers.
-if [[ -n "$FROM_PHASE" && -n "$ONLY_PHASE" ]]; then
-  fail "--from and --only are mutually exclusive."
-fi
-for _p in "$FROM_PHASE" "$ONLY_PHASE"; do
-  [[ -z "$_p" ]] && continue
-  phase_index "$_p" >/dev/null \
-    || fail "Unknown phase '${_p}'. Valid phases: ${PHASE_ORDER}."
-done
-if [[ "$RESUME_MODE" == "fresh" && ( -n "$FROM_PHASE" || -n "$ONLY_PHASE" ) ]]; then
-  note "--fresh with --from/--only: the selector still limits which phases run."
 fi
 
 case "$SENSOR_MODE" in

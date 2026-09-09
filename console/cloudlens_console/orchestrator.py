@@ -235,9 +235,12 @@ class Job:
         for it: asterisks when the script asked for a secret, otherwise the
         text through redact(). The value the operator typed for a secret goes
         to the FIFO and nowhere else - not this buffer, not the SSE stream,
-        not the log. It is emitted AFTER the write, never before: an answer
-        the engine never took is not an answer, and emit() takes the same
-        lock, so it happens outside the block that releases the claim."""
+        not the log - and it is registered with the job's redactions on the
+        way, so a later line of the engine's own output that happens to carry
+        it is blanked too. The frame is emitted AFTER the write, never
+        before: an answer the engine never took is not an answer, and emit()
+        takes the same lock, so it happens outside the block that releases
+        the claim."""
         with self._lock:
             if self.pending_prompt is None:
                 raise ValueError("No prompt is waiting for an answer.")
@@ -255,6 +258,17 @@ class Job:
             # script may have asked the next question, and pending_kind would
             # then be that one's
             secret = self.pending_kind == "secret"
+            # A secret typed here is registered exactly like the ones that
+            # came in with the launch (api.run registers those), because the
+            # engine can print it back: MIRROR_SECRET_KEY and
+            # SENSOR_PROJECT_KEY go to kvo_aws_mirror.py on its argv, and an
+            # argparse usage error or a traceback there puts the whole argv
+            # on stdout, which reaches the buffer through job.redact(line).
+            # Registered BEFORE the write, not after: the script can echo the
+            # value the moment it reads it, and an answer the engine never
+            # took was still typed as a secret.
+            if secret and text:
+                self.redactions.append(text)
         try:
             self._write_answer(pipe, text)
         except BaseException:

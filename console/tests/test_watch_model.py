@@ -15,8 +15,11 @@ the only two ways that are worth anything without a browser:
   behaviour  the same frames are fed through the real applyEvent under node,
              and the model that comes back is checked. Skipped, with the
              reason, on a machine with no node.
-
-The DOM half is Task 11's.
+  screen     render() drawn into a DOM stub, also under node, for the two
+             things a redraw carries between frames that the model does not
+             hold: the open prompt's input box and the log lines already on
+             the page. Neither can be tested from the model, and both have
+             already been the site of a defect.
 
 Run:  cd console && python3 -m pytest tests/test_watch_model.py -q
 """
@@ -34,6 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONSOLE = os.path.abspath(os.path.join(HERE, ".."))
 WEB = os.path.join(CONSOLE, "cloudlens_console", "web")
 WATCH = os.path.join(WEB, "watch.js")
+APP = os.path.join(WEB, "app.js")
 DEPLOY = os.path.abspath(os.path.join(CONSOLE, "..", "deploy", "deploy-stack.sh"))
 TS = "2026-09-09T10:00:00Z"
 
@@ -67,9 +71,26 @@ def _reads():
 
 def _js_object_keys(name):
     """The keys of a flat `var NAME={a:"x",b:"y"}` object in watch.js."""
+    return set(re.findall(r"(\w+):", _js_object_body(name)))
+
+
+def _js_object_values(name):
+    """The quoted values of that same object."""
+    return set(re.findall(r':"([^"]*)"', _js_object_body(name)))
+
+
+def _js_object_body(name):
     m = re.search(r"var %s=\{(.*?)\};" % name, _read(WATCH), re.S)
     assert m, "watch.js declares var %s={...};" % name
-    return set(re.findall(r"(\w+):", m.group(1)))
+    return m.group(1)
+
+
+def _app_icon_keys():
+    """The keys of app.js's IC set, which is what window.clConsole.icons is:
+    one `name:'<svg ...>'` per line."""
+    m = re.search(r"var IC=\{(.*?)\n\};", _read(APP), re.S)
+    assert m, "app.js declares var IC={...};"
+    return set(re.findall(r"^\s*(\w+):", m.group(1), re.M))
 
 
 # --------------------------------------------------- what the script emits
@@ -162,6 +183,18 @@ def test_the_model_knows_every_resource_kind_and_every_phase_the_script_has():
     order = set(_phase_order())
     assert _js_object_keys("PHASE_NODE") <= order, "a phase nothing runs: %s" % sorted(
         _js_object_keys("PHASE_NODE") - order)
+
+
+def test_every_node_icon_names_an_icon_the_instrument_really_has():
+    """NODE_ICON's VALUES, not just its keys: each one is a key into app.js's
+    IC set, which reaches this screen as window.clConsole.icons. icon()
+    returns "" for a name that set has not got, so an icon renamed in app.js
+    empties every chip on the topology and nothing fails anywhere - the chips
+    just go blank. This is what fails instead."""
+    want, have = _js_object_values("NODE_ICON"), _app_icon_keys()
+    assert want, "NODE_ICON maps each node kind to an icon"
+    assert have, "app.js declares the icon set"
+    assert want <= have, "watch.js draws icons app.js has not got: %s" % sorted(want - have)
 
 
 def test_the_answered_frame_carries_exactly_what_the_model_reads():
@@ -301,7 +334,8 @@ const out = {
   verdict: W.verdict(m),
   open: W.openPrompt(m),
   states: {},
-  logMax: W.LOG_MAX
+  logMax: W.LOG_MAX,
+  phaseMax: W.PHASE_MAX
 };
 Object.keys(m.nodes).forEach(function(k){ out.states[k] = W.nodeState(m, k); });
 // answering the open question moves the screen on to the next one
@@ -430,8 +464,8 @@ def test_the_prompts_are_the_questions_the_run_is_blocked_on(tmp_path, order):
 
 def test_a_replayed_frame_does_not_duplicate_what_it_already_said(tmp_path, order):
     """A reconnect replays from the last id, but a stream re-read from 0
-    (a fresh attach) sends every frame again. The same prompt, login or
-    resource must land on the same entry, not a second one."""
+    (a fresh attach) sends every frame again. The same prompt, login,
+    resource or check must land on the same entry, not a second one."""
     rows = _run_rows(order)
     evs = _events(_frames(_script_emits(), rows + rows), tmp_path)
     out = _node(evs, tmp_path)
@@ -440,6 +474,37 @@ def test_a_replayed_frame_does_not_duplicate_what_it_already_said(tmp_path, orde
     assert [l["component"] for l in m["logins"]] == ["vcontroller", "kvo", "vpb"]
     assert set(m["nodes"]) == {"vpc", "subnet:mgmt", "subnet:ingress", "subnet:egress",
                                "vcontroller", "kvo", "vpb", "workloads", "eks"}
+    # checks were the one list that still grew on a replay: a doctor run's
+    # table doubled, every row twice, on nothing worse than a reconnect
+    assert [c["item"] for c in m["checks"]] == ["aws cli present", "AWS credentials"]
+    assert m["checks"][1]["status"] == "fail" and m["checks"][1]["fix"] == "aws configure"
+
+
+def test_a_check_that_reports_again_updates_its_row(tmp_path):
+    """The same item twice is the same row, and the second report is the one
+    that stands: a check that failed and then passed reads pass."""
+    evs = [{"type": "check", "item": "AWS credentials", "status": "fail",
+            "fix": "aws configure", "id": 1},
+           {"type": "check", "item": "AWS credentials", "status": "pass", "id": 2},
+           {"type": "check", "item": "", "status": "warn", "id": 3},
+           {"type": "check", "item": "", "status": "warn", "id": 4}]
+    m = _node(evs, tmp_path)["model"]
+    assert [c["item"] for c in m["checks"]] == ["AWS credentials", "", ""], m["checks"]
+    assert m["checks"][0]["status"] == "pass"
+    assert m["checks"][0]["fix"] == "aws configure", "the fix the first frame carried stands"
+
+
+def test_a_malformed_phase_list_cannot_become_a_thousand_rows(tmp_path):
+    """The timeline is drawn from `order`, one row per name. A frame that
+    repeated a name, or carried hundreds of them, drew every one: this is a
+    dozen short names in the script and nothing else has to be entertained."""
+    order = " ".join(["stack", "stack", "wait"] + ["p%d" % i for i in range(500)])
+    out = _node([{"type": "phases", "order": order, "id": 1}], tmp_path)
+    got = out["model"]["phaseOrder"]
+    assert out["phaseMax"] <= 100, out["phaseMax"]
+    assert len(got) == out["phaseMax"], len(got)
+    assert got[:3] == ["stack", "wait", "p0"], "deduped, in the order the frame gave"
+    assert len(set(got)) == len(got), "one row per name"
 
 
 def test_a_failed_run_says_so_and_an_unknown_type_changes_nothing(tmp_path, order):
@@ -544,3 +609,277 @@ def test_an_answered_frame_for_a_question_never_asked_changes_nothing(tmp_path):
             ("answered", {"prompt_id": "ghost", "shown": "x"})]
     out = _node(_replayed(tmp_path, rows), tmp_path, REPLAY_HARNESS)
     assert out["prompts"] == [] and out["open"] is None
+
+
+# ------------------------------------------------- the screen, under a DOM
+# The half above is applyEvent, which never touches the DOM. This half is
+# render(), run against a DOM small enough to read: the two pieces of state
+# a redraw carries between frames (the open prompt's input, and the log
+# lines already on the page) are exactly the two the model does not hold,
+# so they cannot be tested from the model at all.
+DOM_HARNESS = r"""
+const fs = require("fs");
+
+/* Elements hold children, a value, a type and a dataset. scrollHeight is ten
+   pixels a line against a fifty-pixel viewport, so "already at the bottom"
+   means in here what it means in a browser. Nothing else is pretended. */
+function El(tag){
+  this.tag=tag; this.dataset={}; this.className=""; this.value=""; this.type="text";
+  this.hidden=false; this.disabled=false; this.focused=false;
+  this.scrollTop=0; this.clientHeight=50; this.kids=[]; this._text=""; this._html="";
+}
+El.prototype.addEventListener=function(t,fn){ (this.on=this.on||{})[t]=fn; };
+El.prototype.focus=function(){this.focused=true;};
+El.prototype.appendChild=function(c){this.kids.push(c);return c;};
+El.prototype.removeChild=function(c){var i=this.kids.indexOf(c);if(i>=0)this.kids.splice(i,1);return c;};
+Object.defineProperty(El.prototype,"textContent",{
+  get:function(){return this._text;},
+  set:function(v){this._text=String(v);this.kids=[];}});
+Object.defineProperty(El.prototype,"innerHTML",{
+  get:function(){return this._html;},
+  set:function(v){this._html=String(v);this.kids=[];}});
+Object.defineProperty(El.prototype,"firstChild",{get:function(){return this.kids[0]||null;}});
+Object.defineProperty(El.prototype,"childNodes",{get:function(){return this.kids;}});
+Object.defineProperty(El.prototype,"scrollHeight",{get:function(){return this.kids.length*10;}});
+
+const els={};
+function $(id){ if(!els[id])els[id]=new El("div"); return els[id]; }
+global.document={getElementById:$, createElement:function(t){return new El(t);}};
+global.localStorage={getItem:function(){return null;},setItem:function(){}};
+let queue=[];
+global.requestAnimationFrame=function(fn){queue.push(fn);return queue.length;};
+function flush(){ const q=queue; queue=[]; q.forEach(function(fn){fn();}); return q.length; }
+
+/* the rest of the browser the file touches: the stream it opens, the answer
+   dialog it puts up, and the one request it sends */
+let stream=null;
+global.EventSource=function(url){ this.url=url; this.readyState=0; this.heard={};
+  stream=this;
+  this.addEventListener=function(t,fn){ this.heard[t]=fn; };
+  this.close=function(){ this.closed=true; }; };
+global.EventSource.CLOSED=2;
+let confirmSays=false; const confirmed=[];
+const sent=[]; let reply={ok:true,status:200};
+global.fetch=function(url,opts){ sent.push({url:url,method:opts&&opts.method}); return Promise.resolve(reply); };
+global.window={confirm:function(msg){ confirmed.push(msg); return confirmSays; }};
+const settle=function(){ return Promise.resolve().then().then().then(); };
+new Function(fs.readFileSync(process.argv[2],"utf8"))();
+const W=global.window.clWatch;
+flush();                                    // the draw init() asked for on load
+const out={};
+
+function frame(ev){ stream.heard[ev.type]({data:JSON.stringify(ev)}); }
+function lines(){ return $("wLog").kids.map(function(k){ return k.textContent; }); }
+
+/* 1. two runs, one prompt id. p1, p2, p4 are per-run counters: every run has
+      a p4, and two runs' p4 are not the same question. attach() is how the
+      page gets to a run: the wizard's Launch calls it, and so does the
+      resume form, which is what makes this a plain afternoon's sequence. */
+W.attach("runA");
+frame({id:1,type:"prompt",prompt_id:"p4",question:"KVO admin password: ",kind:"secret"});
+flush();
+out.runA={question:$("wPromptQ").textContent,type:$("wPromptInput").type,hidden:$("wPrompt").hidden};
+$("wPromptInput").value="Zq7-CANARY-typed-into-run-A";     // and the operator types
+
+W.attach("runB");
+frame({id:1,type:"prompt",prompt_id:"p4",question:"Region [us-east-1]: ",kind:"text",
+       "default":"us-east-1"});
+flush();
+out.runB={question:$("wPromptQ").textContent,type:$("wPromptInput").type,
+          value:$("wPromptInput").value,hidden:$("wPrompt").hidden,
+          hint:$("wPromptHint").textContent};
+
+/* the same run and the same question, redrawn by the next frame to arrive:
+   the box is left alone, which is the whole reason the modal has a key */
+$("wPromptInput").value="us-west-2";
+frame({id:2,type:"log",text:"still going"});
+flush();
+out.sameQuestion={value:$("wPromptInput").value,question:$("wPromptQ").textContent};
+
+/* answered: the modal closes, and takes what was typed with it */
+frame({id:3,type:"answered",prompt_id:"p4",shown:"us-west-2"});
+flush();
+out.closed={hidden:$("wPrompt").hidden,value:$("wPromptInput").value,
+            key:$("wPrompt").dataset.promptId};
+
+/* 2. the log drawer, appended to and not rebuilt */
+const c=W.emptyModel(); c.job="runL"; c.stream="live";
+for(let i=1;i<=3;i++)W.applyEvent(c,{type:"log",text:"line "+i,id:i});
+W.render(c); flush();
+$("wLog").kids.forEach(function(k){ k.fromTheFirstDraw=true; });
+for(let i=4;i<=6;i++)W.applyEvent(c,{type:"log",text:"line "+i,id:i});
+W.render(c); flush();
+out.log={lines:lines(),count:$("wLogCount").textContent,scrollTop:$("wLog").scrollTop,
+         kept:$("wLog").kids.filter(function(k){ return k.fromTheFirstDraw; }).length};
+
+/* a reader scrolled up in the drawer is reading it: the tail is not yanked
+   back under them */
+$("wLog").scrollTop=0;
+W.applyEvent(c,{type:"log",text:"line 7",id:7});
+W.render(c); flush();
+out.scrolledUp={scrollTop:$("wLog").scrollTop,last:lines()[lines().length-1],nodes:lines().length};
+
+/* past LOG_MAX the page keeps the tail, as the model does */
+for(let i=8;i<=W.LOG_MAX+120;i++)W.applyEvent(c,{type:"log",text:"line "+i,id:i});
+W.render(c); flush();
+out.overflow={nodes:$("wLog").kids.length,first:lines()[0],last:lines()[lines().length-1],
+              count:$("wLogCount").textContent,logMax:W.LOG_MAX};
+
+/* another run: the drawer is that run's, not the last one's tail */
+const d=W.emptyModel(); d.job="runM";
+W.applyEvent(d,{type:"log",text:"a fresh run",id:1});
+W.render(d); flush();
+out.newRun={lines:lines()};
+
+/* 3. one draw per frame, and of the newest model */
+const e1=W.emptyModel(); e1.job="jx";
+const e2=W.emptyModel(); e2.job="jy";
+W.render(e1); W.render(e1); W.render(e2);
+out.queued=queue.length;
+flush();
+out.drawn=$("wRunId").textContent;
+W.render(e2);
+out.queuedAgain=queue.length;
+flush();
+
+/* 4. Stop, through the button's own handler on a really attached run */
+(async function(){
+  W.attach("job-77");
+  stream.heard.hello({data:JSON.stringify({type:"hello",stack:"lab",region:"us-east-1",
+                                           dry_run:"false",id:1})});
+  flush();
+  const stop=$("wStop").on.click, btn=$("wStop");
+  out.attached={hidden:btn.hidden,disabled:btn.disabled,run:$("wRunId").textContent};
+
+  stop.call(btn);                          // asked, and the operator says no
+  await settle(); flush();
+  out.stopDeclined={asked:confirmed.length,question:confirmed[0],
+                    sent:sent.length,disabled:btn.disabled};
+
+  confirmSays=true;
+  stop.call(btn);
+  await settle(); flush();
+  out.stopSent={sent:sent.length,url:sent[0]&&sent[0].url,method:sent[0]&&sent[0].method,
+                disabled:btn.disabled,said:$("wConn").textContent};
+
+  // a frame arriving while the run winds down must not wipe what was said
+  stream.heard.log({data:JSON.stringify({type:"log",text:"tearing down",id:2})});
+  flush();
+  out.afterAFrame={said:$("wConn").textContent};
+
+  // a stop the server refused says so, and gives the button back
+  reply={ok:false,status:409};
+  btn.disabled=false;
+  stop.call(btn);
+  await settle(); flush();
+  out.stopRefused={sent:sent.length,disabled:btn.disabled,said:$("wConn").textContent};
+
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+@pytest.fixture(scope="module")
+def dom(tmp_path_factory):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed: running watch.js needs it")
+    harness = tmp_path_factory.mktemp("dom") / "dom.js"
+    harness.write_text(DOM_HARNESS, encoding="utf-8")
+    proc = subprocess.run([node, str(harness), WATCH], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_a_second_run_refills_the_modal_instead_of_keeping_the_last_runs(dom):
+    """The defect, reproduced and then fixed. Prompt ids are per-run counters,
+    so run A's p4 and run B's p4 are two different questions with one name.
+    The modal decided whether to refill on the bare id, and attach() reset the
+    model but no DOM, so attaching to run B while run A's p4 was on screen
+    left run A's question there, run A's password input, and run A's operator's
+    unsent secret in the box - and Send posted that secret as the answer to
+    run B's question, which was a text question, so the `answered` frame
+    carried it in the clear to every attached page and every later replay.
+    The key is the job and the id now, so run B's p4 is a different key."""
+    assert dom["runA"] == {"question": "KVO admin password: ", "type": "password", "hidden": False}
+    b = dom["runB"]
+    assert b["question"] == "Region [us-east-1]: ", "run B's question, not run A's"
+    assert b["type"] == "text", "run B's kind, not run A's password field"
+    assert b["value"] == "", "nothing run A typed is still in the box"
+    assert b["hint"] == "Enter alone takes the default: us-east-1"
+    assert b["hidden"] is False
+
+
+def test_a_redraw_of_the_same_question_does_not_touch_what_is_being_typed(dom):
+    """The other half of the same key: while the question has not changed, a
+    redraw leaves the box alone. The operator is typing into it, and frames
+    arrive the whole time."""
+    assert dom["sameQuestion"] == {"value": "us-west-2", "question": "Region [us-east-1]: "}
+
+
+def test_closing_the_modal_empties_the_box(dom):
+    """Nothing typed outlives the question it was typed for, even before
+    another run attaches."""
+    assert dom["closed"] == {"hidden": True, "value": "", "key": ""}
+
+
+def test_the_log_drawer_appends_only_what_is_new(dom):
+    """It used to rebuild all 400 lines on every frame, which threw away any
+    selection the operator had made in it while output was still streaming.
+    The nodes from the first draw are still the same nodes after the second."""
+    assert dom["log"]["lines"] == ["line %d" % i for i in range(1, 7)]
+    assert dom["log"]["kept"] == 3, "the first three nodes were not rebuilt"
+    assert dom["log"]["count"] == "6 lines"
+
+
+def test_the_log_drawer_follows_the_tail_unless_the_reader_scrolled_up(dom):
+    """There was no scrollTop anywhere: the drawer never followed the run. It
+    does now, for a reader already at the bottom, and only for them."""
+    assert dom["log"]["scrollTop"] == 60, "six lines, ten pixels each, pinned to the tail"
+    assert dom["scrolledUp"]["scrollTop"] == 0, "a reader scrolled up is left there"
+    assert dom["scrolledUp"]["last"] == "line 7", "and still gets the line"
+    assert dom["scrolledUp"]["nodes"] == 7
+
+
+def test_the_log_drawer_keeps_the_tail_and_starts_over_on_another_run(dom):
+    o = dom["overflow"]
+    assert o["nodes"] == o["logMax"] == 400, o
+    assert o["last"] == "line 520" and o["first"] == "line 121", o
+    assert o["count"] == "520 lines", "the badge counts every line the run printed"
+    assert dom["newRun"]["lines"] == ["a fresh run"], "a new model is a new drawer"
+
+
+def test_the_frames_of_one_animation_frame_become_one_draw(dom):
+    """A run that prints two thousand lines used to redraw all nine panels two
+    thousand times, when the browser can show one draw a frame. The renders
+    collapse into one, and it draws the newest model."""
+    assert dom["queued"] == 1, "three renders, one frame asked for"
+    assert dom["drawn"] == "job jy", "and it drew the last model, not the first"
+    assert dom["queuedAgain"] == 1, "the next render asks for the next frame"
+
+
+def test_stop_asks_before_it_ends_a_run(dom):
+    """/stop TERMs the run's whole process group and KILLs what is left after
+    three seconds: a misclick ended a deploy mid-phase and left half a stack
+    in the account, with no dialog and nothing said. It asks now, naming the
+    stack, and a declined dialog sends nothing at all. api.teardown makes the
+    operator type the stack name back for the same reason."""
+    assert dom["attached"]["run"] == "job job-77"
+    d = dom["stopDeclined"]
+    assert d["asked"] == 1 and d["sent"] == 0, "declined: no request left the page"
+    assert "lab" in d["question"], "the dialog names the stack: %r" % d["question"]
+    assert d["disabled"] is False, "and the button is still there to press"
+
+
+def test_stop_says_what_came_of_it(dom):
+    """A stop the server refused used to look exactly like one that worked:
+    no .then, no .catch, nothing on the screen either way."""
+    s = dom["stopSent"]
+    assert s["sent"] == 1 and s["url"] == "/stop/job-77" and s["method"] == "POST"
+    assert s["disabled"] is True, "the button is spent while the run winds down"
+    assert "Stop sent to stack lab" in s["said"], s["said"]
+    assert dom["afterAFrame"]["said"] == s["said"], \
+        "the frames the winding-down run keeps sending do not wipe the sentence"
+    r = dom["stopRefused"]
+    assert "409" in r["said"] and "still going" in r["said"], r["said"]
+    assert r["disabled"] is False, "a refused stop gives the button back"

@@ -18,9 +18,12 @@
                             No DOM, no network, no globals, so tests/test_watch_model.py
                             can run it under node.
      render(model)          all of the DOM. Called after every frame, it
-                            redraws from the model alone and holds nothing of
-                            its own, except the one thing a redraw must not
-                            destroy: the open prompt's input.
+                            draws from the model alone and holds nothing of
+                            its own, except the two things a redraw must not
+                            destroy: the open prompt's input, and the log
+                            lines already on the page. It coalesces: however
+                            many frames arrive, one draw per animation frame,
+                            of the newest model.
 
    READS below is the contract with deploy-stack.sh: the fields this model
    reads out of each event type. test_watch_model.py builds the frames the
@@ -65,6 +68,10 @@ var PHASE_NODE={wait:"vcontroller",key:"vcontroller",bootstrap:"vpb",vpb:"vpb",p
   license:"kvo",adopt:"kvo",mirror:"kvo",sensors:"workloads",eks:"eks"};
 
 var LOG_MAX=400;         // the drawer keeps the tail, as the instrument does
+// A phase list is a dozen short names. Anything longer than this is a frame
+// that went wrong, and drawing thousands of rows from it would take the page
+// down with it: the cap is what stops one bad `order` at a screenful.
+var PHASE_MAX=100;
 
 function txt(v){return v===undefined||v===null?"":String(v);}
 
@@ -73,6 +80,10 @@ function emptyModel(){
     job:"",              // the job id this model follows
     stream:"idle",       // idle | live | reconnecting | closed
     note:"",             // why the stream is not live, in words for the page
+    // what this page last DID to the run, in words: the note is the stream's
+    // and is cleared by the next frame, and a stop the operator asked for
+    // must outlive the frames that keep arriving while the run winds down
+    action:"",
     events:0,            // frames applied
     lastId:0,            // the highest console id seen (EventSource resumes from it)
     ended:false,         // a terminal frame arrived: done, or the console's error
@@ -124,7 +135,16 @@ function applyEvent(model,ev){
     return model;
   }
   if(t==="phases"){
-    var order=txt(ev.order).split(/\s+/).filter(function(p){return !!p;});
+    // one row per phase, in the script's order: a name repeated in the frame
+    // is the same row, and past PHASE_MAX the rest is dropped rather than
+    // drawn. The script writes its PHASE_ORDER, which is neither, so this
+    // only ever fires on a frame that is already wrong.
+    var order=[],seen={};
+    txt(ev.order).split(/\s+/).forEach(function(p){
+      if(!p||order.length>=PHASE_MAX)return;
+      if(Object.prototype.hasOwnProperty.call(seen,p))return;
+      seen[p]=true;order.push(p);
+    });
     if(order.length)model.phaseOrder=order;
     return model;
   }
@@ -147,7 +167,14 @@ function applyEvent(model,ev){
     return model;
   }
   if(t==="check"){
-    model.checks.push(copy({},ev,READS.check));
+    // a check that reports twice (a replayed buffer, a doctor run that
+    // re-checks) updates its row, as a login and a resource do; the item is
+    // what names it. A check with no item has nothing to be the same as, so
+    // it takes a row of its own.
+    var item=txt(ev.item);
+    var c=item?findBy(model.checks,"item",item):null;
+    if(!c){c={item:item};model.checks.push(c);}
+    copy(c,ev,READS.check);
     return model;
   }
   if(t==="login"){
@@ -331,7 +358,7 @@ function renderHead(model){
   $("wChip").innerHTML=chip.join(" · ");
   $("wChip").hidden=!chip.length;
   $("wRunId").textContent=model.job?"job "+model.job:"";
-  $("wConn").textContent=model.note;
+  $("wConn").textContent=[model.note,model.action].filter(function(s){return !!s;}).join(" · ");
   $("wStop").hidden=!model.job||model.ended;
 }
 
@@ -443,9 +470,42 @@ function renderBanner(model){
     lines.map(function(l){return "<p>"+esc(l)+"</p>";}).join("");
 }
 
+/* The raw drawer, appended to and not rebuilt. Redrawing all 400 lines on
+   every frame threw away the operator's selection in it while output was
+   still streaming, and did it once per line of a run that prints thousands.
+   Only the lines that arrived since the last draw are appended; the front is
+   dropped over LOG_MAX, the way the model drops its own.
+
+   logShown is how many of the run's lines are on the page (model.logCount
+   counts every line, including the ones the model has since dropped), and
+   logFor is the model those nodes belong to: attach() makes a new model, so
+   a different object is a different run and the drawer starts over. */
+var logShown=0,logFor=null;
+var LOG_PIN=4;           // px of slack that still counts as "at the bottom"
+
 function renderLog(model){
   $("wLogCount").textContent=model.logCount?model.logCount+(model.logCount===1?" line":" lines"):"";
-  $("wLog").innerHTML=model.logs.map(function(l){return '<div class="cln">'+esc(l)+"</div>";}).join("");
+  var box=$("wLog");
+  var fresh=logFor!==model||model.logCount<logShown;
+  if(fresh){
+    box.innerHTML="";logFor=model;
+    logShown=model.logCount-model.logs.length;   // what the model no longer holds
+  }
+  var added=model.logCount-logShown;
+  if(added>model.logs.length)added=model.logs.length;  // the front was dropped
+  if(added<=0)return;
+  // a reader scrolled up in the drawer is reading it: only a reader already
+  // at the tail is carried along by the new lines
+  var pin=fresh||(box.scrollHeight-box.scrollTop-box.clientHeight)<LOG_PIN;
+  for(var i=model.logs.length-added;i<model.logs.length;i++){
+    var d=document.createElement("div");
+    d.className="cln";
+    d.textContent=model.logs[i];      // text, so nothing in a log line is markup
+    box.appendChild(d);
+  }
+  logShown=model.logCount;
+  while(box.childNodes.length>LOG_MAX)box.removeChild(box.firstChild);
+  if(pin)box.scrollTop=box.scrollHeight;
 }
 
 /* The modal is the one piece of DOM a redraw must not rebuild: the operator
@@ -455,13 +515,29 @@ function renderLog(model){
    answer and there is no cancel - which is why it must never open on a
    question that was already answered. It cannot, now: the `answered` frames
    replay with everything else, so a resumed page opens the modal only on a
-   question the stream has no answer for. */
+   question the stream has no answer for.
+
+   What is filled and what is left alone turns on one key, and that key is the
+   JOB and the prompt id, never the id alone. Prompt ids are per-run counters
+   (p1, p2, ...), so every run has a p4. Keyed on the bare id, attaching to a
+   second run left the key from the first one standing: run B's p4 was read
+   as the question already on screen, and the modal kept showing run A's
+   question, run A's input type and whatever run A's operator had typed into
+   it, while Send posted that value as the answer to run B's. A secret
+   left in the box that way reached the stream verbatim, because run B's p4
+   was a text question and the `answered` frame for a text question carries
+   what was sent. The box is also emptied whenever the modal closes, so
+   nothing typed outlives the question it was typed for. */
 function renderModal(model){
-  var host=$("wPrompt"),p=openPrompt(model);
-  if(!p||model.ended){host.hidden=true;return;}
-  var input=$("wPromptInput");
-  if(host.dataset.promptId!==p.prompt_id){
-    host.dataset.promptId=p.prompt_id;
+  var host=$("wPrompt"),p=openPrompt(model),input=$("wPromptInput");
+  if(!p||model.ended){
+    host.hidden=true;
+    if(host.dataset.promptId){host.dataset.promptId="";input.value="";}
+    return;
+  }
+  var key=model.job+"/"+p.prompt_id;
+  if(host.dataset.promptId!==key){
+    host.dataset.promptId=key;
     $("wPromptQ").textContent=p.question||"The engine asks";
     $("wPromptHint").textContent=p.def?"Enter alone takes the default: "+p.def:"";
     input.type=p.kind==="secret"?"password":"text";
@@ -477,9 +553,37 @@ function renderModal(model){
   $("wPromptSend").disabled=!!p.sending;
 }
 
-function render(model){
+function draw(model){
   renderHead(model);renderPhases(model);renderTopo(model);renderLogins(model);
   renderChecks(model);renderQuestions(model);renderBanner(model);renderLog(model);renderModal(model);
+}
+
+/* One draw per animation frame, whatever the stream does.
+
+   Every frame used to redraw all nine panels: thirteen innerHTML assignments,
+   and a run that prints two thousand lines did that two thousand times. The
+   browser cannot show more than one draw per frame anyway, so the work went
+   nowhere, and while it was going nowhere it destroyed any selection the
+   operator had made in the panels it rebuilt. render() now records the model
+   and asks for a frame; the frames that arrive before it fires collapse into
+   that one draw, always of the newest model.
+
+   requestAnimationFrame is the right clock (a hidden tab stops asking for
+   frames, and a hidden tab has nothing to draw), and the timeout is for
+   where there is none: the node harness, chiefly. */
+var frameQueued=false,frameModel=null;
+
+function render(model){
+  frameModel=model;
+  if(frameQueued)return;
+  frameQueued=true;
+  var run=function(){
+    frameQueued=false;
+    var m=frameModel;frameModel=null;
+    if(m)draw(m);
+  };
+  if(typeof requestAnimationFrame==="function")requestAnimationFrame(run);
+  else setTimeout(run,16);
 }
 
 /* ---------------------------------------------------------- the stream */
@@ -532,6 +636,9 @@ function attach(jobId){
   var id=txt(jobId).trim();
   detach();
   model=emptyModel();
+  // a Stop pressed on the last run left its button disabled; this run has
+  // its own, and its own question, whatever the last one's was called
+  $("wStop").disabled=false;
   if(!JOB_RE.test(id)){
     model.note="A run id is letters, digits, - or _.";
     render(model);
@@ -579,8 +686,36 @@ function send(){
 
 function init(){
   $("wResume").addEventListener("submit",function(e){e.preventDefault();attach($("wJob").value);});
+  /* Stop is not a small button. /stop TERMs the run's whole process group
+     and KILLs what is left after three seconds, so one stray click ends a
+     deploy where it stands and leaves half a stack in the account: nothing
+     is rolled back. It asks first, naming what it is about to stop (the
+     teardown route makes the operator type the stack name back for the same
+     reason), then says what came of it, because a stop that the server
+     refused used to look exactly like one that worked. */
   $("wStop").addEventListener("click",function(){
-    if(model.job)fetch("/stop/"+encodeURIComponent(model.job),{method:"POST"});
+    if(!model.job)return;
+    var btn=this,job=model.job;
+    var what=model.hello.stack?("stack "+model.hello.stack):("run "+job);
+    if(!window.confirm("Stop "+what+"? The engine is signalled where it stands, and whatever it has already created in AWS stays there."))return;
+    btn.disabled=true;
+    // into the model's own action, not its note: the note is what the stream
+    // is doing, and onFrame clears it on the very next frame the winding-down
+    // run sends, which is where this sentence used to disappear
+    var say=function(what){
+      if(model.job!==job)return;    // the page has moved on to another run
+      model.action=what;render(model);
+    };
+    fetch("/stop/"+encodeURIComponent(job),{method:"POST"})
+     .then(function(r){
+       if(r.ok){say("Stop sent to "+what+". The run ends after the step it is in; watch for its last event.");return;}
+       btn.disabled=false;
+       say("The console refused the stop (HTTP "+r.status+"). The run is still going.");
+     })
+     .catch(function(){
+       btn.disabled=false;
+       say("Could not reach the console server to stop the run. It is still going.");
+     });
   });
   $("wPromptForm").addEventListener("submit",function(e){e.preventDefault();send();});
   var last="";
@@ -592,7 +727,7 @@ function init(){
 if(typeof window!=="undefined")window.clWatch={
   applyEvent:applyEvent,noteAnswer:noteAnswer,emptyModel:emptyModel,
   openPrompt:openPrompt,nodeState:nodeState,verdict:verdict,
-  READS:READS,PHASE_NODE:PHASE_NODE,LOG_MAX:LOG_MAX,
+  READS:READS,PHASE_NODE:PHASE_NODE,LOG_MAX:LOG_MAX,PHASE_MAX:PHASE_MAX,
   render:render,attach:attach,
   model:function(){return model;}
 };

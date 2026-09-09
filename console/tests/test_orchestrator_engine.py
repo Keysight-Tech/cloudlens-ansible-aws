@@ -29,10 +29,15 @@ PARSE = r'''#!/usr/bin/env bash
 while [[ $# -gt 0 ]]; do case $1 in --events) ev=$2; shift 2;; --prompt-pipe) pipe=$2; shift 2;; *) shift;; esac; done
 '''
 
-# hello, a prompt, block on the FIFO for the answer, echo it back in the done
+# hello, a prompt, block on the FIFO for the answer, echo it back in the done.
+# A TEXT question, deliberately: the tests below read that echo to prove the
+# engine got the exact bytes that were sent, and the answer to a SECRET
+# question is registered as a redaction, so its echo comes back blanked (see
+# test_a_secret_answer_is_blanked_out_of_the_engines_own_output, which is
+# where that belongs). FAKE_SECRET_PROMPT is the secret one.
 FAKE_PROMPT = PARSE + r'''
 echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
-echo '{"seq":2,"ts":"t","type":"prompt","id":"p1","question":"Code?","kind":"secret"}' >> "$ev"
+echo '{"seq":2,"ts":"t","type":"prompt","id":"p1","question":"Code?","kind":"text"}' >> "$ev"
 IFS= read -r ans < "$pipe"
 echo "{\"seq\":3,\"ts\":\"t\",\"type\":\"done\",\"status\":\"ok\",\"answer\":\"$ans\"}" >> "$ev"
 '''
@@ -44,6 +49,18 @@ FAKE_SECRET_PROMPT = PARSE + r'''
 echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
 echo '{"seq":2,"ts":"t","type":"prompt","id":"p1","question":"KVO admin password: ","kind":"secret"}' >> "$ev"
 IFS= read -r ans < "$pipe"
+echo "{\"seq\":3,\"ts\":\"t\",\"type\":\"done\",\"status\":\"ok\",\"reason\":\"read ${#ans} characters\"}" >> "$ev"
+'''
+
+# A secret question, answered, and then the script prints the answer straight
+# back on stdout. Not a contrivance: MIRROR_SECRET_KEY and SENSOR_PROJECT_KEY
+# reach scripts/kvo_aws_mirror.py on its argv, and an argparse usage error or
+# a traceback there puts the whole argv on stdout, which the console reads.
+FAKE_SECRET_THEN_ECHO = PARSE + r'''
+echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
+echo '{"seq":2,"ts":"t","type":"prompt","id":"p1","question":"Mirror secret key: ","kind":"secret"}' >> "$ev"
+IFS= read -r ans < "$pipe"
+echo "usage: kvo_aws_mirror.py [-h] --secret-key ${ans}: error: unrecognized arguments"
 echo "{\"seq\":3,\"ts\":\"t\",\"type\":\"done\",\"status\":\"ok\",\"reason\":\"read ${#ans} characters\"}" >> "$ev"
 '''
 
@@ -275,6 +292,48 @@ def test_a_secret_answer_reaches_the_engine_and_never_the_stream(tmp_path):
     for leak in (typed, "CANARY"):
         assert leak not in blob, leak
     assert job.pending_prompt is None and job.pending_kind is None
+
+
+def test_a_secret_answer_is_blanked_out_of_the_engines_own_output(tmp_path):
+    """The launch secrets are registered with the job (api.run does it), so a
+    line that prints one reaches the stream as [redacted]. A secret the
+    operator types into the Watch screen's modal instead was not: it went to
+    the FIFO and was never registered, so the engine printing it back put it
+    in the buffer in the clear, and from there into every attached page and
+    every later replay. Answering registers it now, before the write, and
+    this run proves it end to end: the script echoes the answer on stdout the
+    moment it reads it, and the log frame for that line carries the marker
+    and not the value."""
+    typed = "Zq7-CANARY-typed-into-the-modal"
+    job = O.Job("j-echo", "engine-deploy", {})
+    t = _start(job, [_script(tmp_path, FAKE_SECRET_THEN_ECHO, "echo.sh")])
+    assert _wait_for(lambda: job.pending_prompt == "p1"), _types(job)
+    job.answer("p1", typed)
+    t.join(5)
+    assert not t.is_alive(), "run_engine did not return after the done event"
+
+    assert typed in job.redactions, "the answer to a secret question is a redaction"
+    logs = [e["text"] for e in job.buffer if e["type"] == E.LOG]
+    echoed = [l for l in logs if "kvo_aws_mirror.py" in l]
+    assert echoed, "the script echoed the answer: %r" % logs
+    assert O.REDACTED in echoed[0], echoed[0]
+    assert _last(job)["reason"] == "read %d characters" % len(typed), \
+        "the engine still got the real answer, not the marker"
+    blob = json.dumps(job.buffer)
+    for leak in (typed, "CANARY"):
+        assert leak not in blob, leak
+
+
+def test_an_empty_answer_registers_nothing(tmp_path):
+    """An empty answer is the script's own contract for "take the default".
+    Registering it would be registering the empty string, which redact()
+    already skips; registering nothing is what keeps the list honest."""
+    job = O.Job("j-empty", "engine-deploy", {})
+    t = _start(job, [_script(tmp_path, FAKE_SECRET_PROMPT, "secret2.sh")])
+    assert _wait_for(lambda: job.pending_prompt == "p1"), _types(job)
+    job.answer("p1", "")
+    t.join(5)
+    assert job.redactions == []
 
 
 def test_prompt_events_keep_their_script_seq(tmp_path):
