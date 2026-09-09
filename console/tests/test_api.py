@@ -851,6 +851,90 @@ def test_answer_route_maps_onto_job_answer():
     assert j.calls == [("p1", "ABCD"), ("p9", "x")]
 
 
+def _asked(tmp_path, job_id, kind):
+    """A job with a real question pending and a real FIFO whose read end is
+    already open, so job.answer takes the path a run takes: the line reaches
+    a reader, and only a write that got there emits anything. Returns the job
+    and that read fd. O_RDONLY|O_NONBLOCK opens a FIFO with no writer on it
+    straight away, so the answer's own open cannot lose a race with a reader
+    thread and make this test a flake."""
+    job = O.Job(job_id, "stack", {})
+    job.pipe_path = str(tmp_path / (job_id + ".fifo"))
+    os.mkfifo(job.pipe_path)
+    job.emit(E.from_script({"seq": 1, "ts": "t", "type": "prompt", "id": "p1",
+                            "question": "KVO admin password: ", "kind": kind}))
+    return job, os.open(job.pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+
+def _strings(node, out=None):
+    """Every string anywhere in a structure, at any depth."""
+    out = [] if out is None else out
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out.append(str(k))
+            _strings(v, out)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _strings(v, out)
+    elif isinstance(node, str):
+        out.append(node)
+    return out
+
+
+def test_an_answered_question_says_so_in_the_stream(tmp_path):
+    """The ok this route returns is not the record: the record is the frame
+    job.answer emits, because that is the only thing a page attaching to the
+    run later can read. Without it every replayed question looked unanswered
+    and the Watch screen re-opened its modal on one the engine had moved past."""
+    job, rfd = _asked(tmp_path, "jans", "text")
+    try:
+        assert api.answer(job, {"prompt_id": "p1", "text": "lab-2"}) == {"ok": True}
+        assert os.read(rfd, 4096) == b"lab-2\n", "the engine gets the line it is blocked on"
+    finally:
+        os.close(rfd)
+    ev = job.buffer[-1]
+    assert ev["type"] == E.ANSWERED == "answered"
+    assert ev["prompt_id"] == "p1" and ev["shown"] == "lab-2"
+    assert ev["id"] > job.buffer[0]["id"], "emit stamped it, in buffer order, after the question"
+
+
+def test_the_value_of_a_secret_answer_is_in_no_frame_of_the_stream(tmp_path):
+    """The engine gets what was typed. The stream gets asterisks, and the
+    typed value appears nowhere in it: not on the answered frame, not on any
+    other, not in the bytes the browser would be sent."""
+    typed = "Zq7-CANARY-never-in-the-stream"
+    job, rfd = _asked(tmp_path, "jsec", "secret")
+    try:
+        assert api.answer(job, {"prompt_id": "p1", "text": typed}) == {"ok": True}
+        assert os.read(rfd, 4096) == (typed + "\n").encode(), "the engine gets the real value"
+    finally:
+        os.close(rfd)
+    ev = job.buffer[-1]
+    assert ev["type"] == E.ANSWERED and ev["prompt_id"] == "p1"
+    assert ev["shown"] == O.MASKED == "********"
+    for text in _strings(job.buffer):
+        assert typed not in text, text
+    assert typed not in "".join(E.to_sse(e) for e in job.buffer)
+
+
+def test_a_refused_answer_puts_nothing_in_the_stream(tmp_path):
+    """A 409 is an answer that never reached the engine, so the question is
+    still open - and the stream has to keep saying so, or a reload would show
+    it settled by an answer nothing took."""
+    job, rfd = _asked(tmp_path, "jref", "text")
+    before = len(job.buffer)
+    try:
+        r = api.answer(job, {"prompt_id": "p9", "text": "x"})
+        assert r["http"] == 409 and r["error"].startswith("The prompt waiting is p1")
+        # no writer ever opened the pipe, so the read end is at end of file:
+        # nothing reached the engine either
+        assert os.read(rfd, 4096) == b""
+    finally:
+        os.close(rfd)
+    assert len(job.buffer) == before, "no frame: the question is exactly as open as it was"
+    assert job.pending_prompt == "p1"
+
+
 # -------------------------------------------------------------- licences
 class FakeKL(object):
     """kvo_license.py's surface as the API uses it, recording every call."""

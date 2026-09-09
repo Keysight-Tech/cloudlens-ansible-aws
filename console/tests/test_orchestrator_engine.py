@@ -37,6 +37,16 @@ IFS= read -r ans < "$pipe"
 echo "{\"seq\":3,\"ts\":\"t\",\"type\":\"done\",\"status\":\"ok\",\"answer\":\"$ans\"}" >> "$ev"
 '''
 
+# A secret question, answered, then a clean finish. The done reports the
+# LENGTH of what it read, never the value: the check that the engine got the
+# real answer must not itself put that answer in the stream.
+FAKE_SECRET_PROMPT = PARSE + r'''
+echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
+echo '{"seq":2,"ts":"t","type":"prompt","id":"p1","question":"KVO admin password: ","kind":"secret"}' >> "$ev"
+IFS= read -r ans < "$pipe"
+echo "{\"seq\":3,\"ts\":\"t\",\"type\":\"done\",\"status\":\"ok\",\"reason\":\"read ${#ans} characters\"}" >> "$ev"
+'''
+
 # hello, then exit with the given code and no done event
 FAKE_EXIT = PARSE + r'''
 echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
@@ -231,6 +241,40 @@ def test_engine_streams_events_and_answers_prompts(tmp_path):
     assert _last(job)["status"] == "ok", "the script's own done, not a synthesized one"
     assert job.pending_prompt is None
     assert job.done and not job.running()
+
+
+def test_a_secret_answer_reaches_the_engine_and_never_the_stream(tmp_path):
+    """End to end on one run: the script asks a secret question, the answer
+    goes down the FIFO, the script finishes. What the buffer keeps of it is
+    an `answered` frame with asterisks - the thing that lets a page attaching
+    later see the question as settled instead of re-opening its modal on it.
+    The engine really did get the value: its done reports how many characters
+    it read, which is proof without being the value.
+
+    The frame's position is not asserted. It is emitted the moment the write
+    returns and the script's done follows within the tail's next 250ms pass,
+    so which of the two lands first is a race - and neither order is wrong."""
+    typed = "Zq7-CANARY-never-in-the-stream"
+    job = O.Job("j-secret", "stack", {})
+    t = _start(job, [_script(tmp_path, FAKE_SECRET_PROMPT, "secret.sh")])
+    assert _wait_for(lambda: job.pending_prompt == "p1"), _types(job)
+    assert job.pending_kind == "secret", "the kind rides with the pending prompt"
+    job.answer("p1", typed)
+    t.join(5)
+    assert not t.is_alive(), "run_engine did not return after the done event"
+
+    types = _types(job)
+    assert types[:2] == ["hello", "prompt"] and types[-1] == "done", types
+    assert types.count(E.ANSWERED) == 1, types
+    ans = [e for e in job.buffer if e["type"] == E.ANSWERED][0]
+    assert ans["prompt_id"] == "p1" and ans["shown"] == O.MASKED == "********"
+
+    assert _last(job)["reason"] == "read %d characters" % len(typed), \
+        "the engine read the real answer, not the mask"
+    blob = json.dumps(job.buffer)
+    for leak in (typed, "CANARY"):
+        assert leak not in blob, leak
+    assert job.pending_prompt is None and job.pending_kind is None
 
 
 def test_prompt_events_keep_their_script_seq(tmp_path):

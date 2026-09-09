@@ -33,6 +33,10 @@ STOP_GRACE_SECS = 3.0   # TERM to the process group, then KILL after this long
 ANSWER_WAIT_SECS = 10.0  # how long answer() waits for the script to open the FIFO
 COMPLETED = ("ok", "dry-run")  # the script's done statuses that mean the run finished
 REDACTED = "[redacted]"
+# what an `answered` frame shows for a secret. Eight asterisks, the same mask
+# web/watch.js puts on the card the moment it sends one, so the stream's word
+# and the page's agree and a replay does not change what the operator saw.
+MASKED = "********"
 # scripts/kvo_license.py prints `code[:14]...` per activation code, so a
 # registered string longer than this is redacted by its first 14 characters
 # as well as whole
@@ -50,6 +54,7 @@ class Job:
         self.done = False
         self.stopped = False
         self.pending_prompt = None  # the script's id of the prompt waiting for an answer
+        self.pending_kind = None    # that prompt's kind: "secret" answers are never shown
         self.events_path = None     # the --events file run_engine gave the script
         self.pipe_path = None       # the --prompt-pipe FIFO run_engine created
         self._proc = None
@@ -80,8 +85,11 @@ class Job:
             if ev["type"] == E.PROMPT:
                 # the script's own id (from_script filed it as prompt_id):
                 # what answer() pairs the reply with, so a reply meant for an
-                # earlier question after a reconnect cannot land on this one
+                # earlier question after a reconnect cannot land on this one.
+                # The kind rides along because answer() has to know, at the
+                # moment it succeeds, whether what it just wrote may be shown
                 self.pending_prompt = ev.get("prompt_id")
+                self.pending_kind = ev.get("kind")
             if ev["type"] in (E.DONE, E.ERROR):
                 self.done = True
             self._cond.notify_all()
@@ -217,7 +225,19 @@ class Job:
         prompt and reading the pipe, and the window between those two is
         real (ENXIO, no reader yet) even while it is alive. The write itself
         blocks: O_NONBLOCK is cleared after the open, so a long answer waits
-        for the reader instead of failing part-way with EAGAIN."""
+        for the reader instead of failing part-way with EAGAIN.
+
+        A write that succeeded emits an `answered` frame. Nothing else in the
+        stream ever said a question had been settled, so a page attaching to
+        a run that had already answered some replayed them as still waiting,
+        opened its modal on the newest one and could only be refused by the
+        checks above. The frame carries the prompt's id and what may be shown
+        for it: asterisks when the script asked for a secret, otherwise the
+        text through redact(). The value the operator typed for a secret goes
+        to the FIFO and nowhere else - not this buffer, not the SSE stream,
+        not the log. It is emitted AFTER the write, never before: an answer
+        the engine never took is not an answer, and emit() takes the same
+        lock, so it happens outside the block that releases the claim."""
         with self._lock:
             if self.pending_prompt is None:
                 raise ValueError("No prompt is waiting for an answer.")
@@ -231,6 +251,10 @@ class Job:
                 raise ValueError("Prompt {} is already being answered.".format(prompt_id))
             self._answering = prompt_id
             pipe = self.pipe_path
+            # read while the claim is taken: by the time the write returns the
+            # script may have asked the next question, and pending_kind would
+            # then be that one's
+            secret = self.pending_kind == "secret"
         try:
             self._write_answer(pipe, text)
         except BaseException:
@@ -243,6 +267,8 @@ class Job:
                 self._answering = None
             if self.pending_prompt == prompt_id:
                 self.pending_prompt = None
+                self.pending_kind = None
+        self.emit(E.answered(prompt_id, MASKED if secret else self.redact(text)))
 
     def _write_answer(self, pipe, text):
         deadline = time.monotonic() + ANSWER_WAIT_SECS
@@ -505,6 +531,7 @@ def run_engine(job, cmd, cwd=None, env=None, wired=True):
         job._group_open = False
         with job._lock:
             job.pending_prompt = None
+            job.pending_kind = None
         if work is not None:
             shutil.rmtree(work, ignore_errors=True)
     return rc

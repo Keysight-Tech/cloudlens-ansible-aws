@@ -42,8 +42,10 @@ CONSOLE_ONLY = {
     "hello": {"account", "arn"},      # the console's own hello, before the engine starts
     "done": {"summary"},              # the console's done; the script's says status
 }
-# types the console alone produces: no script emit call to compare them with
-CONSOLE_TYPES = {"log", "error"}
+# types the console alone produces: no script emit call to compare them with.
+# `answered` is one of them - the console mints it where it writes an answer
+# to the FIFO, and its contract is with events.py, held below.
+CONSOLE_TYPES = {"log", "error", "answered"}
 
 
 def _read(path):
@@ -160,6 +162,34 @@ def test_the_model_knows_every_resource_kind_and_every_phase_the_script_has():
     order = set(_phase_order())
     assert _js_object_keys("PHASE_NODE") <= order, "a phase nothing runs: %s" % sorted(
         _js_object_keys("PHASE_NODE") - order)
+
+
+def test_the_answered_frame_carries_exactly_what_the_model_reads():
+    """`answered` is the console's own frame, not the script's: it is what
+    says a question was settled, which nothing in the stream said before.
+    Its fields and watch.js's account of them are one set, so a field added
+    on one side and not the other fails here. It stays out of SCRIPT_TYPES,
+    the set of types deploy-stack.sh writes: an `answered` line appearing on
+    the events file is not the console's own record of an answer, and is
+    read as the raw log line it is."""
+    ev = E.answered("p1", "********")
+    assert ev["type"] == E.ANSWERED == "answered"
+    assert set(ev) - {"type"} == _reads()["answered"] == {"prompt_id", "shown"}
+    assert E.ANSWERED not in E.SCRIPT_TYPES
+    assert E.from_script({"seq": 4, "ts": TS, "type": "answered",
+                          "prompt_id": "p1", "shown": "x"})["type"] == E.LOG
+
+
+def test_the_answered_frame_is_a_type_the_screen_listens_for():
+    """A named SSE event with no addEventListener is never delivered, so
+    watch.js's TYPES is what carries this frame to the page at all: without
+    it the browser would be sent every answer and hear none of them."""
+    m = re.search(r"var TYPES=\[([^\]]*)\];", _read(WATCH))
+    assert m, "watch.js declares var TYPES=[...];"
+    types = set(re.findall(r'"([^"]+)"', m.group(1)))
+    assert "answered" in types, sorted(types)
+    assert E.SCRIPT_TYPES <= types, "a script type the screen never hears: %s" % sorted(
+        E.SCRIPT_TYPES - types)
 
 
 def test_the_phases_event_is_a_type_the_console_relays():
@@ -284,12 +314,31 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
-def _node(evs, tmp_path):
+# The same model, read without answering anything: what a page that has just
+# attached to a run holds, which is the whole point of the `answered` frame.
+REPLAY_HARNESS = r"""
+const fs = require("fs");
+global.window = {};
+new Function(fs.readFileSync(process.argv[2], "utf8"))();
+const W = global.window.clWatch;
+let m = W.emptyModel();
+JSON.parse(fs.readFileSync(process.argv[3], "utf8")).forEach(function(ev){ W.applyEvent(m, ev); });
+const open = W.openPrompt(m);
+process.stdout.write(JSON.stringify({
+  // renderModal opens on exactly this and nothing else, so a null here is
+  // "no modal" as surely as reading the DOM would be
+  open: open ? open.prompt_id : null,
+  prompts: m.prompts.map(function(p){ return {id: p.prompt_id, answer: p.answer, kind: p.kind}; })
+}));
+"""
+
+
+def _node(evs, tmp_path, harness_js=None):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed: running watch.js needs it")
     harness = tmp_path / "harness.js"
-    harness.write_text(HARNESS, encoding="utf-8")
+    harness.write_text(harness_js or HARNESS, encoding="utf-8")
     frames = tmp_path / "frames.json"
     frames.write_text(json.dumps(evs), encoding="utf-8")
     proc = subprocess.run([node, str(harness), WATCH, str(frames)],
@@ -432,3 +481,66 @@ def test_a_console_error_ends_the_run(tmp_path):
     assert out["verdict"] == "failed"
     assert out["model"]["ended"] is True
     assert out["model"]["error"]["fix"].startswith("Check that")
+
+
+# ------------------------------------------------- the answers in the stream
+def _replayed(tmp_path, rows):
+    """One SSE replay as a page attaching mid-run receives it: the script's
+    own rows through the real reader, the console's `answered` frames spliced
+    in where job.answer emitted them, and ids stamped in buffer order the way
+    Job.emit stamps them. An answered row cannot go through the script reader:
+    it is not a type deploy-stack.sh writes, and from_script would rightly
+    read it as a log line."""
+    script = [r for r in rows if r[0] != "answered"]
+    from_script = iter(_events(_frames(_script_emits(), script), tmp_path))
+    out = [E.answered(f["prompt_id"], f["shown"]) if t == "answered" else next(from_script)
+           for t, f in rows]
+    for i, ev in enumerate(out, start=1):
+        ev["id"] = i
+    return out
+
+
+ASKED = [
+    ("hello", {"stack": "lab", "region": "us-east-1", "dry_run": "false"}),
+    ("prompt", {"id": "p1", "question": "Stack name [cloudlens-stack]: ",
+                "default": "cloudlens-stack", "kind": "text"}),
+    ("answered", {"prompt_id": "p1", "shown": "lab"}),
+    ("prompt", {"id": "p2", "question": "KVO admin password: ", "kind": "secret"}),
+]
+
+
+def test_a_replay_leaves_open_only_the_question_with_no_answer(tmp_path):
+    """The defect this frame exists for. The answer used to live only in the
+    page that typed it, so a reload of a run that had already answered
+    replayed every prompt unanswered: the modal opened on the newest one, on
+    a question the engine was not waiting on, and there is no cancel on it.
+    Answering it reached job.answer's pending-prompt check and came back 409,
+    with the modal still open. With the answer in the stream the replay
+    settles p1 and only p2 - the one the run really is blocked on - is open."""
+    out = _node(_replayed(tmp_path, ASKED), tmp_path, REPLAY_HARNESS)
+    assert [p["id"] for p in out["prompts"]] == ["p1", "p2"]
+    assert out["prompts"][0]["answer"] == "lab", "the frame's shown, on the question it names"
+    assert out["prompts"][1]["answer"] is None
+    assert out["open"] == "p2", "exactly one question is open, and it is the last one"
+
+
+def test_a_replay_of_an_answered_run_opens_no_modal_at_all(tmp_path):
+    """The other resumed page: every question the run asked has an answer in
+    the stream, so nothing is open and the overlay never appears. The secret
+    shows as the asterisks job.answer put on it; the value it masks was never
+    in the stream to replay."""
+    rows = ASKED + [("answered", {"prompt_id": "p2", "shown": "********"})]
+    out = _node(_replayed(tmp_path, rows), tmp_path, REPLAY_HARNESS)
+    assert out["open"] is None, "no open question, so renderModal has nothing to open on"
+    assert [p["answer"] for p in out["prompts"]] == ["lab", "********"]
+    assert out["prompts"][1]["kind"] == "secret", "still the question it was"
+
+
+def test_an_answered_frame_for_a_question_never_asked_changes_nothing(tmp_path):
+    """The prompt always reaches the buffer before an answer to it can (a job
+    has nothing pending until it emits one), so this cannot arrive orphaned in
+    a run; if it ever did, it would not invent a question nobody was asked."""
+    rows = [("hello", {"stack": "lab", "region": "us-east-1", "dry_run": "false"}),
+            ("answered", {"prompt_id": "ghost", "shown": "x"})]
+    out = _node(_replayed(tmp_path, rows), tmp_path, REPLAY_HARNESS)
+    assert out["prompts"] == [] and out["open"] is None

@@ -26,7 +26,9 @@
    reads out of each event type. test_watch_model.py builds the frames the
    script's own emit_event calls write, runs them through events.from_script,
    and holds this table to them, so a key renamed in the script fails a test
-   here instead of quietly emptying a card. */
+   here instead of quietly emptying a card. A few of the types are the
+   console's own and not the script's (log, error, answered); their contract
+   is with events.py, and the same test holds them to it. */
 
 /* ------------------------------------------------------------ the model */
 
@@ -45,6 +47,10 @@ var READS={
      event, and this screen must never grow one. */
   login:["component","url","user","password_in"],
   prompt:["prompt_id","question","default","kind"],
+  /* the console's own frame, not the script's: orchestrator.Job.answer emits
+     it when the answer reached the engine. `shown` is what may be displayed,
+     which for a secret is asterisks and never the value */
+  answered:["prompt_id","shown"],
   /* the script's done carries status/phase/reason/code/mode/report/profile;
      the console's own carries summary */
   done:["status","phase","reason","code","mode","report","profile","summary"],
@@ -164,6 +170,18 @@ function applyEvent(model,ev){
     p.kind=txt(ev.kind)||"text";
     return model;
   }
+  if(t==="answered"){
+    // the stream, not this page, is what says a question is settled. Without
+    // this frame a reload of a run that had already answered replayed every
+    // prompt as unanswered, opened the modal on the newest one, and the only
+    // thing the operator could do with it was have it refused. An id no
+    // prompt frame introduced is ignored: the prompt is always emitted before
+    // the answer to it can be (nothing is pending until it is), so the model
+    // has the question by the time this arrives, on a replay and on a resume.
+    var ap=findBy(model.prompts,"prompt_id",txt(ev.prompt_id));
+    if(ap){ap.answer=txt(ev.shown);ap.error="";ap.sending=false;}
+    return model;
+  }
   if(t==="log"){
     model.logCount++;
     model.logs.push(txt(ev.text));
@@ -183,8 +201,11 @@ function applyEvent(model,ev){
   return model;
 }
 
-/* The answer to a prompt is not an event: the engine's reply to POST
-   /api/answer is. This records it, and it is pure for the same reason
+/* Instant feedback for the operator who just pressed send: the fetch has
+   come back OK, and the `answered` frame for it is a moment behind. It
+   records the same `shown` that frame will carry, so the replay agrees with
+   what is already on the screen instead of changing it; the stream stays the
+   authority, and this only saves the wait. Pure, for the same reason
    applyEvent is. `shown` is what may be displayed: never a secret. */
 function noteAnswer(model,promptId,shown,error){
   var p=findBy(model.prompts,"prompt_id",txt(promptId));
@@ -373,18 +394,24 @@ function renderChecks(model){
   }).join("");
 }
 
-/* Every question the run asked, with the answer that was sent back. A secret
-   is recorded as asterisks by whoever answered it: nothing here has ever
-   held the value. */
+/* Every question the run asked, with the answer the stream recorded for it.
+   A secret is recorded as asterisks by whoever answered it: nothing here has
+   ever held the value. */
 function renderQuestions(model){
   $("wQuestionsWrap").hidden=!model.prompts.length;
   $("wQuestions").innerHTML=model.prompts.map(function(p){
-    // a replayed run shows its questions again but not the replies: the
-    // stream carries what the script asked, never what was typed back
-    var unanswered=model.ended
-      ? '<span class="dim">the answer is not in the event stream</span>'
-      : '<span class="dim">waiting for an answer</span>'+(p.def?' <span class="dim">(default '+esc(p.def)+")</span>":"");
-    var state=p.answer===null?unanswered:"<code>"+esc(p.answer)+"</code>";
+    // one wording for both branches, because both mean the same thing: no
+    // `answered` frame carried a reply for this question. "waiting for an
+    // answer" was a live-run claim this page could not make - a page that
+    // attached after the question was answered would have said the run was
+    // blocked on it. The default is still worth naming while the run is
+    // going, because it is what pressing Enter alone would send.
+    var unanswered='<span class="dim">no answer in the event stream</span>'+
+      (!model.ended&&p.def?' <span class="dim">(default '+esc(p.def)+")</span>":"");
+    // an empty answer is the script's own contract for "take the default"
+    // (the comment above ask() in deploy-stack.sh), so it is named as one
+    var given=p.answer===""?("(default)"+(p.def?" "+p.def:"")):p.answer;
+    var state=p.answer===null?unanswered:"<code>"+esc(given)+"</code>";
     return '<div class="qcard"><div class="q">'+esc(p.question||"")+"</div>"+
       '<div class="a">'+state+"</div></div>";
   }).join("");
@@ -425,7 +452,10 @@ function renderLog(model){
    is typing into it. It is filled when the open prompt CHANGES, and left
    alone otherwise. It is a div and not a <dialog> on purpose: Escape closes
    a dialog, and there is nothing to close here. The run is blocked on this
-   answer and there is no cancel. */
+   answer and there is no cancel - which is why it must never open on a
+   question that was already answered. It cannot, now: the `answered` frames
+   replay with everything else, so a resumed page opens the modal only on a
+   question the stream has no answer for. */
 function renderModal(model){
   var host=$("wPrompt"),p=openPrompt(model);
   if(!p||model.ended){host.hidden=true;return;}
@@ -455,7 +485,10 @@ function render(model){
 /* ---------------------------------------------------------- the stream */
 
 var model=emptyModel(),es=null;
-var TYPES=["hello","phases","phase","resource","check","login","prompt","log","done"];
+// every type this screen listens for. A named SSE event with no listener
+// here is simply never delivered, so this list is what makes the console's
+// own `answered` reach the page at all.
+var TYPES=["hello","phases","phase","resource","check","login","prompt","answered","log","done"];
 var JOB_RE=/^[A-Za-z0-9_-]+$/;     // server.py's job_id_ok
 
 function detach(){
@@ -517,7 +550,10 @@ function send(){
   var p=openPrompt(model);
   if(!p||p.sending)return;
   var input=$("wPromptInput"),value=input.value;
-  var shown=p.kind==="secret"?"********":(value===""?"(default) "+p.def:value);
+  // exactly what the answered frame will carry, so the stream confirms what
+  // the card already shows rather than rewriting it; an empty answer is left
+  // empty here and named as the default where it is rendered
+  var shown=p.kind==="secret"?"********":value;
   p.sending=true;p.error="";
   render(model);
   fetch("/api/answer/"+encodeURIComponent(model.job),{method:"POST",
@@ -553,7 +589,7 @@ function init(){
   else render(model);
 }
 
-window.clWatch={
+if(typeof window!=="undefined")window.clWatch={
   applyEvent:applyEvent,noteAnswer:noteAnswer,emptyModel:emptyModel,
   openPrompt:openPrompt,nodeState:nodeState,verdict:verdict,
   READS:READS,PHASE_NODE:PHASE_NODE,LOG_MAX:LOG_MAX,

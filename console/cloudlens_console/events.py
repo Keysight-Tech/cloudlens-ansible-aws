@@ -13,6 +13,11 @@ Event types:
   stat     - a live metric update (elapsed, resources-created, status pill, waiting)
   done     - terminal success, with real outputs (URLs, next command)
   error    - terminal or per-node failure, with the real reason and the fix
+  answered - a prompt the console answered: which one, and what may be shown
+             for it. The console mints this one; the script never writes it,
+             so it is not in SCRIPT_TYPES. Without it the answer lived only
+             in the page that typed it, and a reload of the same run replayed
+             every question as still waiting.
 
 Events v2: the script's own side channel.
   deploy-stack.sh --events FILE appends one JSON object per line,
@@ -72,10 +77,17 @@ NARRATE = "narrate"
 STAT = "stat"
 DONE = "done"
 ERROR = "error"
+ANSWERED = "answered"
 
 # the script's types (Events v2); hello and done are shared with the console
 PHASES, PHASE = "phases", "phase"
 RESOURCE, CHECK, PROMPT, LOGIN = "resource", "check", "prompt", "login"
+# SCRIPT_TYPES is "the types deploy-stack.sh itself writes": from_script
+# accepts exactly these off the events file and turns anything else into a log
+# of the raw line. ANSWERED is the console's own frame - it is minted where the
+# answer is written, not by the script - so it stays out of this set. What
+# carries it to the browser is the SSE listener list in web/watch.js (its
+# TYPES), because a named SSE event with no listener is never delivered.
 SCRIPT_TYPES = {_HELLO, PHASES, PHASE, RESOURCE, CHECK, PROMPT, LOGIN, DONE}
 
 # node states the UI understands
@@ -125,6 +137,16 @@ def stat(**kv):
 
 def done(summary, outputs=None):
     return _mk(DONE, summary=summary, outputs=outputs or {})
+
+
+def answered(prompt_id, shown):
+    """A prompt was answered, and what the screen may show for it. `shown` is
+    never the value of a secret: the caller passes asterisks for those, and
+    the redacted text for the rest. This frame is what makes an answer part
+    of the run rather than a fact known only to the page that typed it, so a
+    page that attaches later sees which questions are settled instead of
+    re-opening them."""
+    return _mk(ANSWERED, prompt_id=prompt_id, shown=shown)
 
 
 def error(text, node=None, fix=None):

@@ -616,7 +616,12 @@ def run(body, jobs=None, start=None):
 def answer(job, body):
     """{prompt_id, text} -> job.answer. The job's own refusals (no prompt
     waiting, the wrong prompt, an answer already in flight, an engine that
-    went away) come back as 409 with its words."""
+    went away) come back as 409 with its words.
+
+    The ok here is not the record of the answer: job.answer emits an
+    `answered` frame into the stream, and that is what a page attaching
+    later reads. A refusal emits nothing, so the question stays open in the
+    stream because it is still open in the run."""
     if not isinstance(body, dict):
         return _err("body must be {prompt_id, text}")
     prompt_id, text = body.get("prompt_id"), body.get("text")
