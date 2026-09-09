@@ -441,6 +441,14 @@ Routes (all JSON, all loopback in deliverable 1):
 | `POST /api/teardown` | `{stack, region, orphans_only, confirm_name}`; refuses unless `confirm_name == stack`; runs `teardown-stack.sh` via `run_engine` (`--yes --accept-licence-loss` only when licences were released, see Task 10) |
 | `GET/POST /api/licences` | list (`GET /api/v2/licensing/licenses` via `kvo_license._req`), check codes, activate, release (`operations/deactivate`) |
 
+**As built** (where 3120eab and the fix pass after it differ from the table):
+- `GET /api/licences` is 405 with `Allow: POST`: the KVO password travels in a body, never in a URL. The action comes from the body or the path (`/api/licences/<action>`).
+- Teardown runs `run_engine(..., wired=False)`: teardown-stack.sh has no `--events` or `--prompt-pipe` and rejects a flag it does not know, so its stdout is the stream and its exit the verdict.
+- Activation codes travel on the argv as `--kvo-codes CODE[,QTY]`, the script's only intake (kvo_license.py needs a TTY to prompt, the engine has none). `run()` registers each code and each secret with the job and the engine redacts them from the stream (`Job.redact`: the whole string and its first 14 characters, since kvo_license.py prints `code[:14]...`).
+- `orphans_only` is the script's `--orphans`, a read-only audit, so it skips the typed-name gate. `--yes` is always sent: a non-interactive delete fails without it, so the typed name (`confirm_name == stack`, checked whole and free of control characters) is the human gate. `--accept-licence-loss` only when the body says the licences were released.
+- Subnet `public` is MapPublicIpOnLaunch, what deploy-stack.sh's `pick_subnet()` prints as public/private, so the wizard and the interview agree; the route-table truth (an active route to an internet gateway, own association else the main table) is returned beside it as `igw_route`.
+- Every typed value is checked with a control-character scan and then `re.fullmatch`, never `re.match`: Python's `$` accepts a trailing newline and bash's `=~ ^...$` does not, so `"abc\n"` had passed every anchored rule and reached an argv. Job ids in the URL and prompt ids in a body are checked the same way.
+
 **Step 1: Failing tests** (one per route family; stub `subprocess.run` and the engine):
 
 ```python

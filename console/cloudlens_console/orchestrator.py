@@ -32,6 +32,11 @@ TAIL_SECS = 0.25        # how often run_engine re-reads the script's events file
 STOP_GRACE_SECS = 3.0   # TERM to the process group, then KILL after this long
 ANSWER_WAIT_SECS = 10.0  # how long answer() waits for the script to open the FIFO
 COMPLETED = ("ok", "dry-run")  # the script's done statuses that mean the run finished
+REDACTED = "[redacted]"
+# scripts/kvo_license.py prints `code[:14]...` per activation code, so a
+# registered string longer than this is redacted by its first 14 characters
+# as well as whole
+REDACT_PREFIX = 14
 
 
 class Job:
@@ -41,6 +46,7 @@ class Job:
         self.inputs = inputs
         self.q = queue.Queue()
         self.buffer = []          # every event emitted, for SSE Last-Event-ID replay
+        self.redactions = []      # strings redact() blanks from the stream: codes, secrets
         self._ids = itertools.count(1)  # the event ids, minted by emit under the lock
         self.done = False
         self.stopped = False
@@ -80,6 +86,30 @@ class Job:
         flight is either wholly in or wholly out."""
         with self._lock:
             return [ev for ev in self.buffer if ev["id"] > last_id]
+
+    def redact(self, text):
+        """`text` with every registered string, and the first REDACT_PREFIX
+        characters of each one longer than that, replaced by REDACTED.
+        The engine's stdout loop and its verdict texts go through here, so
+        a script line that prints an activation code (kvo_license.py prints
+        14 of its characters; the dry run prints it whole) or a password
+        never lands in the buffer or the browser. Longest first, so a whole
+        code is blanked before its own prefix could split it; anything that
+        is not a string, or a job with nothing registered, passes through
+        untouched. Registering a short common word (a default password of
+        "admin") blanks that word wherever the run prints it: the operator
+        chose to send it as a secret."""
+        if not self.redactions or not isinstance(text, str):
+            return text
+        needles = set()
+        for s in self.redactions:
+            if isinstance(s, str) and s:
+                needles.add(s)
+                if len(s) > REDACT_PREFIX:
+                    needles.add(s[:REDACT_PREFIX])
+        for s in sorted(needles, key=len, reverse=True):
+            text = text.replace(s, REDACTED)
+        return text
 
     def elapsed(self):
         return int(time.time() - self._t0)
@@ -314,7 +344,7 @@ def _stream_subprocess(job, cmd, cwd, on_line):
         for line in job._proc.stdout:
             if job.stopped:
                 break
-            line = line.rstrip("\n")
+            line = job.redact(line.rstrip("\n"))
             if line:
                 job.emit(E.log(line))
                 on_line(line)
@@ -416,9 +446,11 @@ def run_engine(job, cmd, cwd=None, env=None, wired=True):
         tail = threading.Thread(target=_tail_events, args=(job, exited, state), daemon=True)
         tail.start()
         # read to EOF, stopped or not: after a group kill EOF is how the pipe
-        # closes, and the lines before it are the last thing the run said
+        # closes, and the lines before it are the last thing the run said.
+        # Every line is redacted first: this is where a printed code or
+        # password would otherwise become a log event
         for line in job._proc.stdout:
-            line = line.rstrip("\n")
+            line = job.redact(line.rstrip("\n"))
             if line:
                 job.emit(E.log(line))
         rc = job._proc.wait()
@@ -484,7 +516,7 @@ def _tail_events(job, exited, state):
                         continue
                     job.emit(ev)
             except Exception as exc:  # noqa
-                text = "event tail: {}: {}".format(type(exc).__name__, exc)
+                text = job.redact("event tail: {}: {}".format(type(exc).__name__, exc))
                 if text != warned:
                     job.emit(E.narrate(text, "warn"))
                     warned = text
@@ -508,8 +540,12 @@ def _tail_events(job, exited, state):
 
 def _verdict(job, rc, state):
     """The terminal event, emitted by run_engine once the tail has joined;
-    the order is in run_engine's docstring."""
+    the order is in run_engine's docstring. Every text the verdict writes
+    goes through job.redact, the script's own done included (its reason
+    is free text the script composed from what it saw)."""
     script_done = job._script_done
+    if script_done is not None:
+        script_done = _redact_event(job, script_done)
     if job.stopped:
         if script_done is not None and script_done.get("status") in COMPLETED:
             # the stop landed after the script had finished (it lingers
@@ -519,18 +555,28 @@ def _verdict(job, rc, state):
             job.emit(script_done)
             return
         if script_done is not None:
-            job.emit(E.narrate(_script_done_text(script_done), "note"))
+            job.emit(E.narrate(job.redact(_script_done_text(script_done)), "note"))
         job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
     elif script_done is not None:
         job.emit(script_done)
     elif not state.ok:
-        job.emit(E.error("event tail failed: {}: {}".format(type(state.exc).__name__, state.exc),
+        job.emit(E.error(job.redact("event tail failed: {}: {}".format(type(state.exc).__name__, state.exc)),
                          fix="The engine's events file could not be read; its own log has the run."))
     elif rc != 0:
-        job.emit(E.error("engine exited {}".format(rc),
+        job.emit(E.error(job.redact("engine exited {}".format(rc)),
                          fix="Read the console output above for the failing step."))
     else:
-        job.emit(E.done("engine exited 0"))
+        job.emit(E.done(job.redact("engine exited 0")))
+
+
+def _redact_event(job, ev):
+    """The script frame with each of its string fields redacted, in place:
+    the stash is the frame the verdict emits, and emit stamps the id on
+    that same dict, so a copy here would leave the stash without one."""
+    for k, v in list(ev.items()):
+        if isinstance(v, str):
+            ev[k] = job.redact(v)
+    return ev
 
 
 def _script_done_text(ev):

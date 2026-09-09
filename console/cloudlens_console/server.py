@@ -27,6 +27,7 @@ fetch can post without a preflight; JSON cannot).
 """
 from __future__ import annotations
 import os
+import re
 import json
 import uuid
 import queue
@@ -45,6 +46,17 @@ FIXTURES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "fixtur
 MAX_BODY = 256 * 1024     # bytes of one POST body
 KEEPALIVE_SECS = 12       # SSE comment cadence while a job is quiet
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+# a job id as the routes mint it (uuid4 hex[:12]); the rule leaves room for
+# a test's hand-made id, never for a control byte. Checked the way api.py
+# checks every typed value: control characters first, then fullmatch.
+JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def job_id_ok(job_id):
+    """True for a well-formed job id: a string with no control character
+    that JOB_ID matches whole. The lookup routes refuse anything else with
+    a 400 before touching JOBS, so a malformed id is never an unknown one."""
+    return isinstance(job_id, str) and not A.CONTROL.search(job_id) and JOB_ID.fullmatch(job_id) is not None
 
 
 def host_ok(host):
@@ -221,7 +233,10 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=O.run_job, args=(job,), kwargs={"replay": replay}, daemon=True).start()
             return self._send(200, {"job_id": job_id, "replay": bool(replay)})
         if path.startswith("/stop/") or path.startswith("/api/stop/"):
-            job = JOBS.get(path.rsplit("/", 1)[-1])
+            job_id = path.rsplit("/", 1)[-1]
+            if not job_id_ok(job_id):
+                return self._send(400, {"error": "job id must be letters, digits, - or _"})
+            job = JOBS.get(job_id)
             if job:
                 job.stop()
             return self._send(200, {"ok": True})
@@ -237,7 +252,10 @@ class Handler(BaseHTTPRequestHandler):
             b, sent = self._read_json()
             return None if sent else self._api(A.run(b, jobs=JOBS))
         if path.startswith("/api/answer/"):
-            job = JOBS.get(path[len("/api/answer/"):])
+            job_id = path[len("/api/answer/"):]
+            if not job_id_ok(job_id):
+                return self._send(400, {"error": "job id must be letters, digits, - or _"})
+            job = JOBS.get(job_id)
             if job is None:
                 return self._send(404, {"error": "no such job"})
             b, sent = self._read_json()
@@ -267,6 +285,8 @@ class Handler(BaseHTTPRequestHandler):
         an event that is both in the replay and still on the queue is
         dropped by that watermark. A job that is done and whose queue is
         drained ends the stream at once, not after a keepalive timeout."""
+        if not job_id_ok(job_id):
+            return self._send(400, {"error": "job id must be letters, digits, - or _"})
         job = JOBS.get(job_id)
         if not job:
             return self._send(404, {"error": "no such job"})

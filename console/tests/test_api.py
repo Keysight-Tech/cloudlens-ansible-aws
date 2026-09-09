@@ -31,6 +31,7 @@ import re
 import stat
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -51,16 +52,97 @@ def test_plan_rejects_bad_stack_name_and_renders_profile(monkeypatch):
     assert not r.get("errors") and 'CLOUDLENS_TAPPING="sensors"' in r["profile_text"]
 
 
-def test_stack_rule_is_the_scripts_own():
-    # The rule is read off deploy-stack.sh's valid_stack_name(), not assumed.
+STACK_SAMPLES = ("demo", "a", "Demo-2", "x-", "cloudlens-lab-01", "bad name!", "abc\n", "abc\r", "-abc", "a_b",
+                 "2demo", "de mo", "", "dé", "abc ", " abc", "abc\t")
+
+
+def _bash_stack_rule():
+    """The regex off deploy-stack.sh's valid_stack_name(), read, not assumed."""
     src = open(DEPLOY).read()
     m = re.search(r'^valid_stack_name\(\) \{ \[\[ "\$1" =~ (\S+) \]\]; \}', src, re.M)
     assert m, "valid_stack_name() not found in deploy-stack.sh"
-    assert api.STACK.pattern == m.group(1)
-    for ok in ("demo", "a", "Demo-2", "x-"):
-        assert api.STACK.match(ok), ok
-    for bad in ("2demo", "-demo", "de_mo", "de mo", "", "dé"):
-        assert not api.STACK.match(bad), bad
+    return m.group(1)
+
+
+def test_stack_rule_is_the_scripts_own():
+    # Semantic, not textual: the script's own regex is run by /bin/bash (3.2
+    # on macOS, the one the script runs under) over every sample, and the
+    # Python validator has to agree on each. re.match let "abc\n" through
+    # where bash's =~ ^...$ does not; fullmatch agrees with bash.
+    regex = _bash_stack_rule()
+    assert api.STACK.pattern == regex
+    probe = '[[ "$1" =~ %s ]]' % regex
+    for sample in STACK_SAMPLES:
+        rc = subprocess.run(["/bin/bash", "-c", probe, "_", sample], stdin=subprocess.DEVNULL).returncode
+        assert rc in (0, 1), (sample, rc)
+        assert api.stack_ok(sample) is (rc == 0), "bash says %s for %r, the API says %s" % (
+            "valid" if rc == 0 else "invalid", sample, api.stack_ok(sample))
+    assert api.stack_ok("a" * api.STACK_MAX) and not api.stack_ok("a" * (api.STACK_MAX + 1)), "CloudFormation's cap"
+    assert not api.stack_ok(None) and not api.stack_ok(5)
+
+
+class _NoPrompt(object):
+    """A job that refuses every answer: for tests where the prompt id must
+    be refused before job.answer is reached."""
+    id = "j"
+
+    def answer(self, prompt_id, text):
+        raise AssertionError("a refused prompt id reached job.answer: %r" % prompt_id)
+
+
+# Each validator takes a control-character tail appended to a value that is
+# otherwise valid, so the refusal can only be the control character's; the
+# callable is True when the API refused it. Nothing may start or shell out:
+# the test stubs every exit and would raise.
+CONTROL_VALIDATORS = [
+    ("stack (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_STACK_NAME="abc" + t)).get("errors"))),
+    ("stack (teardown)", lambda t: "error" in api.teardown(
+        {"stack": "abc" + t, "region": "us-east-1", "confirm_name": "abc" + t}, start=_never)),
+    ("confirm_name", lambda t: "error" in api.teardown(
+        {"stack": "abc", "region": "us-east-1", "confirm_name": "abc" + t}, start=_never)),
+    ("region (discover)", lambda t: "error" in api.discover_vpcs("us-east-1" + t)),
+    ("region (doctor)", lambda t: "error" in api.doctor("us-east-1" + t)),
+    ("region (teardown)", lambda t: "error" in api.teardown(
+        {"stack": "abc", "region": "us-east-1" + t, "confirm_name": "abc"}, start=_never)),
+    ("region (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_REGION="us-east-1" + t)).get("errors"))),
+    ("zone (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_COLLECTOR_ZONE="us-east-1a" + t)).get("errors"))),
+    ("vpc (discover)", lambda t: "error" in api.discover_subnets("us-east-1", "vpc-0a0a0a0a" + t)),
+    ("vpc (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_EXISTING_VPC_ID="vpc-0a0a0a0a" + t)).get("errors"))),
+    ("subnet (plan)", lambda t: bool(
+        api.plan(dict(GOOD, CLOUDLENS_EXISTING_SUBNET_ID="subnet-0123abcd" + t)).get("errors"))),
+    ("sg (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_COLLECTOR_MGMT_SG="sg-0123abcd" + t)).get("errors"))),
+    ("eks (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_EKS_CLUSTER="prod" + t)).get("errors"))),
+    ("tag key (discover)", lambda t: "error" in api.discover_workloads("us-east-1", "k" + t + "=v", "")),
+    ("tag key (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_DISCOVERY_TAG_KEY="k" + t)).get("errors"))),
+    ("tag value (discover)", lambda t: "error" in api.discover_workloads("us-east-1", "k=v" + t, "")),
+    ("tag value (plan)", lambda t: bool(api.plan(dict(GOOD, CLOUDLENS_DISCOVERY_TAG_VALUE="v" + t)).get("errors"))),
+    ("kvo host", lambda t: "error" in api.licences({"kvo": "kvo.example.net" + t, "action": "list"})),
+    ("kvo user", lambda t: "error" in api.licences({"kvo": "1.2.3.4", "action": "list", "user": "admin" + t})),
+    ("release row code", lambda t: "error" in api.licences(
+        {"kvo": "1.2.3.4", "action": "release", "rows": [{"activationCode": "AAAA-1111" + t, "quantity": 1}]})),
+    ("job id", lambda t: not server.job_id_ok("abc" + t)),
+    ("prompt id", lambda t: "error" in api.answer(_NoPrompt(), {"prompt_id": "p1" + t, "text": "x"})),
+]
+
+
+def _never(*a, **k):
+    raise AssertionError("a refused input started something: %r" % (a[:2],))
+
+
+@pytest.mark.parametrize("tail", ["\n", "\r", "\x00"], ids=["newline", "cr", "nul"])
+@pytest.mark.parametrize("name,rejects", CONTROL_VALIDATORS, ids=[v[0] for v in CONTROL_VALIDATORS])
+def test_control_characters_are_rejected_by_every_validator(name, rejects, tail, monkeypatch):
+    # Reproduced before the fix: "abc\n" as a stack name reached the argv as
+    # --stack-name "abc\n", "us-east-1\n" passed _check_region, and so on
+    # for the vpc, subnet, EKS name and the KVO host: Python's $ accepts a
+    # trailing newline. Every typed check now runs the control-character
+    # check first and fullmatch after, so the three tails are refused by
+    # every validator, and nothing is started or shelled out on the way.
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api, "_aws", _never)
+    monkeypatch.setattr(api, "_kvo_license", _never)
+    assert rejects(tail), "%s accepted %r" % (name, "abc" + tail)
+    assert rejects(tail * 2)
 
 
 def test_plan_refuses_unknown_keys_and_unwritable_values():
@@ -164,9 +246,15 @@ def test_discover_vpcs_and_subnets(monkeypatch):
             {"VpcId": "vpc-0b0b0b0b", "CidrBlock": "172.31.0.0/16"}]},
         ("ec2", "describe-subnets"): {"Subnets": [
             {"SubnetId": "subnet-01010101", "AvailabilityZone": "us-east-1a", "CidrBlock": "10.0.1.0/24",
-             "Tags": [{"Key": "Name", "Value": "pub-a"}]},
-            {"SubnetId": "subnet-02020202", "AvailabilityZone": "us-east-1b", "CidrBlock": "10.0.2.0/24"},
-            {"SubnetId": "subnet-03030303", "AvailabilityZone": "us-east-1c", "CidrBlock": "10.0.3.0/24"}]},
+             "MapPublicIpOnLaunch": True, "Tags": [{"Key": "Name", "Value": "pub-a"}]},
+            # auto-assigns public IPs but has no internet route: "public" to
+            # the CLI's pick_subnet, not reachable from the internet
+            {"SubnetId": "subnet-02020202", "AvailabilityZone": "us-east-1b", "CidrBlock": "10.0.2.0/24",
+             "MapPublicIpOnLaunch": True},
+            {"SubnetId": "subnet-03030303", "AvailabilityZone": "us-east-1c", "CidrBlock": "10.0.3.0/24",
+             "MapPublicIpOnLaunch": False},
+            # an igw route but no auto-assign: the field missing altogether is False, as the CLI prints "private"
+            {"SubnetId": "subnet-04040404", "AvailabilityZone": "us-east-1d", "CidrBlock": "10.0.4.0/24"}]},
         ("ec2", "describe-route-tables"): {"RouteTables": [
             # the main table: no internet route
             {"Associations": [{"Main": True}], "Routes": [{"GatewayId": "local"}]},
@@ -174,7 +262,9 @@ def test_discover_vpcs_and_subnets(monkeypatch):
             {"Associations": [{"SubnetId": "subnet-01010101"}],
              "Routes": [{"GatewayId": "local"}, {"DestinationCidrBlock": "0.0.0.0/0", "GatewayId": "igw-1"}]},
             {"Associations": [{"SubnetId": "subnet-03030303"}],
-             "Routes": [{"DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": "nat-1"}]}]},
+             "Routes": [{"DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": "nat-1"}]},
+            {"Associations": [{"SubnetId": "subnet-04040404"}],
+             "Routes": [{"DestinationCidrBlock": "0.0.0.0/0", "GatewayId": "igw-1"}]}]},
     }
 
     def fake_aws(args, region, **kw):
@@ -186,10 +276,15 @@ def test_discover_vpcs_and_subnets(monkeypatch):
         {"id": "vpc-0a0a0a0a", "cidr": "10.0.0.0/16", "name": "prod"},
         {"id": "vpc-0b0b0b0b", "cidr": "172.31.0.0/16", "name": ""}]
     subnets = api.discover_subnets("us-east-1", "vpc-0a0a0a0a")
-    assert [(s["id"], s["az"], s["cidr"], s["public"]) for s in subnets] == [
-        ("subnet-01010101", "us-east-1a", "10.0.1.0/24", True),     # its own table routes to an igw
-        ("subnet-02020202", "us-east-1b", "10.0.2.0/24", False),    # falls to the main table: no igw
-        ("subnet-03030303", "us-east-1c", "10.0.3.0/24", False)]    # NAT is not an internet gateway
+    # `public` is MapPublicIpOnLaunch, the column deploy-stack.sh's
+    # pick_subnet() prints as public/private, so the wizard and the
+    # interview agree; `igw_route` is the route-table truth. The two
+    # disagree on 02 (auto-assign, no route) and 04 (route, no auto-assign).
+    assert [(s["id"], s["az"], s["cidr"], s["public"], s["igw_route"]) for s in subnets] == [
+        ("subnet-01010101", "us-east-1a", "10.0.1.0/24", True, True),     # its own table routes to an igw
+        ("subnet-02020202", "us-east-1b", "10.0.2.0/24", True, False),    # falls to the main table: no igw
+        ("subnet-03030303", "us-east-1c", "10.0.3.0/24", False, False),   # NAT is not an internet gateway
+        ("subnet-04040404", "us-east-1d", "10.0.4.0/24", False, True)]    # igw route, no auto-assign
     assert subnets[0]["name"] == "pub-a"
     # the vpc reached the filter as a JSON structure, not a comma-split shorthand
     flt = [c for c in calls if c[0][:2] == ["ec2", "describe-subnets"]][0][0]
@@ -334,6 +429,59 @@ def test_run_writes_the_profile_and_starts_the_engine_with_secrets_in_env_only(t
     for leak in ("s3cr3t", "AKIAEXAMPLE", "1234-ABCD", "AAAA-BBBB"):
         assert leak not in everywhere, leak
     assert job.buffer and job.buffer[0]["type"] == E.NARRATE, "the stream opens with the command it runs"
+
+
+# The real script's argv parser (the two flags run_engine appends), then the
+# lines scripts/kvo_license.py and the dry run print: `code[:14]...` per
+# code, the whole code in the dry-run command line, and a password a phase
+# echoed. The done's reason carries a code too, as the script's free text may.
+FAKE_LICENSE_ENGINE = r'''#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do case $1 in --events) ev=$2; shift 2;; --prompt-pipe) pipe=$2; shift 2;; *) shift;; esac; done
+echo '[license] 1234-ABCD-5678... = KVO-DEVICE  avail=5 total=5 -> activating 5'
+echo '[license] 1234-ABCD-5678-EFGH-9012... = KVO-DEVICE'
+echo 'dry run: python3 scripts/kvo_license.py --codes 1234-ABCD-5678-EFGH-9012,5 AAAA-BBBB-CCCC-DDDD'
+echo 'pw is hunter2secret'
+echo 'plain line stays plain'
+echo '{"seq":1,"ts":"t","type":"done","status":"ok","reason":"activated 1234-ABCD-5678-EFGH-9012"}' >> "$ev"
+exit 0
+'''
+
+
+def test_run_registers_codes_and_secrets_and_the_engine_redacts_them(tmp_path, monkeypatch):
+    # Reproduced before the fix: kvo_license.py prints code[:14]... per
+    # code and the engine turns every stdout line into a log event, so 14
+    # of the 19 characters of each code landed in job.buffer and the
+    # browser. run() now registers each code and each secret with the job
+    # and the engine's stdout loop and verdict go through job.redact.
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    script = tmp_path / "fake-deploy.sh"
+    script.write_text(FAKE_LICENSE_ENGINE)
+    script.chmod(0o755)
+    monkeypatch.setattr(api, "DEPLOY", str(script))
+    jobs = {}
+    r = api.run({"plan": GOOD, "secrets": {"CLOUDLENS_VC_PASSWORD": "hunter2secret"},
+                 "kvo_codes": ["1234-ABCD-5678-EFGH-9012,5", "AAAA-BBBB-CCCC-DDDD"]}, jobs=jobs)
+    assert not r.get("errors"), r
+    job = jobs[r["job_id"]]
+    assert sorted(job.redactions) == ["1234-ABCD-5678-EFGH-9012", "AAAA-BBBB-CCCC-DDDD", "hunter2secret"]
+    deadline = time.monotonic() + 10
+    while not job.done and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert job.done, [e["type"] for e in job.buffer]
+    blob = json.dumps(job.buffer)
+    for leak in ("1234-ABCD-5678", "EFGH-9012", "AAAA-BBBB-CCCC", "hunter2secret"):
+        assert leak not in blob, leak
+    assert O.REDACTED in blob
+    texts = [e["text"] for e in job.buffer if e["type"] == E.LOG]
+    assert "[license] [redacted]... = KVO-DEVICE  avail=5 total=5 -> activating 5" in texts, texts
+    assert "[license] [redacted]... = KVO-DEVICE" in texts
+    assert "dry run: python3 scripts/kvo_license.py --codes [redacted],5 [redacted]" in texts, "the quantity stays"
+    assert "pw is [redacted]" in texts and "plain line stays plain" in texts
+    last = job.buffer[-1]
+    assert last["type"] == E.DONE and last["status"] == "ok"
+    assert last["reason"] == "activated [redacted]", "the script's own done is redacted too"
+    # the narrate that opens the stream never carried them either
+    assert job.buffer[0]["type"] == E.NARRATE and "1234" not in job.buffer[0]["text"]
 
 
 def test_run_refuses_secrets_it_does_not_know_and_bad_plans(tmp_path, monkeypatch):
@@ -680,6 +828,62 @@ def test_api_get_routes_validate_before_running_anything(live, monkeypatch):
     assert st == 404
     st, r = _call(live, "GET", "/events/nope")
     assert st == 404
+    # a job id the routes could never have minted is a 400 before JOBS is
+    # consulted: %0A is the one way a newline reaches a request path
+    for path in ("/events/a%0Ab", "/api/stop/a%0Ab", "/stop/a%00b", "/events/a.b"):
+        st, r = _call(live, "GET" if path.startswith("/events/") else "POST", path)
+        assert st == 400 and "job id" in r["error"], path
+    st, r = _call(live, "POST", "/api/answer/a%0Db", {"prompt_id": "p1", "text": "x"})
+    assert st == 400 and "job id" in r["error"]
+    for bad in ("abc\n", "abc\r", "abc\x00", "", "a/b", "a" * 65, None, 5):
+        assert not server.job_id_ok(bad), repr(bad)
+    assert server.job_id_ok("sse1") and server.job_id_ok("0123abcd0123") and server.job_id_ok("a-b_c")
+
+
+def test_licences_route_over_http_with_kvo_license_stubbed(live, monkeypatch):
+    kl = FakeKL(licences=[{"activationCode": "AAAA-1111", "product": "KVO-DEVICE", "quantity": 5}],
+                ents={"BBBB-2222": [("CloudLens-Credit", 10, 20)]})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    creds = {"kvo": "10.1.2.3", "user": "admin", "password": "hunter2"}
+    st, r = _call(live, "POST", "/api/licences", dict(creds, action="list"))
+    assert st == 200 and r["count"] == 1 and r["licences"][0]["activationCode"] == "AAAA-1111", r
+    assert ("token", "10.1.2.3", "admin", "hunter2", False) in kl.calls
+    assert "hunter2" not in json.dumps(r)
+    # the action from the path, the body's own inputs validated first
+    st, r = _call(live, "POST", "/api/licences/check", dict(creds, codes=["BBBB-2222"]))
+    assert st == 200 and r["codes"][0]["valid"] is True and r["codes"][0]["entitlements"][0]["available"] == 10
+    n = len(kl.calls)
+    st, r = _call(live, "POST", "/api/licences/check", creds)
+    assert st == 400 and "codes" in r["error"]
+    st, r = _call(live, "POST", "/api/licences", dict(creds, action="nope"))
+    assert st == 400 and "action" in r["error"]
+    st, r = _call(live, "POST", "/api/licences", dict(creds, action="list", kvo="10.1.2.3\n"))
+    assert st == 400 and "kvo" in r["error"]
+    assert len(kl.calls) == n, "a refused body never reaches the KVO"
+    # a login the KVO refuses is a 502 with the KVO's words and never the password
+    st, r = _call(live, "POST", "/api/licences", dict(creds, action="list", password="wrong"))
+    assert st == 502 and "login failed" in r["error"] and "wrong" not in r["error"]
+    st, r = _call(live, "GET", "/api/licences/list")
+    assert st == 405
+
+
+def test_discover_route_over_http_with_the_cli_stubbed(live, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        assert argv[:3] == ["aws", "ec2", "describe-vpcs"] and not kw.get("shell")
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({"Vpcs": [
+            {"VpcId": "vpc-0a0a0a0a", "CidrBlock": "10.0.0.0/16", "Tags": [{"Key": "Name", "Value": "prod"}]}]}),
+            stderr="")
+
+    monkeypatch.setattr(api.subprocess, "run", fake_run)
+    st, r = _call(live, "GET", "/api/discover/vpcs?region=eu-west-2")
+    assert st == 200 and r == [{"id": "vpc-0a0a0a0a", "cidr": "10.0.0.0/16", "name": "prod"}], r
+    assert calls[0][-4:] == ["--region", "eu-west-2", "--output", "json"]
+    # the query string decodes %0A to a newline: refused before the CLI runs
+    st, r = _call(live, "GET", "/api/discover/vpcs?region=eu-west-2%0A")
+    assert st == 400 and "region" in r["error"] and len(calls) == 1
 
 
 def test_events_route_replays_after_last_event_id(live):

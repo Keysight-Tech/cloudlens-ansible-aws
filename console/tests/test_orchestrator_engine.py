@@ -233,6 +233,23 @@ def test_prompt_events_keep_their_script_seq(tmp_path):
     assert "id" in prompt and isinstance(prompt["id"], int)
 
 
+def test_redact_blanks_registered_strings_and_their_prefixes():
+    """Job.redact: every registered string, and the first REDACT_PREFIX
+    characters of one longer than that (kvo_license.py prints code[:14]...),
+    become the marker; longest first, so a whole code is never split by
+    its own prefix; nothing registered, or not a string, passes through."""
+    job = O.Job("r", "engine-deploy", {})
+    line = "[license] 1234-ABCD-5678... = X; full 1234-ABCD-5678-EFGH-9012,5; pw hunter2secret"
+    assert job.redact(line) == line, "nothing registered: untouched"
+    job.redactions += ["1234-ABCD-5678-EFGH-9012", "hunter2secret", "", None]
+    assert job.redact(line) == "[license] [redacted]... = X; full [redacted],5; pw [redacted]"
+    assert O.REDACT_PREFIX == 14
+    assert job.redact("short") == "short" and job.redact(None) is None and job.redact(7) == 7
+    # a registered string of REDACT_PREFIX characters or fewer has no prefix form
+    job.redactions[:] = ["1234-ABCD-5678"]
+    assert job.redact("x 1234-ABCD-5678-EFGH y 1234-ABCD z") == "x [redacted]-EFGH y 1234-ABCD z"
+
+
 def test_stdout_lines_become_log_events(tmp_path):
     script = _script(tmp_path, FAKE_STDOUT)
     job = O.Job("j8", "stack", {})

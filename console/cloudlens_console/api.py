@@ -42,6 +42,12 @@ MAX_ANSWER = 64 * 1024  # bytes of one prompt answer
 MAX_VALUE = 4096        # characters of one plan value or secret
 
 # ---------------------------------------------------------------- rules
+# Every rule below is applied through _shape(): a control-character check
+# first, then re.fullmatch. Not re.match: Python's `$` also matches before
+# a trailing newline, bash's `=~ ^...$` does not, so "abc\n" passed every
+# anchored rule here and reached an argv as --stack-name "abc\n" while the
+# script would have refused it (test_api runs the samples through bash).
+#
 # deploy-stack.sh valid_stack_name(), verbatim (test_api holds them equal).
 STACK = re.compile(r"^[a-zA-Z][-a-zA-Z0-9]*$")
 STACK_MAX = 128         # CloudFormation's own limit on a stack name
@@ -56,8 +62,31 @@ CODE = re.compile(r"^[A-Za-z0-9-]{4,64}$")
 CODE_QTY = re.compile(r"^([A-Za-z0-9-]{4,64})(?:,([0-9]{1,6}))?$")
 # the KVO address: an IP or a hostname, never a URL, a port or a path
 HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+# the script's prompt ids are p1, p2, ...; the rule leaves room for a
+# renamed scheme but never for a byte the FIFO line could not carry
+PROMPT_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 TAG_KEY_MAX, TAG_VALUE_MAX = 128, 256   # AWS's own limits
+
+
+def _shape(rule, value, cap=None):
+    """True when `value` is a string under `cap` characters, holds no
+    control character, and `rule` matches ALL of it. The control check
+    runs before the rule for every typed value, whatever its rule allows;
+    fullmatch, never match, for the newline reason above."""
+    if not isinstance(value, str) or (cap is not None and len(value) > cap):
+        return False
+    if CONTROL.search(value):
+        return False
+    return rule.fullmatch(value) is not None
+
+
+def stack_ok(name):
+    """deploy-stack.sh's valid_stack_name() plus CloudFormation's length
+    cap: the one check plan() and teardown() share, held equal to bash by
+    test_stack_rule_is_the_scripts_own."""
+    return _shape(STACK, name, STACK_MAX)
+
 
 # Typed profile keys: what each must look like when it is not empty. Shape
 # only, as profile.py says; the vocabulary of the rest is the forms' job.
@@ -97,6 +126,11 @@ SECRET_ENV = {
 # Activation codes have NO environment name: the script takes them only as
 # --kvo-codes CODE[,QTY] (repeatable), so run() puts them on the argv.
 # kvo_license.py needs a TTY to prompt for them, and the engine has none.
+# An argv is readable by `ps` to any local user for the life of the run,
+# which on the single-user laptop this console serves is the same exposure
+# as typing `--kvo-codes` at the shell by hand; the script and the licence
+# tool print parts of them, so run() registers each code (and every secret)
+# with the job and the engine redacts them from the stream (Job.redact).
 
 LICENCE_ACTIONS = ("list", "check", "activate", "release")
 
@@ -129,7 +163,7 @@ def _name_tag(tags):
 
 
 def _check_region(region):
-    if not isinstance(region, str) or not REGION.match(region):
+    if not _shape(REGION, region):
         return _err("region must be an AWS region like us-east-1")
     return None
 
@@ -169,7 +203,7 @@ def plan(p):
             continue        # written empty, as the interview does for a field it did not use
         if CONTROL.search(v):
             errors.append("%s: control characters are not allowed" % k)
-        elif k in _TYPED and not _TYPED[k][0].match(v):
+        elif k in _TYPED and not _shape(_TYPED[k][0], v):
             errors.append("%s: must be %s" % (k, _TYPED[k][1]))
         elif k == "CLOUDLENS_DISCOVERY_TAG_KEY" and not _tag_part(v, TAG_KEY_MAX):
             errors.append("%s: a tag key is 1 to %d characters" % (k, TAG_KEY_MAX))
@@ -178,7 +212,7 @@ def plan(p):
     stack = p.get("CLOUDLENS_STACK_NAME")
     if not isinstance(stack, str) or not stack:
         errors.append("CLOUDLENS_STACK_NAME: required (the profile file and the stack are named after it)")
-    elif not STACK.match(stack) or len(stack) > STACK_MAX:
+    elif not stack_ok(stack):
         errors.append("CLOUDLENS_STACK_NAME: must start with a letter and use only letters, digits and "
                       "hyphens, at most %d characters (the script's own rule)" % STACK_MAX)
     region = p.get("CLOUDLENS_REGION")
@@ -244,14 +278,20 @@ def discover_vpcs(region):
 
 
 def discover_subnets(region, vpc):
-    """[{id, az, cidr, public, name}] for one VPC. `public` is the real
-    thing, not MapPublicIpOnLaunch: the subnet's route table (its own
-    association, else the VPC's main table) has a route to an internet
-    gateway. A NAT gateway is not one."""
+    """[{id, az, cidr, public, igw_route, name}] for one VPC. Two readings
+    of "public", both returned so the wizard can show either and agree
+    with the interview:
+      public     MapPublicIpOnLaunch, exactly what deploy-stack.sh's
+                 pick_subnet() prints as public/private (its
+                 "public=auto-assigns public IPs" column)
+      igw_route  the route-table truth: the subnet's own association,
+                 else the VPC's main table, has an active route to an
+                 internet gateway. A NAT gateway is not one. A subnet
+                 can be either without the other."""
     bad = _check_region(region)
     if bad:
         return bad
-    if not isinstance(vpc, str) or not VPC.match(vpc):
+    if not _shape(VPC, vpc):
         return _err("vpc must be a VPC id (vpc-...)")
     try:
         subnets = _aws(["ec2", "describe-subnets", "--filters", _filters(("vpc-id", [vpc]))], region)
@@ -271,7 +311,8 @@ def discover_subnets(region, vpc):
     for s in subnets.get("Subnets", []):
         sid = s.get("SubnetId", "")
         out.append({"id": sid, "az": s.get("AvailabilityZone", ""), "cidr": s.get("CidrBlock", ""),
-                    "public": by_subnet.get(sid, main_public), "name": _name_tag(s.get("Tags"))})
+                    "public": s.get("MapPublicIpOnLaunch") is True,
+                    "igw_route": by_subnet.get(sid, main_public), "name": _name_tag(s.get("Tags"))})
     return out
 
 
@@ -298,7 +339,7 @@ def discover_workloads(region, tag, vpcs=""):
         return _err("tag must be KEY=VALUE (a key of 1 to %d characters, a value of at most %d, no control "
                     "characters)" % (TAG_KEY_MAX, TAG_VALUE_MAX))
     ids = [v.strip() for v in (vpcs or "").split(",") if v.strip()] if isinstance(vpcs, str) else None
-    if ids is None or len(ids) > 50 or any(not VPC.match(v) for v in ids):
+    if ids is None or len(ids) > 50 or any(not _shape(VPC, v) for v in ids):
         return _err("vpcs must be a comma-separated list of VPC ids (vpc-...)")
     pairs = [("tag:" + kv[0], [kv[1]]), ("instance-state-name", ["running"])]
     if ids:
@@ -420,7 +461,9 @@ def _check_codes(codes, with_qty=True):
     rule = CODE_QTY if with_qty else CODE
     out = []
     for c in codes:
-        if not isinstance(c, str) or not rule.match(c.strip()):
+        # strip() forgives the whitespace a pasted code carries; what is
+        # left has to be the whole code, control bytes included in "not"
+        if not isinstance(c, str) or not _shape(rule, c.strip()):
             return [], "codes: %r is not an activation code%s" % (c, " (CODE or CODE,QTY)" if with_qty else "")
         out.append(c.strip())
     return out, None
@@ -435,7 +478,11 @@ def run(body, jobs=None, start=None):
     cannot leave the repo root; mode 600, as the script's own writer does.
     The job is registered before the start so /events can find it at once;
     its inputs carry the stack, the region and the profile path, never a
-    secret. Returns {job_id, profile_file, stack, region} or {errors}."""
+    secret. Every code and every secret value is registered with the job
+    before the engine starts, so a line that prints one (kvo_license.py
+    prints the first 14 characters of each code; the dry run prints them
+    whole) reaches the stream as [redacted]: see Job.redact. Returns
+    {job_id, profile_file, stack, region} or {errors}."""
     if not isinstance(body, dict):
         return {"errors": ["body must be an object: {plan, secrets?, kvo_codes?}"]}
     p = plan(body.get("plan"))
@@ -460,6 +507,9 @@ def run(body, jobs=None, start=None):
         cmd += ["--kvo-codes", c]
     job_id = uuid.uuid4().hex[:12]
     job = O.Job(job_id, "engine-deploy", {"stack": p["stack"], "region": p["region"], "profile": path})
+    for c in codes:
+        job.redactions.append(CODE_QTY.fullmatch(c).group(1))   # the code, never the quantity
+    job.redactions.extend(env.values())
     (jobs if jobs is not None else _jobs())[job_id] = job
     shown = "bash deploy/deploy-stack.sh --profile %s" % p["profile_file"]
     if codes:
@@ -478,7 +528,7 @@ def answer(job, body):
     if not isinstance(body, dict):
         return _err("body must be {prompt_id, text}")
     prompt_id, text = body.get("prompt_id"), body.get("text")
-    if not isinstance(prompt_id, str) or not prompt_id or len(prompt_id) > 64 or CONTROL.search(prompt_id):
+    if not _shape(PROMPT_ID, prompt_id):
         return _err("prompt_id must be the id of the prompt event")
     if not isinstance(text, str):
         return _err("text must be a string (the answer, one line)")
@@ -509,13 +559,15 @@ def teardown(body, start=None, jobs=None):
     if not isinstance(body, dict):
         return _err("body must be {stack, region, confirm_name, orphans_only?, licences_released?}")
     stack, region = body.get("stack"), body.get("region")
-    if not isinstance(stack, str) or not STACK.match(stack) or len(stack) > STACK_MAX:
+    if not stack_ok(stack):
         return _err("stack must be a CloudFormation stack name (letters, digits and hyphens, starting with a letter)")
     bad = _check_region(region)
     if bad:
         return bad
     audit = bool(body.get("orphans_only"))
-    if not audit and body.get("confirm_name") != stack:
+    # an exact, typed match: a name with a stray newline or control byte is
+    # not the stack's name, whatever the stack field itself passed as
+    if not audit and (not _shape(STACK, body.get("confirm_name")) or body.get("confirm_name") != stack):
         return _err("type the stack name (%s) as confirm_name to tear it down" % stack)
     cmd = ["bash", TEARDOWN, "--stack-name", stack, "--region", region, "--yes"]
     if audit:
@@ -576,7 +628,7 @@ def _release_rows(body):
             return [], bad
         rows = []
         for c in codes:
-            code, qty = CODE_QTY.match(c).groups()
+            code, qty = CODE_QTY.fullmatch(c).groups()
             rows.append({"code": code, "quantity": int(qty) if qty else 0})
     if not isinstance(rows, list) or not rows or len(rows) > 50:
         return [], "rows must list what to release: [{activationCode, quantity}] as GET licenses shows them"
@@ -584,7 +636,7 @@ def _release_rows(body):
     for r in rows:
         code = r.get("activationCode", r.get("code")) if isinstance(r, dict) else None
         qty = r.get("quantity") if isinstance(r, dict) else None
-        if not isinstance(code, str) or not CODE.match(code):
+        if not _shape(CODE, code):
             return [], "rows: %r is not an activation code" % (code,)
         if not isinstance(qty, int) or isinstance(qty, bool) or qty < 1:
             return [], "rows: %s needs the quantity to release (a positive integer)" % code
@@ -611,7 +663,7 @@ def licences(body, action=None):
     if action not in LICENCE_ACTIONS:
         return _err("action must be one of %s" % ", ".join(LICENCE_ACTIONS))
     kvo = body.get("kvo")
-    if not isinstance(kvo, str) or not HOST.match(kvo):
+    if not _shape(HOST, kvo):
         return _err("kvo must be the KVO address: an IP or a hostname, no scheme, port or path")
     user, password = body.get("user", "admin"), body.get("password", "admin")
     if not _tag_part(user, 128) or not _is_str(password, 1024) or CONTROL.search(password):
@@ -650,7 +702,7 @@ def licences(body, action=None):
         if action == "activate":
             results = []
             for c in codes:
-                code, qty = CODE_QTY.match(c).groups()
+                code, qty = CODE_QTY.fullmatch(c).groups()
                 qty = int(qty) if qty else None
                 ents, info = KL.lookup_code(kvo, base, tok, code, verify)
                 if not ents:
