@@ -2292,6 +2292,11 @@ fi
 # The console's first line. Stack and region may still be empty here (the
 # interview fills them in Phase 3); a second hello follows once they are known.
 emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
+# The phases this run can go through, in this script's own order, said once
+# and early. A console that has only seen the phases that already ended
+# cannot draw the ones still to come, and a copy of the list on its side
+# drifts the day a phase is added here.
+emit_event phases order="$PHASE_ORDER"
 
 # --prompt-pipe: the console is the terminal. The questions travel as events,
 # so it needs --events; the answers come back on a FIFO the console created.

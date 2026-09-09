@@ -11,7 +11,7 @@
    carries a stale key. Secrets never enter the plan or localStorage: they
    are read from their password fields at Launch and cleared. */
 var $=function(id){return document.getElementById(id);};
-var P=window.clPlan, C=window.clConsole, esc=P.esc;
+var P=window.clPlan, C=window.clConsole, W=window.clWatch, esc=P.esc;
 var enc=encodeURIComponent;
 
 /* The words the script accepts for each choice key. test_web_static holds
@@ -30,7 +30,11 @@ var REGION_RE=/^[a-z]{2}(-[a-z]+)+-\d$/;
 var STACK_RE=/^[A-Za-z][A-Za-z0-9-]*$/, STACK_MAX=128;   // deploy-stack.sh valid_stack_name()
 var DEBOUNCE=400;
 var PAGES=["preflight","deploy","watch","operate","licensing","teardown"];
-var RUN_PAGES={deploy:true,watch:true};   // the pages the instrument shows under
+/* The pages the quick-flow instrument shows under. Watch is not one of them
+   any more: watch.js owns that screen, and a run launched here streams into
+   it. The instrument stays on the Deploy page, where the quick flows it
+   belongs to live. */
+var RUN_PAGES={deploy:true};
 var OS=["ubuntu","rhel","windows"];
 
 /* ------------------------------------------------------------- state */
@@ -687,8 +691,9 @@ $("launchBtn").addEventListener("click",function(){
     document.querySelectorAll("#secrets [data-secret]").forEach(function(i){i.value="";});
     codes.length=0;$("codeEntry").value="";paintCodes();
     status("launchStatus","Started job "+d.job_id+" on "+d.profile_file+".");
-    C.begin("stack","deploy-stack.sh --profile "+d.profile_file);
-    C.attach(d.job_id);
+    // the Watch screen follows it from here, and remembers the id, so a
+    // reload (or a tab opened later) can attach to the same run
+    W.attach(d.job_id);
     showPage("watch");
     gate();
   });

@@ -16,7 +16,7 @@ and hold them to the same lists the server reads:
              words deploy-stack.sh accepts (parsed from its own messages)
   routes     every /api/..., /events/, /run, /stop/ and /flows literal in the
              three scripts is a path server.py routes (parsed from its source)
-  ids        every id app.js and wizard.js look up exists in index.html
+  ids        every id app.js, wizard.js and watch.js look up exists in index.html
   buttons    begin() hands the quick-flow Run button back, so a wizard launch
              does not strand it disabled and reading "Running..."
   labels     every static input, select and textarea has a label or an aria-label
@@ -39,7 +39,7 @@ PKG = os.path.join(HERE, "..", "cloudlens_console")
 WEB = os.path.join(PKG, "web")
 SERVER = os.path.join(PKG, "server.py")
 DEPLOY = os.path.join(HERE, "..", "..", "deploy", "deploy-stack.sh")
-SCRIPTS = ("app.js", "wizard.js", "plan.js")
+SCRIPTS = ("app.js", "wizard.js", "plan.js", "watch.js")
 KEY = re.compile(r"CLOUDLENS_[A-Z0-9_]+")
 
 
@@ -325,7 +325,7 @@ def _ids_a_script_names(src):
     return ids
 
 
-@pytest.mark.parametrize("name", ("app.js", "wizard.js"))
+@pytest.mark.parametrize("name", ("app.js", "wizard.js", "watch.js"))
 def test_every_id_a_script_looks_up_exists_in_the_page(name):
     ids = set(re.findall(r'id="([^"]+)"', _read("index.html")))
     wanted = _ids_a_script_names(_read(name))

@@ -195,8 +195,8 @@ python3 - "$S/nofifo.jsonl" "$code" <<'PY' || rc=1
 import json, sys
 evs = [json.loads(l) for l in open(sys.argv[1])]
 assert sys.argv[2] == "1", "exit %s, expected 1" % sys.argv[2]
-assert [e["type"] for e in evs] == ["hello", "done"] and evs[-1]["status"] == "failed", evs
+assert [e["type"] for e in evs] == ["hello", "phases", "done"] and evs[-1]["status"] == "failed", evs
 assert "named pipe" in evs[-1]["reason"], evs[-1]
-print("PASS a --prompt-pipe that is no FIFO fails with hello + done naming it")
+print("PASS a --prompt-pipe that is no FIFO fails with hello + phases + done naming it")
 PY
 exit $rc

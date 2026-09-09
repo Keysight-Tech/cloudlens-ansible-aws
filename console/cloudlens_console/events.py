@@ -24,6 +24,11 @@ Events v2: the script's own side channel.
              arn, region) before the script starts, so one job carries two
              hellos of different shape: the LAST hello is authoritative for
              display.
+  phases   - order: every phase name this run can go through, in the script's
+             own PHASE_ORDER, space separated, emitted once right after the
+             first hello. It is the only way the browser can draw the phases
+             still to come; the phase events below only ever report one that
+             has already ended.
   phase    - name, status (done|failed|skipped), reason
   resource - kind (vpc|subnet|vcontroller|kvo|vpb|workloads|eks) plus what
              that kind has: id, role, zone, ip, private_ip, ingress_ip,
@@ -69,8 +74,9 @@ DONE = "done"
 ERROR = "error"
 
 # the script's types (Events v2); hello and done are shared with the console
-PHASE, RESOURCE, CHECK, PROMPT, LOGIN = "phase", "resource", "check", "prompt", "login"
-SCRIPT_TYPES = {_HELLO, PHASE, RESOURCE, CHECK, PROMPT, LOGIN, DONE}
+PHASES, PHASE = "phases", "phase"
+RESOURCE, CHECK, PROMPT, LOGIN = "resource", "check", "prompt", "login"
+SCRIPT_TYPES = {_HELLO, PHASES, PHASE, RESOURCE, CHECK, PROMPT, LOGIN, DONE}
 
 # node states the UI understands
 GHOST = "ghost"   # planned, not yet started (dim outline)

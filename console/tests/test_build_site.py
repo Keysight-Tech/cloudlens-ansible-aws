@@ -28,7 +28,7 @@ WEB = os.path.join(CONSOLE, "cloudlens_console", "web")
 MARKERS = ("<!-- ops:start -->", "<!-- ops:end -->")
 
 # strings the operations console owns and the static page must not carry
-OPS_ONLY = ("data-screen", "wizard.js", "plan.js", "/api/", "data-secret", "codeEntry")
+OPS_ONLY = ("data-screen", "wizard.js", "plan.js", "watch.js", "/api/", "data-secret", "codeEntry")
 
 
 @pytest.fixture(scope="module")

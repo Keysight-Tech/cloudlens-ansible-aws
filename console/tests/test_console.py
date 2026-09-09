@@ -400,6 +400,7 @@ def test_unknown_script_type_becomes_a_log_of_the_raw_line():
 def test_every_script_type_round_trips_through_sse():
     samples = {
         "hello": dict(stack="st", region="us-east-1", dry_run="false"),
+        E.PHASES: dict(order="stack wait bootstrap"),
         E.PHASE: dict(name="stack", status="done", reason=""),
         E.RESOURCE: dict(kind="vpc", id="vpc-0abc"),
         E.CHECK: dict(item="aws cli", status="pass"),

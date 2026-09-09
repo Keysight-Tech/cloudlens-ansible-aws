@@ -236,7 +236,7 @@
   .switchrow .sw{margin-left:auto;flex:0 0 38px}
   button.sw{padding:0;appearance:none;display:block}
   .subsec{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line)}
-  .subsec h4,.wiz h4{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;font-weight:600;display:flex;align-items:center;gap:10px}
+  .subsec h4,.wiz h4,.wpanel h4{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;font-weight:600;display:flex;align-items:center;gap:10px}
   table.pick{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;font-family:var(--mono)}
   table.pick th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
   table.pick td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);white-space:nowrap}
@@ -275,6 +275,70 @@
   .launch .note{font-size:13px;color:var(--ink-soft)}
   details.quick{margin-top:14px}
   details.quick>summary{cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 0}
+  /* watch: the run as the engine reports it */
+  .watchbar{display:flex;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .watchbar .pill{border-color:var(--line);color:var(--ink-faint)}
+  .watchbar .pill.run{color:var(--amber);border-color:var(--amber)}
+  .watchbar .pill.done{color:var(--good);border-color:var(--good)}
+  .watchbar .pill.err{color:var(--accent);border-color:var(--accent)}
+  .watchbar .id-chip{border-color:var(--line);color:var(--ink-soft)}
+  .watchbar .id-chip b{color:var(--ink)}
+  .watchbar .status{margin:0}
+  .watchgrid{display:grid;grid-template-columns:minmax(230px,.85fr) 1.15fr;gap:16px;margin-top:16px}
+  @media(max-width:860px){.watchgrid{grid-template-columns:1fr}}
+  .wpanel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-top:16px}
+  .watchgrid .wpanel{margin-top:0}
+  ol.tl{list-style:none;margin:0;padding:0}
+  .tlrow{display:grid;grid-template-columns:18px 1fr;gap:4px 10px;padding:7px 0;border-bottom:1px solid var(--line-soft);align-items:baseline}
+  .tlmark{font-family:var(--mono);font-size:12px;text-align:center;color:var(--ink-faint)}
+  .tlname{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .tlwhy{grid-column:2;font-size:12px;color:var(--ink-faint)}
+  .tlwhy:empty{display:none}
+  .tlrow.pending .tlname{color:var(--ink-faint)}
+  .tlrow.pending .tlmark::before{content:"\00b7"}
+  .tlrow.done .tlmark{color:var(--good)}
+  .tlrow.failed .tlmark,.tlrow.failed .tlname{color:var(--accent)}
+  .tlrow.skipped{opacity:.62}
+  .tlrow.start .tlmark::before,.tlrow.running .tlmark::before{content:"";display:inline-block;width:9px;height:9px;
+    border-radius:50%;border:2px solid var(--amber);border-top-color:transparent;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .topo{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;padding:16px;border-radius:var(--r-sm);
+    background:var(--screen);border:1px solid #000;min-height:96px}
+  .topo p.dim{font-family:var(--mono);font-size:12px;color:var(--screen-faint);margin:0}
+  .topo .node,.topo .node.show,.topo .node.busy,.topo .node.live,.topo .node.fail{position:static;transform:none;opacity:1}
+  .topo .node{width:104px}
+  .tvpc{display:flex;flex-wrap:wrap;gap:12px;padding:12px;border:1px dashed var(--screen-line);border-radius:10px}
+  .tnodes{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+  .nics{display:flex;gap:5px;margin-top:1px}
+  .nics i{width:7px;height:7px;border-radius:50%;background:var(--screen-line);display:block}
+  .nics i.on{background:var(--signal)}
+  .wstack{display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center;margin-top:2px;max-width:96px}
+  .wstack i{width:9px;height:12px;border-radius:2px;border:1px solid var(--signal);display:block}
+  .wstack span{font-family:var(--mono);font-size:9px;color:var(--screen-faint)}
+  .logins .lgn{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;color:var(--ink-soft)}
+  .logins .lgn b{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+  .logins .lgn a,.logins .lgn code{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .logins .pwin{color:var(--ink-faint);font-size:12px}
+  .qcard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
+  .qcard .q{font-size:13.5px}
+  .qcard .a{margin-top:4px;font-size:12.5px;color:var(--ink-soft)}
+  .banner{margin-top:16px;padding:14px 16px;border-radius:var(--r);border:1px solid var(--line);background:var(--panel)}
+  .banner b{font-size:15px}
+  .banner p{margin:6px 0 0;font-size:13.5px;color:var(--ink-soft);word-break:break-word}
+  .banner.good{border-color:var(--good)}.banner.good b{color:var(--good)}
+  .banner.bad{border-color:var(--accent)}.banner.bad b{color:var(--accent)}
+  #wLog{background:var(--screen);border:1px solid #000;border-radius:10px;margin-top:8px;max-height:260px}
+  .modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;
+    background:rgba(11,13,17,.55)}
+  .modal[hidden]{display:none}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);
+    padding:20px 22px;max-width:560px;width:100%}
+  .modal-card .mq{font-size:16px;font-weight:650;line-height:1.4}
+  .modal-card form{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center}
+  .modal-card input{flex:1 1 220px;min-width:0;font-family:var(--mono);font-size:13px;color:var(--ink);
+    background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .modal-card .runbtn{padding:10px 18px;font-size:14px}
+  .modal-card .status{flex-basis:100%;margin:0}
   .card-in.prompt form{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
   .card-in.prompt input{flex:1;min-width:160px;font-family:var(--mono);font-size:12.5px;background:var(--screen);color:var(--screen-ink);border:1px solid var(--screen-line);border-radius:8px;padding:7px 10px}
   footer{padding:36px 0;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13px}
@@ -511,7 +575,38 @@
 
 <section class="page" id="page-watch" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" data-page-body="watch" hidden><div class="wrap">
   <div class="sec-head"><span class="eyebrow">Watch</span><h2>The run, as it happens.</h2>
-    <p>A launched run streams into the instrument below: the script's phases and resources in the narration, its questions as cards you answer in place, the raw output underneath. The full watch view (a phase timeline, the login cards, reconnecting to a run after a reload) is not built yet.</p></div>
+    <p>Every row, node, login and banner here is one event the engine sent. The phases are the deploy script's own list, in its order; the addresses are the ones it reported; a question it asks stops the run until it is answered here. Nothing on this screen is a guess or a timer.</p></div>
+
+  <div class="watchbar">
+    <span class="pill" id="wPill"><span class="d"></span><span id="wPillTxt">idle</span></span>
+    <span class="id-chip" id="wChip" hidden></span>
+    <span class="status mono" id="wRunId"></span>
+    <button type="button" class="ghostbtn" id="wStop" hidden>Stop</button>
+  </div>
+  <form class="pfbar" id="wResume">
+    <div class="field"><label for="wJob">Run id</label><input id="wJob" spellcheck="false" autocomplete="off" placeholder="the id Launch reported"></div>
+    <button type="submit" class="ghostbtn" id="wAttach">Attach</button>
+  </form>
+  <p class="hint">Launch fills this in and follows the run. A reload picks the last one up again; the stream replays it from the first event, so nothing is missed.</p>
+  <div class="status" id="wConn" role="status" aria-live="polite"></div>
+
+  <div class="banner" id="wBanner" hidden></div>
+
+  <div class="watchgrid">
+    <div class="wpanel"><h4>Phases</h4><ol class="tl" id="wPhases"></ol></div>
+    <div class="wpanel"><h4>What the run reported</h4><div class="topo" id="wTopo"></div>
+      <h4 style="margin-top:16px">Logins</h4><div class="logins" id="wLogins"></div>
+    </div>
+  </div>
+
+  <div class="wpanel" id="wChecksWrap" hidden><h4>Checks</h4>
+    <div class="tblwrap"><table class="ref checks" aria-label="Checks this run reported"><thead><tr><th>Status</th><th>Check</th><th>Fix</th></tr></thead><tbody id="wChecks"></tbody></table></div>
+  </div>
+
+  <div class="wpanel" id="wQuestionsWrap" hidden><h4>Questions the run asked</h4><div id="wQuestions"></div></div>
+
+  <details class="fold" id="wLogFold"><summary>Raw output <span class="tag" id="wLogCount"></span></summary>
+    <div class="console" id="wLog"></div></details>
 </div></section>
 
 <section class="page" id="page-operate" role="tabpanel" aria-labelledby="tab-operate" tabindex="0" data-page-body="operate" hidden><div class="wrap">
@@ -528,6 +623,20 @@
   <div class="sec-head"><span class="eyebrow">Teardown</span><h2>Remove a stack.</h2></div>
   <div class="placeholder">Not built yet: the typed-name gate, the orphan audit and the licence-loss warning. Until then: <code class="mono">bash deploy/teardown-stack.sh --stack-name NAME --region REGION</code>.</div>
 </div></section>
+
+<div class="modal" id="wPrompt" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wPromptQ">
+    <div class="mq" id="wPromptQ"></div>
+    <p class="hint" id="wPromptHint"></p>
+    <form id="wPromptForm">
+      <label class="vh" for="wPromptInput">Answer</label>
+      <input id="wPromptInput" type="text" autocomplete="off" spellcheck="false">
+      <button type="submit" class="runbtn" id="wPromptSend">Send</button>
+      <span class="status" id="wPromptNote" role="status" aria-live="polite"></span>
+    </form>
+    <p class="hint">The run is blocked on this answer, so there is nothing to cancel. Send it empty to take the default.</p>
+  </div>
+</div>
 </div>
 <!-- ops:end -->
 
@@ -724,6 +833,7 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <script src="/web/plan.js"></script>
 <script src="/web/app.js"></script>
+<script src="/web/watch.js"></script>
 <script src="/web/wizard.js"></script>
 </body>
 </html>

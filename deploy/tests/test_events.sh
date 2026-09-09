@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # deploy/tests/test_events.sh: the --events sink writes valid, ordered JSON
 # lines, exactly one done per run, and never a byte JSON forbids; a partial
-# last line is finished before the next hello; the dry run describes the
-# stack's resources; --doctor turns every check into an event.
+# last line is finished before the next hello; the run names its whole phase
+# list up front; the dry run describes the stack's resources; --doctor turns
+# every check into an event.
 #
 # Runs under /bin/bash explicitly (3.2 on macOS, the floor the script targets)
 # and again under the bash first on PATH when that is a different binary.
@@ -58,10 +59,11 @@ for B in "${shells[@]}"; do
   if [[ $code -ne 0 ]]; then echo "FAIL dry-run (with-kvo, with-vpb): exit $code, expected 0"; rc=1; fi
   # The state file lands in the cwd, which must be the temp dir, not the repo.
   if [[ ! -f "$S/.cloudlens-deploy-evt-us-east-1.state" ]]; then echo "FAIL dry-run: state file not in the temp dir"; rc=1; fi
-  python3 - "$S/events.jsonl" "$S/events-full.jsonl" <<'PY' || rc=1
-import json, sys
+  python3 - "$S/events.jsonl" "$S/events-full.jsonl" "$REPO/deploy/deploy-stack.sh" <<'PY' || rc=1
+import json, re, sys
 runs = {name: [json.loads(line) for line in open(path)]   # every line is one JSON object
         for name, path in (("minimal", sys.argv[1]), ("full", sys.argv[2]))}
+order = re.search(r'^PHASE_ORDER="([^"]+)"', open(sys.argv[3]).read(), re.M).group(1).split()
 for name, evs in runs.items():
     seqs = [e["seq"] for e in evs]
     types = [e["type"] for e in evs]
@@ -69,7 +71,15 @@ for name, evs in runs.items():
         assert "ts" in e and "type" in e, e
     assert seqs == list(range(1, len(seqs) + 1)), "%s: seq must be 1..N with no gap or repeat: %r" % (name, seqs)
     assert types[0] == "hello", (name, types[:3])
+    # The phase list, once, second: a console cannot draw the phases still to
+    # come from the phase events, which only ever report one that has ended.
+    assert types[1] == "phases", (name, types[:3])
+    assert types.count("phases") == 1, (name, types)
+    assert evs[1]["order"].split() == order, (name, evs[1], order)
     assert "phase" in types, (name, types)
+    for e in evs:
+        if e["type"] == "phase":
+            assert e["name"] in order, "a phase nothing announced: %r" % e
     assert types.count("done") == 1, "%s: exactly one done per run: %r" % (name, types)
     assert types[-1] == "done", (name, types)
     hello = [e for e in evs if e["type"] == "hello"][-1]
@@ -103,8 +113,8 @@ for l in logins:
 # machine, not the creds-file branch on the one box that happens to have the file.
 vc = [l for l in logins if l["component"] == "vcontroller"]
 assert vc and all("factory default" in l["password_in"] for l in vc), vc
-print("PASS dry-run: %d lines, %d phase events, %d resources, one done; %d logins name no password, vcontroller is factory-default"
-      % (len(evs), types.count("phase"), len(res), len(logins)))
+print("PASS dry-run: %d lines, %d phases announced, %d phase events, %d resources, one done; %d logins name no password, vcontroller is factory-default"
+      % (len(evs), len(order), types.count("phase"), len(res), len(logins)))
 PY
 
   # 2. A parse-time fail() after the sink exists, with every byte JSON hates in
@@ -115,13 +125,14 @@ PY
   python3 - "$S/fail.jsonl" <<'PY' || rc=1
 import json, sys
 lines = open(sys.argv[1]).read().splitlines()
-assert len(lines) == 2, "expected hello + done only: %r" % lines
-hello, done = (json.loads(line) for line in lines)
+assert len(lines) == 3, "expected hello + phases + done only: %r" % lines
+hello, phases, done = (json.loads(line) for line in lines)
 assert hello["type"] == "hello" and done["type"] == "done", (hello, done)
+assert phases["type"] == "phases" and phases["order"].split(), phases
 assert done["status"] == "failed", done
 r = done["reason"]
 assert 'x"y\\z' in r and "\n" in r and "\x1b" in r, repr(r)
-print("PASS parse-time fail: hello + one done, reason round-trips %r" % r)
+print("PASS parse-time fail: hello + phases + one done, reason round-trips %r" % r)
 PY
 
   # 2b. The newline guard. A run killed mid-write leaves a partial last line;
@@ -135,15 +146,16 @@ PY
   python3 - "$S/partial.jsonl" <<'PY' || rc=1
 import json, sys
 lines = open(sys.argv[1]).read().split("\n")
-assert len(lines) == 4 and lines[-1] == "", "partial + hello + done, each newline-terminated: %r" % lines
+assert len(lines) == 5 and lines[-1] == "", "partial + hello + phases + done, each newline-terminated: %r" % lines
 def parses(s):
     try: json.loads(s); return True
     except ValueError: return False
 assert not parses(lines[0]) and lines[0] == '{"seq":1,"type":"pha', "line 1 must stay the untouched fragment: %r" % lines[0]
-hello, done = json.loads(lines[1]), json.loads(lines[2])
+hello, phases, done = (json.loads(l) for l in lines[1:4])
 assert hello["type"] == "hello" and hello["seq"] == 2, hello
-assert done["type"] == "done" and done["seq"] == 3, done
-print("PASS newline guard: fragment finished, hello is line 2 with seq 2, done seq 3")
+assert phases["type"] == "phases" and phases["seq"] == 3, phases
+assert done["type"] == "done" and done["seq"] == 4, done
+print("PASS newline guard: fragment finished, hello is line 2 with seq 2, phases seq 3, done seq 4")
 PY
 
   # 3. --doctor with no usable AWS credentials (the nocreds set above). The

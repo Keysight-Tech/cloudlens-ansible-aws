@@ -222,8 +222,10 @@ function run(){
 
 /* Follow one job's stream into the instrument. The console's own events
    (hello, log, state, narrate, stat, done, error) and the script's (hello,
-   phase, resource, check, prompt, login, done): every frame the engine
-   relays is rendered somewhere, nothing is dropped on the floor. */
+   phases, phase, resource, check, prompt, login, done): every frame the
+   engine relays is rendered somewhere, nothing is dropped on the floor.
+   The Watch screen (watch.js) draws the same frames as a timeline and a
+   topology; this instrument stays the quick flows' own rendering. */
 function attach(jobId){
   if(es){es.close();es=null;}
   window._job=jobId;
@@ -246,6 +248,11 @@ function attach(jobId){
     // up seconds later and every stat after that carries no note at all.
     if(m.waiting){setPill("run",m.note||"waiting on AWS");}
     else{setPill("run","running");}});
+  es.addEventListener("phases",function(e){var m=JSON.parse(e.data);
+    // the script's whole phase list, once, at the start: said here as the one
+    // line it is, and drawn as pending rows on the Watch screen
+    var list=String(m.order||"").split(/\s+/).filter(function(p){return !!p;});
+    if(list.length)narrate("Phases this run can go through: "+list.join(", "),"note");});
   es.addEventListener("phase",function(e){var m=JSON.parse(e.data);
     var tone=m.status==="done"?"good":m.status==="failed"?"err":"note";
     narrate("Phase "+(m.name||"")+": "+(m.status||"")+(m.reason?" ("+m.reason+")":""),tone);});
@@ -301,13 +308,16 @@ function finish(cls,txt){
 
 window.addEventListener("resize",function(){if(!timer&&current)layoutDiagram(FLOWS[current]);});
 
-/* What wizard.js drives: begin(flowId, title) readies the instrument with
-   that flow's diagram (the "stack" one for deploy-stack.sh), attach(jobId)
-   follows the job, relayout() redraws a diagram that was laid out while
-   hidden (a hidden page has no width). */
+/* What the rest of the page drives: begin(flowId, title) readies the
+   instrument with that flow's diagram (the "stack" one for deploy-stack.sh),
+   attach(jobId) follows the job, relayout() redraws a diagram that was laid
+   out while hidden (a hidden page has no width), and icons is the node icon
+   set, so the Watch screen draws its topology in this diagram's language
+   instead of inventing a second one. */
 window.clConsole={
   begin:function(flowId,title){begin(FLOWS[flowId]||EMPTY_FLOW,title);},
   attach:attach,
-  relayout:function(){if(!timer&&current&&FLOWS[current])layoutDiagram(FLOWS[current]);}
+  relayout:function(){if(!timer&&current&&FLOWS[current])layoutDiagram(FLOWS[current]);},
+  icons:IC
 };
 })();
