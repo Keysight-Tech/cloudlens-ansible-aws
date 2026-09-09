@@ -30,6 +30,7 @@ POLL_SECS = 4
 TAIL_SECS = 0.25        # how often run_engine re-reads the script's events file
 STOP_GRACE_SECS = 3.0   # TERM to the process group, then KILL after this long
 ANSWER_WAIT_SECS = 10.0  # how long answer() waits for the script to open the FIFO
+COMPLETED = ("ok", "dry-run")  # the script's done statuses that mean the run finished
 
 
 class Job:
@@ -91,7 +92,9 @@ class Job:
         its pid is its pgid and the whole tree is one group. A run that
         ignores TERM gets KILL after STOP_GRACE_SECS. The runner reports the
         stop: once the group is gone and the pipe has closed it ends the
-        stream with the stop sentence, after whatever the script said last."""
+        stream with the stop sentence, after whatever the script said last;
+        unless the script's done says the run had already completed, in
+        which case that done is the verdict (see run_engine)."""
         self.stopped = True
         if not self.running():
             return
@@ -141,7 +144,10 @@ class Job:
         two answers to the same prompt (a double click, two tabs) let exactly
         one through; and the prompt is cleared afterwards only if it is still
         the one answered, because the script may already have asked the next
-        question by then.
+        question by then. The claim is released the same way, only while it
+        is still this prompt's: by then another answer may hold the claim
+        for that next question, and clearing it unconditionally would let a
+        third answer through on it while that one is still writing.
 
         The FIFO is opened non-blocking and retried: a blocking open would
         hang this thread forever if the script died between emitting the
@@ -170,7 +176,8 @@ class Job:
                     self._answering = None
             raise
         with self._lock:
-            self._answering = None
+            if self._answering == prompt_id:
+                self._answering = None
             if self.pending_prompt == prompt_id:
                 self.pending_prompt = None
 
@@ -316,12 +323,18 @@ def run_engine(job, cmd, cwd=None, env=None):
     done on the job, so however the two producers interleaved the last
     event in the buffer is the verdict. The verdict, in order:
 
-      stopped      the operator stopped it. The script's own done, when it
-                   wrote one, is relayed as a note ("engine: interrupted in
-                   key (code 130)"), then the stop sentence, always last.
-      tail failed  the events file could not be read even after the exit:
-                   an error naming the exception.
-      script done  the script's own done, verbatim.
+      stopped      the operator stopped it. When the script's done says the
+                   run had already completed (status in COMPLETED: ok or
+                   dry-run) that done is the verdict, verbatim: a finished
+                   deploy is never reported as stopped. Any other done it
+                   wrote is relayed as a note ("engine: interrupted in key
+                   (code 130)"), then the stop sentence, always last.
+      script done  the script's own done, verbatim. It is the script's last
+                   word, and beats a tail that failed after reading it: the
+                   warn narrate already recorded that failure.
+      tail failed  the events file could not be read even after the exit,
+                   and no done was read before that: an error naming the
+                   exception.
       exit != 0    an error naming the exit code.
       exit 0       a done that says only that the engine exited.
 
@@ -473,14 +486,21 @@ def _verdict(job, rc, state):
     the order is in run_engine's docstring."""
     script_done = job._script_done
     if job.stopped:
+        if script_done is not None and script_done.get("status") in COMPLETED:
+            # the stop landed after the script had finished (it lingers
+            # after emit_done: resume guidance, cleanup). The run completed
+            # and its done says so; a stop sentence here would report a
+            # finished deploy as cancelled.
+            job.emit(script_done)
+            return
         if script_done is not None:
             job.emit(E.narrate(_script_done_text(script_done), "note"))
         job.emit(E.error("Stopped by operator.", fix="Reload to start over."))
+    elif script_done is not None:
+        job.emit(script_done)
     elif not state.ok:
         job.emit(E.error("event tail failed: {}: {}".format(type(state.exc).__name__, state.exc),
                          fix="The engine's events file could not be read; its own log has the run."))
-    elif script_done is not None:
-        job.emit(script_done)
     elif rc != 0:
         job.emit(E.error("engine exited {}".format(rc),
                          fix="Read the console output above for the failing step."))

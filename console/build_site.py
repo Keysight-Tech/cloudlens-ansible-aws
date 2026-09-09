@@ -74,7 +74,7 @@ function selectFlow(id){stop();current=id;var f=FLOWS[id];
   f.inputs.forEach(function(fd){var d=document.createElement("div");d.className="field";
     d.innerHTML='<label>'+fd.label+'</label><input value="'+(fd.default||"")+'" placeholder="'+(fd.placeholder||"")+'" spellcheck="false">';fl.appendChild(d);});
   reset();layoutDiagram(f);
-  $("narr").innerHTML='<div class="empty">Press ▸ Run — the narration explains each step as it happens.</div>';
+  $("narr").innerHTML='<div class="empty">Press ▸ Run: the narration explains each step as it happens.</div>';
   $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
 
 function reset(){$("console").innerHTML="";conLines=0;$("conCount").textContent="";

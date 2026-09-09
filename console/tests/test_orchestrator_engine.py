@@ -10,8 +10,8 @@ deploy/deploy-stack.sh: one line per answer, write end never held open, a
 blocked run needs its process GROUP signalled, and exit is terminal whether
 or not the script wrote a done. On the console's side: run_engine owns the
 terminal event, so the last event of every run is its verdict, a stopped run
-always ends with the stop sentence, and the script's own done is never
-emitted by the tail thread.
+ends with the stop sentence unless the script's done says the run had already
+completed, and the script's own done is never emitted by the tail thread.
 
 Run:  cd console && python3 -m pytest tests/test_orchestrator_engine.py -q
 """
@@ -126,6 +126,15 @@ exit 0
 # no events, just enough time for the tail loop to poll more than once
 FAKE_SLEEP = PARSE + r'''
 sleep 0.7
+exit 0
+'''
+
+# hello and a done, then a linger long enough for a stop to land: the real
+# script prints resume guidance and cleans up after emit_done. %s: the status
+FAKE_DONE_THEN_LINGER = PARSE + r'''
+echo '{"seq":1,"ts":"t","type":"hello","stack":"x","region":"us-east-1"}' >> "$ev"
+echo '{"seq":2,"ts":"t","type":"done","status":"%s"}' >> "$ev"
+sleep 1
 exit 0
 '''
 
@@ -308,6 +317,56 @@ def test_two_answers_to_one_prompt_let_exactly_one_through(tmp_path):
     assert _last(job)["type"] == "done" and _last(job)["answer"] == winner
 
 
+def test_a_finished_answer_does_not_release_the_next_prompts_claim(monkeypatch):
+    """Two prompts back to back. A claims p1 and is in its write; the script
+    asks p2 and the tail files it; C claims p2 (allowed: the claim held is
+    p1's) and is in its write; then A finishes. A's success path must
+    release only ITS claim. Clearing unconditionally wiped C's, and a third
+    answer D was then let through on p2 while C was still writing: two
+    lines on the FIFO for one question. The write helper is replaced by a
+    gate per answer so the interleaving is exact, not a race."""
+    writes = []
+    gates = {"a": threading.Event(), "c": threading.Event(), "d": threading.Event()}
+
+    def gated_write(self, pipe, text):
+        writes.append((self._answering, text))
+        assert gates[text].wait(5), "the test never released %s" % text
+
+    monkeypatch.setattr(O.Job, "_write_answer", gated_write)
+    job = O.Job("j2f", "stack", {})
+    job.pipe_path = "/nonexistent/prompts.fifo"   # never opened: the gate is the write
+    results = {}
+
+    def go(prompt_id, text):
+        try:
+            job.answer(prompt_id, text)
+            results[text] = "ok"
+        except ValueError as exc:
+            results[text] = str(exc)
+
+    job.emit(E.from_script({"seq": 1, "type": "prompt", "id": "p1", "question": "one?"}))
+    a = threading.Thread(target=go, args=("p1", "a"))
+    a.start()
+    assert _wait_for(lambda: writes == [("p1", "a")]), writes
+    # the script asks the next question while A is still writing
+    job.emit(E.from_script({"seq": 2, "type": "prompt", "id": "p2", "question": "two?"}))
+    assert job.pending_prompt == "p2"
+    c = threading.Thread(target=go, args=("p2", "c"))
+    c.start()
+    assert _wait_for(lambda: writes == [("p1", "a"), ("p2", "c")]), writes
+    gates["a"].set()
+    a.join(5)
+    assert results["a"] == "ok"
+    # C still holds p2: D is refused, not let through as a second write
+    with pytest.raises(ValueError, match="already being answered"):
+        job.answer("p2", "d")
+    gates["c"].set()
+    c.join(5)
+    assert results["c"] == "ok"
+    assert [w for w in writes if w[0] == "p2"] == [("p2", "c")], writes
+    assert job.pending_prompt is None and job._answering is None
+
+
 def test_answer_does_not_hang_when_the_engine_never_reads(tmp_path, monkeypatch):
     """The FIFO open is non-blocking and bounded: a script that emitted the
     prompt and then died, or never got to the read, must not hang the API
@@ -463,6 +522,29 @@ def test_stop_relays_the_scripts_own_done_and_still_ends_with_the_stop_sentence(
     _assert_stopped(job)
 
 
+@pytest.mark.parametrize("status", ["ok", "dry-run"])
+def test_a_stop_after_the_script_finished_is_not_a_stopped_run(tmp_path, status):
+    """The script wrote its done (status ok, or dry-run for a plan-only
+    run) and is lingering on its way out when the operator hits stop. The
+    run completed: the script's done is the verdict, verbatim, and no stop
+    sentence follows it. A finished deploy must never read as cancelled.
+    Any other status keeps the note + stop sentence (the test above)."""
+    script = _script(tmp_path, FAKE_DONE_THEN_LINGER % status)
+    job = O.Job("j4d", "stack", {})
+    t = _start(job, [script])
+    assert _wait_for(lambda: job._script_done is not None), _types(job)
+    assert job.running(), "the script must still be lingering when the stop lands"
+    job.stop()
+    t.join(O.STOP_GRACE_SECS + 5)
+    assert not t.is_alive()
+    last = _last(job)
+    assert last["type"] == "done" and last["status"] == status, _types(job)
+    assert last == job._script_done and last["script_seq"] == 2
+    assert "error" not in _types(job), _types(job)
+    assert not [e for e in job.buffer if e["type"] == "narrate" and e["text"].startswith("engine: ")]
+    assert job.stopped and job.done and not job.running()
+
+
 def test_stop_ends_a_run_whose_leader_died_but_whose_subshell_holds_stdout(tmp_path):
     """The trap the old poll()-gated signalling fell into. A leader that
     exited while a subshell of its still holds the stdout pipe is a run
@@ -611,10 +693,39 @@ def test_a_tail_that_cannot_read_after_the_exit_is_the_verdict(tmp_path, monkeyp
     t = _start(job, [script])
     t.join(10)
     assert not t.is_alive(), "run_engine never gave up on the failing tail"
+    # no read ever succeeded, so there is no done to be the verdict
+    assert job._script_done is None and "done" not in _types(job), _types(job)
     assert _last(job)["type"] == "error", _types(job)
     assert _last(job)["text"] == "event tail failed: OSError: disk on fire", _last(job)
     warns = [e for e in job.buffer if e["type"] == "narrate" and e["tone"] == "warn"]
     assert len(warns) == 1, "the same failure is not narrated once per retry: %r" % (warns,)
+
+
+def test_a_done_read_before_the_tail_failed_is_still_the_verdict(tmp_path, monkeypatch):
+    """The done is the script's last word. Reads that fail AFTER it was read
+    (the file gone at exit, a disk error) are already in the stream as the
+    warn narrate; the verdict is the done, not the tail failure."""
+    real = E.iter_script_events
+    seen = {"done": False}
+
+    def fails_after_the_done(path, start_offset=0, last_seq=None):
+        if seen["done"]:
+            raise OSError("disk on fire")
+        offset, evs = real(path, start_offset, last_seq)
+        seen["done"] = any(e["type"] == "done" for e in evs)
+        return offset, evs
+
+    monkeypatch.setattr(E, "iter_script_events", fails_after_the_done)
+    script = _script(tmp_path, FAKE_DONE_SLOW)
+    job = O.Job("j7h", "stack", {})
+    t = _start(job, [script])
+    t.join(15)
+    assert not t.is_alive(), "run_engine never gave up on the failing tail"
+    assert seen["done"], "the fake never reached its done: %r" % (_types(job),)
+    warns = [e for e in job.buffer if e["type"] == "narrate" and e["tone"] == "warn"]
+    assert len(warns) == 1 and "disk on fire" in warns[0]["text"], warns
+    assert _last(job)["type"] == "done" and _last(job)["status"] == "ok", _types(job)
+    assert "error" not in _types(job), _types(job)
 
 
 def test_engine_appends_the_two_flags_itself(tmp_path):

@@ -59,7 +59,7 @@
   "_delay": 0.3,
   "event": {
    "type": "narrate",
-   "text": "EULA accepted and licenses active \u2014 every KVO write is unblocked.",
+   "text": "EULA accepted and licenses active: every KVO write is unblocked.",
    "tone": "good"
   }
  },
@@ -144,7 +144,7 @@
   "_delay": 0.3,
   "event": {
    "type": "narrate",
-   "text": "vPB is Online and auto-licensed \u2014 KVO built its Device Config.",
+   "text": "vPB is Online and auto-licensed: KVO built its Device Config.",
    "tone": "good"
   }
  },
@@ -200,7 +200,7 @@
   "_delay": 0.4,
   "event": {
    "type": "done",
-   "summary": "Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.",
+   "summary": "Fabric live in KVO: CLMS CONNECTED, vPB Online, sensors managed.",
    "outputs": {}
   }
  }

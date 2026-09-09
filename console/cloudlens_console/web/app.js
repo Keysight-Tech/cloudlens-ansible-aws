@@ -65,7 +65,7 @@ function selectFlow(id){
   });
   resetInstrument();
   layoutDiagram(f);
-  $("narr").innerHTML='<div class="empty">Press ▸ Run — the narration explains each step as it happens.</div>';
+  $("narr").innerHTML='<div class="empty">Press ▸ Run: the narration explains each step as it happens.</div>';
   $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';
 }
 
