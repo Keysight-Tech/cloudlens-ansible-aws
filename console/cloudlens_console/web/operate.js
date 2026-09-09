@@ -313,6 +313,22 @@ function replay(only){
         (codes.length===1?"":"s")+"?\n\ndeploy-stack.sh runs --only "+only+" even when the resume state "+
         "says this phase is already done, and activation codes are consumable: re-activating one that is "+
         "already spent burns entitlement quantity. That is real money, and it does not come back."))return;
+  }else if(codes.length){
+    // the codes ride the argv on THIS path too: api._replay puts every
+    // code it is given on the command line whatever the button was, and
+    // a resume runs the licensing phase whenever the resume state has not
+    // marked it done. So the same money can be spent from the Resume
+    // button, which asked nothing. Either send no codes here or ask; the
+    // codes are asked for, because a resume that reaches licensing with
+    // none fails there (the engine gives the script no terminal) and
+    // "resume, and it stops at the phase you have the codes for" is the
+    // trap this screen exists to avoid.
+    if(!window.confirm((only?"Re-run the "+only+" phase":"Resume "+stack())+" with "+codes.length+
+        " activation code"+(codes.length===1?"":"s")+" on the command line?\n\nThe codes ride the argv as "+
+        "--kvo-codes on every replay, not only the licensing one, and a resume runs the licensing phase "+
+        "unless the resume state already calls it done. Activation codes are consumable: re-activating one "+
+        "that is already spent burns entitlement quantity, and it does not come back.\n\nRemove the code "+
+        "chips above to replay without them."))return;
   }
   var s=stack(),r=region(),body={stack:s,region:r};
   if(only)body.only=only;
@@ -326,9 +342,19 @@ function replay(only){
       gate();
       return status("opAction",why,true);
     }
+    // a consumable does not survive its run. The codes are on a command
+    // line now; leaving the chips up invites a second press that spends
+    // them again, and the operator has no way to tell from the chips that
+    // these are the ones already gone.
+    var spent=codes.length;
+    codes.length=0;
+    paintCodes();
     // the buttons come back BEFORE the line that stands: gate() writes its
     // own message when it has one, and this is the one to leave on screen
     gate();
+    if(spent)status("opCodeCount",spent+" code"+(spent===1?"":"s")+" went with that run and "+
+      (spent===1?"was":"were")+" cleared: add "+(spent===1?"it":"them")+" again if the next run needs "+
+      (spent===1?"it":"them")+".",false);
     status("opAction","Started job "+x.d.job_id+" on "+x.d.profile_file+
       (x.d.only?" (--only "+x.d.only+")":" (--resume)")+".");
     if(window.clWatch)window.clWatch.attach(x.d.job_id);

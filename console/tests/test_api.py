@@ -986,8 +986,11 @@ class FakeKL(object):
             return 200, list(self.licences)
         return 202, {"url": "/op/" + url.rsplit("/", 1)[-1]}
 
-    def lookup_code(self, kvo, base, tok, code, verify):
-        self.calls.append(("lookup", code))
+    def lookup_code(self, kvo, base, tok, code, verify, timeout=None):
+        # the timeout is recorded: check loops over a paste of codes inside
+        # one request, and kvo_license.py's poll_op applies its own 120
+        # second default per code to a caller that passes none
+        self.calls.append(("lookup", code, timeout))
         return self.ents.get(code, []), {"state": "SUCCESS" if code in self.ents else "FAILED"}
 
     def poll_op(self, kvo, tok, first, verify, want_result=True, timeout=120, label=None):
@@ -1012,9 +1015,13 @@ def test_licences_list_check_activate_release(monkeypatch):
     # check: one lookup per code, the entitlements as rows
     r = api.licences(dict(creds, action="check", codes=["BBBB-2222", "ZZZZ-9999"]))
     assert r["codes"] == [
-        {"code": "BBBB-2222", "valid": True, "state": "SUCCESS",
+        {"code": "BBBB-2222", "valid": True, "state": "SUCCESS", "running": False,
          "entitlements": [{"product": "CloudLens-Credit", "available": 10, "total": 20}]},
-        {"code": "ZZZZ-9999", "valid": False, "state": "FAILED", "entitlements": []}]
+        {"code": "ZZZZ-9999", "valid": False, "state": "FAILED", "running": False, "entitlements": []}]
+    # every lookup was given what was left of the request's budget, not
+    # kvo_license.py's own 120 second default per code
+    looks = [c[2] for c in kl.calls if c[0] == "lookup"]
+    assert len(looks) == 2 and all(0 < t <= api.OP_BUDGET for t in looks), looks
     # activate: the available quantity unless one is given; a 0-available code is skipped
     r = api.licences(dict(creds, action="activate", codes=["BBBB-2222,3", "CCCC-3333"]))
     posts = [c for c in kl.calls if c[0] == "req" and c[1] == "POST" and c[2].endswith("/operations/activate")]
@@ -1028,7 +1035,8 @@ def test_licences_list_check_activate_release(monkeypatch):
     assert [c[4] for c in posts] == [[{"activationCode": "AAAA-1111", "quantity": 5}]]
     assert r["released"] is True and r["clear"] is True and r["licences"] == []
     assert r["results"] == [{"code": "AAAA-1111", "quantity": 5, "state": "SUCCESS", "ok": True,
-                             "result": {"op": "deactivate"}}]
+                             "running": False, "result": {"op": "deactivate"}}]
+    assert r["running"] == 0 and "unreadable" not in r
     # the action may also come from the route path
     assert api.licences(creds, action="list")["count"] == 0
 
@@ -1093,6 +1101,189 @@ def test_licences_eula_and_login_refusals_have_their_own_answers(monkeypatch):
     kl.token = broken
     r = api.licences(dict(creds, action="list"))
     assert r["http"] == 502 and "503" in r["error"] and "hunter2" not in r["error"]
+
+
+class _ListKL(FakeKL):
+    """FakeKL whose GET licenses answers exactly what the test chose.
+
+    kvo_license.py's _req does not raise on an HTTP status error: it hands
+    back (code, body), and the body of a 500 is a dict, of a KVO still
+    behind its EULA is an HTML page, of one that answered nothing is None.
+    Every one of those has to be told apart from the empty list a KVO
+    holding no licences returns."""
+    def __init__(self, code, body, **kw):
+        FakeKL.__init__(self, **kw)
+        self.list_code, self.list_body = code, body
+
+    def _req(self, method, url, token=None, body=None, verify=False, timeout=30):
+        if url.endswith("/licensing/licenses"):
+            self.calls.append(("req", method, url, token, body))
+            return self.list_code, self.list_body
+        return FakeKL._req(self, method, url, token, body, verify, timeout)
+
+
+LICENCE_ROW = {"activationCode": "AAAA-1111", "product": "KVO-DEVICE", "quantity": 5}
+HTML_EULA = "<html><head><title>End User Licence Agreement</title></head><body>...</body></html>"
+
+
+@pytest.mark.parametrize("code,body,clear,count,readable", [
+    (200, [], True, 0, True),                       # the KVO holds nothing, and said so
+    (200, [LICENCE_ROW], False, 1, True),           # it holds one, and said so
+    (500, {"error": "internal server error"}, None, 0, False),
+    (200, HTML_EULA, None, 0, False),               # the EULA redirect's page
+    (200, None, None, 0, False),                    # no body at all
+    (200, {"licenses": [LICENCE_ROW]}, False, 1, False),   # a wrapped list: rows prove holdings
+    (200, {"licenses": []}, None, 0, False),        # an empty envelope proves nothing
+])
+def test_an_unreadable_licence_list_is_never_reported_as_clear(code, body, clear, count, readable,
+                                                               monkeypatch):
+    """`clear` is the KVO's own answer to "do you still hold licences",
+    and it is the last thing between a stack and --accept-licence-loss.
+
+    It was computed as `not (rows if isinstance(rows, list) else [])`. An
+    HTTP error body, an HTML EULA page, a None and a wrapped list all
+    became [], [] became "the KVO holds nothing", licences.js recorded
+    that as this session's evidence and teardown.js turned it into
+    --accept-licence-loss on the argv of a run that deletes the KVO. Four
+    shapes, none of them a reading, all of them clear. The script puts the
+    cost of one of those at 1500 counts.
+
+    So the read is tri-state: True only on a genuine empty list, False on
+    any answer that named a licence, and None with a reason otherwise. The
+    page treats a missing or null `clear` as not-clear, which is why None
+    is the right value for "I could not tell" and False is not: False
+    reads as an answer the KVO gave."""
+    kl = _ListKL(code, body)
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                      "rows": [{"activationCode": "AAAA-1111", "quantity": 5}]})
+    assert r["clear"] is clear, r
+    assert r["count"] == count and len(r["licences"]) == count
+    assert ("unreadable" in r) is (not readable), r
+    if not readable:
+        assert r["unreadable"] and "list" in r["unreadable"]
+        # the reason says the shape and the status, never the KVO's own
+        # words: an error body is arbitrary text on an operator's screen
+        assert "internal server error" not in r["unreadable"]
+        assert "<html" not in r["unreadable"]
+    # the deactivate itself succeeded either way: `released` is about the
+    # rows this call asked for, `clear` about the appliance
+    assert r["released"] is True
+    # and the same answer through list, which the Licensing screen reads
+    listed = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "list"})
+    assert listed["clear"] is clear and listed["count"] == count
+
+
+def test_a_licence_list_the_kvo_never_answered_is_not_an_empty_one(monkeypatch):
+    """_req can also raise: a socket that never opened is not a KVO that
+    holds nothing."""
+    class _Broken(FakeKL):
+        def _req(self, method, url, token=None, body=None, verify=False, timeout=30):
+            if url.endswith("/licensing/licenses"):
+                raise urllib.error.URLError("[Errno 61] Connection refused")
+            return FakeKL._req(self, method, url, token, body, verify, timeout)
+
+    monkeypatch.setattr(api, "_kvo_license", lambda: _Broken())
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "list"})
+    assert r["clear"] is None and r["count"] == 0
+    assert "URLError" in r["unreadable"], r
+
+
+def test_a_poll_that_ran_out_of_its_budget_is_not_a_success(monkeypatch):
+    """kvo_license.py's poll_op returns IN_PROGRESS in exactly one case:
+    it hit its timeout with the KVO still working. _op_ok read that as
+    success ("FAIL" not in it, "ERROR" not in it), so a row nobody watched
+    to its end was counted as done.
+
+    That is not a rare shape. OP_BUDGET is shared across the rows of one
+    call, so the LAST rows of a full call are the ones that get a second
+    or two: rows 4 and 5 of a five-code activate. "5 of 5 activated" then
+    included two operations with no outcome, and on the release side a
+    row that never finished sat beside `clear` and turned the teardown
+    banner green."""
+    assert api._op_ok("IN_PROGRESS") is False and api._op_running("IN_PROGRESS") is True
+    assert api._op_ok("in_progress") is False, "the state is compared case-insensitively"
+    assert api._op_ok("SUCCESS") is True and api._op_running("SUCCESS") is False
+    assert api._op_ok("FAILED") is False and api._op_ok("") is False and api._op_ok(None) is False
+
+    kl = FakeKL(ents={"BBBB-2222": [("CloudLens-Credit", 10, 20)]}, states={"activate": "IN_PROGRESS"})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "activate", "codes": ["BBBB-2222,3"]})
+    assert r["results"][0]["ok"] is False and r["results"][0]["running"] is True
+    assert r["activated"] == 0 and r["running"] == 1, "a row still running is not a row activated"
+
+    # a release whose poll timed out, over a KVO whose list could not be
+    # read either: neither half may be reported as done
+    kl = _ListKL(503, {"error": "service unavailable"}, licences=[LICENCE_ROW],
+                 states={"deactivate": "IN_PROGRESS"})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                      "rows": [{"activationCode": "AAAA-1111", "quantity": 5}]})
+    assert r["released"] is False and r["running"] == 1
+    assert r["results"][0]["running"] is True and r["results"][0]["ok"] is False
+    assert r["clear"] is None, "an unread list beside an unfinished release is not a clear KVO"
+
+    # and one whose list DID come back, still holding the licence
+    kl = FakeKL(licences=[LICENCE_ROW], states={"deactivate": "IN_PROGRESS"})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                      "rows": [{"activationCode": "AAAA-1111", "quantity": 5}]})
+    assert r["released"] is False and r["clear"] is False and r["count"] == 1
+
+
+class _TimedLookupKL(FakeKL):
+    """FakeKL that records the timeout each lookup was given and lets the
+    lookup take time on a clock the test holds."""
+    def __init__(self, clock, per_lookup=0.0, **kw):
+        FakeKL.__init__(self, **kw)
+        self.clock, self.per_lookup, self.timeouts = clock, per_lookup, []
+
+    def lookup_code(self, kvo, base, tok, code, verify, timeout=None):
+        self.timeouts.append(timeout)
+        self.clock[0] += self.per_lookup
+        return FakeKL.lookup_code(self, kvo, base, tok, code, verify, timeout)
+
+
+def test_check_is_capped_in_rows_and_shares_the_requests_polling_budget(monkeypatch):
+    """check is where a customer's whole paste lands, and it was the one
+    licensing action with neither bound: MAX_LIST let 50 codes through,
+    and _lookup passed no timeout at all, so kvo_license.py's poll_op
+    applied its own 120 second default PER CODE. Fifty codes was one
+    request that could hold the browser's connection for an hour and a
+    half. It spends nothing, so its row cap is its own (MAX_CHECK), but it
+    shares the same OP_BUDGET as the calls that do."""
+    clock = [1000.0]
+    monkeypatch.setattr(api, "_now", lambda: clock[0])
+    kl = _TimedLookupKL(clock, per_lookup=100.0, ents={"BBBB-2222": [("CloudLens-Credit", 10, 20)]})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "check",
+                      "codes": ["BBBB-2222", "CCCC-3333", "DDDD-4444"]})
+    assert len(r["codes"]) == 3
+    # one budget, spent across the rows, and never below 1: not three
+    # fresh 120 second defaults
+    assert kl.timeouts == [api.OP_BUDGET, api.OP_BUDGET - 100, 1], kl.timeouts
+
+    n = len(kl.calls)
+    many = ["AAAA-%04d" % i for i in range(api.MAX_CHECK + 1)]
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "check", "codes": many})
+    assert r.get("error") and str(api.MAX_CHECK) in r["error"] and str(len(many)) in r["error"], r
+    assert len(kl.calls) == n, "a body over the limit never reaches the KVO, not even to log in"
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "check",
+                      "codes": ["AAAA-%04d" % i for i in range(api.MAX_CHECK)]})
+    assert len(r["codes"]) == api.MAX_CHECK, "exactly the limit is allowed"
+    assert api.MAX_CHECK < api.MAX_LIST, "a paste of MAX_LIST codes is not one polled request"
+    # a lookup that ran out of the budget says so, rather than reporting a
+    # good activation code as one the KVO did not recognise
+    kl = FakeKL(states={"retrieve-activation-code-info": "IN_PROGRESS"})
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+
+    def timed_out(kvo, base, tok, code, verify, timeout=None):
+        return [], {"state": "IN_PROGRESS"}
+
+    kl.lookup_code = timed_out
+    r = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "check", "codes": ["BBBB-2222"]})
+    assert r["codes"][0] == {"code": "BBBB-2222", "valid": False, "state": "IN_PROGRESS",
+                             "running": True, "entitlements": []}
 
 
 def test_a_refused_code_is_named_by_position_and_never_echoed(tmp_path, monkeypatch):
@@ -1666,6 +1857,92 @@ def test_status_carries_a_state_per_field_and_never_invents_a_count(tmp_path, mo
     assert r["vpb"]["command"] == (
         'ssh -i ~/.ssh/lab.pem -p 9022 admin@3.1.1.3 \'sudo vpb -c "show traffic-rule-packet-counters"\'')
     assert ".pem" in r["vpb"]["unavailable"]
+
+
+def test_the_profile_reader_takes_export_and_single_quotes_as_the_loader_does(tmp_path):
+    """Two divergences from deploy-stack.sh's loader, in opposite
+    directions, in the guard that stops a replay running in a region the
+    console is not watching.
+
+    `export CLOUDLENS_REGION="us-west-2"` is a line the loader reads (it
+    strips the `export ` prefix, one space, before matching) and the
+    regex here did not match at all. _profile_says then said nothing about
+    the region, the caller only refuses on a value that DISAGREES, and the
+    guard failed OPEN: the run went to the profile's region while the
+    console held and reported the typed one, and _in_flight, which keys on
+    the typed region, would have let the same profile be replayed twice at
+    once.
+
+    `CLOUDLENS_REGION='us-west-2'` is the same value in the other kind of
+    quotes. The loader strips one matching pair of EITHER kind; the regex
+    stripped only double quotes, so the value read back as "'us-west-2'"
+    and a request that named us-west-2 was refused over quotes the script
+    never sees."""
+    p = tmp_path / "profile.env"
+    p.write_text('export CLOUDLENS_REGION="us-west-2"\n'
+                 "CLOUDLENS_STACK_NAME='demo'\n"
+                 'export CLOUDLENS_TAPPING=sensors\n'
+                 'CLOUDLENS_INFRA="new\n')
+    says = api._profile_says(str(p), ("CLOUDLENS_REGION", "CLOUDLENS_STACK_NAME", "CLOUDLENS_TAPPING",
+                                      "CLOUDLENS_INFRA"))
+    assert says["CLOUDLENS_REGION"] == "us-west-2", "export is stripped, as ${_pl#export } strips it"
+    assert says["CLOUDLENS_STACK_NAME"] == "demo", "one matching pair of quotes, either kind"
+    assert says["CLOUDLENS_TAPPING"] == "sensors"
+    # an unbalanced quote is part of the value there, so it is part of it
+    # here: the loader strips a PAIR
+    assert says["CLOUDLENS_INFRA"] == '"new'
+    # what the loader itself ignores is still ignored: it strips exactly
+    # "export " with one space, and anything else fails its key rule
+    for line in ("export\tCLOUDLENS_REGION=eu-west-1", "export  CLOUDLENS_REGION=eu-west-1",
+                 "EXPORT CLOUDLENS_REGION=eu-west-1", "# CLOUDLENS_REGION=eu-west-1"):
+        one = tmp_path / "one.env"
+        one.write_text(line + "\n")
+        assert api._profile_says(str(one), ("CLOUDLENS_REGION",))["CLOUDLENS_REGION"] is None, line
+    # and the guard that reads it refuses on the value the script would use
+    stack_says = tmp_path / "deploy-profile-demo.env"
+    stack_says.write_text('export CLOUDLENS_STACK_NAME="demo"\nexport CLOUDLENS_REGION="us-west-2"\n')
+    assert api._profile_says(str(stack_says), ("CLOUDLENS_REGION",)) == {"CLOUDLENS_REGION": "us-west-2"}
+
+
+def test_status_names_the_kvo_by_role_over_every_instance_not_only_the_rows(tmp_path, monkeypatch):
+    """`rows` is the first MAX_ROWS instances; `by_role` is computed over
+    all of them, and travels with the answer.
+
+    teardown.js asked "does this stack have a KVO, and at what address" of
+    the rows. A stack with more than 50 live instances whose KVO sorted
+    past the cut answered no KVO, and no KVO is the ONE value that draws
+    no licence banner at all: the teardown armed silently over an
+    appliance still holding its counts. The side that has seen every row
+    is this one."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "not-here.json"))
+    monkeypatch.setattr(api.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
+    monkeypatch.delenv("CLOUDLENS_KEY_PEM", raising=False)
+    monkeypatch.setattr(api.subprocess, "run", _never)
+    monkeypatch.setattr(api.subprocess, "Popen", _never)
+
+    def crowd(args, region, **kw):
+        if args[:2] == ["ec2", "describe-instances"]:
+            rows = [{"InstanceId": "i-w%03d" % n, "InstanceType": "t3.small", "State": {"Name": "running"},
+                     "PrivateIpAddress": "10.0.0.%d" % (n % 250),
+                     "Tags": [{"Key": "Name", "Value": "demo-workload-%03d" % n}]}
+                    for n in range(api.MAX_ROWS + 10)]
+            # the KVO past the cut, which is the whole case
+            rows.append({"InstanceId": "i-kvo", "InstanceType": "t3.xlarge", "State": {"Name": "running"},
+                         "PublicIpAddress": "3.1.1.9",
+                         "Tags": [{"Key": "Name", "Value": "demo-kvo"}]})
+            return {"Reservations": [{"Instances": rows}]}
+        return {"TrafficMirrorSessions": []}
+
+    monkeypatch.setattr(api, "_aws", crowd)
+    r = api.status("demo", "us-east-1")
+    cell = r["instances"]["value"]
+    assert cell["count"] == api.MAX_ROWS + 11 and len(cell["rows"]) == api.MAX_ROWS
+    assert cell["truncated"] is True
+    assert not [x for x in cell["rows"] if x["role"] == "kvo"], (
+        "the case: the KVO is outside the rows the answer carries")
+    assert cell["by_role"]["kvo"]["id"] == "i-kvo" and cell["by_role"]["kvo"]["public_ip"] == "3.1.1.9"
+    assert "hunter" not in json.dumps(cell)
 
 
 def test_status_says_what_the_cli_said_when_it_could_not_answer(tmp_path, monkeypatch):

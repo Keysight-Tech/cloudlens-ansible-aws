@@ -54,6 +54,7 @@ if (IN.releaseResp !== undefined) {
   out.before = W.clLicences.released();
   out.recorded = W.clLicences.noteRelease(IN.kvo, IN.releaseResp);
 }
+if (IN.inst !== undefined) out.kvoAnswer = W.clTeardown.kvoAnswer(IN.inst);
 if (IN.gate !== undefined) out.gate = W.clTeardown.teardownGate(IN.gate);
 if (IN.gates !== undefined) out.gates = IN.gates.map(function(g){ return W.clTeardown.teardownGate(g); });
 if (IN.freshModel !== undefined) out.freshModel = W.clTeardown.model();
@@ -61,6 +62,8 @@ if (IN.rows !== undefined) out.kvoRow = W.clTeardown.kvoRow(IN.rows);
 if (IN.session !== undefined) out.session = IN.session.map(function(step){
   if (step.release !== undefined)
     return {recorded: W.clLicences.noteRelease(step.release.kvo, step.release.resp)};
+  // what activate() and load() do when the KVO says it holds something
+  if (step.holds !== undefined) return {held: W.clLicences.noteHolds(step.holds)};
   var m = {};
   Object.keys(step.gate).forEach(function(k){ m[k] = step.gate[k]; });
   // exactly what teardown.js's render() does before it gates: the record is
@@ -210,7 +213,7 @@ class _KL(object):
             return 200, list(self.licences)
         return 202, {"url": "/op/" + url.rsplit("/", 1)[-1]}
 
-    def lookup_code(self, kvo, base, tok, code, verify):
+    def lookup_code(self, kvo, base, tok, code, verify, timeout=None):
         if code.startswith("BBBB"):
             return [("CloudLens-Credit", 10, 20)], {"state": "SUCCESS"}
         return [], {"state": "FAILED"}
@@ -550,3 +553,202 @@ def test_one_rule_picks_the_kvo_row_on_both_sides(tmp_path, monkeypatch):
     assert _node({"rows": stopped}, tmp_path, "ui.js", "plan.js",
                  "teardown.js")["kvoRow"]["id"] == "i-kvo-before", "with none running, the first stands"
     assert _node({"rows": []}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoRow"] is None
+
+
+class _KLUnreadable(_KL):
+    """A KVO whose deactivate succeeds and whose licence list then comes
+    back as an HTTP error body: _req returns (code, body) and does not
+    raise, so this is the shape that used to read as an empty list and
+    therefore as a clear appliance."""
+    def _req(self, method, url, token=None, body=None, verify=False, timeout=30):
+        if url.endswith("/licensing/licenses"):
+            return 500, {"error": "internal server error"}
+        return _KL._req(self, method, url, token, body, verify, timeout)
+
+
+def test_a_release_whose_list_could_not_be_read_never_paints_the_banner_green(tmp_path, monkeypatch):
+    """The seam the whole gate hangs on, driven end to end.
+
+    api._lic_release answers clear:null when it could not read what the
+    KVO holds. licences.js must record that as "not clear" (and as its own
+    kind of not-clear, so the banner can say which), and teardownGate must
+    refuse to arm on it. Before the read was tri-state this exact KVO -
+    deactivate SUCCESS, licence list an HTTP 500 - answered clear:true,
+    which is a green banner and --accept-licence-loss on the argv of a run
+    that deletes the appliance."""
+    monkeypatch.setattr(api, "_kvo_license", lambda: _KLUnreadable())
+    resp = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                         "rows": [{"activationCode": "AAAA-1111-BBBB", "quantity": 5}]})
+    assert resp["released"] is True and resp["clear"] is None and resp["unreadable"]
+
+    armed = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1",
+             "hasKvo": True, "kvoAddr": "10.1.2.3", "kvoName": "demo-kvo"}
+    out = _node({"session": [{"release": {"kvo": "10.1.2.3", "resp": resp}},
+                             {"gate": dict(armed)}]},
+                tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js")["session"]
+    rec = out[1]["released"]
+    assert rec["clear"] is False and rec["unknown"] is True, rec
+    assert out[1]["gate"]["licencesReleased"] is False, (
+        "an unread licence list is not an empty one, and must never arm --accept-licence-loss")
+    assert out[1]["gate"]["warn"]["level"] == "bad"
+    assert "could not be READ" in out[1]["gate"]["warn"]["text"], out[1]["gate"]["warn"]["text"]
+    # and it does not read as "the KVO still holds licences", which is a
+    # different fact with a different next step
+    assert "STILL HOLDS" not in out[1]["gate"]["warn"]["text"]
+
+
+def test_a_later_activation_takes_back_an_earlier_releases_evidence(tmp_path, monkeypatch):
+    """`record` was written by noteRelease alone, so it aged into a lie.
+
+    Release everything on a KVO (green banner, licencesReleased true),
+    then activate a new code on the SAME KVO in the same session, and the
+    banner stayed green off the older fact: the appliance now holds
+    licences again and the teardown would still have run with
+    --accept-licence-loss. Anything that says the KVO holds licences - an
+    activation against it, or a list that names one - marks the record
+    stale, and a stale record no longer arms the gate. The codes and the
+    sentence stay, because the release did happen."""
+    clear = _KL()
+    monkeypatch.setattr(api, "_kvo_license", lambda: clear)
+    resp = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "release",
+                         "rows": [{"activationCode": "AAAA-1111-BBBB", "quantity": 5}]})
+    assert resp["clear"] is True
+    armed = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1",
+             "hasKvo": True, "kvoAddr": "10.1.2.3", "kvoName": "demo-kvo"}
+    steps = [
+        {"release": {"kvo": "10.1.2.3", "resp": resp}},     # 0
+        {"gate": dict(armed)},                              # 1 clear: the one green case
+        {"holds": "https://10.1.2.3/"},                     # 2 an activation lands on it
+        {"gate": dict(armed)},                              # 3 the same gate, after
+        {"gate": dict(armed, kvoAddr="10.9.9.9", kvoName="other-kvo")},   # 4 another appliance
+    ]
+    out = _node({"session": steps}, tmp_path, "ui.js", "plan.js", "licences.js", "teardown.js")["session"]
+    assert out[1]["gate"]["licencesReleased"] is True and out[1]["gate"]["warn"]["level"] == "good"
+    # the record keeps what it knows and loses its force
+    assert out[3]["released"]["codes"] == ["****-BBBB"] and out[3]["released"]["kvo"] == "10.1.2.3"
+    assert out[3]["released"]["clear"] is False and out[3]["released"]["stale"] is True
+    assert out[3]["gate"]["licencesReleased"] is False, (
+        "a KVO that has been activated on since the release is not a released KVO")
+    assert out[3]["gate"]["warn"]["level"] == "bad"
+    assert "ACTIVATED on it" in out[3]["gate"]["warn"]["text"], out[3]["gate"]["warn"]["text"]
+    # the host is matched the same way here as everywhere: the url form of
+    # the address is the same appliance
+    assert out[4]["gate"]["licencesReleased"] is False
+
+
+def test_the_gate_needs_the_kvo_question_answered_not_only_an_address(tmp_path):
+    """licencesReleased is what becomes --accept-licence-loss, so its
+    rule is structural rather than a convention every caller keeps.
+
+    `counts` was (ours && released.clear): it never asked whether this
+    stack HAS a KVO, and leaned entirely on the page clearing kvoAddr
+    whenever it cleared hasKvo. One caller forgetting that (an early
+    return, a new code path) is a stack whose KVO question came back
+    unknown arming on a previous stack's address. And `clear` is compared
+    with === true, as licences.js writes it: a truthy value that is not
+    the KVO's yes is not a yes."""
+    base = {"stack": "demo", "region": "us-east-1", "typed": "demo", "auditFor": "demo/us-east-1",
+            "kvoAddr": "10.1.2.3", "kvoName": "demo-kvo"}
+    mine = {"kvo": "10.1.2.3", "codes": ["****-BBBB"], "clear": True}
+    gates = [
+        dict(base, hasKvo=True, released=mine),                             # 0 the one that counts
+        dict(base, hasKvo=None, released=mine),                             # 1 could not tell
+        dict(base, hasKvo=False, released=mine),                            # 2 no KVO at all
+        dict(base, released=mine),                                          # 3 hasKvo not in the model
+        dict(base, hasKvo=True, released=dict(mine, clear="yes")),          # 4 truthy, not the answer
+        dict(base, hasKvo=True, released=dict(mine, clear=1)),              # 5 truthy, not the answer
+        dict(base, hasKvo=True, released=dict(mine, stale=True)),           # 6 clear but stale
+        # 7 an empty form: nothing named, so nothing to warn about yet
+        dict(base, hasKvo=None, stack="", region="", typed=""),
+    ]
+    out = _node({"gates": gates}, tmp_path, "ui.js", "plan.js", "teardown.js")["gates"]
+    assert [g["licencesReleased"] for g in out] == [True, False, False, False, False, False, False, False]
+    assert out[0]["warn"]["level"] == "good"
+    assert out[1]["warn"]["level"] == "warn", "unknown warns; it does not arm"
+    # the empty form draws nothing at all: the screen opens on it, and a
+    # banner over a form nobody has typed in teaches the operator to
+    # scroll past the one that matters
+    assert out[7]["warn"] is None and out[7]["armed"] is False
+    assert "Name the stack" in out[7]["why"]
+
+
+def test_a_truncated_instance_list_never_answers_no_kvo(tmp_path, monkeypatch):
+    """kvoAnswer reads api.status's by_role, which is computed over every
+    instance, and not the rows, which are the first api.MAX_ROWS.
+
+    The screen read the rows. A stack with more than 50 live instances
+    whose KVO sorted past the cut answered hasKvo false, and false is the
+    single value that draws no banner at all: the teardown armed with no
+    warning over a KVO still holding its counts. Where an answer carries
+    no by_role, a truncated list is "could not tell", which warns."""
+    monkeypatch.setattr(api, "REPO", str(tmp_path))
+    monkeypatch.setattr(api, "VC_CREDS_FILE", str(tmp_path / "absent.json"))
+    monkeypatch.setattr(api.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
+    monkeypatch.delenv("CLOUDLENS_KEY_PEM", raising=False)
+
+    def crowd(args, region, **kw):
+        if args[:2] == ["ec2", "describe-instances"]:
+            rows = [{"InstanceId": "i-w%03d" % n, "InstanceType": "t3.small",
+                     "State": {"Name": "running"}, "PrivateIpAddress": "10.0.0.9",
+                     "Tags": [{"Key": "Name", "Value": "demo-workload-%03d" % n}]}
+                    for n in range(api.MAX_ROWS + 5)]
+            rows.append({"InstanceId": "i-kvo", "InstanceType": "t3.xlarge",
+                         "State": {"Name": "running"}, "PublicIpAddress": "3.1.1.9",
+                         "Tags": [{"Key": "Name", "Value": "demo-kvo"}]})
+            return {"Reservations": [{"Instances": rows}]}
+        return {"TrafficMirrorSessions": []}
+
+    resp = _status(monkeypatch, tmp_path, aws=crowd)
+    cell = resp["instances"]
+    assert cell["value"]["truncated"] is True
+    out = _node({"inst": cell}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is True and out["addr"] == "3.1.1.9" and out["name"] == "demo-kvo"
+
+    # an answer with no by_role at all (an older server, or a shape this
+    # page did not expect) and a truncated list: could not tell, never no
+    older = {"value": {"count": cell["value"]["count"], "rows": cell["value"]["rows"], "truncated": True}}
+    out = _node({"inst": older}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is None and "only the first" in out["why"], out
+    # the same list untruncated is an answer, and the rows that DID arrive
+    # are still evidence OF a KVO
+    whole = {"value": {"count": 3, "truncated": False, "rows": [
+        {"id": "i-kvo", "role": "kvo", "state": "running", "name": "demo-kvo", "public_ip": "3.1.1.9",
+         "private_ip": ""}]}}
+    out = _node({"inst": whole}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is True and out["addr"] == "3.1.1.9"
+    part = {"value": {"count": 99, "truncated": True, "rows": whole["value"]["rows"]}}
+    out = _node({"inst": part}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is True, "a KVO among the rows that arrived is still a KVO"
+    none = {"value": {"count": 2, "truncated": False, "rows": [
+        {"id": "i-vpb", "role": "vpb", "state": "running", "name": "demo-vpb", "public_ip": "3.1.1.3",
+         "private_ip": ""}], "by_role": {"vpb": {"id": "i-vpb"}}}}
+    out = _node({"inst": none}, tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is False and out["addr"] == "", "a whole list with no KVO is an answer"
+    # a cell that carries no value is the unavailable one, with its reason
+    out = _node({"inst": {"unavailable": "AccessDenied", "command": "aws ec2 describe-instances"}},
+                tmp_path, "ui.js", "plan.js", "teardown.js")["kvoAnswer"]
+    assert out["hasKvo"] is None and out["why"] == "AccessDenied"
+
+
+def test_a_code_still_being_looked_up_is_not_a_code_the_kvo_refused(tmp_path, monkeypatch):
+    """check's poll can run out of the request's budget, and poll_op
+    reports that as IN_PROGRESS. Rendering it as "the KVO recognised
+    nothing under this code" is how a good activation code is thrown
+    away, so the row says the outcome is unknown and is not styled as a
+    refusal."""
+    kl = _KL()
+
+    def timed_out(kvo, base, tok, code, verify, timeout=None):
+        if code.startswith("BBBB"):
+            return [("CloudLens-Credit", 10, 20)], {"state": "SUCCESS"}
+        return [], {"state": "IN_PROGRESS"}
+
+    kl.lookup_code = timed_out
+    monkeypatch.setattr(api, "_kvo_license", lambda: kl)
+    check = api.licences({"kvo": "10.1.2.3", "password": "pw", "action": "check",
+                          "codes": ["BBBB-2222-CCCC", "DDDD-3333-EEEE"]})
+    rows = _node({"check": check}, tmp_path, "ui.js", "plan.js", "licences.js")["codeRows"]
+    assert rows[0]["valid"] is True and rows[0]["running"] is False
+    assert rows[1]["valid"] is False and rows[1]["running"] is True
+    assert "outcome unknown" in rows[1]["summary"], rows[1]["summary"]
+    assert "recognised nothing" not in rows[1]["summary"]

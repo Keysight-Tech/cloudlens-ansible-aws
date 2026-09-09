@@ -68,10 +68,22 @@ var LOG_MAX=400;
      it, which is exactly the loss this screen exists to prevent. The
      script's own words put a previous instance of it at 1500 counts.
 
+     the release is still the LATEST word on that KVO. A record marked
+     stale by licences.js (an activation landed on the appliance after the
+     release, or it listed a licence it still holds) says what happened
+     but no longer says what is true now.
+
    Either one missing is a `bad` warning, and each says which one, because
    "release the KVO's licences" and "finish releasing this KVO's licences"
    are different jobs. A KVO whose address the console could not read
-   cannot be matched at all, and is treated the same way. */
+   cannot be matched at all, and is treated the same way.
+
+   `counts` requires hasKvo === true structurally, rather than leaning on
+   every caller resetting kvoAddr whenever it resets hasKvo. It is the one
+   value in this file that becomes --accept-licence-loss on a command
+   line, so it does not depend on a convention being kept somewhere else:
+   an address left over from a previous stack cannot arm a stack whose own
+   KVO question came back unknown. */
 function teardownGate(m){
   m=m||{};
   var stack=txt(m.stack),region=txt(m.region),typed=txt(m.typed);
@@ -80,13 +92,34 @@ function teardownGate(m){
   var mine=hostOf(m.kvoAddr);                       // this stack's own KVO
   var from=released?hostOf(released.kvo):"";        // where the release was made
   var ours=!!(released&&mine&&from&&from===mine);   // made against this stack's KVO
-  var counts=!!(ours&&released.clear);              // and it left the KVO clear
+  // and it left the KVO clear, and nothing has been put back on it since.
+  // `clear` is === true because licences.js writes exactly true or false
+  // and the API's own answer is tri-state: a null is "could not read the
+  // KVO's list", which is not a yes.
+  var counts=!!(m.hasKvo===true&&ours&&released.clear===true&&released.stale!==true);
   var warn=null;
-  if(m.hasKvo===true&&counts)
+  // an empty form has no stack to have a KVO: the screen opens on one, and
+  // a banner about an unchecked KVO over a form nobody has typed in yet is
+  // noise that teaches the operator to scroll past this banner
+  if(!stack||!region)warn=null;
+  else if(m.hasKvo===true&&counts)
     warn={level:"good",text:"Licences were released from "+from+" in this session ("+
       (released.codes||[]).join(", ")+"), which is this stack's KVO"+named+
       ", and the KVO answered that it now holds none, so the teardown will run with "+
       "--accept-licence-loss."};
+  else if(m.hasKvo===true&&ours&&released.stale===true)
+    warn={level:"bad",text:"Licences were released from this stack's own KVO"+named+" at "+mine+
+      " in this session ("+(released.codes||[]).join(", ")+"), but licences have been ACTIVATED on it "+
+      "since, or it has listed licences it still holds, so that release is no longer evidence that it is "+
+      "clear. The teardown will NOT run with --accept-licence-loss. Go back to the Licensing screen, list "+
+      "what is installed and release it: a KVO deleted with licences still installed strands those counts, "+
+      "and they do not come back."};
+  else if(m.hasKvo===true&&ours&&released.unknown===true)
+    warn={level:"bad",text:"A release was made against this stack's own KVO"+named+" at "+mine+
+      " in this session ("+(released.codes||[]).join(", ")+"), but the KVO's licence list could not be READ "+
+      "afterwards, so whether it still holds licences is unknown. An unread list is not an empty one. The "+
+      "teardown will NOT run with --accept-licence-loss. Go back to the Licensing screen and list what is "+
+      "installed: a KVO deleted with licences still installed strands those counts, and they do not come back."};
   else if(m.hasKvo===true&&ours)
     warn={level:"bad",text:"A release was made against this stack's own KVO"+named+" at "+mine+
       " in this session ("+(released.codes||[]).join(", ")+"), but the KVO answered that it STILL HOLDS "+
@@ -135,10 +168,43 @@ function recordFor(addr,L){
   return L.released(addr)||L.latestRelease();
 }
 
+/* Whether this stack has a KVO and, when it has one, WHICH: the answer
+   /api/status's instances cell gives, as {hasKvo, name, addr, why}.
+   hasKvo is true, false, or null for "could not tell", and only a null
+   carries a `why`.
+
+   The KVO is read from `by_role`, which api.status computes over EVERY
+   instance it found, and not from `rows`, which is only the first
+   api.MAX_ROWS (50) of them. This screen read the rows: a stack with more
+   than 50 live instances whose KVO sorted past the cut answered "this
+   stack has no KVO", and false is the single value that draws no banner
+   at all, so the teardown armed in silence over an appliance still
+   holding its counts. Where no by_role arrives, a truncated list is
+   "could not tell" unless the KVO is among the rows that did come: those
+   rows are still evidence OF a KVO, they are just never evidence of its
+   absence. */
+function kvoAnswer(inst){
+  var unknown=function(why){return {hasKvo:null,name:"",addr:"",why:txt(why)};};
+  if(!inst||!Object.prototype.hasOwnProperty.call(inst,"value"))
+    return unknown(inst&&inst.unavailable);
+  var v=inst.value||{};
+  var roles=v.by_role&&typeof v.by_role==="object"?v.by_role:null;
+  var kvo=roles?(roles.kvo||null):kvoRow(v.rows);
+  if(!kvo&&!roles&&v.truncated===true)
+    return unknown("the console listed only the first "+((v.rows||[]).length)+" of "+v.count+
+                   " instances, and a KVO outside that list would not be among them");
+  return {hasKvo:!!kvo,name:kvo?txt(kvo.name):"",
+          // the address the Licensing screen would have been pointed at; a
+          // KVO with neither is "" and matches nothing, which is the point
+          addr:kvo?txt(kvo.public_ip)||txt(kvo.private_ip):"",why:""};
+}
+
 /* The kvo-role instance among the rows /api/status listed: the first one,
    except that a running instance beats a stopped one. api.by_role picks
    by the same rule on its side, so the address the console licenses
-   against and the address it matches a release to are one instance. */
+   against and the address it matches a release to are one instance. This
+   is the fallback for an answer that carries no by_role; where there is
+   one, the server has seen every row and this has seen 50. */
 function kvoRow(rows){
   var pick=null;
   (rows||[]).forEach(function(row){
@@ -262,25 +328,16 @@ function stopAudit(){
   render();
 }
 
-/* Whether this stack has a KVO and, when it has one, WHICH: the address
-   of the kvo-role instance, which is what a recorded release is matched
-   against. Both come from the one read-only route that knows, the
-   instances it named. A failure is null, not false. */
 function checkKvo(){
   var s=model.stack,r=model.region;
   U.get("/api/status?stack="+enc(s)+"&region="+enc(r),function(x){
     if(model.stack!==s||model.region!==r)return;      // the operator moved on
-    var d=x.d;
-    var inst=d&&d.instances;
-    if(!inst||!Object.prototype.hasOwnProperty.call(inst,"value")){
-      forgetKvo((inst&&inst.unavailable)||U.why(x)||"the console could not read the instances");
-    }else{
-      var kvo=kvoRow(inst.value.rows);
-      model.hasKvo=!!kvo;
-      model.kvoName=kvo?txt(kvo.name):"";
-      // the address the Licensing screen would have been pointed at; a
-      // KVO with neither is "" and matches nothing, which is the point
-      model.kvoAddr=kvo?txt(kvo.public_ip)||txt(kvo.private_ip):"";
+    var a=kvoAnswer(x.d&&x.d.instances);
+    if(a.hasKvo===null)forgetKvo(a.why||U.why(x)||"the console could not read the instances");
+    else{
+      model.hasKvo=a.hasKvo;
+      model.kvoName=a.name;
+      model.kvoAddr=a.addr;
       model.kvoWhy="";
     }
     render();
@@ -392,7 +449,7 @@ function init(){
 }
 
 if(typeof window!=="undefined")window.clTeardown={
-  teardownGate:teardownGate,recordFor:recordFor,kvoRow:kvoRow,COUNTS:COUNTS,
+  teardownGate:teardownGate,recordFor:recordFor,kvoRow:kvoRow,kvoAnswer:kvoAnswer,COUNTS:COUNTS,
   model:function(){return model;}
 };
 

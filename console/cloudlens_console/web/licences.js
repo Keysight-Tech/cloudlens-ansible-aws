@@ -25,6 +25,12 @@
        on the argv of a run that deletes the KVO with those licences
        still on it. `clear` is carried into the record and the teardown
        gate turns on it.
+     - the record was written only when something was RELEASED, so it
+       aged into a lie. Release everything on a KVO, activate a new code
+       on the same KVO a minute later, and the banner was still green off
+       the older fact. Anything that puts licences back on an appliance
+       (an activation, or a list that names one) marks that appliance's
+       record stale, and a stale record no longer arms the teardown.
 
    What this file never does:
      - store the KVO password. It is read out of its field at the moment a
@@ -37,12 +43,14 @@
        is a code somebody else can spend.
 
    The pure half (codeRows, licenceRows, releaseRow, noteRelease,
-   released, latestRelease) is under tests/test_ops_model.py in node. */
+   noteHolds, released, latestRelease) is under tests/test_ops_model.py in
+   node. */
 
 var U=window.clUi;                            // ui.js, loaded before this file
 var $=U.$,txt=U.txt,esc=U.esc,status=U.status,codeTail=U.codeTail,hostOf=U.hostOf;
 var CODES_MAX=50;                             // api.MAX_LIST
 var OPS_MAX=10;                               // api.MAX_OPS: codes in one polled call
+var CHECK_MAX=25;                             // api.MAX_CHECK: codes in one polled check
 var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;   // api.CODE_QTY
 
 /* ------------------------------------------------------------ the model */
@@ -59,11 +67,18 @@ function codeRows(resp){
       return {product:txt(e.product),available:num(e.available),total:num(e.total)};
     });
     var avail=ents.length?ents[0].available:0;
-    return {code:txt(c.code),tail:codeTail(c.code),valid:c.valid===true,state:txt(c.state),
-            entitlements:ents,available:avail,quantity:avail,
+    // a lookup whose poll ran out of the request's budget has no answer:
+    // reporting it as a code the KVO did not recognise is how a good
+    // activation code gets thrown away
+    var running=!!(c&&c.running===true&&!ents.length);
+    return {code:txt(c.code),tail:codeTail(c.code),valid:c.valid===true,running:running,
+            state:txt(c.state),entitlements:ents,available:avail,quantity:avail,
             summary:ents.length
               ? ents.map(function(e){return e.product+" "+e.available+" of "+e.total;}).join(", ")
-              : "the KVO recognised nothing under this code"};
+              : running
+                ? "the KVO was still looking this code up when the console's polling budget ran out: "+
+                  "outcome unknown, check it again on its own"
+                : "the KVO recognised nothing under this code"};
   });
 }
 
@@ -89,18 +104,34 @@ function releaseRow(row){
    the Teardown screen's warning is deliberately about THIS session's
    evidence rather than a claim it cannot check.
 
-   host -> {kvo (as it was typed), codes (tails), clear, when}. `clear` is
-   the KVO's own answer to "do you still hold licences", read from the
-   release response and never inferred: a release that succeeded on the
-   rows it was given still leaves the KVO holding whatever nobody asked
-   about, and that is the case this record exists to make visible. */
+   host -> {kvo (as it was typed), codes (tails), clear, unknown, stale,
+   when}.
+
+   `clear` is the KVO's own answer to "do you still hold licences", read
+   from the release response and never inferred: a release that succeeded
+   on the rows it was given still leaves the KVO holding whatever nobody
+   asked about, and that is the case this record exists to make visible.
+   It is true only when the KVO ANSWERED that it holds none: /api/licences
+   answers clear:null when the list could not be read at all, and a null
+   is not a yes.
+
+   `stale` is the other half of the same rule, in time rather than in
+   rows. The record was written only by noteRelease, so a release followed
+   by an activation on the same KVO in the same session still showed the
+   green banner: the release did happen, and it stopped being TRUE of the
+   appliance the moment something was put back on it. Anything that says
+   the KVO holds licences again (an activation against it, or a list that
+   comes back non-empty) marks the record stale. The codes and the
+   timestamp stay, because "released ****-BBBB from 10.1.2.3" is still a
+   fact worth printing; what it stops being is evidence. */
 var record={},seq=0;
 
 function noteRelease(kvo,resp){
   var host=hostOf(kvo);
   var ok=((resp&&resp.results)||[]).filter(function(r){return r&&r.ok===true;});
   if(!host||!ok.length)return released(kvo);
-  var rec=record[host]||(record[host]={kvo:txt(kvo),codes:[],clear:false,when:0,seq:0});
+  var rec=record[host]||(record[host]={kvo:txt(kvo),codes:[],clear:false,unknown:false,stale:false,
+                                       when:0,seq:0});
   rec.kvo=txt(kvo);
   rec.when=Date.now();
   // the order releases were made in, which Date.now() does not give: two in
@@ -108,6 +139,11 @@ function noteRelease(kvo,resp){
   // answer and not a coin toss
   rec.seq=++seq;
   rec.clear=resp.clear===true;
+  // the API answers clear:null when it could not read the KVO's list at
+  // all. That is not "still holds licences" and it is not "holds none":
+  // the record says which, so the Teardown banner can say it too
+  rec.unknown=resp.clear!==true&&resp.clear!==false;
+  rec.stale=false;                  // this release is the newest word on this KVO
   ok.forEach(function(r){
     var tail=codeTail(r.code);
     if(rec.codes.indexOf(tail)<0)rec.codes.push(tail);
@@ -115,8 +151,20 @@ function noteRelease(kvo,resp){
   return released(kvo);
 }
 
+/* This KVO holds licences again, or still: an activation landed on it, or
+   it listed something. The record keeps its sentence and loses its force. */
+function noteHolds(kvo){
+  var host=hostOf(kvo),rec=host&&record[host];
+  if(!rec)return released(kvo);
+  rec.clear=false;
+  rec.unknown=false;                // this is not an unread list: it is a licence
+  rec.stale=true;
+  return released(kvo);
+}
+
 function _copy(rec){
-  return rec?{kvo:rec.kvo,codes:rec.codes.slice(),clear:rec.clear===true,when:rec.when}:null;
+  return rec?{kvo:rec.kvo,codes:rec.codes.slice(),clear:rec.clear===true,
+              unknown:rec.unknown===true,stale:rec.stale===true,when:rec.when}:null;
 }
 
 /* The release made against one appliance, or null. An address in any of
@@ -183,7 +231,8 @@ function renderCodeRows(){
   }
   tb.innerHTML=rows.map(function(r,i){
     return "<tr><td><code>"+esc(r.tail)+"</code></td>"+
-      '<td><span class="st '+(r.valid?"pass":"fail")+'">'+esc(r.valid?"VALID":"NO")+"</span></td>"+
+      '<td><span class="st '+(r.valid?"pass":r.running?"warn":"fail")+'">'+
+      esc(r.valid?"VALID":r.running?"UNKNOWN":"NO")+"</span></td>"+
       "<td>"+esc(r.summary)+(r.state?' <span class="dim">'+esc(r.state)+"</span>":"")+"</td>"+
       "<td>"+(r.valid&&r.available
         ? '<label class="vh" for="licQty'+i+'">Quantity for the code ending '+esc(r.tail.slice(-4))+"</label>"+
@@ -225,8 +274,12 @@ function renderRecord(){
   $("licReleased").textContent=hosts.map(function(h){
     var r=record[h];
     return "Released from "+r.kvo+": "+r.codes.join(", ")+". "+
-      (r.clear?"That KVO now holds no licences."
-              :"That KVO STILL holds licences, so it is not safe to delete yet.");
+      (r.stale?"Licences have been activated on that KVO, or it has listed licences it still holds, since "+
+               "that release: it is not safe to delete yet."
+             :r.clear?"That KVO now holds no licences."
+                     :r.unknown?"That KVO's licence list could not be read afterwards, so whether it still "+
+                                "holds licences is unknown; it is not safe to delete on that."
+                               :"That KVO STILL holds licences, so it is not safe to delete yet.");
   }).join(" ")+" The Teardown screen reads this per KVO, and runs with --accept-licence-loss only for a "+
     "KVO that is this stack's own AND clear.";
 }
@@ -267,12 +320,22 @@ function call(action,extra,cb){
 }
 
 function check(){
+  if(codes.length>CHECK_MAX)
+    return status("licStatus","That is "+codes.length+" codes in one call, and each one is a lookup the "+
+      "console POSTs to the KVO and polls to its end inside a single request: it takes at most "+CHECK_MAX+
+      " at a time, and they share one polling budget, so a longer list only gives each code less time to "+
+      "answer. Remove some and check them in batches.",true);
   call("check",{codes:codes.slice()},function(d){
     rows=codeRows(d);
     renderCodeRows();
     var good=rows.filter(function(r){return r.valid;}).length;
+    var open=rows.filter(function(r){return r.running;});
     status("licStatus",good+" of "+rows.length+" code"+(rows.length===1?"":"s")+
-      " recognised. Set the quantity per code, then Activate: activating spends entitlement that does not come back.");
+      " recognised. Set the quantity per code, then Activate: activating spends entitlement that does not come back."+
+      (open.length?" "+open.length+" code"+(open.length===1?" was":"s were")+" still being looked up when the "+
+        "console's budget ran out, so nothing is known about "+(open.length===1?"it":"them")+" either way ("+
+        open.map(function(r){return r.tail;}).join(", ")+"): check "+(open.length===1?"it":"them")+
+        " again on "+(open.length===1?"its":"their")+" own.":""),!!open.length);
   });
 }
 
@@ -288,13 +351,28 @@ function activate(){
   call("activate",{codes:picked},function(d){
     installed=licenceRows(d);
     renderInstalled();
+    // whatever this KVO's release record said before, something has just
+    // been put back ON it: the record keeps its sentence and stops being
+    // the evidence the Teardown screen may arm on
+    noteHolds($("licKvo").value.trim());
+    renderRecord();
     var ok=(d.activated||0);
+    // a row still running is not a row that failed and not a row that
+    // worked: the console stopped polling before the KVO finished, and
+    // the entitlement may or may not have been spent
+    var open=(d.results||[]).filter(function(r){return r&&r.running===true;});
+    var no=(d.results||[]).filter(function(r){return r&&r.ok!==true&&r.running!==true;});
     // a partial or total failure is a failure: the refused codes are named
     // here and the line is styled as the refusal it is
-    status("licStatus",ok+" of "+picked.length+" activated. "+
-      (d.results||[]).filter(function(r){return !r.ok;}).map(function(r){
+    status("licStatus",ok+" of "+picked.length+" activated."+
+      (no.length?" Refused: "+no.map(function(r){
         return codeTail(r.code)+": "+(r.state||"refused");
-      }).join("; "),ok<picked.length);
+      }).join("; ")+".":"")+
+      (open.length?" "+open.length+" still running, outcome unknown ("+
+        open.map(function(r){return codeTail(r.code);}).join(", ")+"): the console's polling budget ran out "+
+        "before the KVO finished, so "+(open.length===1?"that code":"those codes")+" may or may not have "+
+        "been spent. Press \"List what is installed\" to see what actually landed.":""),
+      ok<picked.length);
   });
 }
 
@@ -302,9 +380,20 @@ function load(){
   call("list",null,function(d){
     installed=licenceRows(d);
     renderInstalled();
+    // a list that names anything is the KVO saying it still holds
+    // something, whatever this session released earlier
+    if(installed.length){noteHolds($("licKvo").value.trim());renderRecord();}
+    // clear is tri-state: the API answers null when it could not read the
+    // list at all, and "this KVO holds no licences" is not a thing to say
+    // about an answer nobody got
     status("licStatus",installed.length
       ? (installed.length+" licence"+(installed.length===1?"":"s")+" installed on this KVO.")
-      : "This KVO holds no licences.");
+      : d.clear===true
+        ? "This KVO holds no licences."
+        : "The KVO's licence list could not be read"+(d.unreadable?" ("+d.unreadable+")":"")+
+          ", so what it holds is unknown. That is not the same as holding none: try again before "+
+          "tearing anything down.",
+      installed.length?false:d.clear!==true);
   });
 }
 
@@ -317,12 +406,22 @@ function release(row){
     renderInstalled();
     noteRelease($("licKvo").value.trim(),d);
     renderRecord();
+    var open=(d.results||[]).filter(function(r){return r&&r.running===true;});
     status("licStatus",d.released
-      ? ("Released. "+(d.clear
+      ? ("Released. "+(d.clear===true
           ? "This KVO now holds no licences."
-          : "Some licences are still installed, so this KVO is still not safe to delete: the Teardown "+
-            "screen will keep warning until it is clear."))
-      : "The KVO did not confirm the release; the counts are still with it.",!d.released||!d.clear);
+          : d.clear===false
+            ? "Some licences are still installed, so this KVO is still not safe to delete: the Teardown "+
+              "screen will keep warning until it is clear."
+            : "The KVO's licence list could not be read afterwards"+(d.unreadable?" ("+d.unreadable+")":"")+
+              ", so whether it still holds licences is UNKNOWN. It is not clear until it says so: list "+
+              "what is installed again before tearing anything down."))
+      : open.length
+        ? ("The KVO had not finished the release when the console's polling budget ran out, so the outcome "+
+           "is unknown: the counts may or may not be back. List what is installed and look before releasing "+
+           "again.")
+        : "The KVO did not confirm the release; the counts are still with it.",
+      !d.released||d.clear!==true);
   });
 }
 
@@ -349,7 +448,7 @@ function init(){
 
 if(typeof window!=="undefined")window.clLicences={
   codeRows:codeRows,licenceRows:licenceRows,releaseRow:releaseRow,codeTail:codeTail,
-  noteRelease:noteRelease,released:released,latestRelease:latestRelease
+  noteRelease:noteRelease,noteHolds:noteHolds,released:released,latestRelease:latestRelease
 };
 
 if(typeof document!=="undefined"&&document.getElementById("licRows"))init();

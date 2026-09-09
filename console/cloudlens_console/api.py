@@ -61,6 +61,11 @@ MAX_PASSWORD = 1024     # characters of a KVO password
 # MAX_OPS bounds the rows; OP_BUDGET bounds the whole request, shared out
 # across them, so the last row cannot start a fresh 120 seconds.
 MAX_OPS = 10            # activation codes in one polled licensing call
+# check is a lookup per code, polled the same way, and it is where a
+# customer's whole paste lands: it spends nothing, so it may take more rows
+# than activate, but not 50 of them, and it shares the same OP_BUDGET so a
+# long list only makes each row's share smaller.
+MAX_CHECK = 25          # activation codes looked up in one check call
 OP_BUDGET = 180         # seconds for all of one licensing request's polling
 
 # ---------------------------------------------------------------- rules
@@ -572,10 +577,34 @@ def _in_flight(jobs, stack, region):
 # vocabulary, because only the script knows it.
 PHASE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
-# KEY="value" as deploy-stack.sh's profile loader reads a line back: one pair
-# of outer quotes stripped, nothing unescaped (profile.render() refuses the
-# two values that could not survive that).
-_PROFILE_LINE = re.compile(r'^(CLOUDLENS_[A-Z0-9_]+)="?(.*?)"?$')
+# KEY="value" as deploy-stack.sh's profile loader reads a line back, line for
+# line with the loader (its `_pl="${_pl#export }"` and the two lines under
+# "one matching pair of quotes around the whole value, either kind"):
+#
+#   an optional leading `export ` (exactly one space, as ${_pl#export }
+#   strips it). Without this the guard failed OPEN: a profile written with
+#   `export CLOUDLENS_REGION="us-west-2"` is loaded by the script and read
+#   as nothing here, so the region check passed and the replay ran in the
+#   profile's region while the console held, and reported, the typed one.
+#
+#   one matching pair of outer quotes, EITHER kind. A single-quoted value
+#   is unquoted by the loader and was not here, so the same profile read
+#   as CLOUDLENS_REGION='us-west-2' against a typed us-west-2 was refused
+#   over quotes the script never sees.
+#
+# The value is taken whole (the loader's BASH_REMATCH[2] is the rest of the
+# line) and unquoted by _unquote, never by the regex: a non-greedy "?(.*?)"?$
+# also strips a lone leading quote, which the loader keeps.
+_PROFILE_LINE = re.compile(r'^(?:export )?(CLOUDLENS_[A-Z0-9_]+)=(.*)$')
+
+
+def _unquote(value):
+    """One matching pair of outer quotes, either kind, stripped: the
+    loader's own rule. Nothing else is unescaped, and an unbalanced quote
+    is part of the value, as it is there."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
 
 
 def _profile_says(path, keys):
@@ -594,7 +623,7 @@ def _profile_says(path, keys):
                     continue
                 m = _PROFILE_LINE.match(line)
                 if m and m.group(1) in out:
-                    out[m.group(1)] = m.group(2)
+                    out[m.group(1)] = _unquote(m.group(2))
     except OSError:
         pass
     return out
@@ -888,10 +917,29 @@ class _Kvo(object):
         return max(1, int(self.deadline - _now()))
 
 
+def _op_running(state):
+    """Whether the operation had NOT finished when the poll stopped.
+
+    kvo_license.py's poll_op returns IN_PROGRESS in exactly one case: it
+    ran out of its timeout with the KVO still working. So IN_PROGRESS from
+    here never means "the operation is fine, it is just slow"; it means
+    the console stopped watching and does not know how it ended."""
+    return str(state or "").upper() == "IN_PROGRESS"
+
+
 def _op_ok(state):
-    """kvo_license.py's own reading of an operation's final state."""
+    """kvo_license.py's own reading of an operation's final state.
+
+    IN_PROGRESS is NOT ok. It used to be: "FAIL" not in "IN_PROGRESS" and
+    "ERROR" not in it, so a poll that exhausted the request's budget was
+    counted as a success. With OP_BUDGET shared across the rows of one
+    call that is not a rare case, it is what the last rows of a full call
+    get: rows 4 and 5 of a five-code activate are polled with 1 second.
+    "5 of 5 activated" then included two operations nobody had watched to
+    their end, and for a release it paired with `clear` to turn the
+    teardown banner green."""
     s = str(state or "").upper()
-    return bool(state) and "FAIL" not in s and "ERROR" not in s
+    return bool(state) and not _op_running(s) and "FAIL" not in s and "ERROR" not in s
 
 
 def _state(info):
@@ -912,13 +960,79 @@ def _op(k, name, payload):
     return state, result
 
 
-def _list(k):
-    _, rows = k.KL._req("GET", k.base + "/api/v2/licensing/licenses", k.tok, verify=k.verify)
-    return rows if isinstance(rows, list) else []
+# The envelope keys a licence list could plausibly arrive under. Enough to
+# say the KVO STILL HOLDS something, and never enough to say it holds
+# nothing: an envelope this code guessed at is not a reading of the KVO.
+_LIST_KEYS = ("licenses", "licences", "items", "rows", "data")
+
+
+def _body_shape(body):
+    """What came back, said as a shape and never as the KVO's own words."""
+    if body is None:
+        return "no body"
+    if isinstance(body, list):
+        return "a list"
+    if isinstance(body, dict):
+        return "an object"
+    return "text (an HTML page, or a plain-text error)"
+
+
+def _read_list(k):
+    """(rows, why): the licences the KVO says it still holds, and why they
+    could not be read. `why` is None only when the KVO answered 200 with
+    the JSON ARRAY this endpoint returns.
+
+    kvo_license.py's _req does not raise on an HTTP status error: it
+    returns (code, body), and the body of a 500 is a dict, of a pending
+    EULA is an HTML redirect page, of a KVO that answered nothing is None,
+    and a build that wrapped the array would be {"licenses": [...]}. The
+    old reading, `rows if isinstance(rows, list) else []`, turned every
+    one of those into an empty list, which is the same value a KVO holding
+    nothing returns. `clear` was computed from it, licences.js recorded
+    that as this session's evidence, and teardown.js turned that into
+    --accept-licence-loss, which is the last gate before a stack whose KVO
+    still holds its counts is deleted. Four shapes, all of them wrongly
+    clear, none of them a read.
+
+    A wrapped array is mined for rows, because rows that ARE there prove
+    the KVO holds licences; its emptiness proves nothing, so it still
+    comes back with a `why`."""
+    try:
+        code, body = k.KL._req("GET", k.base + "/api/v2/licensing/licenses", k.tok, verify=k.verify)
+    except Exception as exc:  # noqa: urllib raises several; none carries a password here
+        return [], "the KVO did not answer GET licenses (%s)" % type(exc).__name__
+    if isinstance(body, list) and code == 200:
+        return body, None
+    rows = []
+    if isinstance(body, dict):
+        for key in _LIST_KEYS:
+            if isinstance(body.get(key), list):
+                rows = body[key]
+                break
+    return rows, ("GET licenses answered HTTP %s with %s, not the list of licences this KVO's API returns"
+                  % (code, _body_shape(body)))
+
+
+def _holdings(k):
+    """What the KVO holds now, as a field that may say "I could not tell".
+
+    {licences, count, clear, unreadable?}. `clear` is tri-state and is the
+    only thing the teardown gate may stand on: True on a genuine empty
+    list, False on any answer that named a licence, and None (with the
+    reason beside it) when the list could not be read. The page treats a
+    missing or null `clear` as not-clear, so None refuses the green
+    banner, which is the whole point of not returning False there either:
+    False would read as "the KVO answered", and it did not."""
+    rows, why = _read_list(k)
+    out = {"licences": rows, "count": len(rows),
+           "clear": (False if rows else None) if why else not rows}
+    if why:
+        out["unreadable"] = why
+    return out
 
 
 def _lookup(k, code):
-    return k.KL.lookup_code(k.kvo, k.base, k.tok, code, k.verify)
+    return k.KL.lookup_code(k.kvo, k.base, k.tok, code, k.verify, timeout=k.left())
 
 
 def _release_rows(body):
@@ -950,17 +1064,28 @@ def _release_rows(body):
 
 
 def _lic_list(k, _):
-    """GET /api/v2/licensing/licenses -> {licences, count}."""
-    rows = _list(k)
-    return {"licences": rows, "count": len(rows)}
+    """GET /api/v2/licensing/licenses -> {licences, count, clear,
+    unreadable?}. A list that could not be read says so rather than
+    reporting an empty appliance."""
+    return _holdings(k)
 
 
 def _lic_check(k, codes):
-    """retrieve-activation-code-info per code -> {codes: [...]}."""
+    """retrieve-activation-code-info per code -> {codes: [...]}.
+
+    One POST and one poll per code, inside the request's own budget: a
+    customer's paste comes through here first, and _lookup used to pass no
+    timeout at all, so kvo_license.py's poll_op applied its own 120 second
+    default PER CODE. A code whose poll ran out of the budget is reported
+    as still running, not as a code the KVO refused: check spends nothing,
+    but "the KVO recognised nothing under this code" about a good code is
+    how an operator throws away an activation code."""
     out = []
     for code in codes:
         ents, info = _lookup(k, code)
-        out.append({"code": code, "valid": bool(ents), "state": _state(info), "entitlements": _ents_rows(ents)})
+        state = _state(info)
+        out.append({"code": code, "valid": bool(ents), "state": state, "running": _op_running(state),
+                    "entitlements": _ents_rows(ents)})
     return {"codes": out}
 
 
@@ -974,33 +1099,46 @@ def _lic_activate(k, codes):
         qty = int(qty) if qty else None
         ents, info = _lookup(k, code)
         if not ents:
-            results.append({"code": code, "state": "invalid", "ok": False, "picks": [], "detail": _state(info)})
+            results.append({"code": code, "state": "invalid", "ok": False, "running": False, "picks": [],
+                            "detail": _state(info)})
             continue
         picks = [(p, qty if qty is not None else a) for p, a, _ in ents if (qty if qty is not None else a)]
         if not picks:
-            results.append({"code": code, "state": "nothing-available", "ok": False, "picks": [],
-                            "entitlements": _ents_rows(ents)})
+            results.append({"code": code, "state": "nothing-available", "ok": False, "running": False,
+                            "picks": [], "entitlements": _ents_rows(ents)})
             continue
         if len(picks) == 1:
             payload = [{"activationCode": code, "quantity": picks[0][1]}]
         else:
             payload = [{"activationCode": code, "product": p, "quantity": q} for p, q in picks]
         state, result = _op(k, "activate", payload)
-        results.append({"code": code, "state": state, "ok": _op_ok(state),
+        results.append({"code": code, "state": state, "ok": _op_ok(state), "running": _op_running(state),
                         "picks": [{"product": p, "quantity": q} for p, q in picks], "result": result})
-    return {"results": results, "activated": sum(1 for r in results if r["ok"]), "licences": _list(k)}
+    return dict(_holdings(k), results=results,
+                activated=sum(1 for r in results if r["ok"]),
+                # a row whose poll ran out of the budget is neither: the
+                # console stopped watching before the KVO finished, and
+                # counting it as activated is a number nobody measured
+                running=sum(1 for r in results if r["running"]))
 
 
 def _lic_release(k, rows):
     """operations/deactivate per row, polled -> {results, released (every
-    row succeeded), clear (the KVO holds no licence now), licences}."""
+    row succeeded), clear (tri-state: whether the KVO holds no licence
+    now), licences, running}.
+
+    `released` and `clear` are two different facts and both are needed:
+    the rows this call asked about can all come back SUCCESS while the
+    appliance still holds licences nobody named, and a deactivate whose
+    poll timed out has no outcome at all. Only a row that finished counts
+    as released, and only a genuinely empty list counts as clear."""
     results = []
     for code, qty in rows:
         state, result = _op(k, "deactivate", [{"activationCode": code, "quantity": qty}])
-        results.append({"code": code, "quantity": qty, "state": state, "ok": _op_ok(state), "result": result})
-    remaining = _list(k)
-    return {"results": results, "released": all(r["ok"] for r in results), "clear": not remaining,
-            "licences": remaining}
+        results.append({"code": code, "quantity": qty, "state": state, "ok": _op_ok(state),
+                        "running": _op_running(state), "result": result})
+    return dict(_holdings(k), results=results, released=all(r["ok"] for r in results),
+                running=sum(1 for r in results if r["running"]))
 
 
 _LICENCE = {"list": _lic_list, "check": _lic_check, "activate": _lic_activate, "release": _lic_release}
@@ -1040,6 +1178,12 @@ def licences(body, action=None):
         arg, bad = _release_rows(body)
         if bad:
             return _err(bad)
+    if action == "check" and len(arg) > MAX_CHECK:
+        # a lookup per code, each POSTed and polled inside this one request
+        return _err("check takes at most %d activation codes in one call, and this asks for %d. Each one is "
+                    "a lookup POSTed to the KVO and polled to its end inside this single request, and they "
+                    "share one polling budget, so a longer list only gives each code less time to answer. "
+                    "Check them in batches." % (MAX_CHECK, len(arg)))
     if action in ("activate", "release") and len(arg) > MAX_OPS:
         # each row is an operation POSTed and polled to its end, and they run
         # one after another inside this one request
@@ -1398,8 +1542,15 @@ def status(stack, region):
                 prev = by_role.get(row["role"])
                 if prev is None or (prev["state"] != "running" and state == "running"):
                     by_role[row["role"]] = row
+        # by_role is computed from EVERY instance and travels with the
+        # answer, because `rows` is only the first MAX_ROWS of them.
+        # teardown.js asked "does this stack have a KVO, and at what
+        # address" of the truncated list: a stack of more than 50 live
+        # instances whose KVO sorted past the cut answered no KVO, which
+        # draws no banner at all and arms the teardown silently. The one
+        # side that has seen all the rows is this one, so it says.
         out["instances"] = _cell({"count": len(rows), "rows": rows[:MAX_ROWS],
-                                  "truncated": len(rows) > MAX_ROWS})
+                                  "truncated": len(rows) > MAX_ROWS, "by_role": by_role})
     except AwsError as exc:
         out["instances"] = _blind(str(exc), inst_cmd)
     out["sensors"] = _sensors_cell((by_role.get("vcontroller") or {}).get("public_ip", ""))

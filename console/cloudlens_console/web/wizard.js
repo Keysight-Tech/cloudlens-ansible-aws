@@ -12,6 +12,10 @@
    are read from their password fields at Launch and cleared. */
 var $=function(id){return document.getElementById(id);};
 var P=window.clPlan, C=window.clConsole, W=window.clWatch, esc=P.esc;
+// codeTail is a rule three screens have to agree on exactly, so there is one
+// of it, in ui.js, and this file takes it from there rather than keeping a
+// second copy that can drift from the other two
+var codeTail=window.clUi.codeTail;
 var enc=encodeURIComponent;
 
 /* The words the script accepts for each choice key. test_web_static holds
@@ -617,7 +621,6 @@ var codes=[];
 var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;
 var CODES_MAX=50;                                                    // api.MAX_LIST
 function codesNow(){return kvo()?codes.slice():[];}
-function codeTail(c){var parts=c.split(",");return "****-"+parts[0].slice(-4)+(parts[1]?","+parts[1]:"");}
 function paintCodes(){
   var list=$("codeList");list.innerHTML="";
   codes.forEach(function(c,i){

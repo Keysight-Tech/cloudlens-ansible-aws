@@ -395,13 +395,26 @@ def test_the_operations_screens_take_their_escaper_from_one_place():
     ui.js each throws on its first line and draws nothing."""
     ui = _read("ui.js")
     assert "window.clUi=" in ui
-    assert 'replace(/[&<>"]/g' in ui, "ui.js carries a real escaper"
+    assert 'replace(/[&<>"\']/g' in ui, "ui.js carries a real escaper"
+    # the apostrophe is in the set: an escaper that covers three of the four
+    # delimiters is one single-quoted attribute away from useless
+    assert '"&#39;"' in ui, "ui.js escapes the apostrophe too"
     for name in ("operate.js", "licences.js", "teardown.js"):
         js = _read(name)
         assert "var U=window.clUi;" in js, name
         assert re.search(r"\besc=U\.esc\b", js), "%s takes esc from the shared surface" % name
         assert "function esc(" not in js, "%s declares a second escaper" % name
         assert "String(s==null" not in js, "%s still carries the fallback that escapes nothing" % name
+    # codeTail is the same kind of rule and lives in the same place. The
+    # wizard kept a second copy of it, which is two answers to "how is an
+    # activation code shown" waiting to disagree on the day one of them
+    # changes.
+    assert "function codeTail(" in ui, "ui.js is where codeTail is declared"
+    for name in ("operate.js", "licences.js", "wizard.js"):
+        js = _read(name)
+        assert "function codeTail(" not in js, "%s declares a second codeTail" % name
+        assert re.search(r"codeTail\s*=\s*(?:U|window\.clUi)\.codeTail", js), (
+            "%s takes codeTail from the shared surface" % name)
 
 
 def test_the_shared_surface_loads_before_the_screens_that_need_it():
@@ -410,7 +423,9 @@ def test_the_shared_surface_loads_before_the_screens_that_need_it():
     contract."""
     order = re.findall(r'<script src="/web/([\w.]+)"></script>', _read("index.html"))
     assert "ui.js" in order, "index.html loads the shared surface"
-    for name in ("operate.js", "licences.js", "teardown.js"):
+    # wizard.js is in the list because it took ui.js's codeTail instead of
+    # keeping its own copy of it
+    for name in ("operate.js", "licences.js", "teardown.js", "wizard.js"):
         assert order.index("ui.js") < order.index(name), name
 
 
@@ -455,6 +470,26 @@ def test_the_rerun_warns_about_a_phase_the_script_runs_and_can_supply_its_codes(
     assert "license" in named, "the licensing phase is the one that spends entitlement"
     assert "confirm(" in js, "a phase that spends asks before it runs"
     assert "kvo_codes=codes.slice()" in js.replace(" ", ""), "the re-run sends the codes it collected"
+    # Resume carries the codes too: operate.js attaches kvo_codes whenever
+    # it has any, and api._replay puts every code it is given on the argv
+    # whichever button was pressed, so the same entitlement can be spent
+    # from a button that asked nothing. Both paths confirm.
+    body = _js_function(js, "replay")
+    branch = body.split("if(SPENDS[only]){", 1)
+    assert len(branch) == 2, "replay() gates the spending phase"
+    # comments out, so a rule that was commented away does not still read
+    # as present in the source
+    code = "".join(l for l in body.splitlines(True) if not l.strip().startswith("//"))
+    flat = code.replace(" ", "").replace("\n", "")
+    assert "}elseif(codes.length){" in flat, (
+        "replay() has a branch for a replay that is not the spending phase but carries codes")
+    other = flat.split("}elseif(codes.length){", 1)[1].split("varss=stack()", 1)[0]
+    assert "confirm(" in other, "that branch asks before the codes go on a command line"
+    assert flat.count("confirm(") >= 2, "both paths that can spend entitlement ask first"
+    # and a consumable does not survive its run: the chips go when the
+    # codes are on a command line, so a second press cannot spend them
+    # again off a list that looks unchanged
+    assert "codes.length=0;" in flat, "the codes are cleared after the replay that carried them"
     # the codes enter as they do everywhere else in this console: a password
     # input, chips of the last four characters, and nothing stored
     block = re.search(r'<section class="page" id="page-operate".*?</section>', _read("index.html"), re.S)
@@ -574,3 +609,37 @@ def test_each_script_is_a_strict_iife(name):
 @pytest.mark.parametrize("name", sorted(os.listdir(WEB)))
 def test_no_em_dash_in_any_web_file(name):
     assert "\u2014" not in _read(name), "%s carries an em dash" % name
+
+
+def test_the_licensing_limits_on_the_page_are_the_apis(name="licences.js"):
+    """Three caps, each mirrored from api.py, each with the API's own name
+    beside it. A page cap that is higher than the API's is a request the
+    server refuses after the operator has done the work; one that is lower
+    is a refusal with no cause. check has its own (MAX_CHECK) because it
+    spends nothing and is where a customer's whole paste lands, while it
+    still shares the one polling budget."""
+    js = _read(name)
+    for var, want in (("CODES_MAX", api.MAX_LIST), ("OPS_MAX", api.MAX_OPS), ("CHECK_MAX", api.MAX_CHECK)):
+        m = re.search(r"var %s=(\d+);" % var, js)
+        assert m, "%s declares var %s=<n>;" % (name, var)
+        assert int(m.group(1)) == want, "%s is %s on the page and %s in the API" % (var, m.group(1), want)
+    assert api.MAX_CHECK < api.MAX_LIST, "a paste of MAX_LIST codes is not one polled request"
+    assert "codes.length>CHECK_MAX" in js.replace(" ", ""), (
+        "the page refuses an over-long check before the request is made")
+
+
+def test_the_release_record_is_taken_back_when_the_kvo_is_used_again(name="licences.js"):
+    """noteHolds is the half of the rule that cannot be seen from the pure
+    functions: the calls that make it.
+
+    The session record was written by noteRelease alone, so releasing
+    everything on a KVO and then activating a new code on the same KVO
+    left the Teardown screen showing the green banner and sending
+    --accept-licence-loss. Both calls that learn the appliance holds
+    licences again say so: activate, whose whole point is putting one
+    there, and list, which is the KVO reading its own inventory back."""
+    js = _read(name)
+    for fn in ("activate", "load"):
+        body = _js_function(js, fn)
+        assert "noteHolds(" in body, (
+            "%s() does not take back the release record for the KVO it just used" % fn)

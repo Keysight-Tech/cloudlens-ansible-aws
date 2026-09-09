@@ -34,10 +34,16 @@ function txt(v){return v===undefined||v===null?"":String(v);}
 
 /* HTML text. The only escaper these screens have: there is no fallback
    path that returns the string unchanged, because the one thing worse
-   than no escaping is escaping that quietly stops. */
+   than no escaping is escaping that quietly stops.
+
+   The apostrophe is in the set. It was not, and an escaper that covers
+   three of the four delimiters is one attribute away from useless: the
+   screens here build markup by concatenation, and a single-quoted
+   attribute written anywhere in any of them would have been open to a
+   value carrying one. Escaping it costs nothing and removes the question. */
 function esc(s){
-  return String(s==null?"":s).replace(/[&<>"]/g,function(c){
-    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];
+  return String(s==null?"":s).replace(/[&<>"']/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
   });
 }
 

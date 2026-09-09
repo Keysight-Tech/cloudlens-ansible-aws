@@ -171,11 +171,18 @@ def entitlements(result):
     return out
 
 
-def lookup_code(kvo, base, tok, code, verify):
-    """POST retrieve-activation-code-info for one code; returns (entitlements, info)."""
+def lookup_code(kvo, base, tok, code, verify, timeout=120):
+    """POST retrieve-activation-code-info for one code; returns (entitlements, info).
+
+    `timeout` is passed through to poll_op. The CLI keeps poll_op's own default
+    per code; a caller that loops over a paste of codes inside one request a
+    browser is holding open (the console's /api/licences/check) has a budget for
+    the whole request and shares it out, and could not before: this took the
+    120 second default PER CODE.
+    """
     st, resp = _req("POST", f"{base}/api/v2/licensing/operations/retrieve-activation-code-info",
                     tok, {"activationCode": code}, verify)
-    info = poll_op(kvo, tok, resp, verify)
+    info = poll_op(kvo, tok, resp, verify, timeout=timeout)
     result = info.get("result") if isinstance(info, dict) else None
     return entitlements(result), info
 
