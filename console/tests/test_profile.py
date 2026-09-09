@@ -239,6 +239,19 @@ def test_keys_file_that_refuses_every_key_is_named(tmp_path):
     assert str(d / "profile-keys.txt") in out.stderr, out.stderr
 
 
+def test_hint_names_the_file_only_when_it_refused_a_known_key(tmp_path):
+    # The line-endings hint fired whenever a keys file was in play and any key
+    # was refused, keys the built-in case refuses on its own included. A
+    # profile holding only the hostile key, against the repo's correct keys
+    # file, is a bad profile and not a bad file: "no usable settings", no hint.
+    prof = tmp_path / "hostile-only.env"
+    prof.write_text("%s=-oProxyCommand=x\n" % HOSTILE)
+    out = _run(SCRIPT, ["--profile", str(prof), "--help"], tmp_path)
+    assert out.returncode == 2, out.stdout + out.stderr
+    assert "no usable settings" in out.stderr and HOSTILE in out.stderr, out.stderr
+    assert "check its line endings" not in out.stderr, out.stderr
+
+
 @pytest.mark.parametrize("argv0", ["bash", "/bin/bash"])
 def test_planted_cwd_does_not_govern_a_script_fed_on_stdin(tmp_path, argv0):
     # `curl ... | bash` run from a directory someone prepared: a decoy

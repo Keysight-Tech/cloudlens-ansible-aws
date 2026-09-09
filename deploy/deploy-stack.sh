@@ -137,13 +137,13 @@ done
 # profile-keys.txt governed a script that never came from there.
 PROFILE_KEYS_FILE=""
 [[ -n "${BASH_SOURCE[0]:-}" && -f "$SCRIPT_DIR/profile-keys.txt" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
+# Set when the keys file refused a key the built-in case accepts: the one
+# case where the file itself (CRLF, a trailing space) is the likely fault and
+# worth naming. A key the case refuses anyway says nothing about the file, so
+# the case runs first.
+_FILE_REFUSED=false
 profile_key_allowed() {
   [[ "$1" == CLOUDLENS_* ]] || return 1
-  if [[ -n "$PROFILE_KEYS_FILE" ]]; then
-    # -x: the whole line, so a comment never matches a key; -F: the key as text.
-    # A miss is final; a hit still has to pass the built-in case below.
-    grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null || return 1
-  fi
   case "$1" in
     CLOUDLENS_REGION|CLOUDLENS_STACK_NAME|CLOUDLENS_KEY_NAME|CLOUDLENS_IAC|\
     CLOUDLENS_ADMIN_CIDR|CLOUDLENS_ASSIGN_PUBLIC_IP|CLOUDLENS_INFRA|\
@@ -160,9 +160,15 @@ profile_key_allowed() {
     CLOUDLENS_COLLECTOR_MGMT_SG|CLOUDLENS_COLLECTOR_INGRESS_SG|CLOUDLENS_COLLECTOR_EGRESS_SG|\
     CLOUDLENS_DEPLOY_EKS|CLOUDLENS_EKS_CLUSTER|CLOUDLENS_EKS_SAMPLE|CLOUDLENS_EKS_MODE|\
     CLOUDLENS_EKS_POD_SELECTOR|CLOUDLENS_CLOUD_CONFIG|CLOUDLENS_CLM_NAME|CLOUDLENS_VPB_DEVICE_NAME)
-      return 0 ;;
+      ;;
+    *) return 1 ;;
   esac
-  return 1
+  if [[ -n "$PROFILE_KEYS_FILE" ]]; then
+    # -x: the whole line, so a comment never matches a key; -F: the key as text.
+    # The case passed, so a miss here is the file refusing a known key.
+    grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null || { _FILE_REFUSED=true; return 1; }
+  fi
+  return 0
 }
 
 if [[ -n "$PROFILE_SRC" ]]; then
@@ -206,10 +212,11 @@ if [[ -n "$PROFILE_SRC" ]]; then
   done <<< "$_profile_body"
   [[ -n "$_rejected" ]] && echo "[warn] profile: ignored keys that a profile may not set:${_rejected}" >&2
   if [[ "$_n" -eq 0 ]]; then
-    # Every key refused while a keys file was in play points at the file, not
-    # the profile: a CRLF or trailing-space line never matches grep -x.
+    # Only a known key the keys file refused points at the file (a CRLF or
+    # trailing-space line never matches grep -x); a profile made of keys the
+    # built-in case refuses is a bad profile, and the hint would mislead.
     _hint=""
-    [[ -n "$PROFILE_KEYS_FILE" && -n "$_rejected" ]] && _hint=" (no key passed ${PROFILE_KEYS_FILE}: check its line endings)"
+    [[ "$_FILE_REFUSED" == "true" ]] && _hint=" (no key passed ${PROFILE_KEYS_FILE}: check its line endings)"
     echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?).${_hint}" >&2
     exit 2
   fi
