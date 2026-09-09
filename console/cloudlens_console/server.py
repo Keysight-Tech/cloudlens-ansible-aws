@@ -414,7 +414,12 @@ def _ctype(path):
     if path.endswith(".css"):
         return "text/css"
     if path.endswith(".js"):
-        return "application/javascript"
+        # with the charset, because the scripts carry glyphs (the middot in
+        # the id chip, the check and the cross in the narration tones). A
+        # script served without one is decoded in the document's encoding
+        # or the browser's locale default, and the UTF-8 bytes come out as
+        # mojibake; index.html has said charset=utf-8 all along.
+        return "application/javascript; charset=utf-8"
     if path.endswith(".svg"):
         return "image/svg+xml"
     return "application/octet-stream"

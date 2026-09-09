@@ -1250,6 +1250,23 @@ def test_the_page_routes_that_raise_answer_500_too(live, monkeypatch, capsys):
     assert err.count("Traceback") == 3 and "cannot read" in err, "the message stays on the console's stderr"
 
 
+def test_the_scripts_are_served_with_the_charset_their_glyphs_need(live):
+    # app.js carries its glyphs as themselves: the middot between the account
+    # and the region, the check and the cross of the narration tones. Served
+    # as application/javascript with no charset, an external script is decoded
+    # in the document's encoding or the browser's default, and those UTF-8
+    # bytes read as mojibake. index.html has said charset=utf-8 all along;
+    # the scripts say it now too, which also covers whatever glyph lands next.
+    c = http.client.HTTPConnection("127.0.0.1", live, timeout=5)
+    c.request("GET", "/web/app.js", headers={"Host": "127.0.0.1:%d" % live})
+    r = c.getresponse()
+    status, ctype, body = r.status, r.getheader("Content-Type"), r.read()
+    c.close()
+    assert status == 200
+    assert ctype == "application/javascript; charset=utf-8", ctype
+    assert "\u00b7" in body.decode("utf-8"), "the middot is in the file as itself"
+
+
 def test_a_client_that_hung_up_is_dropped_without_a_word(live, monkeypatch, capsys):
     # A closed tab or an aborted fetch surfaces as BrokenPipeError (or
     # ConnectionResetError) from the write. That is not an operator event:

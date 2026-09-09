@@ -10,12 +10,15 @@ and hold them to the same lists the server reads:
              the secret fields in index.html are named after api.SECRET_ENV and
              nothing else in the page names a key outside the allowlist
   codes      activation codes enter through a password input, never a textarea,
-             and reach /api/run as kvo_codes from an array wizard.js closes over
+             and reach /api/run as kvo_codes from an array wizard.js closes over;
+             the page's CODE,QTY rule is api.CODE_QTY, quantity digits and all
   values     the vocabularies wizard.js offers for the choice keys are the
              words deploy-stack.sh accepts (parsed from its own messages)
   routes     every /api/..., /events/, /run, /stop/ and /flows literal in the
              three scripts is a path server.py routes (parsed from its source)
   ids        every id app.js and wizard.js look up exists in index.html
+  buttons    begin() hands the quick-flow Run button back, so a wizard launch
+             does not strand it disabled and reading "Running..."
   labels     every static input, select and textarea has a label or an aria-label
   syntax     node --check on each script (skipped, with the reason, without node)
   style      no em dash in any web file
@@ -144,6 +147,78 @@ def test_activation_codes_enter_through_a_password_input_never_a_textarea():
     js = _read("wizard.js")
     assert "kvo_codes:codesNow()" in js, "Launch sends the codes as kvo_codes"
     assert 'getData("text")' in js, "a paste is read from the clipboard before the input sanitises it"
+
+
+def test_the_page_and_the_api_agree_on_a_code_with_a_quantity():
+    """CODE_QTY_RE read [0-9]{1,4} while api.CODE_QTY reads {1,6}, and the
+    comment above it claimed the two matched: a five or six digit quantity
+    the engine accepts came back from the page as "not an activation code",
+    with no way past it.
+
+    Both rules are written in syntax the two regex engines share, so the
+    page's is compiled here and the pair is run over one table."""
+    src = _read("wizard.js")
+    m = re.search(r"var CODE_QTY_RE\s*=\s*/(.+?)/;", src)
+    assert m, "wizard.js declares var CODE_QTY_RE = /.../;"
+    page, engine = m.group(1), api.CODE_QTY.pattern
+    qty = re.compile(r"\[0-9\]\{1,(\d+)\}")
+    on_page, in_api = qty.search(page), qty.search(engine)
+    assert on_page and in_api, (page, engine)
+    assert on_page.group(1) == in_api.group(1), (
+        "the page takes a quantity of %s digits, the API %s" % (on_page.group(1), in_api.group(1)))
+    rule = re.compile(page)
+    for value in ("AAAA", "AAAA,1", "AAAA,1234", "AAAA,12345", "AAAA,123456", "AAAA,1234567",
+                  "AAAA,", "AAAA,x", "AAAA,12,3", "-AAA", "AAA", "A" * 64, "A" * 65):
+        assert bool(rule.fullmatch(value)) == bool(api.CODE_QTY.fullmatch(value)), value
+    assert rule.fullmatch("AAAA,123456"), "six digits is a quantity the engine takes"
+    # the field's label and the refusal say the number the rule enforces
+    said = "a quantity of 1 to %s digits" % on_page.group(1)
+    assert said in src, "the refusal text says %r" % said
+    assert said in _read("index.html"), "the field's label says %r" % said
+
+
+# ---------------------------------------------------------------- buttons
+def _js_function(src, name):
+    """The text of `function name(...){ ... }`, braces matched. Every body
+    read this way is checked to hold no brace inside a string literal, which
+    is the one thing that would fool the count."""
+    m = re.search(r"function\s+%s\s*\([^)]*\)\s*\{" % re.escape(name), src)
+    assert m, "%s() is not declared in the file" % name
+    depth, i = 0, m.end() - 1
+    while i < len(src):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                body = src[m.start():i + 1]
+                for literal in re.findall(r"'[^'\n]*'|\"[^\"\n]*\"", body):
+                    assert "{" not in literal and "}" not in literal, (
+                        "%s() holds a brace in a string: the brace count cannot read it" % name)
+                return body
+        i += 1
+    raise AssertionError("%s() has unbalanced braces" % name)
+
+
+def test_a_wizard_launch_hands_the_quick_flow_run_button_back():
+    """Reproduced: click Run on a quick flow, then launch a run from the
+    wizard. The wizard's run finishes, the pill reads complete, and the Run
+    button is still disabled reading "Running...". finish() is right not to
+    relabel it (the button did not start that run: quickRun is false), so the
+    restore belongs where begin() clears quickRun, on the way in.
+
+    Read as text because the fault only shows across two runs in a browser."""
+    src = _read("app.js")
+    body = _js_function(src, "begin")
+    assert "quickRun=false" in body, "begin() clears quickRun"
+    assert "armRunBtn()" in body, (
+        "begin() restores the Run button where it clears quickRun, or a wizard "
+        "launch strands it: " + body)
+    arm = _js_function(src, "armRunBtn")
+    assert '$("runBtn").disabled=false' in arm, arm
+    assert "Run this flow" in arm, "the button goes back to its own label: " + arm
+    fin = _js_function(src, "finish")
+    assert "if(quickRun)" in fin, "finish() relabels only the button that started the run"
 
 
 # ----------------------------------------------------------------- values

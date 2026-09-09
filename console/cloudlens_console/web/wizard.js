@@ -562,6 +562,13 @@ function postPlan(retried){
     var d=x.d;
     if(!x.ok||d.errors||d.error){
       var list=d.errors||[d.error||("HTTP "+x.status)];
+      // one pass, never a loop: the retry drops the stray keys and asks
+      // again, and a key derive() writes straight back is one it cannot
+      // clear. That needs a CLOUDLENS_* literal in this file that is not in
+      // deploy/profile-keys.txt, which test_web_static forbids, so in a
+      // consistent build it is unreachable. The window it is written for is
+      // a stale cache: a page held from before a key was renamed, talking to
+      // the new engine. There the second refusal is shown, not retried.
       if(!retried){
         var stray=[];
         list.forEach(function(e){var m=NOT_A_KEY.exec(String(e));if(m&&has(m[1]))stray.push(m[1]);});
@@ -596,8 +603,10 @@ function secretsNow(){
    else: not the plan, not localStorage. The page shows a chip of the last
    four characters. Launch sends the array as kvo_codes. */
 var codes=[];
-// api.CODE_QTY, held to the 1 to 4 quantity digits the field asks for
-var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,4})?$/;
+// api.CODE_QTY, quantity digits and all. test_web_static extracts both
+// patterns and holds the quantity parts equal: a five or six digit quantity
+// the engine takes is not one this page turns away.
+var CODE_QTY_RE=/^[A-Za-z0-9][A-Za-z0-9-]{3,63}(?:,[0-9]{1,6})?$/;
 var CODES_MAX=50;                                                    // api.MAX_LIST
 function codesNow(){return kvo()?codes.slice():[];}
 function codeTail(c){var parts=c.split(",");return "****-"+parts[0].slice(-4)+(parts[1]?","+parts[1]:"");}
@@ -624,7 +633,7 @@ function addCodes(text){
   });
   paintCodes();
   var notes=[];
-  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY, a quantity of 1 to 4 digits)");
+  if(bad)notes.push(bad+" entr"+(bad===1?"y is":"ies are")+" not an activation code (CODE or CODE,QTY, a quantity of 1 to 6 digits)");
   if(dup)notes.push(dup+" already added");
   if(over)notes.push(over+" over the limit of "+CODES_MAX);
   if(notes.length)status("codeCount",$("codeCount").textContent+(codes.length?"; ":"")+notes.join("; ")+".",!!(bad||over));

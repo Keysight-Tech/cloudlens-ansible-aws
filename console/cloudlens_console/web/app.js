@@ -58,6 +58,12 @@ fetch("/flows").then(function(r){return r.json();}).then(function(d){
   selectFlow(ORDER[0]);
 }).catch(function(){$("narr").innerHTML='<div class="empty">Could not load flows. Is the console server running?</div>';});
 
+/* The quick-flow Run button as the page offers it: enabled, its own label.
+   selectFlow arms it for a new flow; begin() hands it back, because a run
+   the wizard started leaves it disabled and reading "Running..." forever
+   otherwise (finish() deliberately relabels nothing after a wizard launch). */
+function armRunBtn(){$("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
+
 function selectFlow(id){
   if(es){es.close();es=null;} stopTimer();
   current=id; var f=FLOWS[id];
@@ -73,7 +79,7 @@ function selectFlow(id){
   resetInstrument();
   layoutDiagram(f);
   $("narr").innerHTML='<div class="empty">Press ▸ Run: the narration explains each step as it happens.</div>';
-  $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';
+  armRunBtn();
 }
 
 function resetInstrument(){
@@ -192,7 +198,7 @@ $("stopBtn").addEventListener("click",function(){ if(window._job) fetch("/stop/"
    counters at zero, the pill running, the clock started. The quick flows
    and the wizard's Launch both start here. */
 function begin(f,title){
-  quickRun=false;
+  quickRun=false;armRunBtn();
   if(es){es.close();es=null;}
   resetInstrument();layoutDiagram(f||EMPTY_FLOW);$("narr").innerHTML="";
   if(title)$("instName").textContent=title;
@@ -251,7 +257,7 @@ function attach(jobId){
     if(rid)bits.push(rid);if(m.ip)bits.push("ip "+m.ip);if(m.private_ip)bits.push("private "+m.private_ip);
     if(m.zone)bits.push(m.zone);if(m.count!=null)bits.push("count "+m.count);if(m.tag)bits.push("tag "+m.tag);
     if(m.cluster)bits.push("cluster "+m.cluster);if(m.mode)bits.push(m.mode);
-    narrate(bits.join(" \u00b7 "),"info");});
+    narrate(bits.join(" · "),"info");});
   es.addEventListener("check",function(e){var m=JSON.parse(e.data);
     narrate("["+String(m.status||"").toUpperCase()+"] "+(m.item||"")+(m.fix?" (fix: "+m.fix+")":""),
       m.status==="fail"?"err":m.status==="warn"?"warn":"good");});
