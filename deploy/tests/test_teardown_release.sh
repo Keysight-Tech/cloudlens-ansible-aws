@@ -10,6 +10,12 @@
 # leaves the gate exactly as it was. And the password never reaches the
 # terminal, the state file, or a command line.
 #
+# The order of the questions is part of the rule: "Proceed with the
+# teardown?" comes BEFORE the release, so licences are only ever stripped
+# from a KVO the operator has already committed to destroying. A release
+# followed by a "no" at the delete used to leave a running KVO with
+# nothing on it.
+#
 # Hermetic: no AWS account, no KVO, no network. `aws` is a script on PATH
 # that answers the read-only probes with a one-instance stack that has a
 # KVO, records every call, and flips the stack to DELETE_COMPLETE once
@@ -184,6 +190,9 @@ pass() { printf 'PASS %s\n' "$1"; }
 failt() { printf 'FAIL %s\n' "$1"; rc=1; }
 flat() { tr '\r\n' '||' < "$1" | cut -c1-1500; }
 has() { grep -q -- "$2" "$1"; }
+# at FILE STRING: the character position of STRING's first occurrence in
+# FILE (0 when absent), so the ORDER of two prompts can be asserted.
+at() { tr '\r\n' '  ' < "$1" | awk -v s="$2" '{ print index($0, s) }'; }
 lic_called() { grep -q -- "$2" "$LIC" 2>/dev/null; }
 
 # setup NAME: fresh per-case files and a work dir (the script writes its
@@ -219,24 +228,32 @@ run_tty() {
 
 GATE='Type the stack name'
 WARNING='LICENCES ARE ABOUT TO BE STRANDED'
+PROCEED='Proceed with the teardown? [y/N]: '
+RELEASE_Q='Release all 2 licences from this KVO now? [Y/n]: '
 T=$'\t'
 
-# 1. Interactive, the release succeeds: the gate is skipped, no typed name is
-#    asked for, the run proceeds to the delete. The password was typed at a
-#    no-echo prompt, reached the script through the environment, and appears
-#    nowhere: not on the terminal, not in the state file, not on the command
-#    line the stub recorded.
+# 1. Interactive, the release succeeds: the teardown is confirmed FIRST,
+#    then the licences are listed and released, the gate is skipped, no
+#    typed name is asked for, the run proceeds to the delete. The password
+#    was typed at a no-echo prompt, reached the script through the
+#    environment, and appears nowhere: not on the terminal, not in the
+#    state file, not on the command line the stub recorded.
 run_tty tty_ok "STUB_LIC_MODE=ok" \
+  "${PROCEED}${T}y"$'\n' \
   "user [admin]: ${T}"$'\n' \
   "password [admin]: ${T}@secret:s3cret-pw-77"$'\n' \
-  "Release all 2 licences from this KVO now? [Y/n]: ${T}"$'\n' \
-  "Proceed with the teardown? [y/N]: ${T}y"$'\n' \
+  "${RELEASE_Q}${T}"$'\n' \
   --
 if [[ $code -eq 0 ]] && ! has "$OUT" "$GATE" && ! has "$OUT" "$WARNING" \
    && has "$OUT" "All 2 licences released" && has "$OUT" "nothing will be stranded" \
-   && has "$OUT" "no licence-loss confirmation is needed" && has "$AWS" "cloudformation delete-stack"; then
-  pass "1. release ok (tty): gate skipped, no typed name, teardown proceeds to delete-stack"
+   && has "$OUT" "Phase 4a released every licence" && has "$OUT" "no licence-loss confirmation is needed" \
+   && has "$AWS" "cloudformation delete-stack"; then
+  pass "1. release ok (tty): gate skipped, no typed name, teardown proceeds to delete-stack, waiver says released"
 else failt "1. release ok (tty): exit $code, delete-stack=$(grep -c delete-stack "$AWS"), out=[$(flat "$OUT")]"; fi
+if (( $(at "$OUT" "$PROCEED") > 0 )) && (( $(at "$OUT" "$PROCEED") < $(at "$OUT" "$RELEASE_Q") )) \
+   && (( $(at "$OUT" "$RELEASE_Q") < $(at "$OUT" "cloudformation delete-stack") || $(at "$OUT" "cloudformation delete-stack") == 0 )); then
+  pass "1. release ok (tty): 'Proceed with the teardown?' is asked BEFORE the release prompt"
+else failt "1. question order: proceed@$(at "$OUT" "$PROCEED") release@$(at "$OUT" "$RELEASE_Q") out=[$(flat "$OUT")]"; fi
 if lic_called "$LIC" "--list" && lic_called "$LIC" "--release-all" && grep -q '^pw=s3cret-pw-77$' "$SEEN" \
    && ! grep -q 's3cret-pw-77' "$OUT" && ! grep -q 's3cret-pw-77' "$LIC" \
    && ! grep -rq 's3cret-pw-77' "$W/work" && grep -q -- '--password-env CLOUDLENS_KVO_ADMIN_PASS' "$LIC"; then
@@ -250,9 +267,10 @@ else failt "1. state file: [$(ls "$W/work")] [$(cat "$W/work"/.cloudlens-deploy-
 #    clear): the warning prints, the gate demands the stack name, a wrong
 #    answer stops the run, nothing is deleted.
 run_tty tty_fail3 "STUB_LIC_MODE=fail3" \
+  "${PROCEED}${T}y"$'\n' \
   "user [admin]: ${T}"$'\n' \
   "password [admin]: ${T}@secret:"$'\n' \
-  "Release all 2 licences from this KVO now? [Y/n]: ${T}"$'\n' \
+  "${RELEASE_Q}${T}"$'\n' \
   "${GATE}${T}nope"$'\n' \
   --
 if [[ $code -ne 0 ]] && has "$OUT" "$WARNING" && has "$OUT" "$GATE" && has "$OUT" "Not confirmed" \
@@ -333,8 +351,9 @@ else failt "9. wrong password: exit $code, seen=[$(flat "$SEEN")] out=[$(flat "$
 # 10. The KVO holds nothing: nothing to strand, gate skipped, delete proceeds.
 run_bg bg_empty "STUB_LIC_MODE=empty" --yes
 if [[ $code -eq 0 ]] && has "$OUT" "holds no licences" && ! has "$OUT" "$WARNING" \
+   && has "$OUT" "Phase 4a found the KVO held nothing" && ! has "$OUT" "released every licence" \
    && ! lic_called "$LIC" "--release-all" && has "$AWS" "delete-stack"; then
-  pass "10. KVO holds no licences: nothing to release, gate waived, delete proceeds"
+  pass "10. KVO holds no licences: nothing to release, gate waived with 'held nothing', delete proceeds"
 else failt "10. empty KVO: exit $code, out=[$(flat "$OUT")]"; fi
 
 # 11. No address anywhere (output None, instance has no IPs, no tagged
@@ -363,11 +382,54 @@ if [[ $code -ne 0 ]] && has "$OUT" "Could not tell how many licences the KVO hol
   pass "13a. list without a JSON line: count not taken from the prose, nothing released, gate runs"
 else failt "13a. list without a JSON line: exit $code, lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
 
-# 13. --help documents the release.
+# 13. --help documents the release, and the order of the questions.
 run_bg help "" --help
 if [[ $code -eq 0 ]] && has "$OUT" "release-licences" && has "$OUT" "kvo-admin-pass" \
-   && has "$OUT" "Deactivate licenses" && has "$OUT" "4a."; then
-  pass "13. --help names the release flags, the UI route and step 4a"
+   && has "$OUT" "Deactivate licenses" && has "$OUT" "4a." && has "$OUT" "4b." \
+   && has "$OUT" "Asked before any licence is touched"; then
+  pass "13. --help names the release flags, the UI route, steps 4a and 4b, and why 4 comes first"
 else failt "13. --help: exit $code, out=[$(flat "$OUT")]"; fi
+
+# 14. Interactive, the operator confirms the teardown and then answers "n"
+#     to the release: nothing is released, the warning and the typed-name
+#     gate run, and the correct stack name accepts the loss and proceeds to
+#     the delete. The release prompt comes after the proceed question and
+#     before the gate.
+run_tty tty_decline_release "STUB_LIC_MODE=ok" \
+  "${PROCEED}${T}y"$'\n' \
+  "user [admin]: ${T}"$'\n' \
+  "password [admin]: ${T}@secret:"$'\n' \
+  "${RELEASE_Q}${T}n"$'\n' \
+  "${GATE}${T}lab"$'\n' \
+  --
+if [[ $code -eq 0 ]] && has "$OUT" "Nothing was released" && has "$OUT" "$WARNING" && has "$OUT" "$GATE" \
+   && has "$OUT" "Licence loss accepted" && lic_called "$LIC" "--list --json" && ! lic_called "$LIC" "--release-all" \
+   && has "$AWS" "cloudformation delete-stack" \
+   && (( $(at "$OUT" "$PROCEED") < $(at "$OUT" "$RELEASE_Q") )) && (( $(at "$OUT" "$RELEASE_Q") < $(at "$OUT" "$GATE") )); then
+  pass "14. release declined (tty): nothing released, gate runs after it, the typed name accepts the loss, delete proceeds"
+else failt "14. release declined: exit $code, delete-stack=$(grep -c delete-stack "$AWS"), lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
+
+# 15. Interactive, the operator declines the teardown itself: the run stops
+#     before the KVO is even asked about. kvo_license.py is never invoked,
+#     so a "no" here can never leave an unlicensed KVO behind.
+run_tty tty_decline_teardown "STUB_LIC_MODE=ok" \
+  "${PROCEED}${T}n"$'\n' \
+  --
+if [[ $code -ne 0 ]] && has "$OUT" "Aborted. Nothing was deleted, and no licence was released." \
+   && [[ ! -s "$LIC" ]] && ! has "$OUT" "$RELEASE_Q" && ! has "$OUT" "password" && ! has "$AWS" "delete-stack"; then
+  pass "15. teardown declined (tty): stops before the licences are listed, kvo_license.py never run, nothing deleted"
+else failt "15. teardown declined: exit $code, lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
+
+# 16. No terminal, --yes --release-licences --accept-licence-loss, and the
+#     release comes back exit 3: the loss was accepted, so the run proceeds
+#     to the delete with the warning printed. The teardown was confirmed
+#     (--yes) before the release was attempted.
+run_bg bg_flag_fail3_accept "STUB_LIC_MODE=fail3" --yes --release-licences --accept-licence-loss
+if [[ $code -eq 0 ]] && has "$OUT" "$WARNING" && has "$OUT" "did not leave the KVO clear" \
+   && has "$OUT" "Licence loss accepted (--accept-licence-loss)" && lic_called "$LIC" "--release-all" \
+   && has "$AWS" "cloudformation delete-stack" \
+   && (( $(at "$OUT" "Proceeding (--yes)") > 0 )) && (( $(at "$OUT" "Proceeding (--yes)") < $(at "$OUT" "Releasing all 2 licences") )); then
+  pass "16. --release-licences exit 3 with --accept-licence-loss: loss accepted, delete proceeds, --yes taken before the release"
+else failt "16. exit 3 + accept: exit $code, delete-stack=$(grep -c delete-stack "$AWS"), out=[$(flat "$OUT")]"; fi
 
 exit $rc

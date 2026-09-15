@@ -114,6 +114,7 @@ LIC_PY=""                 # the kvo_license.py in use, once located
 LIC_CACHE_DIR=""          # temp dir holding a fetched copy, if one was needed
 LIC_RELEASED=false        # true ONLY on exit 0 from kvo_license.py --release-all,
                           # or a list the KVO answered with nothing on it
+LIC_WHY=""                # with LIC_RELEASED: "released" or "held nothing", for the waiver
 LIC_RC=0                  # set by lic_run
 _lic_out=""               # the temp file holding kvo_license.py's output, while it exists
 # How the licence count is read from kvo_license.py: the `count` of the JSON
@@ -388,7 +389,8 @@ Confirmation (a non-interactive run needs these, and never assumes them):
   --accept-licence-loss     Second confirmation, required only when the stack
                             contains a KVO whose licences were NOT released.
                             Licences can be RELEASED from a live KVO: this
-                            script offers to do it for you before deleting
+                            script offers to do it for you once the teardown
+                            is confirmed and before anything is deleted
                             (Phase 4a, the licensing API's deactivate
                             operation, proven to return the counts), and the
                             KVO UI can too (Settings > Product Licensing >
@@ -450,10 +452,13 @@ Order of operations:
      file BEFORE anything is deleted: volume ids have to be captured while
      they are still attached, because a detached volume remembers nothing.
   3. Report everything found, with GB and estimated monthly cost.
+  4. Confirm the teardown. Asked before any licence is touched, so the next
+     step only ever strips a KVO you have already chosen to destroy.
   4a. List the licences on the stack's KVO and offer to release them all,
      while the KVO is still alive to release them. A release that leaves the
-     KVO clear means nothing is stranded and step 4's licence gate is skipped.
-  4. Warn about stranded KVO licences and take the confirmations.
+     KVO clear means nothing is stranded and step 4b is skipped.
+  4b. Warn about stranded KVO licences and take the licence-loss
+     confirmation (the typed stack name, or --accept-licence-loss).
   5. Delete the stack, then wait for a terminal state.
   6. On DELETE_FAILED, name the blocking resources, offer to remove the ones
      that are attributable, and retry the delete.
@@ -898,7 +903,12 @@ fi
 # so it lists what the KVO holds and offers to release all of it, with
 # scripts/kvo_license.py doing the API work.
 #
-# Fail CLOSED. The only thing that waives the licence gate in Phase 4 is
+# It runs AFTER the teardown itself has been confirmed (Phase 4), so the
+# licences are only ever stripped from a KVO the operator has already
+# committed to destroying: a release followed by a "no" at the delete used
+# to leave a running KVO with nothing on it.
+#
+# Fail CLOSED. The only thing that waives the licence gate in Phase 4b is
 # kvo_license.py exiting 0, which it does only when every deactivate
 # reported SUCCESS and the KVO then reports no licence left (or the KVO
 # answered the list with nothing on it to begin with). An unreachable KVO,
@@ -1018,6 +1028,43 @@ lic_fallback_note() {
   note "each code in the KVO UI > Settings > Product Licensing, then re-run."
 }
 
+# =====================================================================
+# Phase 4: confirm the teardown
+#
+# Asked BEFORE the licences are touched, on purpose. Phase 4a strips the
+# KVO of its licences, and a release followed by a "no" here would leave
+# a running KVO with nothing on it. So the operator commits to destroying
+# the stack first; only then is the KVO in it emptied, and the one
+# question left after that is the licence-loss gate (Phase 4b), which
+# runs only when the release did not leave the KVO clear.
+# =====================================================================
+step "Phase 4: Confirm the teardown"
+echo
+echo "  About to delete, in ${REGION}:"
+[[ "$SWEEP_ONLY" != "true" ]] && echo "    - CloudFormation stack ${STACK_NAME} (${STACK_STATUS})"
+(( SWEEP_GB > 0 )) && echo "    - $(printf '%s' "$SWEEP_VOLUMES" | wc -w | tr -d ' ') EBS volumes, ${SWEEP_GB} GB, about \$${SWEEP_COST}/month"
+[[ -n "$SWEEP_SGS" ]]  && echo "    - $(printf '%s' "$SWEEP_SGS" | wc -w | tr -d ' ') non-stack security groups in ${STACK_VPC_ID}"
+[[ -n "$SWEEP_ASGS" ]] && echo "    - $(printf '%s' "$SWEEP_ASGS" | wc -w | tr -d ' ') Auto Scaling groups"
+[[ -n "$SWEEP_LTS" ]]  && echo "    - $(printf '%s' "$SWEEP_LTS" | wc -w | tr -d ' ') launch templates"
+if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
+  echo "    - the KVO in that stack, with every licence still activated on it. The"
+  echo "      next step offers to release them first; whatever is not released is"
+  echo "      stranded for good when the KVO is deleted."
+fi
+echo
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  dryrun_say "a real run would ask for confirmation here (or require --yes)"
+elif [[ "$INTERACTIVE" == "true" ]]; then
+  ask_yn "  Proceed with the teardown? [y/N]: " "n" || fail "Aborted. Nothing was deleted, and no licence was released."
+elif [[ "$ASSUME_YES" == "true" ]]; then
+  ok "Proceeding (--yes)."
+else
+  fail "No terminal to confirm on and --yes was not given, so nothing was deleted.
+  Re-run with --yes to confirm, or with --orphans to see what is loose without
+  deleting anything."
+fi
+
 if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   step "Phase 4a: Release KVO licences"
   echo "  This stack has a KVO. The licence counts activated on it can be returned"
@@ -1098,6 +1145,7 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
             if [[ "${_lic_n:-}" == "0" ]]; then
               ok "The KVO holds no licences. Nothing to release, nothing will be stranded."
               LIC_RELEASED=true
+              LIC_WHY="held nothing"
             elif [[ -z "${_lic_n:-}" ]]; then
               warn "Could not tell how many licences the KVO holds: kvo_license.py's summary"
               warn "line did not parse (its output is above). Not releasing on a guess."
@@ -1123,7 +1171,8 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
                 case "$_rel_rc" in
                   0)
                     ok "All ${_lic_n} licences released. The KVO reports none left: nothing will be stranded."
-                    LIC_RELEASED=true ;;
+                    LIC_RELEASED=true
+                    LIC_WHY="released" ;;
                   3)
                     warn "The release did not leave the KVO clear (the reasons are above): an"
                     warn "operation failed or its outcome is unknown, or licences remain."
@@ -1162,17 +1211,22 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
 fi
 
 # =====================================================================
-# Phase 4: licence warning + confirmation
+# Phase 4b: the licence-loss gate
 #
-# This runs BEFORE the first delete, always, and it is the only reason the
-# confirmation is two steps instead of one. Phase 4a can waive the licence
-# half of it, and only by reporting the KVO clear.
+# Only when the stack has a KVO, and always before the first delete.
+# Phase 4a can waive it, and only by reporting the KVO clear; every other
+# outcome leaves it exactly as it was: the red warning and the typed stack
+# name, or --accept-licence-loss with no terminal.
 # =====================================================================
-step "Phase 4: Confirm"
-
+if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
+  step "Phase 4b: Confirm the licence loss"
+fi
 if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" && "$LIC_RELEASED" == "true" ]]; then
-  ok "Licences released in Phase 4a and the KVO reports none left: nothing will be"
-  ok "stranded, so no licence-loss confirmation is needed."
+  case "$LIC_WHY" in
+    released) ok "Phase 4a released every licence, and the KVO reports none left: nothing will" ;;
+    *)        ok "Phase 4a found the KVO held nothing, and it reports none left: nothing will" ;;
+  esac
+  ok "be stranded, so no licence-loss confirmation is needed."
 elif [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   echo
   echo -e "${C_RED}${C_BOLD}  LICENCES ARE ABOUT TO BE STRANDED, PERMANENTLY.${C_RESET}"
@@ -1216,27 +1270,6 @@ elif [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   the KVO UI, or accept the loss with:
     --yes --accept-licence-loss"
   fi
-fi
-
-echo
-echo "  About to delete, in ${REGION}:"
-[[ "$SWEEP_ONLY" != "true" ]] && echo "    - CloudFormation stack ${STACK_NAME} (${STACK_STATUS})"
-(( SWEEP_GB > 0 )) && echo "    - $(printf '%s' "$SWEEP_VOLUMES" | wc -w | tr -d ' ') EBS volumes, ${SWEEP_GB} GB, about \$${SWEEP_COST}/month"
-[[ -n "$SWEEP_SGS" ]]  && echo "    - $(printf '%s' "$SWEEP_SGS" | wc -w | tr -d ' ') non-stack security groups in ${STACK_VPC_ID}"
-[[ -n "$SWEEP_ASGS" ]] && echo "    - $(printf '%s' "$SWEEP_ASGS" | wc -w | tr -d ' ') Auto Scaling groups"
-[[ -n "$SWEEP_LTS" ]]  && echo "    - $(printf '%s' "$SWEEP_LTS" | wc -w | tr -d ' ') launch templates"
-echo
-
-if [[ "$DRY_RUN" == "true" ]]; then
-  dryrun_say "a real run would ask for confirmation here (or require --yes)"
-elif [[ "$INTERACTIVE" == "true" ]]; then
-  ask_yn "  Proceed with the teardown? [y/N]: " "n" || fail "Aborted. Nothing was deleted."
-elif [[ "$ASSUME_YES" == "true" ]]; then
-  ok "Proceeding (--yes)."
-else
-  fail "No terminal to confirm on and --yes was not given, so nothing was deleted.
-  Re-run with --yes to confirm, or with --orphans to see what is loose without
-  deleting anything."
 fi
 
 # =====================================================================
