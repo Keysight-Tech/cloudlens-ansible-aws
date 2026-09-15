@@ -314,8 +314,8 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --profile ./deploy-profile-acme.env
 
 # 4. Remove everything it created, when you are done. Audits first, asks before
-#    deleting. If the stack has a KVO, release its licences in the KVO first
-#    (Settings > Product Licensing > Deactivate licenses).
+#    deleting. If the stack has a KVO it offers to release its licences first
+#    (or do it in the KVO: Settings > Product Licensing > Deactivate licenses).
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1</code></pre>
           <p class="muted">Every run ends with <code>deploy-report-&lt;stack&gt;-&lt;region&gt;.html</code>: what was built, where to sign in, what is tapped, how each phase ended, how to verify, and the exact teardown command. Passwords stay in the mode-600 files it points to, never in the page. Profiles never contain secrets either: licence codes and keys are always typed at the moment of use.</p>
         </div>
@@ -478,7 +478,7 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           <button class="copy-btn" data-copy="teardown-audit-cmd" type="button" aria-label="Copy the audit command">Copy</button>
         </div>
 
-        <p class="full-stack-note"><strong>2. Tear it down.</strong> Audits again, shows what it found, and asks before deleting. If the stack has a KVO, release its licences first, in the KVO under Settings &gt; Product Licensing &gt; Deactivate licenses: they come back while the KVO is alive and never afterwards.</p>
+        <p class="full-stack-note"><strong>2. Tear it down.</strong> Audits again, shows what it found, and asks before deleting. If the stack has a KVO, the script lists the licences it holds and offers to release them before deleting anything (default yes on a terminal; <code>--release-licences</code> answers it without one): they come back while the KVO is alive and never afterwards. Only a release that leaves the KVO clear skips the licence confirmation; anything else is explained and the typed stack name is still required. The UI route remains: release them yourself first under Settings &gt; Product Licensing &gt; Deactivate licenses, then run the teardown.</p>
         <div class="full-stack-cmd-wrap">
           <pre id="teardown-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION</code></pre>
           <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy the teardown command">Copy</button>

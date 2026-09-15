@@ -39,10 +39,15 @@ asks before deleting anything:
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1
 ```
 
-If the stack has a KVO, release its licences first, in the KVO under
-Settings > Product Licensing > Deactivate licenses. The counts return to your
-entitlement while the KVO is alive; once it is deleted they cannot be recovered,
-and the script makes you type the stack name to confirm that.
+If the stack has a KVO, the script offers to release its licences before
+deleting anything: it lists what the KVO holds and asks "Release all N
+licences from this KVO now?" (default yes; `--release-licences` answers it
+when there is no terminal). The counts return to your entitlement while the
+KVO is alive; once it is deleted they cannot be recovered. A release that
+leaves the KVO clear is the only thing that skips the confirmation; otherwise
+the script says why and makes you type the stack name to accept the loss. The
+UI route still works too: release them yourself first, in the KVO under
+Settings > Product Licensing > Deactivate licenses, then run the teardown.
 
 **Prerequisites the script handles for you:**
 - Submits `deploy/cloudformation/stack.yaml` and waits for `CREATE_COMPLETE`
@@ -177,7 +182,10 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 ```
 
 Add `--orphans` to see what the stack has left loose without deleting anything,
-or `--dry-run` to rehearse the whole teardown.
+or `--dry-run` to rehearse the whole teardown. When the stack has a KVO the
+teardown offers to release its licences first (`--release-licences` without a
+terminal); the KVO UI's Settings > Product Licensing > Deactivate licenses does
+the same by hand.
 
 ## Marketplace AMIs (subscribe once per account)
 
