@@ -408,7 +408,11 @@ KVO licence release (only when the stack contains a KVO):
   --kvo-admin-user USER     KVO login for the release. Defaults: this flag,
   --kvo-admin-pass PASS     then $CLOUDLENS_KVO_ADMIN_USER / _PASS, then a
                             prompt on a terminal (admin / admin offered). The
-                            password is never echoed, logged or recorded.
+                            script never echoes, logs or records the
+                            password, but a value given with --kvo-admin-pass
+                            sits in your shell history and is visible in ps
+                            while the script runs. Prefer the
+                            CLOUDLENS_KVO_ADMIN_PASS variable or the prompt.
   --kvo-address ADDR        Where to reach the KVO, if the stack cannot say.
                             Found from the stack's KvoAddress output (public
                             IP when it has one, else private), then the
@@ -517,6 +521,7 @@ on_interrupt() {
   echo
   SCRIPT_DONE=true
   [[ -n "$LIC_CACHE_DIR" ]] && rm -rf "$LIC_CACHE_DIR" 2>/dev/null
+  [[ -n "$_lic_out" ]] && rm -f "$_lic_out" 2>/dev/null
   warn "Interrupted in: ${PHASE_NAME}"
   warn "Re-run with --sweep-only to finish the sweep, or --orphans to see what is left."
   exit 130
@@ -957,38 +962,70 @@ kvo_address() {
   return 0
 }
 
+# lic_py_has_modes FILE: whether FILE is a whole kvo_license.py that carries
+# the release modes. Two checks: the --release-all marker (argparse would
+# refuse --list without it and the run would read that as an unreachable
+# KVO), and the entry point in the last three lines, so a download cut
+# short cannot pass as the script: a truncated copy can still parse, and
+# then stops somewhere in the middle of a release.
+lic_py_has_modes() {
+  grep -q -- '--release-all' "$1" 2>/dev/null \
+    && tail -n 3 "$1" 2>/dev/null | grep -q 'sys.exit(main())'
+}
+
 # scripts/kvo_license.py, wherever this run can get it: a checkout next to
 # this script, the clone deploy-stack.sh makes under $HOME, the current
 # directory, and failing all of those the raw file from the repo, fetched
 # over TLS into a temp dir and kept for this run. A copy that predates the
-# release modes is skipped: argparse would refuse --list and the run would
-# read that as an unreachable KVO. A fetched copy is checked to parse as
-# Python and to carry the mode before it is used. Sets LIC_PY, or leaves it
+# release modes is skipped and said so. A fetched copy is checked to be
+# whole, to carry the modes and to parse as Python before it is used, and
+# LIC_FIND_WHY says which of those it failed. Sets LIC_PY, or leaves it
 # empty. Never fails.
+LIC_FIND_WHY=""
 find_kvo_license_py() {
   local cand="" tmp=""
   LIC_PY=""
+  LIC_FIND_WHY=""
   if [[ -n "${CLOUDLENS_KVO_LICENSE_PY:-}" ]]; then
     # An explicit override is honoured or reported, never quietly replaced
     # by some other copy.
-    [[ -f "$CLOUDLENS_KVO_LICENSE_PY" ]] && LIC_PY="$CLOUDLENS_KVO_LICENSE_PY"
+    if [[ -f "$CLOUDLENS_KVO_LICENSE_PY" ]]; then
+      LIC_PY="$CLOUDLENS_KVO_LICENSE_PY"
+    else
+      LIC_FIND_WHY="CLOUDLENS_KVO_LICENSE_PY names a file that does not exist"
+    fi
     return 0
   fi
   for cand in "$SCRIPT_DIR/../scripts/kvo_license.py" "$HOME/${REPO_NAME}/scripts/kvo_license.py" \
               "$PWD/scripts/kvo_license.py"; do
     [[ -f "$cand" ]] || continue
-    grep -q -- '--release-all' "$cand" 2>/dev/null || continue
+    if ! lic_py_has_modes "$cand"; then
+      note "skipping ${cand}: it predates the release modes (or is not the whole script)"
+      continue
+    fi
     LIC_PY="$cand"
     return 0
   done
-  command -v curl >/dev/null 2>&1 || return 0
+  if ! command -v curl >/dev/null 2>&1; then
+    LIC_FIND_WHY="curl is not available to fetch it"
+    return 0
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/cloudlens-teardown-lic.XXXXXX" 2>/dev/null || true)"
-  [[ -n "$tmp" ]] || return 0
+  if [[ -z "$tmp" ]]; then
+    LIC_FIND_WHY="no temp dir could be made to fetch it into"
+    return 0
+  fi
   LIC_CACHE_DIR="$tmp"
   note "scripts/kvo_license.py is not on this machine; fetching it from ${REPO_RAW}"
-  if curl -fsSL --proto '=https' --max-time 30 -o "$tmp/kvo_license.py" "${REPO_RAW}/scripts/kvo_license.py" 2>/dev/null \
-     && grep -q -- '--release-all' "$tmp/kvo_license.py" 2>/dev/null \
-     && python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$tmp/kvo_license.py" 2>/dev/null; then
+  if ! curl -fsSL --proto '=https' --max-time 30 -o "$tmp/kvo_license.py" "${REPO_RAW}/scripts/kvo_license.py" 2>/dev/null; then
+    LIC_FIND_WHY="it could not be fetched from ${REPO_RAW}"
+  elif ! grep -q -- '--release-all' "$tmp/kvo_license.py" 2>/dev/null; then
+    LIC_FIND_WHY="the copy at ${REPO_RAW} predates the release modes (no --release-all)"
+  elif ! tail -n 3 "$tmp/kvo_license.py" 2>/dev/null | grep -q 'sys.exit(main())'; then
+    LIC_FIND_WHY="the fetched copy is not the whole script (its last lines are not the entry point)"
+  elif ! python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$tmp/kvo_license.py" 2>/dev/null; then
+    LIC_FIND_WHY="the fetched copy does not parse as Python"
+  else
     LIC_PY="$tmp/kvo_license.py"
   fi
   return 0
@@ -1091,7 +1128,7 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   else
     find_kvo_license_py
     if [[ -z "$LIC_PY" ]]; then
-      warn "scripts/kvo_license.py is not on this machine and could not be fetched from ${REPO_RAW}."
+      warn "No usable scripts/kvo_license.py: ${LIC_FIND_WHY:-none found on this machine}."
       lic_fallback_note
     else
       # Credentials: flags, then the deploy's env names, then a prompt with the
@@ -1206,6 +1243,7 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
         esac
       fi
       unset CLOUDLENS_KVO_ADMIN_PASS KVO_PASS
+      ARG_KVO_PASS=""
     fi
   fi
 fi

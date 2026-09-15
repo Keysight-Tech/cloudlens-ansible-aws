@@ -77,6 +77,25 @@ exit 0
 EOF
 chmod +x "$S/bin/aws"
 
+# ---- the curl stub: what the teardown fetches when no kvo_license.py is on
+#      disk. Writes to the -o file what STUB_CURL_MODE says: "old" is a
+#      script from before the release modes, "trunc" a download cut short
+#      (the marker is there, the entry point is not); anything else fails
+#      the way curl -f does on a 404.
+cat > "$S/bin/curl" <<'EOF'
+#!/bin/bash
+out=""
+while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac; done
+printf 'curl -o %s\n' "$out" >> "$AWS_CALLS"
+case "${STUB_CURL_MODE:-none}" in
+  old)   printf 'import sys\n\ndef main():\n    print("no release modes here")\n    return 0\n\n\nif __name__ == "__main__":\n    sys.exit(main())\n' > "$out" ;;
+  trunc) printf 'import sys\n# --release-all lives further down, in the part that never arrived\n\ndef main():\n    return 0\n' > "$out" ;;
+  *)     exit 22 ;;
+esac
+exit 0
+EOF
+chmod +x "$S/bin/curl"
+
 # ---- the kvo_license.py stub ---------------------------------------------
 cat > "$S/kvo_license.py" <<'EOF'
 import json, os, sys, time
@@ -382,13 +401,39 @@ if [[ $code -ne 0 ]] && has "$OUT" "Could not tell how many licences the KVO hol
   pass "13a. list without a JSON line: count not taken from the prose, nothing released, gate runs"
 else failt "13a. list without a JSON line: exit $code, lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
 
-# 13. --help documents the release, and the order of the questions.
+# 13. --help documents the release, the order of the questions, and where
+#     a password given on the command line ends up.
 run_bg help "" --help
 if [[ $code -eq 0 ]] && has "$OUT" "release-licences" && has "$OUT" "kvo-admin-pass" \
    && has "$OUT" "Deactivate licenses" && has "$OUT" "4a." && has "$OUT" "4b." \
-   && has "$OUT" "Asked before any licence is touched"; then
-  pass "13. --help names the release flags, the UI route, steps 4a and 4b, and why 4 comes first"
+   && has "$OUT" "Asked before any licence is touched" \
+   && has "$OUT" "sits in your shell history and is visible in ps" && has "$OUT" "Prefer the" \
+   && has "$OUT" "CLOUDLENS_KVO_ADMIN_PASS variable or the prompt"; then
+  pass "13. --help names the release flags, the UI route, steps 4a and 4b, why 4 comes first, and the ps/history caveat"
 else failt "13. --help: exit $code, out=[$(flat "$OUT")]"; fi
+
+# 13b. No kvo_license.py on disk, so the teardown fetches one: a copy that
+#      predates the release modes is refused with that reason, not "could
+#      not be fetched"; a download cut short (marker present, entry point
+#      missing) is refused as not the whole script. Either way nothing is
+#      released and the gate runs. The script under test is copied to a
+#      directory with no ../scripts, HOME has no clone, and the override
+#      is cleared, so the fetch path is the only one left.
+mkdir -p "$S/td/deploy"; cp "$SCRIPT" "$S/td/deploy/teardown-stack.sh"
+SCRIPT_SAVE="$SCRIPT"; SCRIPT="$S/td/deploy/teardown-stack.sh"
+run_bg bg_fetch_old "STUB_CURL_MODE=old CLOUDLENS_KVO_LICENSE_PY=" --yes --release-licences
+if [[ $code -ne 0 ]] && has "$OUT" "fetching it from https://raw.githubusercontent.com" \
+   && has "$OUT" "predates the release modes (no --release-all)" && ! has "$OUT" "could not be fetched" \
+   && has "$OUT" "No usable scripts/kvo_license.py" && [[ ! -s "$LIC" ]] && has "$AWS" "curl -o" \
+   && has "$OUT" "$WARNING" && ! has "$AWS" "delete-stack"; then
+  pass "13b. fetched copy predates the release modes: said so, nothing released, gate runs"
+else failt "13b. fetched old copy: exit $code, out=[$(flat "$OUT")]"; fi
+run_bg bg_fetch_trunc "STUB_CURL_MODE=trunc CLOUDLENS_KVO_LICENSE_PY=" --yes --release-licences
+if [[ $code -ne 0 ]] && has "$OUT" "not the whole script (its last lines are not the entry point)" \
+   && [[ ! -s "$LIC" ]] && has "$OUT" "$WARNING" && ! has "$AWS" "delete-stack"; then
+  pass "13b. fetched copy cut short: refused as not the whole script, gate runs"
+else failt "13b. fetched truncated copy: exit $code, out=[$(flat "$OUT")]"; fi
+SCRIPT="$SCRIPT_SAVE"
 
 # 14. Interactive, the operator confirms the teardown and then answers "n"
 #     to the release: nothing is released, the warning and the typed-name
