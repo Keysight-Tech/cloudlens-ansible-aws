@@ -360,10 +360,13 @@ Required:
 Confirmation (a non-interactive run needs these, and never assumes them):
   --yes                     Confirm the teardown without a terminal to ask on.
   --accept-licence-loss     Second confirmation, required only when the stack
-                            contains a KVO. Deleting a KVO permanently strands
-                            the licence quantity activated on it: there is an
-                            activate API and no release or rehost API. Read the
-                            warning this script prints before passing this.
+                            contains a KVO. Licences can be RELEASED from a
+                            live KVO (Settings > Product Licensing > Deactivate
+                            licenses, or the licensing API's deactivate
+                            operation, proven to return the counts). Once the
+                            KVO is deleted they cannot: the quantity activated
+                            on it is stranded for good. Release first, then
+                            pass this. Read the warning the script prints.
 
 Scoping (why this is safe to run in a shared account):
   A resource is deleted only when AWS itself ties it to this stack: it is a
@@ -836,10 +839,11 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   echo -e "${C_RED}${C_BOLD}  LICENCES ARE ABOUT TO BE STRANDED, PERMANENTLY.${C_RESET}"
   echo
   echo "  This stack contains a KVO. KVO activation codes are bound to the KVO"
-  echo "  host they were activated on. Deleting the stack destroys that host, and"
-  echo "  the quantity activated on it is NOT returned: there is an activate API"
-  echo "  and there is no release or rehost API. The entitlement cannot be used"
-  echo "  again anywhere without Keysight rehosting it by hand."
+  echo "  host they were activated on. While that host is alive the counts CAN"
+  echo "  be released (Settings > Product Licensing > Deactivate licenses, or"
+  echo "  the licensing API's deactivate operation: proven, 20 counts recovered)."
+  echo "  Deleting the stack destroys that host, and the quantity still activated"
+  echo "  on it is NOT returned afterwards: it is stranded for good."
   echo
   echo "  This is not theoretical. Three activation codes worth 500 counts each"
   echo "  came back availableQuantity=0 after the KVO they were activated on was"
