@@ -2330,6 +2330,17 @@ on_exit() {
   echo -e "${C_RED}[x] Stopped in phase: ${PHASE_NAME} (exit ${code})${C_RESET}" >&2
   if (( code == 130 )); then
     echo "    Interrupted (Ctrl-C). Nothing is lost: finished phases are recorded." >&2
+  elif (( code == 254 )); then
+    # 254 is the AWS CLI's own code for "the service returned an error": the
+    # call reached AWS and AWS refused it. On a customer role that is nearly
+    # always a missing IAM permission (AccessDenied, UnauthorizedOperation,
+    # AccessDeniedException), not a broken script and not a subscription.
+    echo "    Exit 254 is the AWS CLI reporting that an AWS service refused a call," >&2
+    echo "    usually because this role lacks an IAM permission for it. The call and" >&2
+    echo "    its error message are in the log unless the call discarded them:" >&2
+    echo "      grep -n 'An error occurred' ${LOG_FILE}" >&2
+    echo "    Grant the permission it names (or run as a role that has it), then" >&2
+    echo "    resume. Check who you are with: aws sts get-caller-identity" >&2
   else
     echo "    Nothing above explained this, which means a command failed inside a" >&2
     echo "    function under 'set -e'. The usual cause is an AWS call: expired or" >&2
@@ -2818,9 +2829,13 @@ fi
 # template resolves its own AMIs from RegionMap, so this does not feed CFN.
 resolve_ami_by_name() {
   local ami_name="$1"
+  # Optional: the callers keep their default id when nothing comes back, so a
+  # refused ec2:DescribeImages must not end the run. It did, through the
+  # top-level ERR trap, with the reason thrown away. The AWS error goes to the
+  # log and the caller sees an empty answer.
   aws "${AWS_REGION_ARG[@]}" ec2 describe-images --owners "$MARKETPLACE_OWNER" \
     --filters "Name=name,Values=${ami_name}" \
-    --query 'Images[0].ImageId' --output text 2>/dev/null
+    --query 'Images[0].ImageId' --output text 2>>"$LOG_FILE" || true
 }
 if [[ "$DRY_RUN" != "true" ]]; then
   if [[ -z "$CLMS_AMI_OVERRIDE" ]]; then
@@ -2936,8 +2951,17 @@ ensure_key_pair() {
   note "Key pair '${name}' not found in ${REGION}. Creating it..."
   local pem="$HOME/.ssh/${name}.pem"
   mkdir -p "$HOME/.ssh"
-  aws "${AWS_REGION_ARG[@]}" ec2 create-key-pair --key-name "$name" \
-    --query 'KeyMaterial' --output text > "$pem"
+  # Required, so a refusal must stop the run LOUDLY. It used to stop it
+  # silently: the ERR trap does not reach into functions, so a refused
+  # ec2:CreateKeyPair ended the run with a bare exit 254, and the `>` had
+  # already created an empty ${pem}. On the next run, with the key pair made
+  # in the console by hand, that empty file passed the "is the .pem on this
+  # machine" check above and every SSH step failed 25 minutes later.
+  if ! aws "${AWS_REGION_ARG[@]}" ec2 create-key-pair --key-name "$name" \
+         --query 'KeyMaterial' --output text > "$pem"; then
+    rm -f "$pem"
+    fail "Could not create the EC2 key pair '${name}' in ${REGION} (the AWS error is above and in ${LOG_FILE}; usually this role is not allowed ec2:CreateKeyPair). The stack cannot launch without one: create it in the EC2 console, save the .pem as ${pem}, and re-run with --key-name ${name}."
+  fi
   chmod 600 "$pem"
   ok "Created key pair '${name}', private key saved to ${pem}"
 }
@@ -3501,8 +3525,15 @@ step "Phase 4: Marketplace AMI subscriptions"
 # the Marketplace ProductCode, which maps to the exact subscribe page.
 ami_subscribe_url() {
   local ami="$1" code
+  # Optional probe with its fallback right below. The callers capture this in
+  # $( ), where errexit is not in force (bash 3.2 and 5.2 alike), so a refused
+  # ec2:DescribeImages never ended the run here: it fell back to the search
+  # page silently, with the reason thrown away. Now the reason is logged and
+  # the fallback is announced, on stderr because stdout IS the URL. The `||`
+  # also keeps this safe if it is ever called outside a substitution.
   code=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-images --image-ids "$ami" \
-           --query 'Images[0].ProductCodes[0].ProductCodeId' --output text 2>/dev/null)
+           --query 'Images[0].ProductCodes[0].ProductCodeId' --output text 2>>"$LOG_FILE") \
+    || { note "Could not read the product code of ${ami} (the AWS error is in ${LOG_FILE}); showing the Marketplace search page instead." >&2; code=""; }
   if [[ -n "$code" && "$code" != "None" ]]; then
     echo "https://aws.amazon.com/marketplace/pp?sku=${code}"
   else
@@ -3530,10 +3561,15 @@ check_ami_subscription() {
 # product URL, so surface it verbatim rather than guessing.
 report_marketplace_failure() {
   local reasons
+  # Diagnostic only: "nothing found" is its normal answer. `||` binds looser
+  # than `|`, so the one `|| true` covers the pipeline, which under pipefail
+  # fails on a refused DescribeStackEvents and on a grep that matched nothing.
+  # The only caller wraps this in `|| true` (errexit is lifted inside), but the
+  # function has to be safe to call from anywhere.
   reasons=$(aws "${AWS_REGION_ARG[@]}" cloudformation describe-stack-events \
               --stack-name "$STACK_NAME" \
               --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason' \
-              --output text 2>/dev/null | tr '\t' '\n' | grep -i "OptInRequired\|Marketplace" | head -3)
+              --output text 2>>"$LOG_FILE" | tr '\t' '\n' | grep -i "OptInRequired\|Marketplace" | head -3 || true)
   [[ -z "$reasons" ]] && return 1
   echo
   warn "This failed because the AWS Marketplace terms are not accepted on this account."
@@ -3582,37 +3618,58 @@ fi
 # immediate, actionable message.
 # ---------------------------------------------------------------------
 check_eip_headroom() {
-  [[ "$DRY_RUN" == "true" ]] && return 0
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would check Elastic IP headroom (ec2 describe-addresses, service-quotas get-service-quota)"; return 0; }
   [[ "$ASSIGN_PUBLIC_IP" != "yes" ]] && { note "No public IPs requested, skipping Elastic IP quota check."; return 0; }
 
   local need=1
   [[ "$DEPLOY_KVO" == "true" ]] && need=$((need+1))
   [[ "$DEPLOY_VPB" == "true" ]] && need=$((need+1))
 
-  local used limit free
-  used=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null)
-  [[ "$used" =~ ^[0-9]+$ ]] || { warn "Could not read Elastic IP usage; skipping quota check."; return 0; }
+  # Every probe below is read-only and optional, and each one MUST be unable
+  # to end the run. Under `set -euo pipefail` an assignment carries its
+  # command's exit status, so a refused call (AWS CLI exit 254: the service
+  # said no, nearly always a missing IAM permission) killed the script on the
+  # assignment line itself, before the guard written for that case on the next
+  # line ever ran. The ERR trap does not reach into functions, so nothing was
+  # printed, and the banner in force was Phase 4's: a customer with every
+  # Marketplace subscription in place lost a day to "Stopped in phase:
+  # Marketplace". `|| true` INSIDE the substitution makes the assignment
+  # succeed with an empty value, which the guard reads as "unknown". The AWS
+  # error text goes to the log instead of /dev/null, so the reason is on disk
+  # for the operator; the terminal gets one warn line that says where to look.
+  local used limit free limit_note=""
+  used=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-addresses --query 'length(Addresses)' --output text 2>>"$LOG_FILE" || true)
+  [[ "$used" =~ ^[0-9]+$ ]] || { warn "Could not read Elastic IP usage (the AWS error is in ${LOG_FILE}); skipping the quota check."; return 0; }
 
+  # `||` binds looser than `|`, so the one `|| true` covers the whole pipeline.
+  # It has to: under pipefail a refused get-service-quota fails the pipeline
+  # even though cut succeeds, and that failure was fatal here too.
   limit=$(aws "${AWS_REGION_ARG[@]}" service-quotas get-service-quota \
             --service-code ec2 --quota-code L-0263D0A3 \
-            --query 'Quota.Value' --output text 2>/dev/null | cut -d. -f1)
-  [[ "$limit" =~ ^[0-9]+$ ]] || limit=5   # AWS default when the quota API is not permitted
+            --query 'Quota.Value' --output text 2>>"$LOG_FILE" | cut -d. -f1 || true)
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    # servicequotas:GetServiceQuota is missing from most non-admin roles.
+    # Assume the AWS default and say so, rather than pretend it was read.
+    limit=5; limit_note=" (quota assumed: it could not be read)"
+    warn "Could not read the Elastic IP quota (the AWS error is in ${LOG_FILE}); assuming the AWS default of ${limit}."
+  fi
 
   free=$(( limit - used ))
   if (( free >= need )); then
-    ok "Elastic IPs: ${used}/${limit} in use, need ${need}, ${free} free"
+    ok "Elastic IPs: ${used}/${limit} in use, need ${need}, ${free} free${limit_note}"
     return 0
   fi
 
-  warn "Not enough Elastic IPs in ${REGION}: need ${need}, only ${free} free (${used}/${limit} in use)."
+  warn "Not enough Elastic IPs in ${REGION}: need ${need}, only ${free} free (${used}/${limit} in use${limit_note})."
   echo "    The deploy would run for several minutes and then roll back."
   echo
 
   # Unattached EIPs are pure waste: they bill hourly and block deploys.
+  # Optional as well: when the listing is refused the advice below still stands.
   local orphans
   orphans=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-addresses \
     --query 'Addresses[?AssociationId==`null`].[PublicIp,AllocationId,Tags[?Key==`Name`]|[0].Value]' \
-    --output text 2>/dev/null)
+    --output text 2>>"$LOG_FILE" || true)
 
   if [[ -n "$orphans" ]]; then
     echo "    Unattached Elastic IPs (billing hourly, attached to nothing):"
@@ -3639,6 +3696,18 @@ check_eip_headroom() {
   read -rp "    Continue anyway? [y/N]: " yn || true
   [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
 }
+# =====================================================================
+# Phase 4b: Elastic IP headroom
+# =====================================================================
+# Its own banner, on purpose. This check used to run under the Phase 4 banner,
+# so when a refused quota probe ended the run the operator read "Stopped in
+# phase: Phase 4: Marketplace AMI subscriptions" and went looking for a
+# subscription problem that did not exist. step() names the work for on_exit
+# and on_error without touching the resume ledger: PHASE_ORDER lists the
+# resumable phases (stack, wait, ...) for --from, --only and the state file,
+# and this is a pre-flight that runs before the stack phase and is never
+# resumed on its own, exactly like Phase 3b.
+step "Phase 4b: Elastic IP headroom"
 # Only when we are actually going to create the stack. A resume against an
 # existing CREATE_COMPLETE stack allocates no new Elastic IPs: its three are
 # already attached and counted in "in use". Checking headroom anyway made a
@@ -4036,10 +4105,17 @@ discover_stack_facts() {
 vpc_mirror_session_count() {
   [[ -z "${STACK_VPC_ID:-}" ]] && { echo 0; return; }
   local enis
+  # Read-only, and "unknown" is answered as 0 so the caller's advice applies.
+  # The callers capture this in $( ), where errexit is not in force, so a
+  # refused DescribeNetworkInterfaces (which fails this pipeline under
+  # pipefail) counted as 0 silently, with the reason thrown away. Now the
+  # reason is logged and the 0 is announced, on stderr because stdout is the
+  # count. The `||` also keeps this safe if it is ever called directly.
   enis="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-network-interfaces \
             --filters "Name=vpc-id,Values=${STACK_VPC_ID}" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null \
-          | tr '\t' '\n' | sed '/^$/d' | sort -u)"
+            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>>"$LOG_FILE" \
+          | tr '\t' '\n' | sed '/^$/d' | sort -u)" \
+    || { warn "Could not list the interfaces in ${STACK_VPC_ID} (the AWS error is in ${LOG_FILE}); treating the mirror session count as 0." >&2; enis=""; }
   [[ -z "$enis" ]] && { echo 0; return; }
   aws "${AWS_REGION_ARG[@]}" ec2 describe-traffic-mirror-sessions \
       --query 'TrafficMirrorSessions[].NetworkInterfaceId' --output text 2>/dev/null \
