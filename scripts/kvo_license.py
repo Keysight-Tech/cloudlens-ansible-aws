@@ -327,6 +327,9 @@ def prompt_plan(kvo, base, tok, verify):
 #   * only SUCCESS counts as a finished, successful operation;
 #   * a poll that ran out of time is UNKNOWN, never a success;
 #   * a licence list that could not be read is UNKNOWN, never "clear";
+#   * a row holds nothing only when its quantity is exactly 0. A row whose
+#     quantity is missing or unreadable is held, amount unknown: it is
+#     reported as a problem, never skipped;
 #   * exit 0 only when every operation succeeded AND the KVO then reports
 #     no licence left. Anything else is exit 3 and the output says which.
 # A whole activation code is never printed: it is a credential, and the
@@ -393,9 +396,12 @@ def mask(code):
 def _scrub(obj, codes):
     """Replace every full activation code inside a KVO response with its
     mask, recursively, so a failure detail can be printed without leaking
-    the credential it is about."""
+    the credential it is about. Dict keys are scrubbed too: a KVO that
+    keys its detail by code would otherwise print the code whole. `codes`
+    is every code the KVO listed, not only the ones being released: a
+    detail about one code can name another."""
     if isinstance(obj, dict):
-        return {k: _scrub(v, codes) for k, v in obj.items()}
+        return {_scrub(k, codes): _scrub(v, codes) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_scrub(v, codes) for v in obj]
     if isinstance(obj, str):
@@ -422,16 +428,40 @@ def _row_code(row):
 
 
 def _row_qty(row):
+    """The row's quantity as an int, or None when the row states none or
+    states something that is not a whole number. None is not 0. A row
+    whose quantity cannot be read is held, amount unknown; only an explicit
+    0 holds nothing. Reading a missing quantity as 0 would let a teardown
+    report a KVO clear while it still holds a licence: fail open."""
+    if not isinstance(row, dict) or "quantity" not in row:
+        return None
+    v = row.get("quantity")
+    if isinstance(v, bool):
+        return None
     try:
-        q = int(row.get("quantity", 0)) if isinstance(row, dict) else 0
+        q = int(v)
     except (TypeError, ValueError):
-        q = 0
-    return max(q, 0)
+        return None
+    return q if q >= 0 else None
+
+
+def _held(rows):
+    """The rows that hold licence counts: every row whose quantity is not
+    exactly 0, which covers a quantity above 0 and a quantity this script
+    could not read (None). The list's count, the release targets, --json's
+    `count` and the teardown's count all stand on this one function, so a
+    row cannot be counted by one of them and skipped by another."""
+    return [r for r in rows if isinstance(r, dict) and _row_qty(r) != 0]
+
+
+def _qty_text(q):
+    return "?" if q is None else str(q)
 
 
 def row_view(row):
     """One licence row with its code masked: what --list prints and what
-    --json returns. Nothing else from the row is passed through."""
+    --json returns. Nothing else from the row is passed through. `quantity`
+    is null when the row does not state a readable one."""
     return {
         "part": _field(row, "partNumber", "partId", "part", "partNo") or "-",
         "product": _field(row, "product", "productName") or "-",
@@ -526,28 +556,31 @@ def read_list(base, tok, verify, timeout):
 
 
 def holdings(base, tok, verify, timeout):
-    """{licences, count, clear, unreadable?}. `clear` is tri-state and is
-    the only thing a teardown may stand on: True on a genuine empty list,
-    False on any answer that named a licence, None when the list could not
-    be read (with the reason beside it)."""
+    """{rows, licences, count, clear, unreadable}. `rows` is every row the
+    KVO listed and `licences` the held ones (see _held), `count` their
+    number. `clear` is tri-state and is the only thing a teardown may stand
+    on: True when nothing is held, False on any answer that named a held
+    licence, None when the list could not be read. `unreadable` is the
+    reason, None once the list was read; always present."""
     rows, why = read_list(base, tok, verify, timeout)
-    out = {"licences": rows, "count": len(rows),
-           "clear": (False if rows else None) if why else not rows}
-    if why:
-        out["unreadable"] = why
-    return out
+    held = _held(rows)
+    return {"rows": rows, "licences": held, "count": len(held),
+            "clear": (False if held else None) if why else not held,
+            "unreadable": why}
 
 
 def _deadline_left(deadline):
     return max(1, int(deadline - time.time()))
 
 
-def release_rows(kvo, base, tok, targets, verify, deadline, http_timeout):
+def release_rows(kvo, base, tok, targets, verify, deadline, http_timeout, scrub_codes=()):
     """operations/deactivate per (code, qty), each polled to a terminal state
     within what is left of the overall budget. Returns a list of
-    {code_last4, quantity, state, ok, running, detail?}."""
+    {code_last4, quantity, state, ok, running, detail?}. `scrub_codes` is
+    every code the KVO listed, masked out of any detail before it is
+    printed; the targets are always included."""
     results = []
-    codes = [c for c, _q in targets]
+    codes = list(scrub_codes) + [c for c, _q in targets if c not in scrub_codes]
     for code, qty in targets:
         if time.time() >= deadline:
             print("[license]   %s x%s: not attempted, the overall time budget is spent" % (mask(code), qty))
@@ -597,32 +630,72 @@ def release_rows(kvo, base, tok, targets, verify, deadline, http_timeout):
 
 
 def _pick_targets(rows, wanted):
-    """(targets, error). With `wanted` None every row with a quantity is a
-    target. With `wanted` (code, qty): the row whose code matches, in full
-    or by its last 4 characters; qty None means the row's full quantity."""
+    """(targets, problems). `targets` is the [(code, qty)] to deactivate;
+    `problems` is what could not be made a target, each a printable line,
+    and any problem means the KVO cannot be reported clear.
+
+    With `wanted` None every held row is a target. A held row with no
+    readable quantity, or no code, is a PROBLEM, never a skip: the KVO
+    holds it and this script cannot release it, so the operator has to.
+    With `wanted` (code, qty): the held row whose code matches, in full or
+    by its last 4 characters; qty None means the row's full quantity. A
+    matching row with quantity 0 holds nothing, and asking to release it
+    is nothing to do rather than an error."""
+    held = _held(rows)
     if wanted is None:
-        return [(_row_code(r), _row_qty(r)) for r in rows if _row_code(r) and _row_qty(r) > 0], None
+        targets, problems = [], []
+        for r in held:
+            code, qty = _row_code(r), _row_qty(r)
+            if not code:
+                problems.append("a row (%s, quantity %s) carries no activation code, so this script cannot "
+                                "release it: release it in the KVO UI"
+                                % (row_view(r)["product"], _qty_text(qty)))
+            elif qty is None:
+                problems.append("%s states no readable quantity (held, amount unknown), so this script "
+                                "cannot release it: release it in the KVO UI, or pass --release %s,QTY "
+                                "with the quantity the UI shows" % (mask(code), str(code)[-4:]))
+            else:
+                targets.append((code, qty))
+        return targets, problems
     code, qty = wanted
-    hits = [r for r in rows if _row_code(r) and (str(_row_code(r)) == code or str(_row_code(r)).endswith(code))]
+
+    def matches(r):
+        c = _row_code(r)
+        return bool(c) and (str(c) == code or str(c).endswith(code))
+    hits = [r for r in held if matches(r)]
     if not hits:
-        return [], "no installed licence matches %s" % mask(code)
+        if any(matches(r) for r in rows if isinstance(r, dict)):
+            print("[license] %s has quantity 0: nothing to release there" % mask(code))
+            return [], []
+        return [], ["no installed licence matches %s" % mask(code)]
     if len(hits) > 1:
-        return [], "%d installed licences end in %s; pass the full code" % (len(hits), mask(code))
+        return [], ["%d installed licences end in %s; pass the full code" % (len(hits), mask(code))]
     row = hits[0]
     use = qty if qty is not None else _row_qty(row)
+    if use is None:
+        return [], ["%s states no readable quantity (held, amount unknown): pass --release %s,QTY with "
+                    "the quantity the KVO UI shows" % (mask(_row_code(row)), str(_row_code(row))[-4:])]
     if use < 1:
-        return [], "%s has quantity %s: nothing to release" % (mask(_row_code(row)), _row_qty(row))
-    return [(_row_code(row), use)], None
+        return [], ["a quantity of %s releases nothing from %s" % (use, mask(_row_code(row)))]
+    return [(_row_code(row), use)], []
 
 
 def _print_rows(rows, kvo):
-    views = [row_view(r) for r in rows if isinstance(r, dict)]
+    """The held rows as a table, codes masked, and a note for any row the
+    KVO lists with quantity 0 (nothing to release there, but the operator
+    should not wonder why the UI shows more rows than this)."""
+    held = _held(rows)
+    views = [row_view(r) for r in held]
     print("[license] %d licence(s) installed on KVO %s" % (len(views), kvo))
     if views:
         print("    %-16s %-24s %8s  %-10s %s" % ("part", "product", "quantity", "code", "expiry"))
         for v in views:
             print("    %-16s %-24s %8s  %-10s %s"
-                  % (str(v["part"])[:16], str(v["product"])[:24], v["quantity"], v["code_last4"], v["expiry"]))
+                  % (str(v["part"])[:16], str(v["product"])[:24], _qty_text(v["quantity"]),
+                     v["code_last4"], v["expiry"]))
+    zero = sum(1 for r in rows if isinstance(r, dict)) - len(held)
+    if zero:
+        print("    (%d more row(s) with quantity 0: nothing to release there)" % zero)
     return views
 
 
@@ -643,12 +716,12 @@ def run_mode(a):
         h = holdings(base, tok, verify, a.http_timeout)
         if a.json:
             out = {"kvo": a.kvo, "count": h["count"], "clear": h["clear"],
-                   "licences": [row_view(r) for r in h["licences"] if isinstance(r, dict)]}
+                   "licences": [row_view(r) for r in h["licences"]]}
             if h.get("unreadable"):
                 out["unreadable"] = h["unreadable"]
             print(json.dumps(out, sort_keys=True))
         else:
-            _print_rows(h["licences"], a.kvo)
+            _print_rows(h["rows"], a.kvo)
         if h.get("unreadable"):
             print("[license] the licence list could not be read: %s" % h["unreadable"], file=sys.stderr)
             return EXIT_UNKNOWN
@@ -673,9 +746,11 @@ def run_mode(a):
         print("[license] cannot release what cannot be listed: %s" % why, file=sys.stderr)
         return EXIT_UNKNOWN
     views = _print_rows(rows, a.kvo)
-    targets, err = _pick_targets(rows, wanted)
-    if err:
-        print("[license] %s" % err, file=sys.stderr)
+    targets, problems = _pick_targets(rows, wanted)
+    for p in problems:
+        print("[license] %s" % p, file=sys.stderr)
+    if problems and not targets:
+        print("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted", file=sys.stderr)
         return EXIT_UNKNOWN
     if not targets:
         print("[license] nothing to release")
@@ -683,14 +758,14 @@ def run_mode(a):
         total = sum(q for _c, q in targets)
         print("[license] releasing %d licence(s), %d count(s) in total, back to the entitlement..."
               % (len(targets), total))
-    results = release_rows(a.kvo, base, tok, targets, verify, deadline, a.http_timeout)
+    results = release_rows(a.kvo, base, tok, targets, verify, deadline, a.http_timeout,
+                           scrub_codes=[_row_code(r) for r in rows if _row_code(r)])
     failed = [r for r in results if not r["ok"] and not r["running"]]
     unknown = [r for r in results if r["running"]]
 
     # Re-read, and stand only on what the KVO actually says now.
     after = holdings(base, tok, verify, a.http_timeout)
-    remaining = [row_view(r) for r in after["licences"] if isinstance(r, dict)]
-    problems = []
+    remaining = [row_view(r) for r in after["licences"]]
     if failed:
         problems.append("%d operation(s) FAILED: %s" % (len(failed), ", ".join(r["code_last4"] for r in failed)))
     if unknown:
@@ -701,7 +776,8 @@ def run_mode(a):
                         "UNKNOWN, not clear: %s" % after.get("unreadable"))
     elif after["clear"] is False:
         problems.append("the KVO still holds %d licence(s): %s"
-                        % (len(remaining), ", ".join("%s x%s" % (v["code_last4"], v["quantity"]) for v in remaining)))
+                        % (len(remaining), ", ".join("%s x%s" % (v["code_last4"], _qty_text(v["quantity"]))
+                                                      for v in remaining)))
     for p in problems:
         print("[license] %s" % p, file=sys.stderr)
     if problems:

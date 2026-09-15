@@ -321,6 +321,101 @@ def test_release_all_on_an_empty_kvo_is_clear(fake):
 
 
 # ---------------------------------------------------------------------
+# held vs counted: only an explicit quantity of 0 holds nothing
+# ---------------------------------------------------------------------
+ROWS_NO_QTY = ROWS + [{"activationCode": "EEEE-5555-FFFF-3333", "product": "CL-CREDIT"}]
+ROWS_ZERO = [dict(ROWS[0], quantity=0), dict(ROWS[1], quantity=0)]
+
+
+def test_release_all_zero_quantity_rows_left_on_the_list_are_clear(fake):
+    kvo = fake(keep_zero_rows=True)
+    """A KVO build that keeps a fully released row on the list with
+    quantity 0 (the live one drops it; both shapes must be right) is clear
+    after the release: exit 0, not 'still holds 2 licence(s)' forever."""
+    p = run(kvo.base, "--release-all", "--json")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert len(kvo.deactivates) == 2 and all(r["quantity"] == 0 for r in kvo.rows)
+    assert "no licence left" in p.stdout and "Nothing will be stranded" in p.stdout
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out["clear"] is True and out["remaining"] == [] and out["released"] == 2
+
+
+def test_list_counts_only_held_rows_and_notes_the_zero_ones(fake):
+    kvo = fake(rows=ROWS_ZERO + [ROWS[1]], keep_zero_rows=True)
+    p = run(kvo.base, "--list", "--json")
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out["count"] == 1 and out["clear"] is False
+    assert [r["code_last4"] for r in out["licences"]] == ["****-2222"]
+    p = run(kvo.base, "--list")
+    assert "[license] 1 licence(s) installed on KVO " in p.stdout
+    assert "(2 more row(s) with quantity 0: nothing to release there)" in p.stdout
+    kvo2 = fake(rows=ROWS_ZERO, keep_zero_rows=True)
+    p = run(kvo2.base, "--list", "--json")
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert p.returncode == 0 and out["count"] == 0 and out["clear"] is True
+
+
+def test_missing_quantity_row_is_held_not_skipped(fake):
+    kvo = fake(rows=ROWS_NO_QTY)
+    """A row with no quantity key is held, amount unknown. --list counts it
+    and shows '?', never 0; --release-all releases what it can, names the
+    row it cannot, and is exit 3, never 'clear' with a licence still on
+    the KVO (the naive fix, sharing qty > 0, would have failed open)."""
+    p = run(kvo.base, "--list", "--json")
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out["count"] == 3 and out["clear"] is False
+    got = {r["code_last4"]: r for r in out["licences"]}
+    assert got["****-3333"]["quantity"] is None
+    p = run(kvo.base, "--list")
+    assert "[license] 3 licence(s) installed on KVO " in p.stdout
+    row = [l for l in p.stdout.splitlines() if "****-3333" in l][0]
+    assert row.split()[-3:] == ["?", "****-3333", "-"], row     # quantity '?', never 0
+    p = run(kvo.base, "--release-all")
+    assert p.returncode == 3, p.stdout + p.stderr
+    assert len(kvo.deactivates) == 2            # the two readable rows were released
+    assert "****-1111 x5: released" in p.stdout and "****-2222 x20: released" in p.stdout
+    assert "****-3333 states no readable quantity (held, amount unknown)" in p.stderr
+    assert "--release 3333,QTY" in p.stderr
+    assert "still holds 1 licence(s): ****-3333 x?" in p.stderr
+    assert "NOT clear" in p.stderr and "Nothing will be stranded" not in p.stdout
+
+
+def test_release_one_of_a_missing_quantity_row_takes_the_operators_qty(fake):
+    kvo = fake(rows=ROWS_NO_QTY)
+    p = run(kvo.base, "--release", "3333")
+    assert p.returncode == 3 and kvo.deactivates == []
+    assert "****-3333 states no readable quantity" in p.stderr and "--release 3333,QTY" in p.stderr
+    p = run(kvo.base, "--release", "3333,7")
+    assert kvo.deactivates == [[{"activationCode": "EEEE-5555-FFFF-3333", "quantity": 7}]]
+    assert "****-3333 x7: released" in p.stdout
+
+
+def test_release_one_zero_quantity_row_is_nothing_to_do(fake):
+    kvo = fake(rows=[dict(ROWS[0], quantity=0)], keep_zero_rows=True)
+    p = run(kvo.base, "--release", "1111")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert kvo.deactivates == []
+    assert "****-1111 has quantity 0: nothing to release there" in p.stdout
+    assert "nothing to release" in p.stdout and "no licence left" in p.stdout
+
+
+def test_scrub_masks_other_held_codes_and_dict_keys(fake):
+    kvo = fake(states={"AAAA-1111-BBBB-1111": "FAILED"}, cross_ref=True)
+    """A failure detail that names ANOTHER held code, in its text and as a
+    dict key, in --release mode where only one code is a target: run()
+    asserts no full code reaches the output, and the other code appears
+    only masked."""
+    p = run(kvo.base, "--release", "1111")
+    assert p.returncode == 3
+    assert "****-1111 x5: FAILED (FAILED)" in p.stdout
+    assert "detail for ****-1111" in p.stdout
+    assert "other codes on this host: ****-2222" in p.stdout
+    assert '"****-2222": "held"' in p.stdout
+
+
+# ---------------------------------------------------------------------
 # --release CODE[,QTY]
 # ---------------------------------------------------------------------
 def test_release_one_by_last4_leaves_the_rest(kvo):
