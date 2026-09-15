@@ -19,6 +19,7 @@ Run:  cd console && python3 -m pytest tests/test_kvo_license_cli.py -q
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -31,6 +32,7 @@ import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.environ.get("KVO_LICENSE_PY") or os.path.join(REPO, "scripts", "kvo_license.py")
+TEARDOWN = os.environ.get("TEARDOWN_STACK_SH") or os.path.join(REPO, "deploy", "teardown-stack.sh")
 
 PASSWORD = "s3cret-teardown!"
 ROWS = [
@@ -522,6 +524,38 @@ def test_json_is_the_last_line_on_every_exit_path(fake):
     assert p.returncode == 2, p.stdout
     assert "KVO_TEST_PASS: that variable is not set (it is set, but empty)" in p.stdout
     assert _last_json(p)["exit"] == 2
+
+
+def test_teardown_reads_the_count_through_its_own_parse_expression(fake):
+    """The two real halves together. deploy/teardown-stack.sh reads the
+    licence count by piping the last line of kvo_license.py's 2>&1 output
+    through LIC_COUNT_PARSE. This greps that exact expression out of the
+    teardown and feeds it the real script's real output, so a change to
+    either side that breaks the other fails here, not on a live KVO."""
+    src = open(TEARDOWN).read()
+    m = re.search(r"^LIC_COUNT_PARSE='([^']+)'$", src, re.M)
+    assert m, "deploy/teardown-stack.sh does not define LIC_COUNT_PARSE"
+    expr = m.group(1)
+    assert 'tail -n 1 "$_lic_out"' in src and 'python3 -c "$LIC_COUNT_PARSE"' in src
+    assert "--list --json" in src
+
+    def parse(p):
+        last = p.stdout.strip().splitlines()[-1]
+        return subprocess.run([sys.executable, "-c", expr], input=last + "\n", capture_output=True, text=True)
+    kvo = fake()
+    q = parse(run_merged(kvo.base, "--list", "--json"))
+    assert q.returncode == 0 and q.stdout.strip() == "2", q.stderr
+    only_zero = fake(rows=[dict(r, quantity=0) for r in ROWS], keep_zero_rows=True)
+    q = parse(run_merged(only_zero.base, "--list", "--json"))
+    assert q.stdout.strip() == "0"
+    bad = fake(list_body=(200, "<html>eula</html>", "text/html"))
+    p = run_merged(bad.base, "--list", "--json")
+    assert p.returncode == 3                    # the teardown stands on this first
+    assert parse(p).stdout.strip() == "0"
+    # a refused login prints no count: the expression fails, and the
+    # teardown reads a failed parse as "could not tell", never as 0
+    q = parse(run_merged(kvo.base, "--list", "--json", password="not-it"))
+    assert q.returncode != 0 and q.stdout.strip() == ""
 
 
 def test_password_env_empty_is_a_clean_stop(kvo):

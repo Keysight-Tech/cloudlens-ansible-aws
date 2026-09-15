@@ -16,8 +16,12 @@
 # delete-stack has been asked for. kvo_license.py is a stub reached through
 # CLOUDLENS_KVO_LICENSE_PY (the override exists for this suite) that plays
 # the exit-code contract: 0 clear, 3 not clear, 6 unreachable or refused,
-# or hangs. It records its arguments and the password it was handed
-# through --password-env, to a file only this suite reads.
+# or hangs; with --list --json it prints the real script's report and then
+# the JSON summary as its last line, which is where the teardown reads the
+# count. It records its arguments and the password it was handed through
+# --password-env, to a file only this suite reads. The real script's JSON
+# against a fake KVO, fed through the teardown's own parse expression, is
+# proven in console/tests/test_kvo_license_cli.py.
 #
 # Two ways of running the whole script, both under /bin/bash (3.2 on macOS,
 # the floor the script targets):
@@ -69,7 +73,7 @@ chmod +x "$S/bin/aws"
 
 # ---- the kvo_license.py stub ---------------------------------------------
 cat > "$S/kvo_license.py" <<'EOF'
-import os, sys, time
+import json, os, sys, time
 args = sys.argv[1:]
 open(os.environ["LIC_CALLS"], "a").write(" ".join(args) + "\n")
 pw_env = args[args.index("--password-env") + 1] if "--password-env" in args else ""
@@ -84,16 +88,23 @@ if mode == "badpw":
     print("[license] the KVO at %s refused the credentials for user 'admin' (HTTP 401)" % kvo, file=sys.stderr); sys.exit(6)
 if "--list" in args:
     n = 0 if mode == "empty" else 2
+    rows = [] if not n else [
+        {"part": "KVO-DEV-01", "product": "KVO-DEVICE", "quantity": 5, "code_last4": "****-1111", "expiry": "2027-01-31"},
+        {"part": "-", "product": "CL-CREDIT", "quantity": 20, "code_last4": "****-2222", "expiry": "-"}]
     print("[license] %d licence(s) installed on KVO %s" % (n, kvo))
     if n:
         print("    part             product                  quantity  code       expiry")
         print("    KVO-DEV-01       KVO-DEVICE                      5  ****-1111  2027-01-31")
         print("    -                CL-CREDIT                      20  ****-2222  -")
+    # "noline": the prose of a copy that predates --json, and no JSON line
+    if "--json" in args and mode != "noline":
+        sys.stdout.flush()
+        print(json.dumps({"kvo": kvo, "count": n, "clear": n == 0, "licences": rows, "unreadable": None, "exit": 0}))
     sys.exit(0)
 if "--release-all" in args:
     if mode == "fail3":
         print("[license]   ****-1111 x5: released")
-        print("[license]   ****-2222 x20: outcome UNKNOWN (state 'IN_PROGRESS' at the deadline): not counted as released")
+        print("[license]   ****-2222 x20: outcome UNKNOWN (no terminal state within the time budget; last state 'IN_PROGRESS'): not counted as released")
         print("[license] 1 operation(s) with an UNKNOWN outcome (not success): ****-2222", file=sys.stderr)
         print("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted", file=sys.stderr)
         sys.exit(3)
@@ -268,8 +279,9 @@ else failt "3. no terminal, no flag: exit $code, lic=[$(flat "$LIC")] out=[$(fla
 run_bg bg_flag "STUB_LIC_MODE=ok" --yes --release-licences --kvo-address 10.9.9.9
 if [[ $code -eq 0 ]] && ! has "$OUT" "$WARNING" && ! has "$OUT" "$GATE" \
    && has "$OUT" "All 2 licences released" && has "$AWS" "cloudformation delete-stack" \
-   && lic_called "$LIC" "--release-all" && grep -q -- '--kvo 10.9.9.9 ' "$LIC"; then
-  pass "4. --release-licences, release ok: gate waived, delete proceeds, --kvo-address honoured"
+   && lic_called "$LIC" "--list --json" && lic_called "$LIC" "--release-all" && grep -q -- '--kvo 10.9.9.9 ' "$LIC" \
+   && has "$OUT" "    KVO-DEV-01       KVO-DEVICE" && ! has "$OUT" '"count": 2'; then
+  pass "4. --release-licences, release ok: gate waived, delete proceeds, --kvo-address honoured, list read as --json with the report shown and the JSON line not"
 else failt "4. --release-licences ok: exit $code, lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
 
 # 5. No terminal, --yes --release-licences, release exit 3: fail closed.
@@ -339,6 +351,17 @@ run_bg bg_fallback_ip "STUB_LIC_MODE=ok STUB_KVO_ADDR=None STUB_KVO_IPS=None,10.
 if [[ $code -eq 0 ]] && grep -q -- '--kvo 10.0.0.11 ' "$LIC"; then
   pass "12. no KvoAddress output: the KvoInstance's private IP is used"
 else failt "12. address fallback: exit $code, lic=[$(flat "$LIC")]"; fi
+
+# 13a. The count comes from kvo_license.py's JSON line, never its prose. A
+#      copy that prints the old prose ("2 licence(s) installed") and no
+#      JSON line is "could not tell": nothing is released on it, the gate
+#      runs. Before this the prose was parsed and the release went ahead.
+run_bg bg_noline "STUB_LIC_MODE=noline" --yes --release-licences
+if [[ $code -ne 0 ]] && has "$OUT" "Could not tell how many licences the KVO holds" \
+   && has "$OUT" "Not releasing on a guess" && lic_called "$LIC" "--list --json" \
+   && ! lic_called "$LIC" "--release-all" && has "$OUT" "$WARNING" && ! has "$AWS" "delete-stack"; then
+  pass "13a. list without a JSON line: count not taken from the prose, nothing released, gate runs"
+else failt "13a. list without a JSON line: exit $code, lic=[$(flat "$LIC")] out=[$(flat "$OUT")]"; fi
 
 # 13. --help documents the release.
 run_bg help "" --help

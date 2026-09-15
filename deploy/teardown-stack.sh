@@ -115,6 +115,14 @@ LIC_CACHE_DIR=""          # temp dir holding a fetched copy, if one was needed
 LIC_RELEASED=false        # true ONLY on exit 0 from kvo_license.py --release-all,
                           # or a list the KVO answered with nothing on it
 LIC_RC=0                  # set by lic_run
+_lic_out=""               # the temp file holding kvo_license.py's output, while it exists
+# How the licence count is read from kvo_license.py: the `count` of the JSON
+# object it prints as the last line of its output (with --json, on every
+# exit path), through the python3 the release already requires. Never its
+# prose: a wording change must not be able to turn "2 licences" into "could
+# not tell", or into 0. console/tests/test_kvo_license_cli.py greps this
+# exact expression out of this file and feeds it the real script's output.
+LIC_COUNT_PARSE='import json,sys; print(json.load(sys.stdin)["count"])'
 
 # Owner tag scripts/deploy-test-workload-vms.sh writes on everything it makes.
 # Evidence class 3 for the resources that script leaves in a stack's VPC.
@@ -1070,10 +1078,20 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
         note "Listing the licences on KVO ${KVO_ADDR} (bounded: ${KVO_HTTP_TIMEOUT}s per call)..."
         # token + list, each bounded by the script, and the whole thing by
         # the kill timer in case the KVO answers nothing at all
-        lic_run $(( KVO_HTTP_TIMEOUT * 3 + 5 )) "$_lic_out" python3 "$LIC_PY" "${LIC_ARGS[@]}" --list
-        sed 's/^/    /' "$_lic_out" 2>/dev/null || true
-        _lic_n="$(sed -n 's/^\[license\] \([0-9][0-9]*\) licence(s) installed on KVO.*/\1/p' "$_lic_out" 2>/dev/null | head -1 || true)"
+        lic_run $(( KVO_HTTP_TIMEOUT * 3 + 5 )) "$_lic_out" python3 "$LIC_PY" "${LIC_ARGS[@]}" --list --json
+        # The count is the JSON object on the last line (see LIC_COUNT_PARSE).
+        # Anything but a whole number from that parse is "could not tell",
+        # fail closed: nothing is released on it and the gate runs. The
+        # lines before it are the script's own report, shown as they are.
+        _lic_n="$(tail -n 1 "$_lic_out" 2>/dev/null | python3 -c "$LIC_COUNT_PARSE" 2>/dev/null || true)"
+        if [[ "$_lic_n" =~ ^[0-9]+$ ]]; then
+          sed '$d' "$_lic_out" 2>/dev/null | sed 's/^/    /' || true
+        else
+          _lic_n=""
+          sed 's/^/    /' "$_lic_out" 2>/dev/null || true
+        fi
         rm -f "$_lic_out" 2>/dev/null || true
+        _lic_out=""
 
         case "$LIC_RC" in
           0)
@@ -1081,7 +1099,8 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
               ok "The KVO holds no licences. Nothing to release, nothing will be stranded."
               LIC_RELEASED=true
             elif [[ -z "${_lic_n:-}" ]]; then
-              warn "Could not tell how many licences the KVO holds from the list above."
+              warn "Could not tell how many licences the KVO holds: kvo_license.py's summary"
+              warn "line did not parse (its output is above). Not releasing on a guess."
               lic_fallback_note
             else
               _go=false
