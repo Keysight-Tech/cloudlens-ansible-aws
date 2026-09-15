@@ -31,6 +31,19 @@ Three ways to deploy vController + KVO (optional) + vPB (optional) + sensors end
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
 ```
 
+**To remove everything that deployment created**, when you are done. Put your
+stack name in. It audits first, shows what it found with sizes and cost, and
+asks before deleting anything:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1
+```
+
+If the stack has a KVO, release its licences first, in the KVO under
+Settings > Product Licensing > Deactivate licenses. The counts return to your
+entitlement while the KVO is alive; once it is deleted they cannot be recovered,
+and the script makes you type the stack name to confirm that.
+
 **Prerequisites the script handles for you:**
 - Submits `deploy/cloudformation/stack.yaml` and waits for `CREATE_COMPLETE`
 - Polls vController and KVO until their UIs are reachable
@@ -157,7 +170,14 @@ Related flags:
 | `--only PHASE` | Run exactly one phase. |
 
 Nothing in the deploy script deletes anything, including under `--fresh`. Teardown
-is a separate, explicitly confirmed command: `deploy/teardown-stack.sh`.
+is a separate, explicitly confirmed command:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1
+```
+
+Add `--orphans` to see what the stack has left loose without deleting anything,
+or `--dry-run` to rehearse the whole teardown.
 
 ## Marketplace AMIs (subscribe once per account)
 

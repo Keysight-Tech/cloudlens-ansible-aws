@@ -301,7 +301,7 @@ terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=tr
         </div>
 
         <div class="prereq-card">
-          <h3>&#129657; Three commands, no stress: check, deploy, remove</h3>
+          <h3>&#129657; Four commands, no stress: check, deploy, replay, remove</h3>
           <p>For anyone, SE or customer. The doctor finds every setup gap first and prints the exact fix; the deploy asks all of its questions <strong>before</strong> anything is built and saves your answers; the teardown removes only what it built.</p>
           <pre><code># 1. Is this machine and account ready? Deploys nothing.
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --doctor --region us-east-1
@@ -311,7 +311,12 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 
 # 3. Replay a saved deployment anywhere, zero questions (an SE fills the
 #    interview once; deploy-profile-&lt;stack&gt;.env is written at the plan step):
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --profile ./deploy-profile-acme.env</code></pre>
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --profile ./deploy-profile-acme.env
+
+# 4. Remove everything it created, when you are done. Audits first, asks before
+#    deleting. If the stack has a KVO, release its licences in the KVO first
+#    (Settings > Product Licensing > Deactivate licenses).
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1</code></pre>
           <p class="muted">Every run ends with <code>deploy-report-&lt;stack&gt;-&lt;region&gt;.html</code>: what was built, where to sign in, what is tapped, how each phase ended, how to verify, and the exact teardown command. Passwords stay in the mode-600 files it points to, never in the page. Profiles never contain secrets either: licence codes and keys are always typed at the moment of use.</p>
         </div>
 
