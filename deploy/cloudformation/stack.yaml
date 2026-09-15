@@ -824,19 +824,24 @@ Resources:
       InstanceId: !Ref KvoInstance
 
   # ---------- vPB (optional) ----------
-  VpbInstance:
-    Type: AWS::EC2::Instance
+  # eth0, the MANAGEMENT interface, is an explicit resource rather than the one
+  # EC2 creates implicitly from SubnetId. It has to be. Once eth1 and eth2
+  # attach, the instance has several interfaces, and EC2 then refuses to
+  # associate an Elastic IP by instance id: "There are multiple interfaces
+  # attached to instance ... Please specify an interface ID for the operation
+  # instead." Nothing ordered the association before those attachments, so a
+  # launch either won that race or rolled the whole stack back. Addressing eth0
+  # directly removes the race instead of depending on which resource lands first.
+  #
+  # With a full brownfield data plane the ingress/egress ENIs carry the traffic,
+  # so eth0 belongs in the management subnet; putting it in the data subnet
+  # would collide with eth1. Only the single-NIC brownfield case falls back to
+  # the data subnet, preserving the previous behaviour for anyone who supplied a
+  # data subnet and no tool one.
+  VpbMgmtEni:
+    Type: AWS::EC2::NetworkInterface
     Condition: DeployVPB
     Properties:
-      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VpbAmi]
-      InstanceType: !Ref VpbInstanceType
-      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
-      SourceDestCheck: false
-      # eth0 is the MANAGEMENT interface. With a full brownfield data plane the
-      # ingress/egress ENIs carry the traffic, so eth0 belongs in the management
-      # subnet; putting it in the data subnet would collide with eth1. Only the
-      # single-NIC brownfield case falls back to the data subnet, preserving the
-      # previous behaviour for anyone who supplied a data subnet and no tool one.
       SubnetId: !If
         - CreateVpc
         - !Ref MgmtSubnet
@@ -844,8 +849,26 @@ Resources:
           - BrownfieldDataPlane
           - !Ref ExistingSubnetId
           - !If [UseDataSubnet, !Ref ExistingDataSubnetId, !Ref ExistingSubnetId]
-      SecurityGroupIds:
+      GroupSet:
         - !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+      SourceDestCheck: false
+      Description: vPB management (eth0)
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpb-mgmt"
+
+  VpbInstance:
+    Type: AWS::EC2::Instance
+    Condition: DeployVPB
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VpbAmi]
+      InstanceType: !Ref VpbInstanceType
+      KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
+      # SubnetId, SecurityGroupIds and SourceDestCheck live on VpbMgmtEni now:
+      # EC2 rejects them here once an interface is supplied by reference.
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          NetworkInterfaceId: !Ref VpbMgmtEni
       Tags:
         - Key: Name
           Value: !If [CustomVpbName, !Ref VpbName, !Sub "${AWS::StackName}-vpb"]
@@ -877,7 +900,9 @@ Resources:
     Condition: VpbHasEip
     Properties:
       AllocationId: !GetAtt VpbEip.AllocationId
-      InstanceId: !Ref VpbInstance
+      # By interface, never by instance: a multi-NIC instance cannot be the
+      # target of an association. See the comment on VpbMgmtEni.
+      NetworkInterfaceId: !Ref VpbMgmtEni
 
   # ---------- vPB data-plane NICs (greenfield) ----------
   # eth1 = ingress (data subnet): receives tapped/mirrored traffic.
