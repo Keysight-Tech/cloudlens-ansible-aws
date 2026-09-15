@@ -45,7 +45,6 @@
   .topnav a{font-size:13px;color:var(--ink-soft);text-decoration:none;padding:7px 11px;border-radius:8px;font-weight:500}
   .topnav a:hover{background:var(--line-soft);color:var(--ink)}
   @media(max-width:860px){.topnav{display:none}}
-  .demo-t{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
   .sw{width:38px;height:22px;border-radius:20px;background:var(--line);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s}
   .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.2s}
   .sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
@@ -62,7 +61,12 @@
   h1.title em{font-style:normal;color:var(--accent)}
   .lede{font-size:clamp(15px,1.8vw,18px);color:var(--ink-soft);max-width:52ch;margin:16px 0 0}
 
-  /* instrument */
+  /* The instrument: the diagram, the narration and the raw-output pane.
+     build_site.py takes this whole stylesheet for the published demo page
+     (docs/console.html) and supplies the markup these rules dress, which
+     this page stopped carrying when the quick flows were removed. Several
+     of them - .console, .card-in, .pill, .node - are also what the Watch
+     screen draws with, so this block is not dead here either. */
   .instrument{background:var(--screen);border-radius:var(--r);box-shadow:var(--shadow-lg);border:1px solid #000;overflow:hidden;position:relative}
   .instrument::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 80% at 50% -10%,rgba(255,255,255,.05),transparent 55%);z-index:3}
   .inst-bar{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--screen-line);background:linear-gradient(var(--screen-2),var(--screen));flex-wrap:wrap}
@@ -182,6 +186,166 @@
   body.embed{background:transparent}
   body.embed>header.top,body.embed>.hero,body.embed>section,body.embed>footer{display:none!important}
   body.embed>.wrap{margin:0 auto;padding:12px 16px}
+  /* operations console: the page strip, the pre-flight table, the wizard */
+  [hidden]{display:none!important}
+  .vh{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+  .ops{padding-top:4px}
+  .opsnav{display:flex;gap:4px;border-bottom:1px solid var(--line);overflow-x:auto}
+  .opsnav button{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--ink-soft);font:inherit;font-size:14px;font-weight:600;padding:12px 14px;cursor:pointer;margin-bottom:-1px;white-space:nowrap}
+  .opsnav button:hover{color:var(--ink)}
+  .opsnav button[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+  .page{padding:26px 0 4px;border-top:0}
+  .page .sec-head p{font-size:15px}
+  .placeholder{margin-top:18px;padding:18px 20px;border:1px dashed var(--line);border-radius:var(--r);color:var(--ink-soft);font-size:14.5px;background:var(--panel)}
+  .pfbar{display:flex;gap:14px;align-items:flex-end;margin-top:18px;flex-wrap:wrap}
+  .pfbar .field{min-width:220px}
+  .status{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin:8px 0;line-height:1.5}
+  .status.err,.err{color:var(--accent)}
+  .st{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.06em;padding:3px 9px;border-radius:100px;border:1px solid currentColor}
+  .st.pass{color:var(--good)}.st.warn{color:var(--amber)}.st.fail{color:var(--accent)}
+  .checks td:first-child{white-space:nowrap}
+  .tblwrap{overflow-x:auto;max-width:100%}
+  .wiz{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;box-shadow:var(--shadow)}
+  .wiz section{padding:0;border:0}
+  .wsteps{display:flex;gap:6px;list-style:none;margin:0 0 20px;padding:0;flex-wrap:wrap}
+  .wsteps button{appearance:none;font:inherit;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);background:transparent;border:1px solid var(--line);border-radius:100px;padding:6px 12px;cursor:pointer}
+  .wsteps button.done{color:var(--ink-soft)}
+  .wsteps button[aria-current="step"]{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .wsteps button:disabled{cursor:default;opacity:.5}
+  .wiz h3{font-size:20px;letter-spacing:-.02em;font-weight:750}
+  .wiz .lead{color:var(--ink-soft);font-size:14.5px;margin:6px 0 16px}
+  .wiz .hint{font-size:11.5px;color:var(--ink-faint);margin:4px 0 0;line-height:1.5}
+  .wiz .field select,.wiz .field textarea{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+  .wiz .field select:focus,.wiz .field textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .coderow{display:flex;gap:8px}.coderow input{flex:1 1 auto;min-width:0}.coderow .ghostbtn{flex:0 0 auto;padding:0 16px}
+  .codes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.codes:empty{display:none}
+  .code{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;color:var(--ink-soft);background:var(--panel);border:1px solid var(--line);border-radius:100px;padding:4px 6px 4px 12px}
+  .code button{appearance:none;border:0;background:transparent;color:var(--ink-faint);font:inherit;font-size:14px;line-height:1;padding:2px 6px;border-radius:100px;cursor:pointer}
+  .code button:hover,.code button:focus-visible{color:var(--accent);background:var(--accent-soft)}
+  .opts{display:grid;gap:8px;margin-top:12px}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border:1px solid var(--line);border-radius:11px;cursor:pointer;background:var(--paper)}
+  .opt:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .opt input{margin:4px 0 0;accent-color:var(--accent);flex:0 0 auto}
+  .opt span{font-size:13px;color:var(--ink-soft)}
+  .opt b{display:block;font-size:14px;color:var(--ink);font-weight:650}
+  .choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px}
+  .choice{appearance:none;text-align:left;font:inherit;background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:13px 14px;cursor:pointer;color:var(--ink);transition:.16s}
+  .choice:hover{border-color:var(--ink-faint)}
+  .choice[aria-checked="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .choice .k{font-family:var(--mono);font-size:10.5px;color:var(--accent);letter-spacing:.08em}
+  .choice b{display:block;font-size:15px;margin-top:4px}
+  .choice .d{display:block;margin-top:5px;font-size:12.5px;color:var(--ink-soft)}
+  .switchrow{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+  .switchrow b{font-size:14.5px}.switchrow span{color:var(--ink-soft);font-size:13px}
+  .switchrow .sw{margin-left:auto;flex:0 0 38px}
+  button.sw{padding:0;appearance:none;display:block}
+  .subsec{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line)}
+  .subsec h4,.wiz h4,.wpanel h4{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;font-weight:600;display:flex;align-items:center;gap:10px}
+  table.pick{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;font-family:var(--mono)}
+  table.pick th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.pick td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);white-space:nowrap}
+  table.pick tr.pickrow{cursor:pointer}
+  table.pick tr.pickrow:hover td{background:var(--line-soft)}
+  table.pick tr.pickrow.on td{background:var(--accent-soft);color:var(--ink)}
+  /* the pick itself is a button in the first cell, wearing the row's type */
+  table.pick td button.pickb{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+  table.pick td button.pickb:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  .tag{font-size:10px;font-family:var(--mono);border:1px solid var(--line);border-radius:100px;padding:1px 7px;color:var(--ink-faint)}
+  .tag.on{color:var(--good);border-color:var(--good)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .chip{appearance:none;font:inherit;font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);border-radius:100px;padding:5px 12px;cursor:pointer}
+  .chip:hover{border-color:var(--ink-faint);color:var(--ink)}
+  .chip[aria-pressed="true"]{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .steppers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:10px}
+  .stepper{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:11px;padding:10px 12px;background:var(--paper)}
+  .stepper label{flex:1;font-size:13.5px;font-weight:600}
+  .stepper button{appearance:none;font:inherit;width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-weight:700}
+  .stepper input{width:44px;text-align:center;font-family:var(--mono);font-size:14px;border:0;background:transparent;color:var(--ink);-moz-appearance:textfield}
+  .stepper input::-webkit-inner-spin-button,.stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  table.resolved{margin-top:12px;font-family:var(--mono);font-size:12.5px}
+  table.resolved td:first-child{font-weight:500}
+  table.resolved tr.unset td{color:var(--ink-faint)}
+  .dim{color:var(--ink-faint);font-style:italic}
+  .qty{width:96px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:6px 9px}
+  .errs{margin:8px 0;padding-left:18px;color:var(--accent);font-size:13.5px}
+  .errs li{margin:4px 0}
+  pre.profile,pre.cli{background:var(--screen);border:1px solid #000;border-radius:10px;padding:14px 16px;font-family:var(--mono);font-size:12px;color:var(--screen-ink);overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:10px 0 0;line-height:1.6}
+  details.fold{margin-top:14px}
+  details.fold>summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--ink-soft);padding:6px 0}
+  .wnav{display:flex;align-items:center;gap:14px;margin-top:22px;padding-top:16px;border-top:1px solid var(--line)}
+  .wnav .err{font-size:13px;flex:1}
+  .ghostbtn{appearance:none;font:inherit;font-weight:600;font-size:14px;background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);border-radius:11px;padding:11px 18px;cursor:pointer}
+  .ghostbtn:hover{color:var(--ink);border-color:var(--ink-faint)}.ghostbtn:disabled{opacity:.45;cursor:default}
+  .launch{display:flex;align-items:center;gap:14px;margin-top:20px;flex-wrap:wrap}
+  .launch .note{font-size:13px;color:var(--ink-soft)}
+  details.quick{margin-top:14px}
+  details.quick>summary{cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 0}
+  /* watch: the run as the engine reports it */
+  .watchbar{display:flex;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .watchbar .pill{border-color:var(--line);color:var(--ink-faint)}
+  .watchbar .pill.run{color:var(--amber);border-color:var(--amber)}
+  .watchbar .pill.done{color:var(--good);border-color:var(--good)}
+  .watchbar .pill.err{color:var(--accent);border-color:var(--accent)}
+  .watchbar .id-chip{border-color:var(--line);color:var(--ink-soft)}
+  .watchbar .id-chip b{color:var(--ink)}
+  .watchbar .status{margin:0}
+  .watchgrid{display:grid;grid-template-columns:minmax(230px,.85fr) 1.15fr;gap:16px;margin-top:16px}
+  @media(max-width:860px){.watchgrid{grid-template-columns:1fr}}
+  .wpanel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-top:16px}
+  .watchgrid .wpanel{margin-top:0}
+  ol.tl{list-style:none;margin:0;padding:0}
+  .tlrow{display:grid;grid-template-columns:18px 1fr;gap:4px 10px;padding:7px 0;border-bottom:1px solid var(--line-soft);align-items:baseline}
+  .tlmark{font-family:var(--mono);font-size:12px;text-align:center;color:var(--ink-faint)}
+  .tlname{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .tlwhy{grid-column:2;font-size:12px;color:var(--ink-faint)}
+  .tlwhy:empty{display:none}
+  .tlrow.pending .tlname{color:var(--ink-faint)}
+  .tlrow.pending .tlmark::before{content:"\00b7"}
+  .tlrow.done .tlmark{color:var(--good)}
+  .tlrow.failed .tlmark,.tlrow.failed .tlname{color:var(--accent)}
+  .tlrow.skipped{opacity:.62}
+  .tlrow.start .tlmark::before,.tlrow.running .tlmark::before{content:"";display:inline-block;width:9px;height:9px;
+    border-radius:50%;border:2px solid var(--amber);border-top-color:transparent;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .topo{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;padding:16px;border-radius:var(--r-sm);
+    background:var(--screen);border:1px solid #000;min-height:96px}
+  .topo p.dim{font-family:var(--mono);font-size:12px;color:var(--screen-faint);margin:0}
+  .topo .node,.topo .node.show,.topo .node.busy,.topo .node.live,.topo .node.fail{position:static;transform:none;opacity:1}
+  .topo .node{width:104px}
+  .tvpc{display:flex;flex-wrap:wrap;gap:12px;padding:12px;border:1px dashed var(--screen-line);border-radius:10px}
+  .tnodes{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+  .nics{display:flex;gap:5px;margin-top:1px}
+  .nics i{width:7px;height:7px;border-radius:50%;background:var(--screen-line);display:block}
+  .nics i.on{background:var(--signal)}
+  .wstack{display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center;margin-top:2px;max-width:96px}
+  .wstack i{width:9px;height:12px;border-radius:2px;border:1px solid var(--signal);display:block}
+  .wstack span{font-family:var(--mono);font-size:9px;color:var(--screen-faint)}
+  .logins .lgn{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;color:var(--ink-soft)}
+  .logins .lgn b{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+  .logins .lgn a,.logins .lgn code{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .logins .pwin{color:var(--ink-faint);font-size:12px}
+  .qcard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
+  .qcard .q{font-size:13.5px}
+  .qcard .a{margin-top:4px;font-size:12.5px;color:var(--ink-soft)}
+  .banner{margin-top:16px;padding:14px 16px;border-radius:var(--r);border:1px solid var(--line);background:var(--panel)}
+  .banner b{font-size:15px}
+  .banner p{margin:6px 0 0;font-size:13.5px;color:var(--ink-soft);word-break:break-word}
+  .banner.good{border-color:var(--good)}.banner.good b{color:var(--good)}
+  .banner.bad{border-color:var(--accent)}.banner.bad b{color:var(--accent)}
+  #wLog{background:var(--screen);border:1px solid #000;border-radius:10px;margin-top:8px;max-height:260px}
+  .modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;
+    background:rgba(11,13,17,.55)}
+  .modal[hidden]{display:none}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);
+    padding:20px 22px;max-width:560px;width:100%}
+  .modal-card .mq{font-size:16px;font-weight:650;line-height:1.4}
+  .modal-card form{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center}
+  .modal-card input{flex:1 1 220px;min-width:0;font-family:var(--mono);font-size:13px;color:var(--ink);
+    background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .modal-card .runbtn{padding:10px 18px;font-size:14px}
+  .modal-card .status{flex-basis:100%;margin:0}
+  .card-in.prompt form{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .card-in.prompt input{flex:1;min-width:160px;font-family:var(--mono);font-size:12.5px;background:var(--screen);color:var(--screen-ink);border:1px solid var(--screen-line);border-radius:8px;padding:7px 10px}
   footer{padding:36px 0;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13px}
   footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 </style>
@@ -194,22 +358,21 @@
     <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
   </nav>
   <div class="sp"></div>
-  </div>
   <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
 </div></header>
 
 <div class="hero"><div class="wrap">
   <span class="badge"><span class="live"></span> <span id="modeBadge">WATCH IT DEPLOY · REAL CAPTURED RUN</span></span>
   <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
-  <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
+  <p class="lede">Pick a flow and press Run. This page replays real captured events from live deploys, in the browser and with no AWS calls: the diagram wires itself up, the narration explains each step, and the console shows the raw output underneath. The tool that runs these for real is the console you install, and it is the one thing on this page that is not here.</p>
 </div></div>
 
-<div class="wrap">
+<div class="wrap" id="runView">
   <div class="instrument">
     <div class="inst-bar">
       <div class="traffic"><i></i><i></i><i></i></div>
       <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
-      <span class="id-chip" id="idChip" hidden>acct <b>—</b></span>
+      <span class="id-chip" id="idChip" hidden>acct <b>-</b></span>
       <div class="inst-right">
         <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
         <div class="metric">created<b id="mCreated">0</b></div>
@@ -220,29 +383,33 @@
     <div class="inst-body">
       <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
       <div class="rightcol">
-        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs — with the why behind it.</div></div>
+        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs, with the why behind it.</div></div>
         <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
         <div class="console" id="console"></div>
       </div>
     </div>
   </div>
 
-  <div class="rig">
-    <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
-    <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
-  </div>
+  <details class="quick" id="quickFlows" open>
+    <summary>Quick flows (advanced)</summary>
+    <div class="rig">
+      <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
+      <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+    </div>
 
-  <div class="cfg">
-    <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
-    <div class="fields" id="fields"></div>
-  </div>
+    <div class="cfg">
+      <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
+      <div class="fields" id="fields"></div>
+    </div>
+  </details>
 </div>
+
 
 <section id="paths">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Four paths, one console</span>
       <h2>From an empty account to live packets on a tool.</h2>
-      <p>Each path runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
+      <p>Each path runs the exact automation an SE runs from the CLI, wrapped so you can watch it, explain it, and hand it to a customer. The detail for each is below.</p></div>
     <div class="cards" id="flowCards"></div>
   </div>
 </section>
@@ -260,12 +427,12 @@
           <span class="req">brownfield or new VPC</span>
           <span class="req">non-admin friendly</span>
         </div>
-        <div class="codeblk"><span class="c"># from AWS CloudShell — zero local setup</span>
+        <div class="codeblk"><span class="c"># from AWS CloudShell: zero local setup</span>
 <span class="g">$</span> curl -sSL https://keysight-tech.github.io/cloudlens-ansible-aws/deploy-stack.sh <span class="r">| bash</span></div>
       </div>
       <ol class="steps">
         <li><b>Network foundation</b><span class="m">VPC, gateway, and the mgmt / data / tool subnets.</span></li>
-        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first — an over-quota account fails in seconds.</span></li>
+        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first: an over-quota account fails in seconds.</span></li>
         <li><b>vController (CLMS)</b><span class="m">The control plane every sensor registers to.</span></li>
         <li><b>KVO</b><span class="m">The single pane that adopts the manager, the vPB, and drives mirroring.</span></li>
         <li><b>vPB</b><span class="m">The virtual packet broker that filters and forwards to your tools.</span></li>
@@ -279,13 +446,13 @@
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Path 02 · Direct</span>
       <h2>Register <span class="em">sensors</span> into CloudLens Manager.</h2>
-      <p>The simplest model — no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
+      <p>The simplest model: no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
     <div class="cards">
       <div class="card"><div class="k">UBUNTU / DEBIAN</div><h3>Docker</h3><p>Insecure registry pull, then <code class="mono">docker run …/sensor --ssl_verify no</code>. Registers with HTTP&nbsp;200.</p></div>
-      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker — <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
+      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker: <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
       <div class="card"><div class="k">WINDOWS</div><h3>Native service</h3><p>Silent install of <code class="mono">cloudlens-win-sensor.exe</code> via SSM; the service is named <b>CloudLens</b> (not CloudLensAgent).</p></div>
     </div>
-    <div class="note-b">The project key is pulled automatically — the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
+    <div class="note-b">The project key is pulled automatically: the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
   </div>
 </section>
 
@@ -298,10 +465,10 @@
         <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">KVO becomes the single pane. Every UI "button" is scripted: accept the EULA, activate licenses, create the KVO user on the CLMS, adopt it, and provision the working project key through a Cloud Config.</p>
       </div>
       <ol class="steps">
-        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done — a legal acceptance, gated behind a flag.</span></li>
+        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done: a legal acceptance, gated behind a flag.</span></li>
         <li><b>Activate licenses</b><span class="m">An unlicensed KVO refuses every write. Codes activate via the licensing API.</span></li>
         <li><b>Adopt the CLMS</b><span class="m"><code>createCloudLensManager</code>, commit the change request, wait for <b>CONNECTED</b>.</span></li>
-        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key — skip it and the key is a phantom.</span></li>
+        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key: skip it and the key is a phantom.</span></li>
       </ol>
     </div>
   </div>
@@ -313,7 +480,7 @@
       <div>
         <span class="eyebrow">Path 03b · Packet broker</span>
         <h2 style="margin-top:12px">Adopt the <span class="em">vPB</span> and wire the path.</h2>
-        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b> — then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b>, then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
         <div class="codeblk"><span class="c"># the vПB `kvo` command is an interactive CONTEXT, not flat</span>
 CloudLensVPB# <span class="b">kvo</span>
 CloudLensVPB-kvo# <span class="b">ip</span> &lt;kvo-ip&gt;
@@ -332,9 +499,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <section id="mirror">
   <div class="wrap">
-    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless — the big one</span>
+    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless: the big one</span>
       <h2>Mirror traffic with <span class="em">zero agents</span>.</h2>
-      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b> — AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
+      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b>: AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
     <div class="reqs">
       <span class="req"><b>Nitro</b> sources only</span>
       <span class="req">opt-in least-privilege IAM</span>
@@ -342,18 +509,18 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
       <span class="req">auto-scaled collectors</span>
     </div>
     <div class="cards" style="margin-top:22px">
-      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped — put sensors on those.</p></div>
+      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped: put sensors on those.</p></div>
       <div class="card"><div class="k">DEPLOY</div><h3>Collectors</h3><p>An auto-scaling group of collector Service VMs comes up per zone, from the Keysight Marketplace image, resolved per region.</p></div>
-      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI — visible in VPC → Traffic Mirroring.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI, visible in VPC → Traffic Mirroring.</p></div>
     </div>
-    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest — both land under the same CLM/KVO project.</div>
+    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest: both land under the same CLM/KVO project.</div>
   </div>
 </section>
 
 <section id="verify">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Proof, not promises</span><h2>Verify at every hop.</h2>
-      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too — every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
+      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too: every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
     <div class="cards">
       <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP&nbsp;200 at <code class="mono">agent/register</code>; the project's sensor count climbs as they check in.</p></div>
       <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB <b>Online</b>, auto-licensed, with its Device Config and bound ingress/egress ports.</p></div>
@@ -368,9 +535,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
     <table class="ref">
       <thead><tr><th>Item</th><th>Value</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase — change on first use.</td></tr>
+        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase: change on first use.</td></tr>
         <tr><td>KVO web UI</td><td><code>admin / admin</code></td><td>Accept the EULA and activate licenses before any write.</td></tr>
-        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code> — not flat commands.</td></tr>
+        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code>, not flat commands.</td></tr>
         <tr><td>Source selection</td><td><code>tag cloudlens=yes</code></td><td>Same tag drives the sensor and the agentless mirror paths.</td></tr>
         <tr><td>AWS mirroring</td><td>Nitro instances only</td><td>t3 / m5 / c5 / r5 and newer are Nitro; <code>describe-instance-types … Hypervisor</code> confirms.</td></tr>
         <tr><td>Key network ports</td><td><code>443 · 9022 · 8443</code></td><td>443 CLMS/KVO API · 9022 vPB SSH · 8443 KVO↔collector (open in the SG).</td></tr>
@@ -383,16 +550,15 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Troubleshoot</span><h2>When it doesn't go clean.</h2></div>
     <div class="cards">
-      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit — the stack's pre-check catches it in seconds.</p></div>
+      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit: the stack's pre-check catches it in seconds.</p></div>
       <div class="card"><h3>vPB never shows in KVO</h3><p>Run the <code class="mono">kvo</code> commands inside the context (not flat <code class="mono">kvo ip</code>), and confirm the mgmt network reaches KVO on 443. It self-announces from there.</p></div>
       <div class="card"><h3>No mirror sessions</h3><p>Sources must be <b>Nitro</b>, KVO needs the Zone-Tapping IAM, and 8443 must be open KVO↔collector. Confirm the collector registered before expecting sessions.</p></div>
     </div>
   </div>
 </section>
 
-<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
-
-<script>window.__FLOWS__={"order":["stack","sensors","kvo","mirror"],"flows":{"stack":{"id":"stack","name":"Launch full stack","script":"deploy-stack.sh","subtitle":"VPC + vController + KVO + vPB, one CloudFormation deploy","inputs":[{"key":"stack","label":"Stack name","default":"cloudlens-live","placeholder":"cloudlens-live"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"},{"key":"kvo","label":"Deploy KVO","default":"yes","placeholder":"yes / no"},{"key":"vpb","label":"Deploy vPB","default":"yes","placeholder":"yes / no"}],"nodes":{"vpc":{"x":50,"y":20,"ic":"vpc","lab":"VPC","sub":"network"},"clms":{"x":22,"y":66,"ic":"clms","lab":"vController","sub":"CLMS"},"kvo":{"x":50,"y":80,"ic":"kvo","lab":"KVO","sub":"orchestrator"},"vpb":{"x":78,"y":66,"ic":"vpb","lab":"vPB","sub":"packet broker"}},"wires":[["vpc","clms"],["vpc","kvo"],["vpc","vpb"]]},"sensors":{"id":"sensors","name":"CLMS + sensors","script":"ansible-playbook","subtitle":"Register sensors straight into CloudLens Manager - no KVO","inputs":[{"key":"clms","label":"vController IP","default":"","placeholder":"20.84.115.190"},{"key":"key","label":"Project API key","default":"","placeholder":"af9aa122\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"}],"nodes":{"clms":{"x":50,"y":18,"ic":"clms","lab":"vController","sub":"CLMS"},"u":{"x":20,"y":72,"ic":"vm","lab":"Ubuntu","sub":"docker"},"r":{"x":50,"y":80,"ic":"vm","lab":"RHEL","sub":"podman"},"w":{"x":80,"y":72,"ic":"vm","lab":"Windows","sub":"service"}},"wires":[["u","clms"],["r","clms"],["w","clms"]]},"kvo":{"id":"kvo","name":"KVO + vPB + sensors","script":"kvo_adopt_clms.py / vpb_kvo_adopt.py","subtitle":"KVO as the single pane: adopt the manager and the packet broker","inputs":[{"key":"clms","label":"CLMS IP","default":"","placeholder":"10.99.1.25"},{"key":"kvo","label":"KVO IP","default":"","placeholder":"10.99.1.26"},{"key":"vpb","label":"vPB IP","default":"","placeholder":"10.99.1.30"},{"key":"cloud","label":"Cloud config","default":"prod-cloud","placeholder":"prod-cloud"}],"nodes":{"kvo":{"x":50,"y":16,"ic":"kvo","lab":"KVO","sub":"single pane"},"clms":{"x":20,"y":50,"ic":"clms","lab":"CLMS","sub":"adopted"},"vpb":{"x":80,"y":50,"ic":"vpb","lab":"vPB","sub":"Online"},"tool":{"x":80,"y":84,"ic":"tool","lab":"Tool","sub":"analyzer"},"vm":{"x":22,"y":84,"ic":"vm","lab":"Sensors","sub":"hosts"}},"wires":[["clms","kvo"],["vpb","kvo"],["vpb","tool"],["vm","clms"]]},"mirror":{"id":"mirror","name":"AWS mirror session","script":"kvo_aws_mirror.py","subtitle":"Agentless: KVO deploys collectors and drives VPC Traffic Mirroring","inputs":[{"key":"vpc","label":"Source VPC","default":"","placeholder":"vpc-0ebe57a\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"az","label":"Zone","default":"us-east-1a","placeholder":"us-east-1a"},{"key":"tool","label":"Tool IP","default":"","placeholder":"10.99.12.146"}],"nodes":{"src":{"x":20,"y":22,"ic":"vm","lab":"Nitro srcs","sub":"cloudlens=yes"},"mir":{"x":50,"y":22,"ic":"mirror","lab":"Mirror","sub":"per ENI"},"coll":{"x":50,"y":58,"ic":"coll","lab":"Collector","sub":"Service VM"},"kvo":{"x":82,"y":38,"ic":"kvo","lab":"KVO","sub":"orchestrates"},"tool":{"x":50,"y":88,"ic":"tool","lab":"Tool","sub":"analyzer"}},"wires":[["src","mir"],["mir","coll"],["coll","tool"],["kvo","coll"]]}}};window.__FIXTURES__={"stack":[{"_delay":0.2,"event":{"type":"state","node":"vpc","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"}},{"_delay":0.9,"event":{"type":"log","text":"Waiting for changeset to be created.."}},{"_delay":0.7,"event":{"type":"state","node":"vpc","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"}},{"_delay":1.1,"event":{"type":"state","node":"vpc","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::VPC  Vpc"}},{"_delay":0.4,"event":{"type":"narrate","text":"Network foundation is up \u2014 the VPC and gateway exist before anything lands in it.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"}},{"_delay":0.6,"event":{"created":1,"type":"stat"}},{"_delay":0.7,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"}},{"_delay":0.5,"event":{"type":"narrate","text":"Elastic IPs are reserved first, so an over-quota account fails in seconds \u2014 not six minutes in with instance-hours burned.","tone":"note"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the CloudLens Manager \u2014 the control plane every sensor registers to.","tone":"info"}},{"_delay":1.4,"event":{"type":"state","node":"clms","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.4,"event":{"type":"narrate","text":"vController is up. It still needs ~15 min to initialize before you can log in.","tone":"good"}},{"_delay":0.5,"event":{"created":2,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching KVO \u2014 the single pane that adopts the manager, the vPB, and drives AWS mirroring.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"kvo","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"created":3,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the virtual packet broker \u2014 filters and forwards tapped traffic to your tools.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"vpb","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"created":4,"type":"stat"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"}},{"_delay":0.4,"event":{"type":"done","summary":"Stack CREATE_COMPLETE \u2014 3 appliances up. They need ~15 min to initialize.","outputs":{"note":"Log in at the vController URL once initialized, then run Flow 02 or 03."}}}],"sensors":[{"_delay":0.2,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"u","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"r","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"w","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ vcontroller_project_key.py --clms 20.84.115.190"}},{"_delay":0.9,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vctl] login ok \u00b7 rotating first-login password"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"live","label":"project"}},{"_delay":0.3,"event":{"type":"narrate","text":"Project key retrieved \u2014 the forced first-login password change was handled automatically.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"}},{"_delay":0.7,"event":{"type":"state","node":"u","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"}},{"_delay":1.0,"event":{"type":"state","node":"u","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ubuntu sensor registered \u2014 Register status 200.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"r","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [redhat : podman run \u2026/sensor]"}},{"_delay":1.0,"event":{"type":"state","node":"r","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"RHEL sensor registered.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"w","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [windows : cloudlens-win-sensor.exe /install /quiet]"}},{"_delay":1.1,"event":{"type":"state","node":"w","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Windows sensor registered \u2014 service CloudLens running.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"}},{"_delay":0.4,"event":{"type":"done","summary":"3 sensors registered \u00b7 sensorCount = 3.","outputs":{"note":"Watch them in the vController UI under your project."}}}],"kvo":[{"_delay":0.2,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vm","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-adopt] KVO EULA accepted \u00b7 licenses active"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"live","label":"licensed"}},{"_delay":0.3,"event":{"type":"narrate","text":"EULA accepted and licenses active \u2014 every KVO write is unblocked.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"[kvo-adopt] createCloudLensManager \u00b7 committing change request"}},{"_delay":1.1,"event":{"type":"log","text":"[kvo-adopt]   clms-live status: CONNECTED"}},{"_delay":0.5,"event":{"type":"state","node":"clms","status":"live","label":"CONNECTED"}},{"_delay":0.3,"event":{"type":"narrate","text":"CLMS is CONNECTED; the Cloud Config provisions the working project key.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"}},{"_delay":0.6,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"}},{"_delay":1.2,"event":{"type":"log","text":"[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"}},{"_delay":0.5,"event":{"type":"state","node":"vpb","status":"live","label":"Online"}},{"_delay":0.3,"event":{"type":"narrate","text":"vPB is Online and auto-licensed \u2014 KVO built its Device Config.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"vm","status":"live","label":"3 hosts"}},{"_delay":0.3,"event":{"type":"narrate","text":"Sensors registered under KVO management.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"Fabric live in KVO \u2014 CLMS CONNECTED, vPB Online, sensors managed.","outputs":{}}}],"mirror":[{"_delay":0.2,"event":{"type":"state","node":"src","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"mir","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"coll","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] Zone-Tapping IAM attached \u2014 least privilege"}},{"_delay":0.6,"event":{"type":"state","node":"kvo","status":"live","label":"IAM ok"}},{"_delay":0.3,"event":{"type":"narrate","text":"Least-privilege Zone-Tapping IAM is attached \u2014 KVO can call AWS on your behalf.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"}},{"_delay":0.6,"event":{"type":"state","node":"src","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] DescribeInstances \u2014 matching Nitro sources"}},{"_delay":0.9,"event":{"type":"state","node":"src","status":"live","label":"3 Nitro"}},{"_delay":0.3,"event":{"type":"narrate","text":"Nitro sources matched by tag \u2014 only Nitro instances can be mirrored; put sensors on the rest.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"coll","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] RunInstances \u2014 collector Service VM \u00b7 launch template + ASG"}},{"_delay":1.3,"event":{"type":"log","text":"[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"}},{"_delay":0.5,"event":{"type":"state","node":"coll","status":"live","label":"up"}},{"_delay":0.3,"event":{"type":"narrate","text":"Collector up; traffic-mirror target and filter created.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.4,"event":{"type":"log","text":"[kvo-mirror] tool bound \u00b7 monitoring policy committed"}},{"_delay":0.3,"event":{"type":"narrate","text":"Tool bound and the monitoring policy committed.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"mir","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"}},{"_delay":0.9,"event":{"type":"state","node":"mir","status":"live","label":"3 sessions"}},{"_delay":0.3,"event":{"type":"narrate","text":"VPC Traffic Mirror sessions created \u2014 one per source ENI. Packets are flowing to the tool.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"3 mirror sessions live \u2014 verify in VPC \u2192 Traffic Mirroring.","outputs":{}}}]};</script><script>
+<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity: credentials never leave the machine.</span></div></footer>
+<script>window.__FLOWS__={"order":["stack","sensors","kvo","mirror"],"flows":{"stack":{"id":"stack","name":"Launch full stack","script":"deploy-stack.sh","subtitle":"VPC + vController + KVO + vPB, one CloudFormation deploy","inputs":[{"key":"stack","label":"Stack name","default":"cloudlens-live","placeholder":"cloudlens-live"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"},{"key":"key","label":"EC2 key pair","default":"","placeholder":"my-ec2-key"},{"key":"kvo","label":"Deploy KVO","default":"yes","placeholder":"yes / no"},{"key":"vpb","label":"Deploy vPB","default":"yes","placeholder":"yes / no"}],"nodes":{"vpc":{"x":50,"y":20,"ic":"vpc","lab":"VPC","sub":"network"},"clms":{"x":22,"y":66,"ic":"clms","lab":"vController","sub":"CLMS"},"kvo":{"x":50,"y":80,"ic":"kvo","lab":"KVO","sub":"orchestrator"},"vpb":{"x":78,"y":66,"ic":"vpb","lab":"vPB","sub":"packet broker"}},"wires":[["vpc","clms"],["vpc","kvo"],["vpc","vpb"]]},"sensors":{"id":"sensors","name":"CLMS + sensors","script":"ansible-playbook","subtitle":"Register sensors straight into CloudLens Manager - no KVO","inputs":[{"key":"clms","label":"vController IP","default":"","placeholder":"20.84.115.190"},{"key":"key","label":"Project API key","default":"","placeholder":"af9aa122\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"region","label":"Region","default":"us-east-1","placeholder":"us-east-1"}],"nodes":{"clms":{"x":50,"y":18,"ic":"clms","lab":"vController","sub":"CLMS"},"u":{"x":20,"y":72,"ic":"vm","lab":"Ubuntu","sub":"docker"},"r":{"x":50,"y":80,"ic":"vm","lab":"RHEL","sub":"podman"},"w":{"x":80,"y":72,"ic":"vm","lab":"Windows","sub":"service"}},"wires":[["u","clms"],["r","clms"],["w","clms"]]},"kvo":{"id":"kvo","name":"KVO + vPB + sensors","script":"kvo_adopt_clms.py / vpb_kvo_adopt.py","subtitle":"KVO as the single pane: adopt the manager and the packet broker","inputs":[{"key":"clms","label":"CLMS IP","default":"","placeholder":"10.99.1.25"},{"key":"kvo","label":"KVO IP","default":"","placeholder":"10.99.1.26"},{"key":"vpb","label":"vPB IP","default":"","placeholder":"10.99.1.30"},{"key":"cloud","label":"Cloud config","default":"prod-cloud","placeholder":"prod-cloud"}],"nodes":{"kvo":{"x":50,"y":16,"ic":"kvo","lab":"KVO","sub":"single pane"},"clms":{"x":20,"y":50,"ic":"clms","lab":"CLMS","sub":"adopted"},"vpb":{"x":80,"y":50,"ic":"vpb","lab":"vPB","sub":"Online"},"tool":{"x":80,"y":84,"ic":"tool","lab":"Tool","sub":"analyzer"},"vm":{"x":22,"y":84,"ic":"vm","lab":"Sensors","sub":"hosts"}},"wires":[["clms","kvo"],["vpb","kvo"],["vpb","tool"],["vm","clms"]]},"mirror":{"id":"mirror","name":"AWS mirror session","script":"kvo_aws_mirror.py","subtitle":"Agentless: KVO deploys collectors and drives VPC Traffic Mirroring","inputs":[{"key":"vpc","label":"Source VPC","default":"","placeholder":"vpc-0ebe57a\u2026"},{"key":"tag","label":"Source tag","default":"cloudlens=yes","placeholder":"cloudlens=yes"},{"key":"az","label":"Zone","default":"us-east-1a","placeholder":"us-east-1a"},{"key":"tool","label":"Tool IP","default":"","placeholder":"10.99.12.146"}],"nodes":{"src":{"x":20,"y":22,"ic":"vm","lab":"Nitro srcs","sub":"cloudlens=yes"},"mir":{"x":50,"y":22,"ic":"mirror","lab":"Mirror","sub":"per ENI"},"coll":{"x":50,"y":58,"ic":"coll","lab":"Collector","sub":"Service VM"},"kvo":{"x":82,"y":38,"ic":"kvo","lab":"KVO","sub":"orchestrates"},"tool":{"x":50,"y":88,"ic":"tool","lab":"Tool","sub":"analyzer"}},"wires":[["src","mir"],["mir","coll"],["coll","tool"],["kvo","coll"]]}}};window.__FIXTURES__={"stack":[{"_delay":0.2,"event":{"type":"state","node":"vpc","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ aws cloudformation deploy --stack-name cloudlens-live --region us-east-1"}},{"_delay":0.9,"event":{"type":"log","text":"Waiting for changeset to be created.."}},{"_delay":0.7,"event":{"type":"state","node":"vpc","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::VPC  Vpc"}},{"_delay":1.1,"event":{"type":"state","node":"vpc","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::VPC  Vpc"}},{"_delay":0.4,"event":{"type":"narrate","text":"Network foundation is up: the VPC and gateway exist before anything lands in it.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Subnet  MgmtSubnet / DataSubnet / ToolSubnet"}},{"_delay":0.6,"event":{"created":1,"type":"stat"}},{"_delay":0.7,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::EIP  VcontrollerEip"}},{"_delay":0.5,"event":{"type":"narrate","text":"Elastic IPs are reserved first, so an over-quota account fails in seconds, not six minutes in with instance-hours burned.","tone":"note"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the CloudLens Manager: the control plane every sensor registers to.","tone":"info"}},{"_delay":1.4,"event":{"type":"state","node":"clms","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VcontrollerInstance"}},{"_delay":0.4,"event":{"type":"narrate","text":"vController is up. It still needs ~15 min to initialize before you can log in.","tone":"good"}},{"_delay":0.5,"event":{"created":2,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching KVO: the single pane that adopts the manager, the vPB, and drives AWS mirroring.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"kvo","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  KvoInstance"}},{"_delay":0.5,"event":{"created":3,"type":"stat"}},{"_delay":0.7,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.4,"event":{"type":"log","text":"CREATE_IN_PROGRESS  AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"type":"narrate","text":"Launching the virtual packet broker: filters and forwards tapped traffic to your tools.","tone":"info"}},{"_delay":1.3,"event":{"type":"state","node":"vpb","status":"live","label":"live"}},{"_delay":0.2,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::EC2::Instance  VpbInstance"}},{"_delay":0.5,"event":{"created":4,"type":"stat"}},{"_delay":0.6,"event":{"type":"log","text":"CREATE_COMPLETE     AWS::CloudFormation::Stack  cloudlens-live"}},{"_delay":0.4,"event":{"type":"done","summary":"Stack CREATE_COMPLETE: 3 appliances up. They need ~15 min to initialize.","outputs":{"note":"Log in at the vController URL once initialized, then run Flow 02 or 03."}}}],"sensors":[{"_delay":0.2,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"u","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"r","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"w","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"$ vcontroller_project_key.py --clms 20.84.115.190"}},{"_delay":0.9,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vctl] login ok \u00b7 rotating first-login password"}},{"_delay":0.8,"event":{"type":"state","node":"clms","status":"live","label":"project"}},{"_delay":0.3,"event":{"type":"narrate","text":"Project key retrieved: the forced first-login password change was handled automatically.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"$ ansible-playbook -i inventory/aws_ec2.yaml deploy.yaml"}},{"_delay":0.7,"event":{"type":"state","node":"u","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [ubuntu : docker run \u2026/sensor --accept_eula yes]"}},{"_delay":1.0,"event":{"type":"state","node":"u","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ubuntu sensor registered: Register status 200.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"r","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [redhat : podman run \u2026/sensor]"}},{"_delay":1.0,"event":{"type":"state","node":"r","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"RHEL sensor registered.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"w","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"TASK [windows : cloudlens-win-sensor.exe /install /quiet]"}},{"_delay":1.1,"event":{"type":"state","node":"w","status":"live","label":"200"}},{"_delay":0.3,"event":{"type":"narrate","text":"Windows sensor registered: service CloudLens running.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"PLAY RECAP  WebServerLB1 ok=27  WebServerLB2 ok=25  brine-winvm ok=25  failed=0"}},{"_delay":0.4,"event":{"type":"done","summary":"3 sensors registered \u00b7 sensorCount = 3.","outputs":{"note":"Watch them in the vController UI under your project."}}}],"kvo":[{"_delay":0.2,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"clms","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"vpb","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"vm","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-adopt] KVO EULA accepted \u00b7 licenses active"}},{"_delay":0.7,"event":{"type":"state","node":"kvo","status":"live","label":"licensed"}},{"_delay":0.3,"event":{"type":"narrate","text":"EULA accepted and licenses active: every KVO write is unblocked.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"clms","status":"busy"}},{"_delay":0.5,"event":{"type":"log","text":"[kvo-adopt] createCloudLensManager \u00b7 committing change request"}},{"_delay":1.1,"event":{"type":"log","text":"[kvo-adopt]   clms-live status: CONNECTED"}},{"_delay":0.5,"event":{"type":"state","node":"clms","status":"live","label":"CONNECTED"}},{"_delay":0.3,"event":{"type":"narrate","text":"CLMS is CONNECTED; the Cloud Config provisions the working project key.","tone":"good"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB: kvo \u25b8 ip \u25b8 port 443 \u25b8 enable \u2192 KVO enabled"}},{"_delay":0.6,"event":{"type":"state","node":"vpb","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[vpb-adopt] vPB announced: STANDARD_VPB \u00b7 adopting with control"}},{"_delay":1.2,"event":{"type":"log","text":"[vpb-adopt]   vpb-prod availability: Online \u00b7 auto-licensed"}},{"_delay":0.5,"event":{"type":"state","node":"vpb","status":"live","label":"Online"}},{"_delay":0.3,"event":{"type":"narrate","text":"vPB is Online and auto-licensed: KVO built its Device Config.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[vpb-adopt] ports bound \u00b7 eth1 \u2192 C2DL \u00b7 eth2 \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.3,"event":{"type":"narrate","text":"Ports bound: ingress to the Cloud-to-Device Link, egress to the tool.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-adopt] monitoring policy committed \u00b7 source \u2192 vPB \u2192 tool"}},{"_delay":0.5,"event":{"type":"state","node":"vm","status":"live","label":"3 hosts"}},{"_delay":0.3,"event":{"type":"narrate","text":"Sensors registered under KVO management.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"Fabric live in KVO: CLMS CONNECTED, vPB Online, sensors managed.","outputs":{}}}],"mirror":[{"_delay":0.2,"event":{"type":"state","node":"src","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"mir","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"coll","status":"ghost"}},{"_delay":0.15,"event":{"type":"state","node":"kvo","status":"ghost"}},{"_delay":0.2,"event":{"type":"state","node":"tool","status":"ghost"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] Zone-Tapping IAM attached: least privilege"}},{"_delay":0.6,"event":{"type":"state","node":"kvo","status":"live","label":"IAM ok"}},{"_delay":0.3,"event":{"type":"narrate","text":"Least-privilege Zone-Tapping IAM is attached: KVO can call AWS on your behalf.","tone":"good"}},{"_delay":0.7,"event":{"type":"log","text":"[kvo-mirror] AWS presence \u2192 cloud config \u2192 collection (tag cloudlens=yes)"}},{"_delay":0.6,"event":{"type":"state","node":"src","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] DescribeInstances: matching Nitro sources"}},{"_delay":0.9,"event":{"type":"state","node":"src","status":"live","label":"3 Nitro"}},{"_delay":0.3,"event":{"type":"narrate","text":"Nitro sources matched by tag: only Nitro instances can be mirrored; put sensors on the rest.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"coll","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] RunInstances: collector Service VM \u00b7 launch template + ASG"}},{"_delay":1.3,"event":{"type":"log","text":"[kvo-mirror] collector up \u00b7 CreateTrafficMirrorTarget \u00b7 CreateTrafficMirrorFilter"}},{"_delay":0.5,"event":{"type":"state","node":"coll","status":"live","label":"up"}},{"_delay":0.3,"event":{"type":"narrate","text":"Collector up; traffic-mirror target and filter created.","tone":"good"}},{"_delay":0.6,"event":{"type":"state","node":"tool","status":"live","label":"bound"}},{"_delay":0.4,"event":{"type":"log","text":"[kvo-mirror] tool bound \u00b7 monitoring policy committed"}},{"_delay":0.3,"event":{"type":"narrate","text":"Tool bound and the monitoring policy committed.","tone":"good"}},{"_delay":0.7,"event":{"type":"state","node":"mir","status":"busy"}},{"_delay":0.6,"event":{"type":"log","text":"[kvo-mirror] CreateTrafficMirrorSession \u00d7 3"}},{"_delay":0.9,"event":{"type":"state","node":"mir","status":"live","label":"3 sessions"}},{"_delay":0.3,"event":{"type":"narrate","text":"VPC Traffic Mirror sessions created: one per source ENI. Packets are flowing to the tool.","tone":"good"}},{"_delay":0.4,"event":{"type":"done","summary":"3 mirror sessions live: verify in VPC \u2192 Traffic Mirroring.","outputs":{}}}]};</script><script>
 (function(){
 "use strict";
 var reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -437,7 +603,7 @@ function selectFlow(id){stop();current=id;var f=FLOWS[id];
   f.inputs.forEach(function(fd){var d=document.createElement("div");d.className="field";
     d.innerHTML='<label>'+fd.label+'</label><input value="'+(fd.default||"")+'" placeholder="'+(fd.placeholder||"")+'" spellcheck="false">';fl.appendChild(d);});
   reset();layoutDiagram(f);
-  $("narr").innerHTML='<div class="empty">Press ▸ Run — the narration explains each step as it happens.</div>';
+  $("narr").innerHTML='<div class="empty">Press ▸ Run: the narration explains each step as it happens.</div>';
   $("runBtn").disabled=false;$("runBtn").innerHTML='<span class="tri"></span> Run this flow';}
 
 function reset(){$("console").innerHTML="";conLines=0;$("conCount").textContent="";

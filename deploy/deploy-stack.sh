@@ -119,8 +119,31 @@ done
 # visible settings, nothing else. A prefix match was tried first and let a
 # profile choose the sensor image, the Windows installer URL, an IAM role,
 # and the ssh username (which reaches ssh as an option). Anything not listed
-# here is reported and ignored, by name.
+# is reported and ignored, by name.
+#
+# The list is deploy/profile-keys.txt, read here and by the console that
+# writes deploy-profile-<stack>.env from a form, so the two sides agree by
+# construction. The case below is the same list for a bare curl|bash, where
+# the script runs with no repo beside it; console/tests/test_profile.py holds
+# the file and the case identical. The file can only ever NARROW the list,
+# never widen it: a key is accepted only when the built-in case knows it AND,
+# when a keys file is in play, the file lists it too (an intersection, so an
+# edited or planted file adds nothing from any path; for a correct repo the
+# two are equal and nothing changes). A keys file is in play only when this
+# script itself came from a file on disk: BASH_SOURCE[0] is empty under
+# `curl | bash`, `| /bin/bash` and `bash -s`, where SCRIPT_DIR is only a
+# guess ($PWD or /bin). The first guard looked for a deploy-stack.sh beside
+# the file instead, and a cwd holding a decoy of that name plus a widened
+# profile-keys.txt governed a script that never came from there.
+PROFILE_KEYS_FILE=""
+[[ -n "${BASH_SOURCE[0]:-}" && -f "$SCRIPT_DIR/profile-keys.txt" ]] && PROFILE_KEYS_FILE="$SCRIPT_DIR/profile-keys.txt"
+# Set when the keys file refused a key the built-in case accepts: the one
+# case where the file itself (CRLF, a trailing space) is the likely fault and
+# worth naming. A key the case refuses anyway says nothing about the file, so
+# the case runs first.
+_FILE_REFUSED=false
 profile_key_allowed() {
+  [[ "$1" == CLOUDLENS_* ]] || return 1
   case "$1" in
     CLOUDLENS_REGION|CLOUDLENS_STACK_NAME|CLOUDLENS_KEY_NAME|CLOUDLENS_IAC|\
     CLOUDLENS_ADMIN_CIDR|CLOUDLENS_ASSIGN_PUBLIC_IP|CLOUDLENS_INFRA|\
@@ -137,9 +160,15 @@ profile_key_allowed() {
     CLOUDLENS_COLLECTOR_MGMT_SG|CLOUDLENS_COLLECTOR_INGRESS_SG|CLOUDLENS_COLLECTOR_EGRESS_SG|\
     CLOUDLENS_DEPLOY_EKS|CLOUDLENS_EKS_CLUSTER|CLOUDLENS_EKS_SAMPLE|CLOUDLENS_EKS_MODE|\
     CLOUDLENS_EKS_POD_SELECTOR|CLOUDLENS_CLOUD_CONFIG|CLOUDLENS_CLM_NAME|CLOUDLENS_VPB_DEVICE_NAME)
-      return 0 ;;
+      ;;
+    *) return 1 ;;
   esac
-  return 1
+  if [[ -n "$PROFILE_KEYS_FILE" ]]; then
+    # -x: the whole line, so a comment never matches a key; -F: the key as text.
+    # The case passed, so a miss here is the file refusing a known key.
+    grep -qxF -- "$1" "$PROFILE_KEYS_FILE" 2>/dev/null || { _FILE_REFUSED=true; return 1; }
+  fi
+  return 0
 }
 
 if [[ -n "$PROFILE_SRC" ]]; then
@@ -183,7 +212,12 @@ if [[ -n "$PROFILE_SRC" ]]; then
   done <<< "$_profile_body"
   [[ -n "$_rejected" ]] && echo "[warn] profile: ignored keys that a profile may not set:${_rejected}" >&2
   if [[ "$_n" -eq 0 ]]; then
-    echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?)." >&2
+    # Only a known key the keys file refused points at the file (a CRLF or
+    # trailing-space line never matches grep -x); a profile made of keys the
+    # built-in case refuses is a bad profile, and the hint would mislead.
+    _hint=""
+    [[ "$_FILE_REFUSED" == "true" ]] && _hint=" (no key passed ${PROFILE_KEYS_FILE}: check its line endings)"
+    echo "[x] --profile ${PROFILE_SRC}: no usable settings in it (is this a deploy-profile-*.env file?).${_hint}" >&2
     exit 2
   fi
   echo "[ok] Profile ${PROFILE_SRC}: ${_n} setting(s) applied; matching questions will not be asked."
@@ -496,7 +530,10 @@ banner() {
 }
 ok()    { echo -e "${C_GREEN}[ok]${C_RESET} $1"; }
 warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $1"; }
-fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; exit 1; }
+# emit_done is defined with the state helpers below. bash resolves function
+# names at call time, so this only requires that no fail() executes before the
+# sink is defined; none does.
+fail()  { echo -e "${C_RED}[x]${C_RESET} $1" >&2; SCRIPT_DONE=true; emit_done status=failed phase="$PHASE_NAME" reason="$1"; exit 1; }
 step()  { echo; echo -e "${C_BLUE}--- $1 ---${C_RESET}"; PHASE_NAME="$1"; }
 note()  { echo -e "${C_GREY}  -> $1${C_RESET}"; }
 dryrun_say() { echo -e "${C_YELLOW}[dry-run]${C_RESET} $1"; }
@@ -549,11 +586,16 @@ announce_vcontroller_login() {
   pw="$(vc_password_now)"
   watch_header
   echo "    https://${ip}/cloudlens/login"
+  # The login event says WHERE the password lives, never what it is.
+  local pw_in="vController factory default (the first login forces a change; phase 9 recorded no password)"
   if [[ -n "$pw" ]]; then
     echo "    ${VC_ADMIN_USER} / ${pw}"
+    pw_in="$VC_CREDS_FILE"
+    [[ -n "${CLOUDLENS_VC_PASSWORD:-}" ]] && pw_in="CLOUDLENS_VC_PASSWORD (environment)"
   else
     echo "    ${VC_ADMIN_USER} / ${VC_FACTORY_PASS}   (the first login forces a change)"
   fi
+  emit_event login component=vcontroller url="https://${ip}/cloudlens/login" user="$VC_ADMIN_USER" password_in="$pw_in"
   # Which project the sensors land in depends on the sensor mode, and this line
   # used to name the standalone one unconditionally. In KVO mode the sensors
   # register with the key the Cloud Config provisioned, into KVO_<cloud-config>,
@@ -573,6 +615,11 @@ announce_kvo_login() {
   watch_header
   echo "    https://${ip}/"
   echo "    ${KVO_ADMIN_USER} / ${KVO_ADMIN_PASS}"
+  # The login event says WHERE the password lives, never what it is: the
+  # factory default is named, not spelled out.
+  local pw_in="CLOUDLENS_KVO_ADMIN_PASS (environment)"
+  [[ "$KVO_ADMIN_PASS" == "admin" ]] && pw_in="KVO factory default"
+  emit_event login component=kvo url="https://${ip}/" user="$KVO_ADMIN_USER" password_in="$pw_in"
   echo "  Licensing, the adopted vController and the Visibility Fabric appear"
   echo "  here as the phases below build them."
   echo "  A freshly booted KVO shows its EULA first: accept it to reach the login."
@@ -584,6 +631,8 @@ announce_vpb_login() {
   [[ -n "$ip" && "$ip" != "None" ]] || return 0
   watch_header
   echo "    ssh -i ${KEY_PEM:-~/.ssh/${KEY_NAME}.pem} -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${ip}"
+  emit_event login component=vpb url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME:-admin}@${ip}" \
+    user="${ADMIN_USERNAME:-admin}" password_in="${KEY_PEM:-${KEY_NAME}.pem} (EC2 key pair, no password)"
   echo "    key-pair auth (no password), then 'sudo vpb' for the CLI"
   echo "    device login KVO manages it with: ${VPB_DEVICE_USER} / ${VPB_DEVICE_PASS}"
   echo "  It appears in KVO as device '${VPB_DEVICE_NAME}' once phase 14 adopts it."
@@ -711,17 +760,63 @@ login_block() {
 # with no controlling terminal) stdin is not a TTY and there is nobody to
 # answer, so every prompt below skips the read entirely and takes its default.
 # That is the single check: -t 0 AFTER the re-attach.
+#
+# The operations console is the third case. With --prompt-pipe FIFO the page
+# is the terminal: every question goes out as a prompt event on the --events
+# file and the run blocks until the console writes one line to the FIFO. The
+# parser forces INTERACTIVE=true for it, whatever stdin is.
+#
+# Per prompt: wait for its prompt event, open the FIFO for writing, write
+# exactly one line, close. Never hold the write end open between answers: a
+# held-then-closed end reads as an empty answer and takes the default. A run
+# whose console goes away blocks on the next prompt forever and emits no done;
+# the console owns the process and must kill it. A TERM to the pid alone does
+# not stop a run blocked on a prompt: signal its process group. After a stop
+# the script usually still writes its own done (status interrupted or failed):
+# the EXIT trap fires for every exit, TERM included, and emit_event appends to
+# the events file directly, never through the tee. A run can still exit with
+# no done (a KILL, or a shell that died before its trap ran), so the console
+# treats process exit as terminal either way, done or no done.
 # ---------------------------------------------------------------------
 INTERACTIVE=false
 [[ -t 0 ]] && INTERACTIVE=true
+PROMPT_PIPE="${CLOUDLENS_PROMPT_PIPE:-}"
 
 # ask "prompt" "default" -> echoes the answer (default when not interactive)
 ask() {
-  local prompt="$1" def="${2:-}" ans=""
-  if [[ "$INTERACTIVE" == "true" ]]; then
+  local prompt="$1" def="${2:-}" ans="" n=""
+  if [[ -n "$PROMPT_PIPE" ]]; then
+    # The console owns this FIFO. Emit the question, block on the reply. The
+    # prompt id lets the page pair an answer with its question after a
+    # reconnect. Nearly every caller is x="$(ask ...)", a subshell where a
+    # counter would never advance, so the id is the number of prompts already
+    # in the events file, not a shell variable.
+    n=$(grep -c '"type":"prompt"' "$EVENTS_FILE" 2>/dev/null) || true
+    emit_event prompt id="p$(( ${n:-0} + 1 ))" question="$prompt" default="$def" kind=text
+    IFS= read -r ans < "$PROMPT_PIPE" || true
+    ans="${ans%$'\r'}"
+    # The transcript still reads like a terminal session: question, answer.
+    printf '%s%s\n' "$prompt" "$ans" >&2
+  elif [[ "$INTERACTIVE" == "true" ]]; then
     read -rp "$prompt" ans || true
   fi
   printf '%s' "${ans:-$def}"
+}
+
+# ask_secret "prompt" -> like ask, but the answer never echoes (not to the
+# terminal, not to the log, not to the events) and there is no default.
+ask_secret() {
+  local prompt="$1" ans="" n=""
+  if [[ -n "$PROMPT_PIPE" ]]; then
+    n=$(grep -c '"type":"prompt"' "$EVENTS_FILE" 2>/dev/null) || true
+    emit_event prompt id="p$(( ${n:-0} + 1 ))" question="$prompt" kind=secret
+    IFS= read -r ans < "$PROMPT_PIPE" || true
+    ans="${ans%$'\r'}"
+    printf '%s\n' "$prompt" >&2
+  elif [[ "$INTERACTIVE" == "true" ]]; then
+    read -rsp "$prompt" ans || true; echo >&2
+  fi
+  printf '%s' "$ans"
 }
 
 # ask_yn "prompt" "y|n"  -> returns 0 for yes, 1 for no
@@ -747,6 +842,28 @@ phase_index() {
     i=$((i+1))
   done
   return 1
+}
+
+# The phases a selector leaves in this run, in PHASE_ORDER's own order:
+# --only names the one, --from cuts everything before it, and with neither it
+# is the whole list. This is what the console is told, so the timeline it
+# draws is the run that was asked for and not the run the script can do.
+# A phase run_phase later skips for its OWN reasons (resume state, a component
+# this stack has not got) still belongs here: it is announced, then reported
+# when it is reached, which is exactly the story the timeline tells. Only the
+# selector narrows the list, because only the selector is settled by now.
+selected_phases() {
+  local p idx want out=""
+  if [[ -n "$ONLY_PHASE" ]]; then printf '%s' "$ONLY_PHASE"; return 0; fi
+  want="$(phase_index "$FROM_PHASE" 2>/dev/null || true)"
+  # no --from, or one this script does not know: the whole list. The unknown
+  # name is the validation's to reject, and it does, before this is called.
+  if [[ -z "$FROM_PHASE" || -z "$want" ]]; then printf '%s' "$PHASE_ORDER"; return 0; fi
+  for p in $PHASE_ORDER; do
+    idx="$(phase_index "$p")"
+    if (( idx >= want )); then out="${out:+$out }$p"; fi
+  done
+  printf '%s' "$out"
 }
 
 phase_label() {
@@ -873,12 +990,88 @@ state_set() {
   mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------
+# Structured events: the side channel the operations console renders.
+# --events FILE appends one JSON object per line at the points where this
+# script already knows the truth (phase changes, discovered resources, doctor
+# checks, prompts, logins, the end). No flag, no file, no change to the
+# terminal output.
+#
+# The FILE is the truth, for seq and for done alike. seq is the line's
+# number in the file, so a resumed run appending to the same file, or an
+# emitter that happens to run in a $( ) subshell, cannot repeat one. And
+# emit_done reads the file's last line instead of trusting DONE_EMITTED: a
+# variable set inside a $( ) never reaches the parent shell, so the variable
+# alone would let a fail() in a command substitution and the EXIT trap each
+# write their own done.
+#
+# The file is append-only for the life of a stack: every run of that stack
+# appends to the same file. A reader that sees a seq smaller than the last
+# one it handled is looking at a new stream (the file was replaced or
+# truncated) and must treat it as one, not as a gap to skip. A line that
+# does not parse as JSON (a run killed mid-write leaves one) must be skipped,
+# not treated as the end of the stream.
+#
+# Nothing here may ever abort the run: a write that fails mid-run is silently
+# ignored. Only a --events path that cannot be created at startup is an input
+# error (checked right after the parser). Bytes that are not valid UTF-8 pass
+# through unchanged, so the console should open the file with errors="replace".
+# ---------------------------------------------------------------------
+EVENTS_FILE="${CLOUDLENS_EVENTS_FILE:-}"
+DONE_EMITTED=false
+json_str() { # minimal JSON string escaper (bash 3.2, no jq dependency)
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  # JSON forbids raw U+0000..U+001F, so every other control byte becomes
+  # \u00XX (0 is a no-op because bash cannot hold NUL; 127 is legal raw but
+  # harmless to escape). Bash 3.2 only: no ${var@Q}, no printf %q round trip.
+  if [[ "$s" == *[[:cntrl:]]* ]]; then
+    local c i oct rep
+    for i in 0 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
+      # printf -v, not $(printf): that was three forks per byte per string.
+      printf -v oct '%03o' "$i"; printf -v c "\\$oct"; printf -v rep '\\u%04x' "$i"
+      [[ -n "$c" && "$s" == *"$c"* ]] && s="${s//$c/$rep}"
+    done
+  fi
+  printf '"%s"' "$s"
+}
+emit_event() { # emit_event TYPE key=value ... (values are strings)
+  [[ -n "$EVENTS_FILE" ]] || return 0
+  local type="$1" seq=1 body kv; shift
+  if [[ -f "$EVENTS_FILE" ]]; then
+    seq=$(( $(wc -l 2>/dev/null < "$EVENTS_FILE" || echo 0) + 1 ))
+  fi
+  body="{\"seq\":${seq},\"ts\":\"$(date -u +%FT%TZ)\",\"type\":$(json_str "$type")"
+  for kv in "$@"; do
+    [[ "$kv" == [A-Za-z_]*=* ]] || continue   # skip a malformed key=value token
+    body+=",$(json_str "${kv%%=*}"):$(json_str "${kv#*=}")"
+  done
+  body+="}"
+  { printf '%s\n' "$body" >> "$EVENTS_FILE"; } 2>/dev/null || true
+}
+# emit_done key=value ...: the run's last event, written once however the run
+# ends (final summary, declined plan, --doctor, fail(), the EXIT trap).
+emit_done() {
+  [[ "$DONE_EMITTED" == "true" ]] && return 0
+  # A fail() inside $( ) already wrote the done; the parent must not repeat it.
+  # Deliberately not `tail | grep -q`: under pipefail an early-closing grep can
+  # turn a match into a non-zero status.
+  if [[ -n "$EVENTS_FILE" && -f "$EVENTS_FILE" ]] \
+     && [[ "$(tail -n 1 "$EVENTS_FILE" 2>/dev/null)" == *'"type":"done"'* ]]; then
+    DONE_EMITTED=true; return 0
+  fi
+  DONE_EMITTED=true
+  emit_event done "$@"
+}
+
 # state_phase NAME done|failed|skipped [detail]
 # A dry run records itself as a dry run: it did not actually do the work.
 state_phase() {
   local outcome="$2"
   [[ "$DRY_RUN" == "true" ]] && outcome="dry-run ${outcome}"
   state_set "PHASE_$(upper "$1")" "${outcome} at $(date -u +%FT%TZ)${3:+ (${3})}"
+  emit_event phase name="$1" status="$2" reason="${3:-}"
 }
 
 # Printed whenever an SSH step cannot find its private key. Every SSH-based
@@ -1813,6 +2006,30 @@ Toggles:
                             answers is skipped. The plan step writes
                             deploy-profile-<stack>.env after any interview;
                             share it so someone else deploys the same shape.
+  --events FILE             Append one JSON object per line describing the run
+                            (phase changes, discovered resources, the end) to
+                            FILE. The operations console reads it; the terminal
+                            output does not change.
+  --prompt-pipe FIFO        Take every answer from FIFO instead of the terminal.
+                            Each question is written to the --events file as a
+                            prompt event and the run waits for one line on the
+                            pipe. The operations console creates the pipe and
+                            answers from the page. Needs --events.
+                            Per prompt: wait for its prompt event, open the
+                            FIFO for writing, write exactly one line, close.
+                            Never hold the write end open between answers: a
+                            held-then-closed end reads as an empty answer and
+                            takes the default. A run whose console goes away
+                            blocks on the next prompt forever and emits no
+                            done; the console owns the process and must kill
+                            it. A TERM to the pid alone does not stop a run
+                            blocked on a prompt: signal its process group.
+                            After a stop the script usually still writes its
+                            own done (the EXIT trap fires for every exit and
+                            writes the events file directly, not through the
+                            tee); a run can still exit with no done, so the
+                            console treats process exit as terminal either
+                            way.
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
@@ -1991,6 +2208,8 @@ while [[ $# -gt 0 ]]; do
     --no-kvo) DEPLOY_KVO=false; shift ;;
     --doctor) RUN_DOCTOR=true; shift ;;
     --profile) shift 2 ;;   # consumed at the top of the script, before defaults
+    --events) EVENTS_FILE="$2"; shift 2 ;;
+    --prompt-pipe) PROMPT_PIPE="$2"; shift 2 ;;
     --with-eks) DEPLOY_EKS=true; shift ;;
     --no-eks) DEPLOY_EKS=false; shift ;;
     --eks-cluster) DEPLOY_EKS=true; EKS_CLUSTER="$2"; shift 2 ;;
@@ -2082,12 +2301,24 @@ while [[ $# -gt 0 ]]; do
     *) warn "Unknown argument: $1"; show_help; exit 1 ;;
   esac
 done
-
-if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
-  fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
+# An --events or CLOUDLENS_EVENTS_FILE path that cannot be created is an input
+# error. A write that fails later in the run stays silent (see the sink).
+if [[ -n "$EVENTS_FILE" ]] && ! { : >> "$EVENTS_FILE"; } 2>/dev/null; then
+  fail "--events: cannot write ${EVENTS_FILE}"
 fi
+# A previous run killed mid-write leaves a partial last line. Finish it, or
+# this run's hello would be glued onto it and the reader would lose both.
+if [[ -n "$EVENTS_FILE" && -s "$EVENTS_FILE" && -n "$(tail -c 1 "$EVENTS_FILE" 2>/dev/null)" ]]; then
+  { printf '\n' >> "$EVENTS_FILE"; } 2>/dev/null || true
+fi
+# The console's first line. Stack and region may still be empty here (the
+# interview fills them in Phase 3); a second hello follows once they are known.
+emit_event hello stack="${ARG_STACK:-}" region="${ARG_REGION:-}" dry_run="$DRY_RUN"
 
-# Phase selectors use the stable short names, not numbers.
+# Phase selectors use the stable short names, not numbers. Resolved here,
+# before the phase list is announced: a selector naming a phase that does not
+# exist ends the run, and a run scoped to some of the phases must not announce
+# the ones it will never reach.
 if [[ -n "$FROM_PHASE" && -n "$ONLY_PHASE" ]]; then
   fail "--from and --only are mutually exclusive."
 fi
@@ -2098,6 +2329,28 @@ for _p in "$FROM_PHASE" "$ONLY_PHASE"; do
 done
 if [[ "$RESUME_MODE" == "fresh" && ( -n "$FROM_PHASE" || -n "$ONLY_PHASE" ) ]]; then
   note "--fresh with --from/--only: the selector still limits which phases run."
+fi
+
+# The phases this run can go through, in this script's own order, said once
+# and early. A console that has only seen the phases that already ended
+# cannot draw the ones still to come, and a copy of the list on its side
+# drifts the day a phase is added here. It is the SELECTED list (see
+# selected_phases): under --from or --only the console is told the phases
+# this run can reach, not every phase the script has.
+emit_event phases order="$(selected_phases)"
+
+# --prompt-pipe: the console is the terminal. The questions travel as events,
+# so it needs --events; the answers come back on a FIFO the console created.
+# Forced here, after the parser, because the tty check above ran before the
+# flag was seen; nothing between the two consults INTERACTIVE.
+if [[ -n "$PROMPT_PIPE" ]]; then
+  [[ -n "$EVENTS_FILE" ]] || fail "--prompt-pipe needs --events: the questions are delivered as prompt events"
+  [[ -p "$PROMPT_PIPE" ]] || fail "--prompt-pipe: ${PROMPT_PIPE} is not a named pipe (mkfifo it first)"
+  INTERACTIVE=true
+fi
+
+if [[ "$IAC" != "cfn" && "$IAC" != "terraform" ]]; then
+  fail "--iac must be 'cfn' or 'terraform' (got '$IAC')."
 fi
 
 case "$SENSOR_MODE" in
@@ -2323,7 +2576,12 @@ trap on_error ERR
 # ---------------------------------------------------------------------
 on_exit() {
   local code=$?
-  [[ "${BASHPID:-$$}" == "$$" ]] || return 0
+  (( BASH_SUBSHELL == 0 )) || return 0   # BASHPID is unset on bash 3.2
+  # The console must always see how the run ended, explained or not.
+  if (( code == 0 )); then emit_done status=ok
+  elif (( code == 130 )); then emit_done status=interrupted phase="$PHASE_NAME"
+  else emit_done status=failed phase="$PHASE_NAME" code="$code"
+  fi
   [[ "$SCRIPT_DONE" == "true" ]] && return 0
   (( code == 0 )) && return 0
   echo
@@ -2411,7 +2669,7 @@ elif [[ "$KERNEL" == MINGW* ]] || [[ "$KERNEL" == MSYS* ]] || [[ "$KERNEL" == CY
   echo "    2. WSL                  (Windows Subsystem for Linux: 'wsl --install')"
   echo "    3. Linux jumpbox EC2    (small EC2 you SSH into)"
   echo
-  read -rp "Continue anyway in this Windows shell? [y/N]: " yn || true
+  yn="$(ask "Continue anyway in this Windows shell? [y/N]: " "n")"
   yn_lc=$(to_lower "${yn:-n}")
   if [[ "$yn_lc" != "y" && "$yn_lc" != "yes" ]]; then
     fail "Aborted. Open AWS CloudShell and rerun the curl line there for the smoothest experience."
@@ -2427,9 +2685,12 @@ fi
 # ---------------------------------------------------------------------
 run_doctor() {
   local fails=0 warns=0
-  _pass() { printf "  %-6s %s\n" "[PASS]" "$1"; }
-  _warn() { printf "  %-6s %s\n" "[WARN]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; warns=$((warns+1)); }
-  _fail() { printf "  %-6s %s\n" "[FAIL]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; fails=$((fails+1)); }
+  # Each verdict is also a check event, so the console shows the same list
+  # the terminal prints without parsing it. A warn or fail always carries
+  # its fix: that is what the console renders next to the red or amber row.
+  _pass() { printf "  %-6s %s\n" "[PASS]" "$1"; emit_event check item="$1" status=pass; }
+  _warn() { printf "  %-6s %s\n" "[WARN]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; warns=$((warns+1)); emit_event check item="$1" status=warn fix="${2:-}"; }
+  _fail() { printf "  %-6s %s\n" "[FAIL]" "$1"; [[ -n "${2:-}" ]] && printf "         fix: %s\n" "$2"; fails=$((fails+1)); emit_event check item="$1" status=fail fix="${2:-}"; }
   echo
   printf "${C_BOLD}CloudLens deploy doctor: ${REGION}${C_RESET}\n"
   echo
@@ -2556,8 +2817,8 @@ run_doctor() {
   else
     _warn "Ansible not installed (needed for the sensor step)" "the deploy offers to pip-install it; or: pip3 install --user ansible"
   fi
-  command -v kubectl >/dev/null 2>&1 && _pass "kubectl (EKS tapping ready)" || _warn "kubectl not installed (only needed for EKS tapping; CloudShell has it)"
-  command -v docker  >/dev/null 2>&1 && _pass "docker (can push the sensor image to ECR)" || _warn "docker not installed (only needed to push the EKS sensor image; CloudShell has it)"
+  command -v kubectl >/dev/null 2>&1 && _pass "kubectl (EKS tapping ready)" || _warn "kubectl not installed (only needed for EKS tapping; CloudShell has it)" "install kubectl (https://kubernetes.io/docs/tasks/tools/), or run the EKS step from CloudShell"
+  command -v docker  >/dev/null 2>&1 && _pass "docker (can push the sensor image to ECR)" || _warn "docker not installed (only needed to push the EKS sensor image; CloudShell has it)" "install Docker, or pass --eks-sensor-image with an image already in a registry the cluster can pull"
 
   # 9. Network paths the deploy uses
   if curl -sSf --max-time 15 -o /dev/null "${REPO_RAW}/deploy/deploy-stack.sh"; then
@@ -2585,7 +2846,7 @@ if [[ "$RUN_DOCTOR" == "true" ]]; then
   # An if-condition disables errexit for the call, so a failing doctor
   # reaches its own exit instead of the ERR trap's "FAILED in phase" banner.
   SCRIPT_DONE=true
-  if run_doctor; then exit 0; else exit 1; fi
+  if run_doctor; then emit_done status=ok mode=doctor; exit 0; else emit_done status=failed mode=doctor reason="--doctor found blockers"; exit 1; fi
 fi
 
 # =====================================================================
@@ -2619,7 +2880,7 @@ install_aws_cli() {
     note "Windows shell detected ($os). AWS CLI v2 ships as an MSI."
     echo "    Download: https://awscli.amazonaws.com/AWSCLIV2.msi"
     if command -v msiexec >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
-      read -rp "    Download and run the MSI installer now? [Y/n]: " yn || true
+      yn="$(ask "    Download and run the MSI installer now? [Y/n]: " "y")"
       if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
         curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "$TMPDIR/AWSCLIV2.msi" 2>/dev/null \
           || curl -sSL "https://awscli.amazonaws.com/AWSCLIV2.msi" -o "./AWSCLIV2.msi"
@@ -2646,7 +2907,7 @@ if ! command -v aws >/dev/null 2>&1; then
     warn "aws CLI not installed (dry-run continues)"
   else
     warn "AWS CLI not installed."
-    read -rp "Install it now? Pulls the official AWS CLI v2. [Y/n]: " yn || true
+    yn="$(ask "Install it now? Pulls the official AWS CLI v2. [Y/n]: " "y")"
     yn_lc=$(to_lower "${yn:-y}")
     if [[ "$yn_lc" == "n" || "$yn_lc" == "no" ]]; then
       fail "AWS CLI required. Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html then re-run."
@@ -2734,10 +2995,10 @@ else
     echo "    2) Access key + secret         (runs: aws configure)"
     echo "    3) I will sort it out myself   (exit)"
     echo
-    read -rp "  Choose 1-3 [1]: " auth_choice || true
+    auth_choice="$(ask "  Choose 1-3 [1]: " "1")"
     case "${auth_choice:-1}" in
       1)
-        read -rp "  AWS profile name (blank = default): " auth_profile || true
+        auth_profile="$(ask "  AWS profile name (blank = default): " "")"
         if [[ -n "$auth_profile" ]]; then
           export AWS_PROFILE="$auth_profile"
           aws sso login --profile "$auth_profile" || true
@@ -2880,6 +3141,7 @@ fi
 # Runs the moment stack name + region are known, which is the earliest point at
 # which "does this deployment already exist" is a question that can be asked.
 # Everything it does is read-only.
+emit_event hello stack="$STACK_NAME" region="$REGION" dry_run="$DRY_RUN"
 resume_check
 resume_load_inputs
 
@@ -2986,7 +3248,7 @@ select_key_pair() {
 
   if [[ ${#existing[@]} -eq 0 ]]; then
     warn "No EC2 key pairs exist in ${REGION}."
-    read -rp "Name for a new key pair to create [${default_new}]: " pick || true
+    pick="$(ask "Name for a new key pair to create [${default_new}]: " "$default_new")"
     KEY_NAME="${pick:-$default_new}"
     ensure_key_pair "$KEY_NAME"
     return 0
@@ -3016,7 +3278,7 @@ select_key_pair() {
   # Default to creating a new pair. Defaulting to the FIRST existing pair meant
   # pressing Enter picked a key whose .pem was on a different machine entirely,
   # which is how a full deploy reached the sensor step and died UNREACHABLE.
-  read -rp "Choose 1-${i}, or type a key pair name [${i}]: " pick || true
+  pick="$(ask "Choose 1-${i}, or type a key pair name [${i}]: " "$i")"
   pick="${pick:-$i}"
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick < i )); then
@@ -3041,7 +3303,7 @@ select_key_pair() {
     note "sensor install both need it. If you continue, those SSH steps fail here"
     note "until you upload ${KEY_NAME}.pem to ~/.ssh/ yourself."
     if ask_yn "  Create a NEW key pair instead, so the .pem is written here? [Y/n]: " "y"; then
-      read -rp "Name for the new key pair [${default_new}]: " pick || true
+      pick="$(ask "Name for the new key pair [${default_new}]: " "$default_new")"
       pick="${pick:-$default_new}"
       KEY_NAME="$pick"; ensure_key_pair "$KEY_NAME"; return 0
     fi
@@ -3051,7 +3313,7 @@ select_key_pair() {
   fi
 
   if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick == i )); then
-    read -rp "Name for the new key pair [${default_new}]: " pick || true
+    pick="$(ask "Name for the new key pair [${default_new}]: " "$default_new")"
     pick="${pick:-$default_new}"
   fi
 
@@ -3090,7 +3352,7 @@ pick_subnet() {
       --query 'Subnets[].[SubnetId, AvailabilityZone, CidrBlock, to_string(MapPublicIpOnLaunch)]' \
       --output text 2>/dev/null)
   if [[ ${#rows[@]} -eq 0 ]]; then
-    read -rp "  ${label} (subnet id, Enter to skip): " pick || true
+    pick="$(ask "  ${label} (subnet id, Enter to skip): " "")"
     echo "$pick"; return 0
   fi
   echo "  Subnets in ${vpc} (public=auto-assigns public IPs):" >&2
@@ -3098,7 +3360,7 @@ pick_subnet() {
     i=$((i+1))
     printf "    %2d) %s\n" "$i" "$(echo "$line" | awk -F'\t' '{printf "%s  %s  %-18s  %s", $1, $2, $3, ($4=="true")?"public":"private"}')" >&2
   done
-  read -rp "  ${label} [1-${#rows[@]}, subnet id, or Enter to skip]: " pick || true
+  pick="$(ask "  ${label} [1-${#rows[@]}, subnet id, or Enter to skip]: " "")"
   if [[ "$pick" =~ ^[0-9]+$ ]]; then
     if (( pick >= 1 && pick <= ${#rows[@]} )); then
       echo "${rows[$((pick-1))]}" | cut -f1
@@ -3122,7 +3384,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
   echo "  1) Build a NEW VPC for it. Clean lab or demo; teardown removes everything. Default."
   echo "  2) Deploy INTO infrastructure you already run (your VPC and subnet;"
   echo "     nothing network-level is created, and teardown never touches your VPC)."
-  read -rp "Choose 1-2 [1]: " infra_choice || true
+  infra_choice="$(ask "Choose 1-2 [1]: " "1")"
   INFRA_CHOICE="new"
   if [[ "${infra_choice:-1}" == "2" ]]; then
     INFRA_CHOICE="existing"
@@ -3130,7 +3392,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
     aws ec2 describe-vpcs --region "$REGION" \
       --query 'Vpcs[].[VpcId,CidrBlock,Tags[?Key==`Name`]|[0].Value]' \
       --output table 2>/dev/null | sed 's/^/  /' || true
-    read -rp "  VPC id for the CloudLens appliances: " EXISTING_VPC_ID || true
+    EXISTING_VPC_ID="$(ask "  VPC id for the CloudLens appliances: " "")"
     if [[ -n "$EXISTING_VPC_ID" ]]; then
       EXISTING_SUBNET_ID="$(pick_subnet "$EXISTING_VPC_ID" "Management subnet (appliances live here)")"
       [[ -z "$EXISTING_SUBNET_ID" ]] && { warn "An existing VPC needs a subnet; falling back to a NEW VPC."; EXISTING_VPC_ID=""; }
@@ -3142,7 +3404,7 @@ fi
 
 # Deploy KVO?
 if [[ -z "$DEPLOY_KVO" ]]; then
-  read -rp "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " yn || true
+  yn="$(ask "Deploy KVO (Keysight Vision Orchestrator) alongside vController? [y/N]: " "n")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_KVO=true || DEPLOY_KVO=false
 fi
@@ -3150,7 +3412,7 @@ ok "Deploy KVO: ${DEPLOY_KVO}"
 
 # Deploy vPB?
 if [[ -z "$DEPLOY_VPB" ]]; then
-  read -rp "Deploy vPB alongside vController? [y/N]: " yn || true
+  yn="$(ask "Deploy vPB alongside vController? [y/N]: " "n")"
   yn_lc=$(to_lower "$yn")
   [[ "$yn_lc" == "y" || "$yn_lc" == "yes" ]] && DEPLOY_VPB=true || DEPLOY_VPB=false
 fi
@@ -3170,7 +3432,7 @@ if [[ -z "$CHAIN_SENSORS" || -z "$WITH_MIRROR" ]]; then
     echo "                only; needs KVO and an AWS access key for it."
     echo "  3) both       sensors where possible plus the mirror fabric."
     echo "  4) none       infrastructure only, no tapping."
-    read -rp "Choose 1-4 [1]: " tap_choice || true
+    tap_choice="$(ask "Choose 1-4 [1]: " "1")"
     case "${tap_choice:-1}" in
       2) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=false; [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
       3) [[ -z "$CHAIN_SENSORS" ]] && CHAIN_SENSORS=true;  [[ -z "$WITH_MIRROR" ]] && WITH_MIRROR=true ;;
@@ -3195,7 +3457,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  1) standalone   register straight to the vController project"
   echo "  2) KVO-managed  register to the project KVO provisions, so KVO is the"
   echo "                  single pane of glass (licensing and adoption run first)"
-  read -rp "Choose 1-2 [1]: " _sm || true
+  _sm="$(ask "Choose 1-2 [1]: " "1")"
   [[ "${_sm:-1}" == "2" ]] && SENSOR_MODE="kvo" || SENSOR_MODE="standalone"
 fi
 
@@ -3214,17 +3476,17 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "  2) Throwaway TEST workloads created with the stack (you choose how many"
   echo "     of Ubuntu / RHEL / Windows). Right for demos and first runs. Default."
   echo "  3) Decide later (tag instances afterwards and re-run the sensor step)."
-  read -rp "Choose 1-3 [2]: " wl_choice || true
+  wl_choice="$(ask "Choose 1-3 [2]: " "2")"
   case "${wl_choice:-2}" in
     1)
       WORKLOAD_CHOICE="existing"
-      read -rp "  Tag that marks them, key=value [${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}]: " _wt || true
+      _wt="$(ask "  Tag that marks them, key=value [${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}]: " "")"
       if [[ -n "$_wt" && "$_wt" == *=* ]]; then
         DISCOVERY_TAG_KEY="${_wt%%=*}"; DISCOVERY_TAG_VALUE="${_wt#*=}"
         DISCOVERY_TAG_EXPLICIT=true
       fi
       _wl_default_vpc="${EXISTING_VPC_ID:-the new VPC this deploy builds}"
-      read -rp "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " _wv || true
+      _wv="$(ask "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " "")"
       if [[ -n "$_wv" ]]; then
         for _v in ${_wv//,/ }; do SOURCE_VPC_SPECS+=("$_v"); done
       fi
@@ -3249,13 +3511,13 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     *)
       WORKLOAD_CHOICE="test"
       TEST_UBUNTU=yes; TEST_RHEL=yes; TEST_WINDOWS=yes
-      read -rp "  How many Ubuntu VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many Ubuntu VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_UBUNTU=no || UBUNTU_COUNT="${_c:-1}"
-      read -rp "  How many RHEL VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many RHEL VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_RHEL=no || RHEL_COUNT="${_c:-1}"
-      read -rp "  How many Windows VMs? [1, 0 skips]: " _c || true
+      _c="$(ask "  How many Windows VMs? [1, 0 skips]: " "1")"
       [[ "${_c:-1}" =~ ^[0-9]+$ ]] && (( ${_c:-1} <= 10 )) || _c=1
       [[ "${_c:-1}" == "0" ]] && TEST_WINDOWS=no || WINDOWS_COUNT="${_c:-1}"
       ;;
@@ -3273,7 +3535,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   echo "     kubectl rights on it)."
   echo "  3) Yes, create a small SAMPLE cluster to see it work (2x t3.medium,"
   echo "     ~15 extra minutes, plus a demo app generating pod-to-pod HTTP)."
-  read -rp "Choose 1-3 [1]: " eks_choice || true
+  eks_choice="$(ask "Choose 1-3 [1]: " "1")"
   case "${eks_choice:-1}" in
     2) DEPLOY_EKS=true ;;
     3) DEPLOY_EKS=true; EKS_SAMPLE=true ;;
@@ -3287,7 +3549,7 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     echo "    2) Sidecar    a sensor container inside each tapped pod. Pod-"
     echo "                  selective, but adding it restarts the pod, so your"
     echo "                  apps get a rendered snippet to apply yourselves."
-    read -rp "  Choose 1-2 [1]: " eks_mode_choice || true
+    eks_mode_choice="$(ask "  Choose 1-2 [1]: " "1")"
     [[ "${eks_mode_choice:-1}" == "2" ]] && EKS_MODE="sidecar" || EKS_MODE="daemonset"
   fi
 fi
@@ -3452,6 +3714,7 @@ PROFILE_FILE=""
 if [[ "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
   if ! ask_yn "Proceed with this plan? [Y/n]: " y; then
     note "Nothing was deployed. Re-run with different answers or flags when ready."
+    emit_done status=declined reason="plan not accepted"
     exit 0
   fi
   echo
@@ -3603,7 +3866,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
   echo "  Already subscribed on this account? Nothing to do."
   echo "  Check anytime: https://console.aws.amazon.com/marketplace/home#/subscriptions"
   echo
-  read -rp "Press Enter to continue (Ctrl+C to abort and subscribe first): " _ || true
+  ask "Press Enter to continue (Ctrl+C to abort and subscribe first): " "" >/dev/null
 fi
 
 # ---------------------------------------------------------------------
@@ -3709,7 +3972,7 @@ check_eip_headroom() {
   echo "    Or deploy without public IPs and reach the stack privately:"
   echo "      re-run with --no-public-ip"
   echo
-  read -rp "    Continue anyway? [y/N]: " yn || true
+  yn="$(ask "    Continue anyway? [y/N]: " "n")"
   [[ "$(to_lower "${yn:-n}")" == "y" ]] || fail "Aborted: free up Elastic IPs, then re-run."
 }
 # =====================================================================
@@ -3917,6 +4180,13 @@ tf_output() {
   ( cd "$REPO_DIR/$TF_DIR_REL" && terraform output -raw "$key" 2>/dev/null ) || echo ""
 }
 
+# Did this run actually deploy, or did a selector / the resume state take the
+# apply out of it? A phase that did not run is never recorded as done: the
+# state file, the HTML report's phase table and the console's timeline all
+# read that record, and a green row for work nothing did is a lie in all three.
+STACK_PHASE_RAN=true
+STACK_SKIP_REASON=""
+
 if [[ "$IAC" == "terraform" ]]; then
   if run_phase stack; then
     # A real apply can move addresses, so re-read them rather than trusting
@@ -3924,6 +4194,7 @@ if [[ "$IAC" == "terraform" ]]; then
     CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
     deploy_terraform
   else
+    STACK_PHASE_RAN=false; STACK_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the Terraform apply"
     note "Keeping the addresses detection already read from the existing workspace."
   fi
@@ -3935,6 +4206,7 @@ else
     CLMS_PUBLIC_IP=""; KVO_PUBLIC_IP=""; VPB_PUBLIC_IP=""
     deploy_cfn
   else
+    STACK_PHASE_RAN=false; STACK_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the CloudFormation deploy"
     note "Keeping the addresses detection already read from the existing stack."
   fi
@@ -3952,7 +4224,11 @@ ok "vController at ${CLMS_PUBLIC_IP:-unknown}"
 state_set VCONTROLLER_ADDRESS "$CLMS_PUBLIC_IP"
 state_set KVO_ADDRESS "$KVO_PUBLIC_IP"
 state_set VPB_ADDRESS "$VPB_PUBLIC_IP"
-state_phase stack done
+if [[ "$STACK_PHASE_RAN" == "true" ]]; then
+  state_phase stack done
+else
+  state_phase stack skipped "$STACK_SKIP_REASON"
+fi
 
 # ---------------------------------------------------------------------
 # Extra test workloads. CloudFormation cannot loop, so the template builds
@@ -4023,6 +4299,31 @@ ec2_fact() {
   printf '%s' "$v"
 }
 
+# The stack as the console draws it: one resource event per thing an operator
+# would otherwise have to read out of the terminal. Called once the facts are
+# known; a dry run emits its placeholders, and hello.dry_run says so.
+emit_stack_resources() {
+  local vpc="${STACK_VPC_ID:-}" mgmt="${MGMT_SUBNET_ID:-}" zone="${STACK_ZONE:-}"
+  local ing="${INGRESS_SUBNET_ID:-}" eg="${EGRESS_SUBNET_ID:-}"
+  local vc_ip="${CLMS_PUBLIC_IP:-}" vc_priv="${CLMS_PRIVATE_IP:-}"
+  local kvo_ip="${KVO_PUBLIC_IP:-}" kvo_priv="${KVO_PRIVATE_IP:-}"
+  local vpb_ip="${VPB_PUBLIC_IP:-}" vpb_in="${VPB_INGRESS_IP:-}" vpb_out="${VPB_EGRESS_IP:-}"
+  # The AWS CLI prints the word None for a null field; the console wants "".
+  local v
+  for v in vpc mgmt zone ing eg vc_ip vc_priv kvo_ip kvo_priv vpb_ip vpb_in vpb_out; do
+    # printf -v with a NON-empty format: bash 3.2 assigns nothing for ''.
+    if [[ "${!v}" == "None" ]]; then printf -v "$v" '%s' ''; fi
+  done
+  emit_event resource kind=vpc id="$vpc"
+  if [[ -n "$mgmt" ]]; then emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"; fi
+  if [[ -n "$ing" ]]; then emit_event resource kind=subnet id="$ing" role=ingress; fi
+  if [[ -n "$eg"  ]]; then emit_event resource kind=subnet id="$eg"  role=egress;  fi
+  emit_event resource kind=vcontroller ip="$vc_ip" private_ip="$vc_priv"
+  if [[ "$DEPLOY_KVO" == "true" ]]; then emit_event resource kind=kvo ip="$kvo_ip" private_ip="$kvo_priv"; fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then emit_event resource kind=vpb ip="$vpb_ip" ingress_ip="$vpb_in" egress_ip="$vpb_out"; fi
+  return 0
+}
+
 discover_stack_facts() {
   local vc_tag="${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
   local kvo_tag="${KVO_NAME:-${STACK_NAME}-kvo}"
@@ -4038,6 +4339,7 @@ discover_stack_facts() {
     EGRESS_SUBNET_ID="${COLLECTOR_EGRESS_SUBNET:-subnet-egress}"
     VPB_EGRESS_IP="10.0.2.12"; VPB_EGRESS_NETMASK="255.255.255.0"; VPB_EGRESS_GATEWAY="10.0.2.1"
     dryrun_say "would read private IPs, VPC and subnets from the deployed stack"
+    emit_stack_resources
     return 0
   fi
 
@@ -4105,6 +4407,7 @@ discover_stack_facts() {
   # properly"), and the collapse produced a fabric that committed cleanly and
   # then cut zero sessions with no alert. The mirror phase now names the
   # missing --collector-* flags instead.
+  emit_stack_resources
   return 0
 }
 
@@ -4163,9 +4466,19 @@ discover_stack_facts
 # =====================================================================
 step "Phase 7: Wait for vController initialization"
 
+WAIT_PHASE_RAN=true
+WAIT_SKIP_REASON=""
+
 if ! run_phase wait; then
+  WAIT_PHASE_RAN=false; WAIT_SKIP_REASON="$PHASE_SKIP_REASON"
   skip_note "the vController wait"
-  ok "The vController API answered during detection, so there is nothing to wait for."
+  # run_phase skips for several different reasons, and only ONE of them is
+  # "the API is already serving". Claiming that on a --only or --from run said
+  # the appliance had answered when nothing had asked it. skip_note above
+  # already printed the real reason; this line is only for the real one.
+  if [[ -n "$REASON_WAIT" && "$WAIT_SKIP_REASON" == "$REASON_WAIT" ]]; then
+    ok "The vController API answered during detection, so there is nothing to wait for."
+  fi
 elif [[ "$DRY_RUN" == "true" ]]; then
   dryrun_say "would poll https://${CLMS_PUBLIC_IP}:443 every 15s for up to 17 minutes"
 elif [[ -z "$CLMS_PUBLIC_IP" || "$CLMS_PUBLIC_IP" == "None" ]]; then
@@ -4221,7 +4534,11 @@ else
     note "  -X POST -H 'Content-Type: application/json' -d '{}' https://${CLMS_PUBLIC_IP}/cloudlens/api/v1/identity/login"
   fi
 fi
-state_phase wait done
+if [[ "$WAIT_PHASE_RAN" == "true" ]]; then
+  state_phase wait done
+else
+  state_phase wait skipped "$WAIT_SKIP_REASON"
+fi
 
 # =====================================================================
 # Phase 8: vPB post-deploy bootstrap (KCOS wait + vpb CLI wrapper)
@@ -4318,7 +4635,11 @@ vc_key_script() { find_repo_script "scripts/vcontroller_project_key.py"; }
 
 # Re-running this step against an already-rotated admin password FAILS, so a
 # resume reuses the key already in the creds file rather than rotating again.
+KEY_PHASE_RAN=true
+KEY_SKIP_REASON=""
+
 if ! run_phase key; then
+  KEY_PHASE_RAN=false; KEY_SKIP_REASON="$PHASE_SKIP_REASON"
   skip_note "the project key step"
   if VC_PROJECT_KEY="$(vc_key_from_creds)"; then
     ok "Reusing the project key already in ${VC_CREDS_FILE} (${#VC_PROJECT_KEY} characters)."
@@ -4343,7 +4664,7 @@ else
   elif ! python3 -c "import requests" 2>/dev/null; then
     # The one dependency. Offer to install rather than silently degrading.
     warn "The python 'requests' module is missing (needed to talk to the vController API)."
-    read -rp "  Install it now with pip? [Y/n]: " yn || true
+    yn="$(ask "  Install it now with pip? [Y/n]: " "y")"
     if [[ "$(to_lower "${yn:-y}")" != "n" ]]; then
       python3 -m pip install --quiet --user requests 2>/dev/null \
         || python3 -m pip install --quiet --break-system-packages --user requests 2>/dev/null \
@@ -4384,7 +4705,20 @@ Manual path: to deploy sensors, you need a project key.
 
 EOM
 fi
-state_phase key done
+# The phase's output is a project key, so that is what decides how it is
+# recorded. A skip that read one back out of the creds file DID produce it and
+# is done; a skip that could not is not, and neither is a run that ended with
+# the manual instructions above and nothing in hand. Sensors cannot register
+# without this key, so recording it done either way put a green row on a step
+# whose whole point had not happened. A dry run is a dry run: it says what it
+# would do, and state_phase already stamps the record "dry-run".
+if [[ "$KEY_PHASE_RAN" != "true" && -z "$VC_PROJECT_KEY" ]]; then
+  state_phase key skipped "$KEY_SKIP_REASON"
+elif [[ -n "$VC_PROJECT_KEY" || "$DRY_RUN" == "true" ]]; then
+  state_phase key done
+else
+  state_phase key failed "no project key was retrieved"
+fi
 
 # The vController can take a login from here on, and everything below (KVO
 # licensing, adoption, sensors, vPB) is visible in its UI while it happens.
@@ -5017,6 +5351,12 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
       echo "  Matching running EC2s: ${TAGGED_COUNT}"
       echo "  The sensor chain will install on those ${TAGGED_COUNT} instance(s)."
     fi
+    # The terminal shows "?" for a count the CLI could not produce; the console
+    # wants "" for an unknown, as emit_stack_resources does for a None id.
+    _wl_count="${TAGGED_COUNT:-0}"
+    if [[ "$_wl_count" == "?" ]]; then _wl_count=""; fi
+    emit_event resource kind=workloads count="$_wl_count" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+      mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}"
   fi
   echo
 fi
@@ -5065,6 +5405,11 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
     if deploy_test_workloads_now; then
       sensor_blocker="${sensor_blocker/notags/}"
       sensor_blocker="${sensor_blocker%,}"; sensor_blocker="${sensor_blocker#,}"
+      # The workloads row above said count=0 and nothing updated it, so the
+      # console kept drawing an empty stack while the sensors installed onto
+      # the machines just created. Say what exists now, and that we made it.
+      emit_event resource kind=workloads count="${TAGGED_COUNT:-}" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+        mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}" created=true
     else
       echo "    Tag your workloads first (see the command above), then run:"
       echo "      curl -sSL ${REPO_RAW}/quickstart.sh | bash"
@@ -5073,7 +5418,7 @@ if [[ "$CHAIN_SENSORS" == "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
 
   if [[ -n "$sensor_blocker" ]]; then
     echo
-    read -rp "Skip the sensor step for now? [Y/n]: " skip_yn || true
+    skip_yn="$(ask "Skip the sensor step for now? [Y/n]: " "y")"
     if [[ "$(to_lower "${skip_yn:-y}")" != "n" ]]; then
       warn "Skipping sensor deployment. Infrastructure is deployed and ready."
       # Do not end here without saying how to come back. The stack is built and
@@ -5156,7 +5501,11 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
 
   # Activation codes are consumable: re-activating one that is already spent
   # burns entitlement quantity. An already-licensed KVO is therefore left alone.
+  LICENSE_PHASE_RAN=true
+  LICENSE_SKIP_REASON=""
+
   if ! run_phase license; then
+    LICENSE_PHASE_RAN=false; LICENSE_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "KVO licensing"
     ok "No activation code is re-used, so no entitlement quantity is spent."
   elif [[ "$DRY_RUN" == "true" ]]; then
@@ -5203,8 +5552,12 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     note "  bash deploy/deploy-stack.sh --sensor-mode ${SENSOR_MODE} --kvo-codes CODE[,QTY]"
     note "The re-run resumes: everything already done above is detected and skipped."
     state_phase license failed "KVO licensing did not complete"
-  else
+  elif [[ "$LICENSE_PHASE_RAN" == "true" ]]; then
     state_phase license done
+  else
+    # An untouched KVO is not a licensed one: a selector that removed this
+    # phase left the licence exactly as it found it, whatever it was.
+    state_phase license skipped "$LICENSE_SKIP_REASON"
   fi
 fi
 
@@ -5237,7 +5590,11 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
 
   # Re-adopting an already-adopted manager errors, and the Cloud Config is
   # reusable by name, so a resume reads the existing key back instead.
+  ADOPT_PHASE_RAN=true
+  ADOPT_SKIP_REASON=""
+
   if ! run_phase adopt; then
+    ADOPT_PHASE_RAN=false; ADOPT_SKIP_REASON="$PHASE_SKIP_REASON"
     skip_note "the KVO adoption and Cloud Config"
     kvo_auth "$KVO_PUBLIC_IP" || true
     if KVO_PROJECT_KEY="$(kvo_cloud_config_key "$KVO_PUBLIC_IP")"; then
@@ -5279,10 +5636,14 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
       KVO_CHAIN_OK=false
     fi
   fi
-  if [[ "$KVO_CHAIN_OK" == "true" ]]; then
+  if [[ "$KVO_CHAIN_OK" != "true" ]]; then
+    state_phase adopt failed "adoption or Cloud Config did not complete"
+  elif [[ "$ADOPT_PHASE_RAN" == "true" ]]; then
     state_phase adopt done
   else
-    state_phase adopt failed "adoption or Cloud Config did not complete"
+    # The skip branch above only READS a key back out of an existing Cloud
+    # Config. Nothing was adopted and no Cloud Config was created here.
+    state_phase adopt skipped "$ADOPT_SKIP_REASON"
   fi
 fi
 
@@ -5309,9 +5670,8 @@ if [[ "$CHAIN_SENSORS" == "true" || "$CHAIN_SENSORS" == "write_yaml_only" ]]; th
     echo "The project key is a secret. It is written to customer_input.yaml"
     echo "(git-ignored, permissions 600) so Ansible can read it."
     if [[ "$INTERACTIVE" == "true" ]]; then
-      # -s: do not echo the secret to the terminal or the log.
-      read -rsp "Paste project key (or press Enter to skip sensor deployment): " SENSOR_PROJECT_KEY || true
-      echo
+      # ask_secret: the value never reaches the terminal, the log or the events.
+      SENSOR_PROJECT_KEY="$(ask_secret "Paste project key (or press Enter to skip sensor deployment): ")"
     fi
     if [[ -z "$SENSOR_PROJECT_KEY" ]]; then
       warn "No project key supplied. Skipping sensor chain."
@@ -5818,6 +6178,7 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
     [[ -n "$EKS_SENSOR_TAR" ]]        && _eks_args+=(--sensor-tar "$EKS_SENSOR_TAR")
     if bash "$EKS_SCRIPT" "${_eks_args[@]}"; then
       state_phase eks done
+      emit_event resource kind=eks cluster="${EKS_CLUSTER:-${STACK_NAME}-eks}" mode="$EKS_MODE"
       ok "EKS pod tapping deployed. The K8s sensors register into the same"
       ok "project as the VM sensors and follow the same tool path."
       # KVO side of the rail: the Kubernetes Cloud Config referencing the
@@ -6014,9 +6375,8 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       MIRROR_ACCESS_KEY="$(ask "  AWS access key id: " "")"
     fi
     if [[ -z "$MIRROR_SECRET_KEY" && "$INTERACTIVE" == "true" && -n "$MIRROR_ACCESS_KEY" ]]; then
-      # -s: the secret must not reach the terminal or the log.
-      read -rsp "  AWS secret access key: " MIRROR_SECRET_KEY || true
-      echo
+      # ask_secret: the value never reaches the terminal, the log or the events.
+      MIRROR_SECRET_KEY="$(ask_secret "  AWS secret access key: ")"
     fi
 
     # The collector spec (awsConfiguration.availabilityZones) needs the zone AND
@@ -6795,6 +7155,8 @@ login_block
 completion_report
 echo
 ok "Done."
+_done_status=ok; [[ "$DRY_RUN" == "true" ]] && _done_status=dry-run
+emit_done status="$_done_status" report="${REPORT_FILE:-}" profile="${PROFILE_FILE:-}"
 SCRIPT_DONE=true
 trap - ERR
 exit 0

@@ -1,6 +1,6 @@
 # CloudLens Ansible for AWS
 
-**Deploy the full CloudLens stack (vController + KVO + vPB) and push sensors to every EC2 instance. One command, or one click from the AWS Console.**
+**Deploy the full CloudLens stack (vController + KVO + vPB) and push sensors to every EC2 instance. The console is the front door: `python3 -m cloudlens_console` on your own machine, checking the account first and showing the run as it happens. `deploy/deploy-stack.sh` is the engine it drives, and it is still one command, or one click from the AWS Console, on its own.**
 
 ![Tested on AWS](https://img.shields.io/badge/Tested%20on-AWS-232F3E?logo=amazonaws&logoColor=FF9900)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-20%2F22%2F24-E95420?logo=ubuntu)
@@ -18,6 +18,20 @@
 </p>
 
 ---
+
+## Start with the console
+
+A local web UI on the same automation: pre-flight checks with the fix beside each failure, a wizard that ends in a plan you can read before anything runs, the deploy as it happens including the questions it asks you, a view of a stack that is up, KVO licensing, and a gated teardown.
+
+```bash
+git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
+cd cloudlens-ansible-aws/console
+python3 -m cloudlens_console      # http://localhost:8760
+```
+
+It binds loopback only, uses your shell's AWS identity, and needs Python 3.9+ plus the AWS CLI, `bash` (it runs `deploy-stack.sh`) and `ssh` (Operate reads the vPB's counters over it). No secret is stored in the browser: `localStorage` keeps the plan, the page and screen you were on, the last run's id and the light/dark choice, and nothing else. What the wizard writes is a `deploy-profile-<stack>.env` the CLI replays with `--profile`, so anything you click through reproduces in a terminal and the UI can never produce a plan the CLI would refuse. Screens, contracts and limits: [`console/README.md`](console/README.md).
+
+The CLI below is that engine, unchanged. If the terminal is where you live, start there.
 
 ## Deploy the full stack with one command
 

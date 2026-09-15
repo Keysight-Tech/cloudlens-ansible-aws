@@ -45,7 +45,6 @@
   .topnav a{font-size:13px;color:var(--ink-soft);text-decoration:none;padding:7px 11px;border-radius:8px;font-weight:500}
   .topnav a:hover{background:var(--line-soft);color:var(--ink)}
   @media(max-width:860px){.topnav{display:none}}
-  .demo-t{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
   .sw{width:38px;height:22px;border-radius:20px;background:var(--line);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s}
   .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.2s}
   .sw[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
@@ -62,7 +61,12 @@
   h1.title em{font-style:normal;color:var(--accent)}
   .lede{font-size:clamp(15px,1.8vw,18px);color:var(--ink-soft);max-width:52ch;margin:16px 0 0}
 
-  /* instrument */
+  /* The instrument: the diagram, the narration and the raw-output pane.
+     build_site.py takes this whole stylesheet for the published demo page
+     (docs/console.html) and supplies the markup these rules dress, which
+     this page stopped carrying when the quick flows were removed. Several
+     of them - .console, .card-in, .pill, .node - are also what the Watch
+     screen draws with, so this block is not dead here either. */
   .instrument{background:var(--screen);border-radius:var(--r);box-shadow:var(--shadow-lg);border:1px solid #000;overflow:hidden;position:relative}
   .instrument::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 80% at 50% -10%,rgba(255,255,255,.05),transparent 55%);z-index:3}
   .inst-bar{display:flex;align-items:center;gap:12px;padding:11px 15px;border-bottom:1px solid var(--screen-line);background:linear-gradient(var(--screen-2),var(--screen));flex-wrap:wrap}
@@ -182,6 +186,166 @@
   body.embed{background:transparent}
   body.embed>header.top,body.embed>.hero,body.embed>section,body.embed>footer{display:none!important}
   body.embed>.wrap{margin:0 auto;padding:12px 16px}
+  /* operations console: the page strip, the pre-flight table, the wizard */
+  [hidden]{display:none!important}
+  .vh{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+  .ops{padding-top:4px}
+  .opsnav{display:flex;gap:4px;border-bottom:1px solid var(--line);overflow-x:auto}
+  .opsnav button{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--ink-soft);font:inherit;font-size:14px;font-weight:600;padding:12px 14px;cursor:pointer;margin-bottom:-1px;white-space:nowrap}
+  .opsnav button:hover{color:var(--ink)}
+  .opsnav button[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+  .page{padding:26px 0 4px;border-top:0}
+  .page .sec-head p{font-size:15px}
+  .placeholder{margin-top:18px;padding:18px 20px;border:1px dashed var(--line);border-radius:var(--r);color:var(--ink-soft);font-size:14.5px;background:var(--panel)}
+  .pfbar{display:flex;gap:14px;align-items:flex-end;margin-top:18px;flex-wrap:wrap}
+  .pfbar .field{min-width:220px}
+  .status{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin:8px 0;line-height:1.5}
+  .status.err,.err{color:var(--accent)}
+  .st{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.06em;padding:3px 9px;border-radius:100px;border:1px solid currentColor}
+  .st.pass{color:var(--good)}.st.warn{color:var(--amber)}.st.fail{color:var(--accent)}
+  .checks td:first-child{white-space:nowrap}
+  .tblwrap{overflow-x:auto;max-width:100%}
+  .wiz{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;box-shadow:var(--shadow)}
+  .wiz section{padding:0;border:0}
+  .wsteps{display:flex;gap:6px;list-style:none;margin:0 0 20px;padding:0;flex-wrap:wrap}
+  .wsteps button{appearance:none;font:inherit;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);background:transparent;border:1px solid var(--line);border-radius:100px;padding:6px 12px;cursor:pointer}
+  .wsteps button.done{color:var(--ink-soft)}
+  .wsteps button[aria-current="step"]{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .wsteps button:disabled{cursor:default;opacity:.5}
+  .wiz h3{font-size:20px;letter-spacing:-.02em;font-weight:750}
+  .wiz .lead{color:var(--ink-soft);font-size:14.5px;margin:6px 0 16px}
+  .wiz .hint{font-size:11.5px;color:var(--ink-faint);margin:4px 0 0;line-height:1.5}
+  .wiz .field select,.wiz .field textarea{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+  .wiz .field select:focus,.wiz .field textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .coderow{display:flex;gap:8px}.coderow input{flex:1 1 auto;min-width:0}.coderow .ghostbtn{flex:0 0 auto;padding:0 16px}
+  .codes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.codes:empty{display:none}
+  .code{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;color:var(--ink-soft);background:var(--panel);border:1px solid var(--line);border-radius:100px;padding:4px 6px 4px 12px}
+  .code button{appearance:none;border:0;background:transparent;color:var(--ink-faint);font:inherit;font-size:14px;line-height:1;padding:2px 6px;border-radius:100px;cursor:pointer}
+  .code button:hover,.code button:focus-visible{color:var(--accent);background:var(--accent-soft)}
+  .opts{display:grid;gap:8px;margin-top:12px}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border:1px solid var(--line);border-radius:11px;cursor:pointer;background:var(--paper)}
+  .opt:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .opt input{margin:4px 0 0;accent-color:var(--accent);flex:0 0 auto}
+  .opt span{font-size:13px;color:var(--ink-soft)}
+  .opt b{display:block;font-size:14px;color:var(--ink);font-weight:650}
+  .choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:12px}
+  .choice{appearance:none;text-align:left;font:inherit;background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:13px 14px;cursor:pointer;color:var(--ink);transition:.16s}
+  .choice:hover{border-color:var(--ink-faint)}
+  .choice[aria-checked="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .choice .k{font-family:var(--mono);font-size:10.5px;color:var(--accent);letter-spacing:.08em}
+  .choice b{display:block;font-size:15px;margin-top:4px}
+  .choice .d{display:block;margin-top:5px;font-size:12.5px;color:var(--ink-soft)}
+  .switchrow{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+  .switchrow b{font-size:14.5px}.switchrow span{color:var(--ink-soft);font-size:13px}
+  .switchrow .sw{margin-left:auto;flex:0 0 38px}
+  button.sw{padding:0;appearance:none;display:block}
+  .subsec{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line)}
+  .subsec h4,.wiz h4,.wpanel h4{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;font-weight:600;display:flex;align-items:center;gap:10px}
+  table.pick{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px;font-family:var(--mono)}
+  table.pick th{text-align:left;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.pick td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-soft);white-space:nowrap}
+  table.pick tr.pickrow{cursor:pointer}
+  table.pick tr.pickrow:hover td{background:var(--line-soft)}
+  table.pick tr.pickrow.on td{background:var(--accent-soft);color:var(--ink)}
+  /* the pick itself is a button in the first cell, wearing the row's type */
+  table.pick td button.pickb{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+  table.pick td button.pickb:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  .tag{font-size:10px;font-family:var(--mono);border:1px solid var(--line);border-radius:100px;padding:1px 7px;color:var(--ink-faint)}
+  .tag.on{color:var(--good);border-color:var(--good)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .chip{appearance:none;font:inherit;font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);border-radius:100px;padding:5px 12px;cursor:pointer}
+  .chip:hover{border-color:var(--ink-faint);color:var(--ink)}
+  .chip[aria-pressed="true"]{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .steppers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:10px}
+  .stepper{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:11px;padding:10px 12px;background:var(--paper)}
+  .stepper label{flex:1;font-size:13.5px;font-weight:600}
+  .stepper button{appearance:none;font:inherit;width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-weight:700}
+  .stepper input{width:44px;text-align:center;font-family:var(--mono);font-size:14px;border:0;background:transparent;color:var(--ink);-moz-appearance:textfield}
+  .stepper input::-webkit-inner-spin-button,.stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  table.resolved{margin-top:12px;font-family:var(--mono);font-size:12.5px}
+  table.resolved td:first-child{font-weight:500}
+  table.resolved tr.unset td{color:var(--ink-faint)}
+  .dim{color:var(--ink-faint);font-style:italic}
+  .qty{width:96px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:6px 9px}
+  .errs{margin:8px 0;padding-left:18px;color:var(--accent);font-size:13.5px}
+  .errs li{margin:4px 0}
+  pre.profile,pre.cli{background:var(--screen);border:1px solid #000;border-radius:10px;padding:14px 16px;font-family:var(--mono);font-size:12px;color:var(--screen-ink);overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:10px 0 0;line-height:1.6}
+  details.fold{margin-top:14px}
+  details.fold>summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--ink-soft);padding:6px 0}
+  .wnav{display:flex;align-items:center;gap:14px;margin-top:22px;padding-top:16px;border-top:1px solid var(--line)}
+  .wnav .err{font-size:13px;flex:1}
+  .ghostbtn{appearance:none;font:inherit;font-weight:600;font-size:14px;background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);border-radius:11px;padding:11px 18px;cursor:pointer}
+  .ghostbtn:hover{color:var(--ink);border-color:var(--ink-faint)}.ghostbtn:disabled{opacity:.45;cursor:default}
+  .launch{display:flex;align-items:center;gap:14px;margin-top:20px;flex-wrap:wrap}
+  .launch .note{font-size:13px;color:var(--ink-soft)}
+  details.quick{margin-top:14px}
+  details.quick>summary{cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;padding:8px 0}
+  /* watch: the run as the engine reports it */
+  .watchbar{display:flex;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .watchbar .pill{border-color:var(--line);color:var(--ink-faint)}
+  .watchbar .pill.run{color:var(--amber);border-color:var(--amber)}
+  .watchbar .pill.done{color:var(--good);border-color:var(--good)}
+  .watchbar .pill.err{color:var(--accent);border-color:var(--accent)}
+  .watchbar .id-chip{border-color:var(--line);color:var(--ink-soft)}
+  .watchbar .id-chip b{color:var(--ink)}
+  .watchbar .status{margin:0}
+  .watchgrid{display:grid;grid-template-columns:minmax(230px,.85fr) 1.15fr;gap:16px;margin-top:16px}
+  @media(max-width:860px){.watchgrid{grid-template-columns:1fr}}
+  .wpanel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-top:16px}
+  .watchgrid .wpanel{margin-top:0}
+  ol.tl{list-style:none;margin:0;padding:0}
+  .tlrow{display:grid;grid-template-columns:18px 1fr;gap:4px 10px;padding:7px 0;border-bottom:1px solid var(--line-soft);align-items:baseline}
+  .tlmark{font-family:var(--mono);font-size:12px;text-align:center;color:var(--ink-faint)}
+  .tlname{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .tlwhy{grid-column:2;font-size:12px;color:var(--ink-faint)}
+  .tlwhy:empty{display:none}
+  .tlrow.pending .tlname{color:var(--ink-faint)}
+  .tlrow.pending .tlmark::before{content:"\00b7"}
+  .tlrow.done .tlmark{color:var(--good)}
+  .tlrow.failed .tlmark,.tlrow.failed .tlname{color:var(--accent)}
+  .tlrow.skipped{opacity:.62}
+  .tlrow.start .tlmark::before,.tlrow.running .tlmark::before{content:"";display:inline-block;width:9px;height:9px;
+    border-radius:50%;border:2px solid var(--amber);border-top-color:transparent;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .topo{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;padding:16px;border-radius:var(--r-sm);
+    background:var(--screen);border:1px solid #000;min-height:96px}
+  .topo p.dim{font-family:var(--mono);font-size:12px;color:var(--screen-faint);margin:0}
+  .topo .node,.topo .node.show,.topo .node.busy,.topo .node.live,.topo .node.fail{position:static;transform:none;opacity:1}
+  .topo .node{width:104px}
+  .tvpc{display:flex;flex-wrap:wrap;gap:12px;padding:12px;border:1px dashed var(--screen-line);border-radius:10px}
+  .tnodes{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+  .nics{display:flex;gap:5px;margin-top:1px}
+  .nics i{width:7px;height:7px;border-radius:50%;background:var(--screen-line);display:block}
+  .nics i.on{background:var(--signal)}
+  .wstack{display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center;margin-top:2px;max-width:96px}
+  .wstack i{width:9px;height:12px;border-radius:2px;border:1px solid var(--signal);display:block}
+  .wstack span{font-family:var(--mono);font-size:9px;color:var(--screen-faint)}
+  .logins .lgn{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;font-size:13px;color:var(--ink-soft)}
+  .logins .lgn b{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
+  .logins .lgn a,.logins .lgn code{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .logins .pwin{color:var(--ink-faint);font-size:12px}
+  .qcard{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
+  .qcard .q{font-size:13.5px}
+  .qcard .a{margin-top:4px;font-size:12.5px;color:var(--ink-soft)}
+  .banner{margin-top:16px;padding:14px 16px;border-radius:var(--r);border:1px solid var(--line);background:var(--panel)}
+  .banner b{font-size:15px}
+  .banner p{margin:6px 0 0;font-size:13.5px;color:var(--ink-soft);word-break:break-word}
+  .banner.good{border-color:var(--good)}.banner.good b{color:var(--good)}
+  .banner.bad{border-color:var(--accent)}.banner.bad b{color:var(--accent)}
+  #wLog{background:var(--screen);border:1px solid #000;border-radius:10px;margin-top:8px;max-height:260px}
+  .modal{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;
+    background:rgba(11,13,17,.55)}
+  .modal[hidden]{display:none}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);
+    padding:20px 22px;max-width:560px;width:100%}
+  .modal-card .mq{font-size:16px;font-weight:650;line-height:1.4}
+  .modal-card form{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center}
+  .modal-card input{flex:1 1 220px;min-width:0;font-family:var(--mono);font-size:13px;color:var(--ink);
+    background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .modal-card .runbtn{padding:10px 18px;font-size:14px}
+  .modal-card .status{flex-basis:100%;margin:0}
+  .card-in.prompt form{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .card-in.prompt input{flex:1;min-width:160px;font-family:var(--mono);font-size:12.5px;background:var(--screen);color:var(--screen-ink);border:1px solid var(--screen-line);border-radius:8px;padding:7px 10px}
   footer{padding:36px 0;border-top:1px solid var(--line);color:var(--ink-faint);font-size:13px}
   footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
 </style>
@@ -194,57 +358,397 @@
     <a href="#vpb">vPB</a><a href="#mirror">Mirror</a><a href="#reference">Reference</a>
   </nav>
   <div class="sp"></div>
-  <div class="demo-t" title="Replay real captured events - no AWS calls">
-    <span>Demo</span><div class="sw" id="demoSw" role="switch" aria-checked="true" tabindex="0"></div>
-  </div>
   <button class="theme-btn" id="themeBtn" aria-label="Toggle theme">◐</button>
 </div></header>
 
 <div class="hero"><div class="wrap">
-  <span class="badge"><span class="live"></span> <span id="modeBadge">DEMO · REPLAYING REAL EVENTS</span></span>
+  <span class="badge"><span class="live"></span> <span id="modeBadge">LIVE · YOUR AWS ACCOUNT</span></span>
   <h1 class="title">Deploy it for real.<br><em>Watch every step.</em></h1>
-  <p class="lede">Pick a flow, fill in your details, and run it against your own AWS account. The diagram wires itself up from real state, the narration explains each step as it happens, and the console shows the raw truth underneath.</p>
+  <p class="lede">Plan a deploy, watch the engine run it, and operate what it built. Every screen here runs against your own AWS account and your own appliances: the phases are the deploy script's own, the addresses are the ones it reported, and its raw output is underneath.</p>
 </div></div>
 
-<div class="wrap">
-  <div class="instrument">
-    <div class="inst-bar">
-      <div class="traffic"><i></i><i></i><i></i></div>
-      <div class="inst-title"><b id="instName">deploy-stack.sh</b></div>
-      <span class="id-chip" id="idChip" hidden>acct <b>—</b></span>
-      <div class="inst-right">
-        <div class="metric">elapsed<b id="mElapsed">0:00</b></div>
-        <div class="metric">created<b id="mCreated">0</b></div>
-        <span class="pill" id="statusPill"><span class="d"></span><span id="statusTxt">idle</span></span>
-        <button class="stopbtn" id="stopBtn" hidden>Stop</button>
+<!-- ops:start -->
+<div class="ops" id="ops">
+<div class="wrap"><nav class="opsnav" id="opsNav" role="tablist" aria-label="Console pages">
+  <button type="button" role="tab" id="tab-preflight" data-page="preflight" aria-selected="false" aria-controls="page-preflight">Pre-flight</button>
+  <button type="button" role="tab" id="tab-deploy" data-page="deploy" aria-selected="true" aria-controls="page-deploy">Deploy</button>
+  <button type="button" role="tab" id="tab-watch" data-page="watch" aria-selected="false" aria-controls="page-watch">Watch</button>
+  <button type="button" role="tab" id="tab-operate" data-page="operate" aria-selected="false" aria-controls="page-operate">Operate</button>
+  <button type="button" role="tab" id="tab-licensing" data-page="licensing" aria-selected="false" aria-controls="page-licensing">Licensing</button>
+  <button type="button" role="tab" id="tab-teardown" data-page="teardown" aria-selected="false" aria-controls="page-teardown">Teardown</button>
+</nav></div>
+
+<section class="page" id="page-preflight" role="tabpanel" aria-labelledby="tab-preflight" tabindex="0" data-page-body="preflight" hidden><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">Pre-flight</span>
+    <h2>Every setup problem that ever stopped a live run, checked first.</h2>
+    <p><code class="mono">deploy-stack.sh --doctor</code>, read-only: subscriptions, quotas, the key pair, tooling, network. Each failure comes with its exact fix. The wizard's Launch stays off while a FAIL stands for the plan's region.</p></div>
+  <div class="pfbar">
+    <div class="field"><label for="pfRegion">Region</label><input id="pfRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"></div>
+    <button type="button" class="runbtn" id="pfBtn"><span class="tri"></span> Run checks</button>
+  </div>
+  <div class="status" id="pfStatus" role="status" aria-live="polite"></div>
+  <div class="tblwrap"><table class="ref checks" aria-label="Pre-flight checks"><thead><tr><th>Status</th><th>Check</th><th>Fix</th></tr></thead><tbody id="pfRows"></tbody></table></div>
+</div></section>
+
+<section class="page" id="page-deploy" role="tabpanel" aria-labelledby="tab-deploy" tabindex="0" data-page-body="deploy"><div class="wrap">
+  <div class="wiz" id="wizard" aria-label="Deploy wizard">
+    <ol class="wsteps" id="wSteps">
+      <li><button type="button" data-step="1">1 · Where</button></li>
+      <li><button type="button" data-step="2">2 · Components</button></li>
+      <li><button type="button" data-step="3">3 · Tapping</button></li>
+      <li><button type="button" data-step="4">4 · Workloads</button></li>
+      <li><button type="button" data-step="5">5 · Kubernetes</button></li>
+      <li><button type="button" data-step="6">6 · Plan</button></li>
+    </ol>
+
+    <section data-screen="1">
+      <h3>Where should CloudLens land?</h3>
+      <p class="lead">The stack name owns every resource this deploy creates; the region decides the Marketplace AMIs and every listing below.</p>
+      <div class="fields">
+        <div class="field"><label for="wStack">Stack name</label><input id="wStack" spellcheck="false" autocomplete="off" placeholder="cloudlens-stack"><p class="hint">Letters, digits and hyphens, starting with a letter: the CloudFormation stack and the profile file are named after it.</p></div>
+        <div class="field"><label for="wRegion">Region</label><input id="wRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"><p class="hint">The twelve CloudFormation RegionMap regions are listed; any AWS region can be typed.</p></div>
+        <div class="field"><label for="wKey">EC2 key pair (optional)</label><input id="wKey" spellcheck="false" autocomplete="off" placeholder="created if missing"><p class="hint">The appliances take SSH keys, not passwords. Left empty, the run lists your key pairs and asks.</p></div>
       </div>
+      <datalist id="regionList">
+        <option value="us-east-1"><option value="us-east-2"><option value="us-west-1"><option value="us-west-2">
+        <option value="ca-central-1"><option value="eu-west-1"><option value="eu-west-2"><option value="eu-central-1">
+        <option value="ap-southeast-1"><option value="ap-southeast-2"><option value="ap-northeast-1"><option value="ap-south-1">
+      </datalist>
+      <div class="opts" role="radiogroup" aria-label="Infrastructure">
+        <label class="opt" for="infraNew"><input type="radio" id="infraNew" name="infra" value="new"><span><b>Build a NEW VPC for it</b>Clean lab or demo; teardown removes everything. Default.</span></label>
+        <label class="opt" for="infraExisting"><input type="radio" id="infraExisting" name="infra" value="existing"><span><b>Deploy INTO infrastructure you already run</b>Your VPC and subnet; nothing network-level is created, and teardown never touches your VPC.</span></label>
+      </div>
+      <div id="existingBlock" class="subsec" hidden>
+        <h4>Your VPCs <button type="button" class="chip" id="vpcRefresh">refresh</button></h4>
+        <div class="status" id="vpcStatus" role="status" aria-live="polite"></div>
+        <div class="tblwrap"><table class="pick" aria-label="VPCs"><thead><tr><th>VPC</th><th>Name</th><th>CIDR</th></tr></thead><tbody id="vpcRows"></tbody></table></div>
+        <div id="subnetBlock" class="subsec" hidden>
+          <h4>Management subnet (the appliances live here)</h4>
+          <div class="status" id="subnetStatus" role="status" aria-live="polite"></div>
+          <div class="tblwrap"><table class="pick" aria-label="Subnets"><thead><tr><th>Subnet</th><th>Name</th><th>AZ</th><th>CIDR</th><th>Access</th></tr></thead><tbody id="subnetRows"></tbody></table></div>
+        </div>
+        <div class="status" id="s1Pick"></div>
+      </div>
+    </section>
+
+    <section data-screen="2" hidden>
+      <h3>Which components?</h3>
+      <p class="lead">The vController always deploys: it is the control plane every sensor registers to. KVO and the vPB are optional.</p>
+      <div class="switchrow"><div><b>KVO (Keysight Vision Orchestrator)</b><br><span>The single pane that adopts the manager and the vPB and drives agentless AWS mirroring. Needs activation codes.</span></div><button type="button" class="sw" id="swKvo" role="switch" aria-checked="false" aria-label="Deploy KVO"></button></div>
+      <div class="switchrow"><div><b>vPB (virtual packet broker)</b><br><span>Filters and forwards tapped traffic to your tools; adopted by KVO when both deploy.</span></div><button type="button" class="sw" id="swVpb" role="switch" aria-checked="false" aria-label="Deploy vPB"></button></div>
+      <div class="subsec"><h4>vController capacity</h4>
+        <div class="opts" role="radiogroup" aria-label="vController capacity">
+          <label class="opt" for="vcT3"><input type="radio" id="vcT3" name="vctype" value="t3.xlarge"><span><b>t3.xlarge (recommended)</b>Burstable, cheapest, right for labs and pilots. 4 vCPU / 16 GB RAM.</span></label>
+          <label class="opt" for="vcM5"><input type="radio" id="vcM5" name="vctype" value="m5.xlarge"><span><b>m5.xlarge</b>Sustained CPU, for production traffic volumes. 4 vCPU / 16 GB RAM.</span></label>
+        </div>
+        <p class="hint">Both meet the documented requirement (at least 4 vCPU and 16 GB); the difference is the CPU model. Anything else fails at launch with UnsupportedOperation.</p>
+        <p class="hint" id="fixedKvo" hidden>KVO runs on c5.2xlarge (8 vCPU / 16 GB): the only type its Marketplace image permits.</p>
+        <p class="hint" id="fixedVpb" hidden>vPB runs on t3.xlarge (4 vCPU / 16 GB): the only type its Marketplace image permits.</p>
+      </div>
+    </section>
+
+    <section data-screen="3" hidden>
+      <h3>How should the workloads be tapped?</h3>
+      <p class="lead">One answer decides both paths: an agent in each VM, the agentless mirror fabric, both, or neither.</p>
+      <div class="choices" id="tapCards" role="radiogroup" aria-label="Tapping">
+        <button type="button" class="choice" role="radio" aria-checked="false" data-tap="sensors"><span class="k">SENSORS</span><b>An agent inside each VM</b><span class="d">Works on any instance type, Linux and Windows. The default.</span></button>
+        <button type="button" class="choice" role="radio" aria-checked="false" data-tap="mirror"><span class="k">MIRRORING</span><b>Agentless VPC Traffic Mirroring</b><span class="d">Nitro instances only; needs KVO and an AWS access key for it.</span></button>
+        <button type="button" class="choice" role="radio" aria-checked="false" data-tap="both"><span class="k">BOTH</span><b>Sensors where possible plus the mirror fabric</b><span class="d">Mix and match: both land under the same project.</span></button>
+        <button type="button" class="choice" role="radio" aria-checked="false" data-tap="none"><span class="k">NONE</span><b>Infrastructure only</b><span class="d">No tapping now; tag and re-run later.</span></button>
+      </div>
+      <p class="status err" id="mirrorNeedsKvo" hidden>Mirroring needs KVO: turn it on under Components, or the mirror step is skipped.</p>
+      <div class="subsec" id="mgmtPlane" hidden><h4>Which management plane owns the sensors?</h4>
+        <div class="opts" role="radiogroup" aria-label="Management plane">
+          <label class="opt" for="smStandalone"><input type="radio" id="smStandalone" name="smode" value="standalone"><span><b>Standalone</b>Register straight to the vController project.</span></label>
+          <label class="opt" for="smKvo"><input type="radio" id="smKvo" name="smode" value="kvo"><span><b>KVO-managed</b>Register to the project KVO provisions, so KVO is the single pane of glass (licensing and adoption run first).</span></label>
+        </div>
+      </div>
+    </section>
+
+    <section data-screen="4" hidden>
+      <h3>What should be tapped?</h3>
+      <p class="lead" id="wlNone" hidden>No tapping was chosen, so there is nothing to select here. Press Next.</p>
+      <div id="wlChoices">
+        <div class="opts" role="radiogroup" aria-label="Workloads">
+          <label class="opt" for="wlExisting"><input type="radio" id="wlExisting" name="workload" value="existing"><span><b>Workloads you ALREADY run</b>Selected by a tag you name, in the VPC(s) you name. Nothing extra is deployed.</span></label>
+          <label class="opt" for="wlTest"><input type="radio" id="wlTest" name="workload" value="test"><span><b>Throwaway TEST workloads created with the stack</b>You choose how many of Ubuntu / RHEL / Windows. Right for demos and first runs. Default.</span></label>
+          <label class="opt" for="wlLater"><input type="radio" id="wlLater" name="workload" value="later"><span><b>Decide later</b>Tag instances afterwards and re-run the sensor step.</span></label>
+        </div>
+        <div id="wlExistingBlock" class="subsec" hidden>
+          <div class="fields">
+            <div class="field"><label for="tagKey">Tag key</label><input id="tagKey" spellcheck="false" autocomplete="off" placeholder="cloudlens"></div>
+            <div class="field"><label for="tagValue">Tag value</label><input id="tagValue" spellcheck="false" autocomplete="off" placeholder="yes"></div>
+          </div>
+          <h4 style="margin-top:14px">VPC(s) they live in</h4>
+          <div class="chips" id="vpcChips"></div>
+          <div class="status" id="chipNote"></div>
+          <div class="status" id="wlStatus" role="status" aria-live="polite"></div>
+          <div class="tblwrap"><table class="pick" aria-label="Matching instances"><thead><tr><th>Instance</th><th>Name</th><th>VPC</th><th>AZ</th><th>Type</th><th>Platform</th><th>Private IP</th></tr></thead><tbody id="wlRows"></tbody></table></div>
+        </div>
+        <div id="wlTestBlock" class="subsec" hidden>
+          <h4>How many of each? (0 skips an OS; at most 10)</h4>
+          <div class="steppers">
+            <div class="stepper"><label for="n-ubuntu">Ubuntu</label><button type="button" id="dec-ubuntu" aria-label="fewer Ubuntu">-</button><input id="n-ubuntu" type="number" min="0" max="10" inputmode="numeric"><button type="button" id="inc-ubuntu" aria-label="more Ubuntu">+</button></div>
+            <div class="stepper"><label for="n-rhel">RHEL</label><button type="button" id="dec-rhel" aria-label="fewer RHEL">-</button><input id="n-rhel" type="number" min="0" max="10" inputmode="numeric"><button type="button" id="inc-rhel" aria-label="more RHEL">+</button></div>
+            <div class="stepper"><label for="n-windows">Windows</label><button type="button" id="dec-windows" aria-label="fewer Windows">-</button><input id="n-windows" type="number" min="0" max="10" inputmode="numeric"><button type="button" id="inc-windows" aria-label="more Windows">+</button></div>
+          </div>
+        </div>
+        <p class="status" id="wlLaterNote" hidden>Nothing will be tapped until instances carry the discovery tag (cloudlens=yes unless a later run changes it).</p>
+      </div>
+      <div id="collectorBlock" class="subsec" hidden>
+        <h4>Collector placement</h4>
+        <p class="hint">Mirroring into an existing VPC needs a collector appliance in it, on three distinct subnets in one availability zone; the zone is taken from the management subnet.</p>
+        <div class="status" id="colStatus" role="status" aria-live="polite"></div>
+        <div class="fields">
+          <div class="field"><label for="colMgmt">Collector management subnet</label><select id="colMgmt"><option value="">(none)</option></select></div>
+          <div class="field"><label for="colIngress">Collector ingress subnet</label><select id="colIngress"><option value="">(none)</option></select></div>
+          <div class="field"><label for="colEgress">Collector egress subnet</label><select id="colEgress"><option value="">(none)</option></select></div>
+        </div>
+      </div>
+    </section>
+
+    <section data-screen="5" hidden>
+      <h3>Do you also run Kubernetes workloads (EKS) to tap?</h3>
+      <p class="lead">VM sensors and mirroring never see pod-to-pod traffic inside a node; the Kubernetes sensor does.</p>
+      <div class="opts" role="radiogroup" aria-label="Kubernetes">
+        <label class="opt" for="eksNone"><input type="radio" id="eksNone" name="eks" value="none"><span><b>No</b>Default.</span></label>
+        <label class="opt" for="eksExisting"><input type="radio" id="eksExisting" name="eks" value="existing"><span><b>Tap an EXISTING EKS cluster</b>Picked from the listing; needs kubectl rights on it.</span></label>
+        <label class="opt" for="eksSample"><input type="radio" id="eksSample" name="eks" value="sample"><span><b>Create a small SAMPLE cluster</b>2x t3.medium, about 15 extra minutes, plus a demo app generating pod-to-pod HTTP.</span></label>
+      </div>
+      <div id="eksClusterBlock" class="subsec" hidden>
+        <h4>Clusters in the region <button type="button" class="chip" id="eksRefresh">refresh</button></h4>
+        <div class="status" id="eksStatus" role="status" aria-live="polite"></div>
+        <div class="tblwrap"><table class="pick" aria-label="EKS clusters"><thead><tr><th>Cluster</th></tr></thead><tbody id="eksRows"></tbody></table></div>
+        <div class="status" id="eksPicked"></div>
+      </div>
+      <div id="eksModeBlock" class="subsec" hidden>
+        <h4>How should the pods be tapped?</h4>
+        <div class="opts" role="radiogroup" aria-label="Pod tapping">
+          <label class="opt" for="modeDaemon"><input type="radio" id="modeDaemon" name="eksmode" value="daemonset"><span><b>DaemonSet</b>One sensor pod per NODE taps every pod on it. One object, no app restarts. Default, recommended when you own the cluster.</span></label>
+          <label class="opt" for="modeSidecar"><input type="radio" id="modeSidecar" name="eksmode" value="sidecar"><span><b>Sidecar</b>A sensor container inside each tapped pod. Pod-selective, but adding it restarts the pod, so your apps get a rendered snippet to apply yourselves.</span></label>
+        </div>
+      </div>
+    </section>
+
+    <section data-screen="6" hidden>
+      <h3>The plan</h3>
+      <p class="lead">What the script will do, question for question: the resolved configuration, the profile it replays, and the CLI line that does the same. Secrets go to the engine and are written nowhere.</p>
+      <div class="status" id="planStatus" role="status" aria-live="polite"></div>
+      <div id="planErrors"></div>
+      <div class="tblwrap" id="resolvedWrap"></div>
+      <details class="fold"><summary>Profile text <code class="mono" id="profileName"></code></summary><pre class="profile" id="profileText"></pre></details>
+      <div class="subsec"><h4>The equivalent CLI line</h4><pre class="cli" id="cliLine"></pre></div>
+      <div class="subsec" id="secrets"><h4>Secrets</h4>
+        <div id="secMirror" hidden>
+          <p class="hint">KVO mirrors with an AWS access key of an IAM user carrying deploy/iam/cloudlens-zonetap-policy.json. Left empty, the run asks for them.</p>
+          <div class="fields">
+            <div class="field"><label for="secAccess">AWS access key id (KVO mirrors with it)</label><input id="secAccess" name="CLOUDLENS_MIRROR_ACCESS_KEY" data-secret type="password" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label for="secSecret">AWS secret access key</label><input id="secSecret" name="CLOUDLENS_MIRROR_SECRET_KEY" data-secret type="password" autocomplete="off" spellcheck="false"></div>
+          </div>
+        </div>
+        <div id="secKvo" hidden>
+          <div class="field"><label for="codeEntry">KVO activation codes, CODE or CODE,QTY (a quantity of 1 to 6 digits): type one and press Enter, or paste the whole list</label>
+            <div class="coderow"><input id="codeEntry" type="password" autocomplete="off" spellcheck="false"><button type="button" class="ghostbtn" id="codeAdd">Add</button></div>
+            <div class="codes" id="codeList"></div>
+            <p class="hint" id="codeCount" role="status" aria-live="polite"></p>
+            <p class="hint">An unlicensed KVO refuses every write. A code never appears whole on the page: each one becomes a chip of its last four characters. The codes ride the engine's command line as --kvo-codes and are redacted from the stream.</p></div>
+        </div>
+        <details class="fold"><summary>Passwords (optional: the script has its defaults)</summary>
+          <div class="fields">
+            <div class="field"><label for="secVc">vController admin password</label><input id="secVc" name="CLOUDLENS_VC_PASSWORD" data-secret type="password" autocomplete="new-password"></div>
+            <div class="field"><label for="secKvoPass">KVO admin password</label><input id="secKvoPass" name="CLOUDLENS_KVO_ADMIN_PASS" data-secret type="password" autocomplete="new-password"></div>
+          </div>
+        </details>
+      </div>
+      <div class="launch">
+        <button type="button" class="runbtn" id="launchBtn" disabled><span class="tri"></span> Launch</button>
+        <span class="note" id="launchNote"></span>
+      </div>
+      <div class="status" id="launchStatus" role="status" aria-live="polite"></div>
+    </section>
+
+    <div class="wnav">
+      <button type="button" class="ghostbtn" id="backBtn">Back</button>
+      <span class="err" id="wErr" role="alert"></span>
+      <button type="button" class="runbtn" id="nextBtn">Next</button>
     </div>
-    <div class="inst-body">
-      <div class="diagram" id="diagram"><div class="dgrid"></div><svg id="wires"></svg></div>
-      <div class="rightcol">
-        <div class="narr" id="narr"><div class="empty">Narration will appear here as each step runs — with the why behind it.</div></div>
-        <div class="console-head"><span>Raw output</span><span id="conCount"></span></div>
-        <div class="console" id="console"></div>
-      </div>
+  </div>
+</div></section>
+
+<section class="page" id="page-watch" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" data-page-body="watch" hidden><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">Watch</span><h2>The run, as it happens.</h2>
+    <p>Every row, node, login and banner here is one event the engine sent. The phases are the deploy script's own list, in its order; the addresses are the ones it reported; a question it asks stops the run until it is answered here. Nothing on this screen is a guess or a timer.</p></div>
+
+  <div class="watchbar">
+    <span class="pill" id="wPill"><span class="d"></span><span id="wPillTxt">idle</span></span>
+    <span class="id-chip" id="wChip" hidden></span>
+    <span class="status mono" id="wRunId"></span>
+    <button type="button" class="ghostbtn" id="wStop" hidden>Stop</button>
+  </div>
+  <form class="pfbar" id="wResume">
+    <div class="field"><label for="wJob">Run id</label><input id="wJob" spellcheck="false" autocomplete="off" placeholder="the id Launch reported"></div>
+    <button type="submit" class="ghostbtn" id="wAttach">Attach</button>
+  </form>
+  <p class="hint">Launch fills this in and follows the run. A reload picks the last one up again; the stream replays it from the first event, so nothing is missed.</p>
+  <div class="status" id="wConn" role="status" aria-live="polite"></div>
+
+  <div class="banner" id="wBanner" hidden></div>
+
+  <div class="watchgrid">
+    <div class="wpanel"><h4>Phases</h4><ol class="tl" id="wPhases"></ol></div>
+    <div class="wpanel"><h4>What the run reported</h4><div class="topo" id="wTopo"></div>
+      <h4 style="margin-top:16px">Logins</h4><div class="logins" id="wLogins"></div>
     </div>
   </div>
 
-  <div class="rig">
-    <div class="flows" id="flows" role="tablist" aria-label="Deployment flows"></div>
-    <button class="runbtn" id="runBtn"><span class="tri"></span> Run this flow</button>
+  <div class="wpanel" id="wChecksWrap" hidden><h4>Checks</h4>
+    <div class="tblwrap"><table class="ref checks" aria-label="Checks this run reported"><thead><tr><th>Status</th><th>Check</th><th>Fix</th></tr></thead><tbody id="wChecks"></tbody></table></div>
   </div>
 
-  <div class="cfg">
-    <h4><span id="cfgTitle">Inputs</span><span class="sub" id="cfgSub"></span></h4>
-    <div class="fields" id="fields"></div>
+  <div class="wpanel" id="wQuestionsWrap" hidden><h4>Questions the run asked</h4><div id="wQuestions"></div></div>
+
+  <details class="fold" id="wLogFold"><summary>Raw output <span class="tag" id="wLogCount"></span></summary>
+    <div class="console" id="wLog"></div></details>
+</div></section>
+
+<section class="page" id="page-operate" role="tabpanel" aria-labelledby="tab-operate" tabindex="0" data-page-body="operate" hidden><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">Operate</span><h2>A stack that is up.</h2>
+    <p>Read-only, and honest about its limits: every card says either what it read or why it could not, with the command that would. Nothing here is a guess and no missing answer is drawn as a zero. The two buttons replay the profile this stack was deployed from: the same file, the same script, no new plan.</p></div>
+
+  <form class="pfbar" id="opForm">
+    <div class="field"><label for="opStack">Stack name</label><input id="opStack" spellcheck="false" autocomplete="off" placeholder="cloudlens-stack"></div>
+    <div class="field"><label for="opRegion">Region</label><input id="opRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"></div>
+    <button type="submit" class="runbtn" id="opRead"><span class="tri"></span> Read status</button>
+  </form>
+  <div class="status" id="opStatus" role="status" aria-live="polite"></div>
+
+  <div class="wpanel"><h4>Instances this stack named</h4>
+    <div class="tblwrap"><table class="ref" aria-label="Instances this stack named"><thead><tr><th>Role</th><th>Name</th><th>State</th><th>Address</th><th>Type</th></tr></thead><tbody id="opInstances"></tbody></table></div>
+    <p class="hint">Every instance carrying a <code class="mono">Name</code> tag of <code class="mono">&lt;stack&gt;-*</code>, which is how the deploy names them and how it finds them again. Terminated ones are not listed.</p>
+  </div>
+
+  <div class="wpanel"><h4>What else this console can see</h4>
+    <div class="logins" id="opCards"></div>
+    <p class="hint">The sensor count comes from the vController, through the credentials file the deploy wrote (mode 600) and never from anything typed into a URL. The vPB counters need SSH with the EC2 key pair: without that key on this machine the card carries the exact command instead of a number.</p>
+  </div>
+
+  <div class="wpanel"><h4>Run it again</h4>
+    <p class="hint" id="opProfile"></p>
+    <div class="pfbar">
+      <div class="field"><label for="opPhase">Phase</label><select id="opPhase"></select></div>
+      <button type="button" class="ghostbtn" id="opRerun">Re-run this phase</button>
+      <button type="button" class="runbtn" id="opResume"><span class="tri"></span> Resume</button>
+    </div>
+    <p class="hint">Resume is <code class="mono">deploy-stack.sh --profile deploy-profile-&lt;stack&gt;.env --resume</code>: it skips what the account proves is already done, and deletes nothing. Re-run adds <code class="mono">--only</code> and forces that one phase, which is why <code class="mono">license</code> is marked: <code class="mono">--only</code> is tested before the resume skip, so it re-runs licensing on a stack the resume state already calls licensed, and re-activating a consumed code burns entitlement quantity that does not come back. The phases offered are the script's own list, served with the status. Both need the profile the Deploy screen wrote, both take the same one-engine-per-stack lock as a launch, and both stream into Watch.</p>
+    <div class="coderow">
+      <div class="field"><label for="opCodes">Activation code for a licensing re-run, or a pasted list</label><input id="opCodes" type="password" autocomplete="off" spellcheck="false" placeholder="CODE or CODE,QUANTITY"></div>
+      <button type="button" class="ghostbtn" id="opCodeAdd">Add</button>
+    </div>
+    <p class="hint">Only the <code class="mono">license</code> phase uses these, and it cannot run without them: the engine gives the script no terminal, so <code class="mono">kvo_license.py</code> exits rather than prompting. They ride the argv as <code class="mono">--kvo-codes</code>, exactly as a launch sends them, and are redacted out of the stream. A password field, because a textarea shows every code in clear on browsers that ignore the masking; each shows as its last four characters and none is stored.</p>
+    <div class="codes" id="opCodeList"></div>
+    <div class="status" id="opCodeCount" role="status" aria-live="polite"></div>
+    <div class="status" id="opAction" role="status" aria-live="polite"></div>
+  </div>
+</div></section>
+
+<section class="page" id="page-licensing" role="tabpanel" aria-labelledby="tab-licensing" tabindex="0" data-page-body="licensing" hidden><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">Licensing</span><h2>KVO activation codes.</h2>
+    <p>Check what a code holds, activate what you need, and release before the KVO goes. Releasing is not tidying up: a KVO deleted with licences still installed strands those counts, and they do not come back. The address and password are typed here and posted in the body of the request; they are stored nowhere, so a reload asks again.</p></div>
+
+  <div class="wpanel"><h4>The KVO</h4>
+    <div class="pfbar">
+      <div class="field"><label for="licKvo">KVO address</label><input id="licKvo" spellcheck="false" autocomplete="off" placeholder="10.0.0.11"></div>
+      <div class="field"><label for="licUser">User</label><input id="licUser" spellcheck="false" autocomplete="off" placeholder="admin"></div>
+      <div class="field"><label for="licPass">Password</label><input id="licPass" type="password" autocomplete="off"></div>
+      <button type="button" class="ghostbtn" id="licLoad">List what is installed</button>
+    </div>
+    <p class="hint">An IP or a hostname, with no scheme, port or path. The password goes into the KVO's own token request and nowhere else: not this page's storage, not a URL, not the console's log.</p>
+    <div class="opts">
+      <label class="opt" for="licVerify"><input type="checkbox" id="licVerify"><span><b>Verify the KVO's TLS certificate</b>Off by default: the appliance serves its own certificate, which is what every script here already assumes.</span></label>
+      <label class="opt" for="licEula"><input type="checkbox" id="licEula"><span><b>Accept a pending EULA first</b>A freshly booted KVO redirects every request, the login included, until its EULA is signed. That is a legal acceptance, so it is a choice and not a default.</span></label>
+    </div>
+    <div class="status" id="licStatus" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="wpanel"><h4>Activation codes</h4>
+    <div class="coderow">
+      <div class="field"><label for="licEntry">Activation code, or a pasted list</label><input id="licEntry" type="password" autocomplete="off" spellcheck="false" placeholder="CODE or CODE,QUANTITY"></div>
+      <button type="button" class="ghostbtn" id="licAdd">Add</button>
+    </div>
+    <p class="hint">A password field, because a textarea shows every code in clear on browsers that ignore the masking. Add <code class="mono">,N</code> for a quantity of 1 to 6 digits. Each code shows as its last four characters, here and in the tables.</p>
+    <div class="codes" id="licList"></div>
+    <div class="status" id="licCount" role="status" aria-live="polite"></div>
+    <div class="pfbar">
+      <button type="button" class="ghostbtn" id="licCheck">Check what these hold</button>
+      <button type="button" class="runbtn" id="licActivate"><span class="tri"></span> Activate</button>
+    </div>
+    <div class="tblwrap"><table class="ref" aria-label="What each activation code holds"><thead><tr><th>Code</th><th>Known</th><th>Entitlements</th><th>Activate</th></tr></thead><tbody id="licCodes"></tbody></table></div>
+    <p class="hint">Check first, every time. Activating spends entitlement quantity, and a code that was already consumed does not give it back.</p>
+  </div>
+
+  <div class="wpanel"><h4>Installed on this KVO</h4>
+    <div class="tblwrap"><table class="ref" aria-label="Licences installed on this KVO"><thead><tr><th>Code</th><th>Product</th><th>Quantity</th><th>Release</th></tr></thead><tbody id="licRows"></tbody></table></div>
+    <p class="hint" id="licReleased"></p>
+    <p class="hint">Release is <code class="mono">POST /api/v2/licensing/operations/deactivate</code>, polled to its end: the counts go back to the pool. Do it before the KVO is deleted, never after; after, there is nothing to ask.</p>
+  </div>
+</div></section>
+
+<section class="page" id="page-teardown" role="tabpanel" aria-labelledby="tab-teardown" tabindex="0" data-page-body="teardown" hidden><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">Teardown</span><h2>Remove a stack.</h2>
+    <p>In this order, and the order is the whole point: audit what the stack would leave loose, release its licences if it has a KVO, type the name back, run, then count what is left. Nothing on this screen deletes anything before the typed name matches.</p></div>
+
+  <form class="pfbar" id="tdForm">
+    <div class="field"><label for="tdStack">Stack name</label><input id="tdStack" spellcheck="false" autocomplete="off" placeholder="cloudlens-stack"></div>
+    <div class="field"><label for="tdRegion">Region</label><input id="tdRegion" list="regionList" spellcheck="false" autocomplete="off" placeholder="us-east-1"></div>
+    <button type="submit" class="ghostbtn" id="tdAudit">Audit what is loose</button>
+  </form>
+  <p class="hint"><code class="mono">teardown-stack.sh --orphans</code>: read-only, deletes nothing, ever. It is what names the volumes the Marketplace AMIs leave behind, the security groups that make a VPC undeletable, and the collector auto-scaling groups KVO builds outside CloudFormation.</p>
+  <div class="status" id="tdAuditStatus" role="status" aria-live="polite"></div>
+  <div class="wpanel" id="tdReportWrap" hidden><h4>What the audit found <span class="tag" id="tdReportCount"></span></h4>
+    <div class="console" id="tdReport"></div></div>
+
+  <div class="banner" id="tdWarn" hidden></div>
+
+  <div class="wpanel"><h4>Type the name to arm it</h4>
+    <div class="pfbar">
+      <div class="field"><label for="tdConfirm">The stack name, typed back</label><input id="tdConfirm" spellcheck="false" autocomplete="off" placeholder="the name, exactly"></div>
+      <button type="button" class="stopbtn" id="tdRun" disabled>Tear it down</button>
+    </div>
+    <div class="status" id="tdRunNote" role="status" aria-live="polite"></div>
+    <p class="hint">The run streams into Watch, like any other run. It deletes the stack and sweeps what the stack leaves; nothing is rolled back.</p>
+  </div>
+
+  <div class="wpanel"><h4>After it ends</h4>
+    <div class="pfbar">
+      <button type="button" class="ghostbtn" id="tdVerify">Count what is left in the region</button>
+    </div>
+    <div class="status" id="tdVerifyStatus" role="status" aria-live="polite"></div>
+    <div id="tdVerifyCard"></div>
+    <p class="hint">Read-only, and region-wide: these are the counts for the whole region and not for one stack, which is the point. A teardown's own sweep is what ties a resource to a stack; this is the check that it worked.</p>
+  </div>
+</div></section>
+
+<div class="modal" id="wPrompt" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wPromptQ">
+    <div class="mq" id="wPromptQ"></div>
+    <p class="hint" id="wPromptHint"></p>
+    <form id="wPromptForm">
+      <label class="vh" for="wPromptInput">Answer</label>
+      <input id="wPromptInput" type="text" autocomplete="off" spellcheck="false">
+      <button type="submit" class="runbtn" id="wPromptSend">Send</button>
+      <span class="status" id="wPromptNote" role="status" aria-live="polite"></span>
+    </form>
+    <p class="hint">The run is blocked on this answer, so there is nothing to cancel. Send it empty to take the default.</p>
   </div>
 </div>
+</div>
+<!-- ops:end -->
 
 <section id="paths">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Four paths, one console</span>
       <h2>From an empty account to live packets on a tool.</h2>
-      <p>Each path runs the exact automation an SE runs from the CLI — wrapped so you can watch it, explain it, and hand it to a customer. Run any of them above; the detail for each is below.</p></div>
+      <p>Each path runs the exact automation an SE runs from the CLI, wrapped so you can watch it, explain it, and hand it to a customer. The detail for each is below.</p></div>
     <div class="cards" id="flowCards"></div>
   </div>
 </section>
@@ -262,12 +766,12 @@
           <span class="req">brownfield or new VPC</span>
           <span class="req">non-admin friendly</span>
         </div>
-        <div class="codeblk"><span class="c"># from AWS CloudShell — zero local setup</span>
+        <div class="codeblk"><span class="c"># from AWS CloudShell: zero local setup</span>
 <span class="g">$</span> curl -sSL https://keysight-tech.github.io/cloudlens-ansible-aws/deploy-stack.sh <span class="r">| bash</span></div>
       </div>
       <ol class="steps">
         <li><b>Network foundation</b><span class="m">VPC, gateway, and the mgmt / data / tool subnets.</span></li>
-        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first — an over-quota account fails in seconds.</span></li>
+        <li><b>Elastic-IP pre-check</b><span class="m">Reserved first: an over-quota account fails in seconds.</span></li>
         <li><b>vController (CLMS)</b><span class="m">The control plane every sensor registers to.</span></li>
         <li><b>KVO</b><span class="m">The single pane that adopts the manager, the vPB, and drives mirroring.</span></li>
         <li><b>vPB</b><span class="m">The virtual packet broker that filters and forwards to your tools.</span></li>
@@ -281,13 +785,13 @@
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Path 02 · Direct</span>
       <h2>Register <span class="em">sensors</span> into CloudLens Manager.</h2>
-      <p>The simplest model — no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
+      <p>The simplest model: no KVO. Ansible pushes the sensor to every tagged host and each one self-registers. One tag (<code class="mono" style="font-size:13px">cloudlens=yes</code>) drives the whole fleet.</p></div>
     <div class="cards">
       <div class="card"><div class="k">UBUNTU / DEBIAN</div><h3>Docker</h3><p>Insecure registry pull, then <code class="mono">docker run …/sensor --ssl_verify no</code>. Registers with HTTP&nbsp;200.</p></div>
-      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker — <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
+      <div class="card"><div class="k">RHEL</div><h3>Podman</h3><p>RHEL&nbsp;9 ships Podman, not Docker: <code class="mono">podman pull --tls-verify=false</code>, and the run drops the docker.sock mount.</p></div>
       <div class="card"><div class="k">WINDOWS</div><h3>Native service</h3><p>Silent install of <code class="mono">cloudlens-win-sensor.exe</code> via SSM; the service is named <b>CloudLens</b> (not CloudLensAgent).</p></div>
     </div>
-    <div class="note-b">The project key is pulled automatically — the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
+    <div class="note-b">The project key is pulled automatically: the forced first-login password change on the vController is handled for you, so the key you hand to Ansible always works.</div>
   </div>
 </section>
 
@@ -300,10 +804,10 @@
         <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">KVO becomes the single pane. Every UI "button" is scripted: accept the EULA, activate licenses, create the KVO user on the CLMS, adopt it, and provision the working project key through a Cloud Config.</p>
       </div>
       <ol class="steps">
-        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done — a legal acceptance, gated behind a flag.</span></li>
+        <li><b>Accept the EULA</b><span class="m">KVO redirects every path until this is done: a legal acceptance, gated behind a flag.</span></li>
         <li><b>Activate licenses</b><span class="m">An unlicensed KVO refuses every write. Codes activate via the licensing API.</span></li>
         <li><b>Adopt the CLMS</b><span class="m"><code>createCloudLensManager</code>, commit the change request, wait for <b>CONNECTED</b>.</span></li>
-        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key — skip it and the key is a phantom.</span></li>
+        <li><b>Cloud Config</b><span class="m">This step provisions the real CLM project and the sensor key: skip it and the key is a phantom.</span></li>
       </ol>
     </div>
   </div>
@@ -315,7 +819,7 @@
       <div>
         <span class="eyebrow">Path 03b · Packet broker</span>
         <h2 style="margin-top:12px">Adopt the <span class="em">vPB</span> and wire the path.</h2>
-        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b> — then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
+        <p style="color:var(--ink-soft);font-size:16px;margin-top:10px">The vPB self-announces to KVO, is auto-licensed on adoption, and comes up <b>Online</b>, then KVO builds its Device Config and you bind the traffic path: ingress → filter → egress → tool.</p>
         <div class="codeblk"><span class="c"># the vПB `kvo` command is an interactive CONTEXT, not flat</span>
 CloudLensVPB# <span class="b">kvo</span>
 CloudLensVPB-kvo# <span class="b">ip</span> &lt;kvo-ip&gt;
@@ -334,9 +838,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
 
 <section id="mirror">
   <div class="wrap">
-    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless — the big one</span>
+    <div class="sec-head"><span class="eyebrow">Path 04 · Agentless: the big one</span>
       <h2>Mirror traffic with <span class="em">zero agents</span>.</h2>
-      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b> — AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
+      <p>No sensor in the guest. KVO deploys collector Service VMs and drives <b>AWS VPC Traffic Mirroring</b>: AWS copies traffic from every selected Nitro source ENI to the collectors, which forward it to your tool. Real AWS resources: mirror targets, filters, and one session per source ENI.</p></div>
     <div class="reqs">
       <span class="req"><b>Nitro</b> sources only</span>
       <span class="req">opt-in least-privilege IAM</span>
@@ -344,18 +848,18 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
       <span class="req">auto-scaled collectors</span>
     </div>
     <div class="cards" style="margin-top:22px">
-      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped — put sensors on those.</p></div>
+      <div class="card"><div class="k">SELECT</div><h3>By tag</h3><p>KVO matches Nitro instances tagged <code class="mono">cloudlens=yes</code>. Non-Nitro hosts can't be tapped: put sensors on those.</p></div>
       <div class="card"><div class="k">DEPLOY</div><h3>Collectors</h3><p>An auto-scaling group of collector Service VMs comes up per zone, from the Keysight Marketplace image, resolved per region.</p></div>
-      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI — visible in VPC → Traffic Mirroring.</p></div>
+      <div class="card"><div class="k">MIRROR</div><h3>Sessions</h3><p>KVO creates a Traffic Mirror target + filter, then one session per source ENI, visible in VPC → Traffic Mirroring.</p></div>
     </div>
-    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest — both land under the same CLM/KVO project.</div>
+    <div class="note-b">Mix and match: mirror the Nitro hosts agentlessly and put sensors on the rest: both land under the same CLM/KVO project.</div>
   </div>
 </section>
 
 <section id="verify">
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Proof, not promises</span><h2>Verify at every hop.</h2>
-      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too — every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
+      <p>Nothing is "done" until it shows up where it matters. The console holds this bar too: every step maps to a real state, and it says <i>waiting</i> rather than faking progress.</p></div>
     <div class="cards">
       <div class="card"><div class="k">SENSORS</div><h3>In the manager</h3><p>Each host returns HTTP&nbsp;200 at <code class="mono">agent/register</code>; the project's sensor count climbs as they check in.</p></div>
       <div class="card"><div class="k">VPB</div><h3>Online in KVO</h3><p>Inventory → Devices shows the vPB <b>Online</b>, auto-licensed, with its Device Config and bound ingress/egress ports.</p></div>
@@ -370,9 +874,9 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
     <table class="ref">
       <thead><tr><th>Item</th><th>Value</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase — change on first use.</td></tr>
+        <tr><td>vController web UI</td><td><code>admin / Cl0udLens@dm!n</code></td><td>Web login only. The console/CLI login is a different passphrase: change on first use.</td></tr>
         <tr><td>KVO web UI</td><td><code>admin / admin</code></td><td>Accept the EULA and activate licenses before any write.</td></tr>
-        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code> — not flat commands.</td></tr>
+        <tr><td>vPB SSH (AWS)</td><td><code>ssh -p 9022 admin@…</code></td><td>Then the <code>kvo</code> context: <code>ip</code> / <code>port 443</code> / <code>enable</code>, not flat commands.</td></tr>
         <tr><td>Source selection</td><td><code>tag cloudlens=yes</code></td><td>Same tag drives the sensor and the agentless mirror paths.</td></tr>
         <tr><td>AWS mirroring</td><td>Nitro instances only</td><td>t3 / m5 / c5 / r5 and newer are Nitro; <code>describe-instance-types … Hypervisor</code> confirms.</td></tr>
         <tr><td>Key network ports</td><td><code>443 · 9022 · 8443</code></td><td>443 CLMS/KVO API · 9022 vPB SSH · 8443 KVO↔collector (open in the SG).</td></tr>
@@ -385,15 +889,22 @@ CloudLensVPB-kvo# <span class="b">enable</span>   <span class="g">→ KVO enable
   <div class="wrap">
     <div class="sec-head"><span class="eyebrow">Troubleshoot</span><h2>When it doesn't go clean.</h2></div>
     <div class="cards">
-      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit — the stack's pre-check catches it in seconds.</p></div>
+      <div class="card"><h3>"Maximum addresses reached"</h3><p>Elastic-IP quota (default 5/region). Release orphaned EIPs from console-terminated instances, or raise the limit: the stack's pre-check catches it in seconds.</p></div>
       <div class="card"><h3>vPB never shows in KVO</h3><p>Run the <code class="mono">kvo</code> commands inside the context (not flat <code class="mono">kvo ip</code>), and confirm the mgmt network reaches KVO on 443. It self-announces from there.</p></div>
       <div class="card"><h3>No mirror sessions</h3><p>Sources must be <b>Nitro</b>, KVO needs the Zone-Tapping IAM, and 8443 must be open KVO↔collector. Confirm the collector registered before expecting sessions.</p></div>
     </div>
   </div>
 </section>
 
-<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity — credentials never leave the machine.</span></div></footer>
+<footer><div class="wrap"><span>CloudLens Live Console · Keysight Technologies · loopback only</span><span>Runs against your shell's AWS identity: credentials never leave the machine.</span></div></footer>
 
+<script src="/web/ui.js"></script>
+<script src="/web/plan.js"></script>
 <script src="/web/app.js"></script>
+<script src="/web/watch.js"></script>
+<script src="/web/operate.js"></script>
+<script src="/web/licences.js"></script>
+<script src="/web/teardown.js"></script>
+<script src="/web/wizard.js"></script>
 </body>
 </html>

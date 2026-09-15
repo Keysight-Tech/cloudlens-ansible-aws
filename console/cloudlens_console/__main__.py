@@ -10,11 +10,13 @@ Replay mode (a "Demo" toggle in the UI) needs neither AWS nor boto3.
 """
 from __future__ import annotations
 import sys
+import time
 import argparse
 import threading
 import webbrowser
 
 from . import server
+from . import orchestrator
 
 
 def main(argv=None):
@@ -34,9 +36,34 @@ def main(argv=None):
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n  stopped.")
+        # The engines do not see this Ctrl-C: run_engine starts each one in
+        # its own session, so the terminal's SIGINT stops at the console. A
+        # deploy blocked on a prompt would otherwise outlive the page that
+        # was going to answer it, forever. Stop them here, as a group each,
+        # and give them the grace period before the process exits.
+        n = _stop_jobs()
+        print("\n  stopped." + ("  ({} running job{} stopped)".format(n, "" if n == 1 else "s") if n else ""))
         httpd.shutdown()
     return 0
+
+
+def _stop_jobs():
+    # list(): a /run request racing this shutdown may still add to JOBS.
+    # running(), not alive(): a job whose leader exited but whose subshell
+    # still holds the pipe is still a run, and its group still needs the
+    # signal.
+    running = [j for j in list(server.JOBS.values()) if j.running()]
+    for j in running:
+        j.stop()
+    # stop() arms a daemon Timer for the KILL escalation. A daemon thread
+    # does not survive the interpreter, but this wait outlasts the grace
+    # period, so the Timer has fired (or the run ended first) before main
+    # returns; the daemon flag costs nothing here.
+    deadline = time.monotonic() + orchestrator.STOP_GRACE_SECS + 0.5
+    for j in running:
+        while j.running() and time.monotonic() < deadline:
+            time.sleep(0.1)
+    return len(running)
 
 
 if __name__ == "__main__":

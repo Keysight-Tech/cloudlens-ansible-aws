@@ -30,8 +30,10 @@ Expected: the commit list above.
 
 **Step 2: Cherry-pick the console commits, oldest first**
 
-Run: `git cherry-pick 83eb1c5 51310d9 c9bfd0c 187059f 5daf0a3`
+Run: `git cherry-pick 83eb1c5 c9bfd0c 187059f 5daf0a3`
 Expected: clean picks (they touch only `console/`). If one conflicts, resolve keeping the branch's version of the console file, then `git cherry-pick --continue`.
+
+Done as: four of the five were ported (`83eb1c5` a stopped replay reported as success, `c9bfd0c` flags the script does not accept, `187059f` two things the page got wrong during a real deploy, `5daf0a3` inputs collected and thrown away). `51310d9` was skipped: it is a Node smoke harness (`console/tests/smoke_browser.mjs`, driven by Playwright) for the bridge's `/health` endpoint, its pairing box and `bridge.js`, none of which exist on main, and this console stays stdlib.
 
 **Step 3: Run the console tests**
 
@@ -41,6 +43,8 @@ Expected: all pass.
 **Step 4: Commit** (the cherry-picks are the commits; push)
 
 Run: `git push origin main`
+
+**Follow-up recorded:** the legacy kvo, mirror and sensors flows cannot launch from this console today. `kvo_adopt_clms.py` requires `--clms-admin-pass`, which the kvo flow never passes. `kvo_aws_mirror.py` requires `--clm-name` and `--region`, which the mirror flow never passes, and the flow has no kvo input at all (it used to send `--kvo ""`; it now omits the flag so argparse fails loudly). The sensors flow passes `-e cloudlens_ip=`, which no playbook reads. Tasks 6-8 replace these three flows with the profile-driven engine, so no work is spent on them here.
 
 ---
 
@@ -143,32 +147,25 @@ git commit -m "deploy: --events writes the structured side channel the console r
 - Modify: `deploy/deploy-stack.sh` (`discover_stack_facts`, the logins block, `run_doctor`'s `_pass/_warn/_fail`)
 - Test: extend `deploy/tests/test_events.sh`
 
-**Step 1: Extend the test** (append before the final `print`):
-
-```python
-kinds = [ev for ev in map(json.loads, open(sys.argv[1])) if ev["type"] == "check"]
-assert kinds, "doctor checks must be events too"   # --dry-run runs the doctor-lite checks
-```
-
-and add a second invocation in the shell part: `bash deploy/deploy-stack.sh --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true` followed by a python assertion that `doctor.jsonl` contains `check` events with `status` in `pass|warn|fail` and a `fix` key on non-pass rows.
+**Step 1: Extend the test**: the dry run emits no check events (it runs no doctor checks), so the doctor is its own invocation in the shell part: `bash deploy/deploy-stack.sh --doctor --region us-east-1 --events "$S/doctor.jsonl" </dev/null >/dev/null 2>&1 || true` followed by a python assertion that `doctor.jsonl` contains `check` events with `status` in `pass|warn|fail` and a `fix` key on non-pass rows.
 
 **Step 2: Run to verify it fails** (no `check` events yet).
 
 **Step 3: Implement**
 
 - In `run_doctor`'s three helpers: `_pass` -> `emit_event check item="$1" status=pass`; `_warn` -> `emit_event check item="$1" status=warn fix="$2"`; `_fail` -> `emit_event check item="$1" status=fail fix="$2"`.
-- In `discover_stack_facts`, after the IPs are known:
+- A new `emit_stack_resources`, called once the facts are known (a dry run emits its placeholders; `hello.dry_run` says so). The CLI prints `None` for a null field, which becomes `""`, and every subnet row is guarded on its id, the mgmt one included:
   ```bash
-  emit_event resource kind=vpc id="$STACK_VPC_ID"
-  emit_event resource kind=subnet id="$MGMT_SUBNET_ID" role=mgmt zone="$STACK_ZONE"
-  [[ -n "$INGRESS_SUBNET_ID" ]] && emit_event resource kind=subnet id="$INGRESS_SUBNET_ID" role=ingress
-  [[ -n "$EGRESS_SUBNET_ID" ]]  && emit_event resource kind=subnet id="$EGRESS_SUBNET_ID" role=egress
-  emit_event resource kind=vcontroller ip="$CLMS_PUBLIC_IP" private_ip="$CLMS_PRIVATE_IP"
-  [[ "$DEPLOY_KVO" == "true" ]] && emit_event resource kind=kvo ip="$KVO_PUBLIC_IP" private_ip="$KVO_PRIVATE_IP"
-  [[ "$DEPLOY_VPB" == "true" ]] && emit_event resource kind=vpb ip="$VPB_PUBLIC_IP" ingress_ip="${VPB_INGRESS_IP:-}" egress_ip="${VPB_EGRESS_IP:-}"
+  emit_event resource kind=vpc id="$vpc"
+  if [[ -n "$mgmt" ]]; then emit_event resource kind=subnet id="$mgmt" role=mgmt zone="$zone"; fi
+  if [[ -n "$ing" ]]; then emit_event resource kind=subnet id="$ing" role=ingress; fi
+  if [[ -n "$eg"  ]]; then emit_event resource kind=subnet id="$eg"  role=egress;  fi
+  emit_event resource kind=vcontroller ip="$vc_ip" private_ip="$vc_priv"
+  if [[ "$DEPLOY_KVO" == "true" ]]; then emit_event resource kind=kvo ip="$kvo_ip" private_ip="$kvo_priv"; fi
+  if [[ "$DEPLOY_VPB" == "true" ]]; then emit_event resource kind=vpb ip="$vpb_ip" ingress_ip="$vpb_in" egress_ip="$vpb_out"; fi
   ```
-- In the logins block (the "Log in now and watch the rest happen" prints for vController, KVO, vPB): beside each print, `emit_event login component=vcontroller url="https://${CLMS_PUBLIC_IP}/cloudlens/login" user="$VC_ADMIN_USER" password_in="$VC_CREDS_FILE"` (KVO: `user=admin password_in="admin (default)"`; vPB: `url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}" password_in="${KEY_NAME}.pem"`). Never the password itself.
-- Where the workloads are counted (`Matching running EC2s`): `emit_event resource kind=workloads count="$TAGGED_COUNT" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"`.
+- In the three `announce_*_login` functions, beside each print, a `login` event whose `password_in` says WHERE the password lives, never what it is: vController is the creds file, `CLOUDLENS_VC_PASSWORD (environment)`, or a "vController factory default ..." sentence when phase 9 recorded none; KVO is `CLOUDLENS_KVO_ADMIN_PASS (environment)` or `KVO factory default` (never the word `admin`: the test forbids every factory password as a substring); vPB is `url="ssh -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${ip}"` with `password_in="${KEY_PEM:-${KEY_NAME}.pem} (EC2 key pair, no password)"`.
+- Where the workloads are counted (`Matching running EC2s`): `emit_event resource kind=workloads count="$_wl_count" tag="${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" mode="${DISCOVERY_MODE:-}" filter="${DISCOVERY_DESC:-}"`, where a count the CLI could not produce (`?`) becomes `""`. The same row is emitted again with `created=true` (and `count="${TAGGED_COUNT:-}"`) after `deploy_test_workloads_now` stands up throwaway workloads, so the console stops drawing an empty stack while the sensors install.
 - In the EKS phase after `deploy-eks-tapping.sh` succeeds: `emit_event resource kind=eks cluster="${EKS_CLUSTER:-${STACK_NAME}-eks}" mode="$EKS_MODE"`.
 
 **Step 4: Run** `bash deploy/tests/test_events.sh` -> PASS. **Step 5: Commit** `deploy: resources, logins and doctor checks are events`.
@@ -193,8 +190,7 @@ S=$(mktemp -d); mkfifo "$S/answers"
 # a tiny harness that sources ask() with the pipe set
 ( sleep 1; echo "hello-from-ui" > "$S/answers" ) &
 out=$(bash -c '
-  source <(awk "/^ask\(\)/,/^}/" deploy/deploy-stack.sh)
-  source <(awk "/^json_str\(\)/,/^}/; /^emit_event\(\)/,/^}/" deploy/deploy-stack.sh)
+  source "$S/helpers.sh"  # ask, json_str, emit_event, lifted out by awk to a file: bash 3.2 cannot source <(...), the shipped test explains it
   INTERACTIVE=true PROMPT_PIPE="'"$S/answers"'" EVENTS_FILE="'"$S/ev.jsonl"'" EVENT_SEQ=0
   ask "Type something: " "default"')
 [[ "$out" == "hello-from-ui" ]] && echo "PASS answer came from the pipe" || { echo "FAIL got '$out'"; exit 1; }
@@ -203,28 +199,9 @@ grep -q '"type":"prompt"' "$S/ev.jsonl" && echo "PASS prompt event emitted" || {
 
 **Step 2: Run** -> FAIL (`PROMPT_PIPE` unknown to `ask`).
 
-**Step 3: Implement** - replace `ask()`:
+**Step 3: Implement** - `ask()` gains a `PROMPT_PIPE` branch: emit the question as a prompt event, block on one line from the FIFO, return it (the default when the line is empty). The prompt id is derived from the count of prompt events already in the events file, not from a shell counter, because nearly every call site is `x="$(ask ...)"` and a counter never advances inside a `$( )` subshell.
 
-```bash
-PROMPT_PIPE="${CLOUDLENS_PROMPT_PIPE:-}"
-PROMPT_SEQ=0
-ask() {
-  local prompt="$1" def="${2:-}" ans=""
-  if [[ -n "$PROMPT_PIPE" ]]; then
-    # The console owns this FIFO. Emit the question, block on the reply. The
-    # prompt id lets the page pair answer with question after a reconnect.
-    PROMPT_SEQ=$((PROMPT_SEQ + 1))
-    emit_event prompt id="p${PROMPT_SEQ}" question="$prompt" default="$def" kind=text
-    IFS= read -r ans < "$PROMPT_PIPE" || ans=""
-    printf '%s' "${ans:-$def}"
-    return 0
-  fi
-  if [[ "$INTERACTIVE" == "true" ]]; then
-    read -rp "$prompt" ans || true
-  fi
-  printf '%s' "${ans:-$def}"
-}
-```
+The FIFO contract, stated in the ask header and the `--prompt-pipe` help. Per prompt: wait for its prompt event, open the FIFO for writing, write exactly one line, close. Never hold the write end open between answers: a held-then-closed end reads as an empty answer and takes the default. A run whose console goes away blocks on the next prompt forever and emits no done; the console owns the process and must kill it. A TERM to the pid alone does not stop a run blocked on a prompt: signal its process group. After a group kill there is no done event (the tee dies first); the console must treat process exit without a done as terminal.
 
 Secrets: the two `read -rsp` calls (KVO secret key, and any password) must go through a new `ask_secret()` with `kind=secret`; replace them. Parser: `--prompt-pipe) PROMPT_PIPE="$2"; shift 2 ;;`. When `PROMPT_PIPE` is set, force `INTERACTIVE=true` after the tty detection so the interview runs (the UI is the terminal).
 
@@ -306,6 +283,8 @@ def render(plan):
 In bash, `profile_key_allowed()`: if `deploy/profile-keys.txt` exists next to the script (`$SCRIPT_DIR/profile-keys.txt`), `grep -qx "$1"` it; else the built-in case (kept verbatim as the fallback for the bare curl path).
 
 **Step 4: Run** -> PASS. **Step 5: Commit** `profile: one key list read by the script and the console`.
+
+**Shipped (where it differs from the sketch):** test 1 extracts the keys from the `case` block of `profile_key_allowed()` and from `write_profile()` and asserts set equality with the file in both directions, so a key added to any one of the three fails the test. It also asserts the file has LF endings and no whitespace around any line (the script matches whole lines with `grep -x`; `.gitattributes` pins `eol=lf`) and that none of a fixed NEVER set (the ssh username, the three AMIs, the Windows installer URL and instance profile, the key/creds/pipe/events paths, the mirror keys and the passwords) is in the list. Test 2 is hermetic the way deploy/tests/test_events.sh is: the AWS credential variables and every `CLOUDLENS_*` variable are unset, HOME and the AWS config files point at the temp dir, cwd is the temp dir (the state file lands in cwd), the script is called by absolute path, and it runs in a new session (`start_new_session=True`) so the script's `/dev/tty` re-attach finds no terminal and a run started from one cannot block on "Deploy KVO?" until the timeout. It also writes a value holding a single quote, a hash, a backslash, `$HOME` and a backtick command and asserts the dry-run plan prints it back unexpanded. `render()` raises ValueError for a value with a double quote or a line break instead of escaping it: the loader strips one pair of outer quotes and never unescapes, so `\"` would come back as two characters; it validates shape only, not vocabulary. `allowed_keys()` refuses any line that changes under strip() (a CR, a trailing space), so the console is as strict as the script's `grep -x`; and when a keys file was in play and it refused every key, the script's "no usable settings" error names the file and its line endings. The guarantee in bash: the keys file can only narrow the list, never widen it, from any path. A key is accepted only if the built-in case knows it AND, when a keys file is in play, the file lists it (an intersection; for a correct repo the two are equal and nothing changes). A keys file is in play only when the script itself came from a file on disk (`BASH_SOURCE[0]` set, so `SCRIPT_DIR` is real); under `curl | bash`, `| /bin/bash` and `bash -s` it is empty and `SCRIPT_DIR` is only a guess ($PWD or /bin). The first guard instead looked for a deploy-stack.sh beside the file, and a cwd holding a decoy of that name plus a widened profile-keys.txt governed a script fed on stdin: reproduced, `CLOUDLENS_ADMIN_USER` was applied. Tests cover the fallback (the script copied out alone, run with `--profile X --help`, which exits right after the loader), that the file governs when present (a case key missing from the file is refused; a `PATH` line in the file widens nothing), that a widened file beside a real copy of the script widens nothing either, that a CRLF file is named by the error, and that the script fed on stdin from the planted cwd, with argv[0] `bash` and `/bin/bash`, still reports the hostile key as ignored.
 
 ---
 
@@ -426,6 +405,15 @@ Job.answer = _answer
 
 `Job` needs `self.buffer` (list of emitted events, for SSE resume) - add in `__init__` and append in `emit`. Fake script takes `$1`/`$2` positionally in the test, so in the test call `O.run_engine(job, [str(script)])` and have the FAKE read `$ev`/`$pipe` from `--events X --prompt-pipe Y`: change FAKE to parse `while [[ $# -gt 0 ]]; do case $1 in --events) ev=$2; shift 2;; --prompt-pipe) pipe=$2; shift 2;; *) shift;; esac; done`.
 
+**Process lifecycle (from the Task 0 and Task 3 reviews):** the sketch above is the data path only. Of the five points below, the shipped `_stream_subprocess` already sets `start_new_session=True` and `run_engine` must keep it; `Job.stop()` still uses `proc.terminate()` and MUST change to `os.killpg(proc.pid, signal.SIGTERM)` in this task.
+
+- The Popen keeps `start_new_session=True`. deploy-stack.sh re-attaches /dev/tty whenever stdin is not a terminal and then treats the run as interactive; a child in its own session has no controlling terminal, so the re-attach cannot happen and every `ask()` goes to the pipe or takes its default.
+- `Job.stop()` sends `os.killpg(proc.pid, signal.SIGTERM)`, not `proc.terminate()`. A TERM to the pid alone does not stop a run blocked on a prompt: the FIFO read sits in a `$( )` child and bash defers the trapped signal until that child exits, which it never does. The group kill ends the reader, the script's own handler runs, and the tee goes with the group (deploy/tests/test_prompt_pipe.sh's EXIT trap does the same, for the same reason).
+- `__main__.py` stops every job in `server.JOBS` on KeyboardInterrupt, before `httpd.shutdown()`. Otherwise a Ctrl-C on the console leaves deploy-stack.sh processes reparented to pid 1 and blocked forever on an unlinked FIFO.
+- Process exit without a `done` event is terminal. After a group kill there is no done: the tee dies first and the script's exit path dies on the broken pipe (exit 141, checked). `run_engine` emits the closing done/error itself, as the sketch's last lines do, and the UI never waits for one from the script.
+- The page's `done` handler (`console/cloudlens_console/web/app.js`, the `es.addEventListener("done", ...)` around line 170) must check `status` in the same change that makes `run_engine` live: today it renders every done as "complete", and a script done with status failed/interrupted/declined is the same event type. Likewise the tail loop must track the highest `script_seq` it has seen and pass it as `last_seq` to `iter_script_events`, or a replaced events file is noticed only when it is shorter than the offset (Task 5, `events.py`).
+- Test (`test_orchestrator_engine.py`): a fake script that reads the FIFO and is never answered is actually reaped by `stop()`: `proc.wait(timeout=5)` returns, and `os.killpg(proc.pid, 0)` then raises ProcessLookupError (no member of the group survives, the `$( )` reader included).
+
 **Step 4/5:** PASS; commit `console: the orchestrator runs the real engine and relays its events`.
 
 ---
@@ -452,6 +440,14 @@ Routes (all JSON, all loopback in deliverable 1):
 | `GET /events/<job>` | SSE; honours `Last-Event-ID` by replaying `job.buffer` past that id |
 | `POST /api/teardown` | `{stack, region, orphans_only, confirm_name}`; refuses unless `confirm_name == stack`; runs `teardown-stack.sh` via `run_engine` (`--yes --accept-licence-loss` only when licences were released, see Task 10) |
 | `GET/POST /api/licences` | list (`GET /api/v2/licensing/licenses` via `kvo_license._req`), check codes, activate, release (`operations/deactivate`) |
+
+**As built** (where 3120eab and the fix pass after it differ from the table):
+- `GET /api/licences` is 405 with `Allow: POST`: the KVO password travels in a body, never in a URL. The action comes from the body or the path (`/api/licences/<action>`).
+- Teardown runs `run_engine(..., wired=False)`: teardown-stack.sh has no `--events` or `--prompt-pipe` and rejects a flag it does not know, so its stdout is the stream and its exit the verdict.
+- Activation codes travel on the argv as `--kvo-codes CODE[,QTY]`, the script's only intake (kvo_license.py needs a TTY to prompt, the engine has none). `run()` registers each code and each secret with the job and the engine redacts them from the stream (`Job.redact`: the whole string and its first 14 characters, since kvo_license.py prints `code[:14]...`).
+- `orphans_only` is the script's `--orphans`, a read-only audit, so it skips the typed-name gate. `--yes` is always sent: a non-interactive delete fails without it, so the typed name (`confirm_name == stack`, checked whole and free of control characters) is the human gate. `--accept-licence-loss` only when the body says the licences were released.
+- Subnet `public` is MapPublicIpOnLaunch, what deploy-stack.sh's `pick_subnet()` prints as public/private, so the wizard and the interview agree; the route-table truth (an active route to an internet gateway, own association else the main table) is returned beside it as `igw_route`.
+- Every typed value is checked with a control-character scan and then `re.fullmatch`, never `re.match`: Python's `$` accepts a trailing newline and bash's `=~ ^...$` does not, so `"abc\n"` had passed every anchored rule and reached an argv. Job ids in the URL and prompt ids in a body are checked the same way.
 
 **Step 1: Failing tests** (one per route family; stub `subprocess.run` and the engine):
 

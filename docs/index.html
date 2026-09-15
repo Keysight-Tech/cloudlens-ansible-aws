@@ -566,6 +566,18 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           <iframe id="clc-frame" src="console.html?embed=1&amp;v=2" title="CloudLens deployment console" loading="lazy"></iframe>
         </div>
         <p class="lede" style="margin-top:1rem;font-size:.95rem">Prefer it full-screen? <a href="console.html">Open the full console &rarr;</a></p>
+        <div class="card-grid" style="margin-top:1.75rem">
+          <article class="card">
+            <h3>Run the console on your own machine</h3>
+            <p>The page above is a replay. The real one is a program you start next to your own AWS credentials, and it drives the same <code>deploy-stack.sh</code> this site hands you for CloudShell. One command:</p>
+            <pre style="margin:0 0 12px;padding:14px 16px;border-radius:14px;overflow-x:auto;background:var(--code-bg);color:var(--code-ink);font-family:var(--mono);font-size:12.5px;line-height:1.55;box-shadow:inset 0 2px 6px oklch(0% 0 0 / .35)"><code style="background:transparent;box-shadow:none;padding:0;color:inherit;font-family:inherit;white-space:pre">git clone https://github.com/Keysight-Tech/cloudlens-ansible-aws.git
+cd cloudlens-ansible-aws/console
+python3 -m cloudlens_console</code></pre>
+            <p>It opens <code>http://localhost:8760</code> with six screens on the automation: pre-flight checks with the fix beside each failure, a wizard that ends in a plan you can read before anything runs, the deploy as it happens including the questions it asks you, a read-only view of a stack that is already up, KVO licensing, and a teardown that makes you type the stack name back. Python 3.9+ plus the AWS CLI, <code>bash</code> and <code>ssh</code>, which every machine that already runs this automation has; nothing to install.</p>
+            <p>It binds loopback only and uses your shell&rsquo;s AWS identity, so nothing is hosted and no credential leaves the machine. What the wizard writes is a profile file the CLI replays with one flag, which means every run you click through reproduces in a terminal.</p>
+            <p><a href="console.html">Open the console page &rarr;</a> &nbsp;&#183;&nbsp; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/console/README.md" target="_blank" rel="noopener">Console README &rarr;</a></p>
+          </article>
+        </div>
       </div>
     </section>
     <script>window.addEventListener("message",function(e){if(e&&e.data&&typeof e.data.clc==="number"){var f=document.getElementById("clc-frame");if(f)f.style.height=(e.data.clc+8)+"px";}});</script>
