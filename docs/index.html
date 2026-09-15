@@ -472,16 +472,19 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
         <h3 id="full-stack-teardown">One command back down</h3>
         <p class="lede">Same discipline in reverse. It removes what this deployment created, and nothing else.</p>
 
+        <p class="full-stack-note"><strong>1. See what is loose first.</strong> Read-only, deletes nothing: the stack, what it left behind, and what that is costing. Put your stack name and region in.</p>
         <div class="full-stack-cmd-wrap">
-          <pre id="teardown-cmd"><code># See what is loose. Read-only, deletes nothing.
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION --orphans
-
-# Tear it down
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION</code></pre>
-          <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy teardown command">Copy</button>
+          <pre id="teardown-audit-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION --orphans</code></pre>
+          <button class="copy-btn" data-copy="teardown-audit-cmd" type="button" aria-label="Copy the audit command">Copy</button>
         </div>
 
-        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so root volumes survive as <code>available</code> and keep billing. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script deletes the stack and sweeps the volumes, security groups, scaling groups and launch templates it can attribute to it. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
+        <p class="full-stack-note"><strong>2. Tear it down.</strong> Audits again, shows what it found, and asks before deleting. If the stack has a KVO, release its licences first, in the KVO under Settings &gt; Product Licensing &gt; Deactivate licenses: they come back while the KVO is alive and never afterwards.</p>
+        <div class="full-stack-cmd-wrap">
+          <pre id="teardown-cmd"><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region YOUR-REGION</code></pre>
+          <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy the teardown command">Copy</button>
+        </div>
+
+        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so on any stack launched before 15 September 2026 the root volumes survive as <code>available</code> and keep billing; the templates now override that, and this script sweeps such volumes either way. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script deletes the stack and sweeps the volumes, security groups, scaling groups and launch templates it can attribute to it. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
 
         <p class="full-stack-note"><strong>It only removes what your deployment built.</strong> Nothing is deleted unless AWS itself ties it to your stack, by stack membership, by living in the VPC that stack created, or by an owner tag naming it. Anything without that evidence is reported and left alone, because in a shared account "it was unattached" is not proof of ownership. Brownfield deploys into an existing VPC (<code>--existing-vpc-id</code>) switch the VPC rule off entirely: that network is the customer's, and its other contents are none of the script's business. Stack name and region are yours to pass, so the same command is safe in any account.</p>
 
