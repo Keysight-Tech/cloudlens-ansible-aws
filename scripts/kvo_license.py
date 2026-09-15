@@ -320,8 +320,10 @@ def prompt_plan(kvo, base, tok, verify):
 # moment the KVO is alive, so it needs a way to release everything the KVO
 # holds and to know, not guess, whether that worked.
 #
-# The rules below are the console's (cloudlens_console/api.py) and are
-# deliberately strict in the safe direction:
+# The rules below are the same ones the operations console's api.py applies.
+# That file lives on the feat/operations-console branch and is NOT on this
+# one; the two are kept in step by hand. The rules are deliberately strict
+# in the safe direction:
 #   * only SUCCESS counts as a finished, successful operation;
 #   * a poll that ran out of time is UNKNOWN, never a success;
 #   * a licence list that could not be read is UNKNOWN, never "clear";
@@ -335,7 +337,10 @@ def prompt_plan(kvo, base, tok, verify):
 # The states that mean an operation FINISHED and succeeded. An allow-list,
 # and a short one: the deactivates that proved the release path answered
 # SUCCESS, and a word wrongly counted as success is a licence count nobody
-# released under a banner saying nothing will be stranded.
+# released under a banner saying nothing will be stranded. A false negative
+# costs the operator one typed stack name; a false positive costs the
+# counts. If the KVO UI shows a licence released after this script reported
+# its state as not counted, that state word belongs here.
 _OP_DONE = ("SUCCESS",)
 
 # The envelope keys a licence list could plausibly arrive under. Enough to
@@ -365,6 +370,16 @@ def _op_running(state):
     neither a known success nor a failure. None of these is a refusal, and
     none of them is a success."""
     return not _op_ok(state) and not _op_failed(state)
+
+
+def _no_terminal_state(state):
+    """Whether the poll ended with no terminal state at all: still
+    IN_PROGRESS when the budget ran out, or no state (the KVO stopped
+    answering, or never sent a JSON object). The other unknown case, a
+    terminal word this script does not recognise, is reported differently:
+    one is a time budget, the other a vocabulary _OP_DONE may be missing,
+    and the operator can tell them apart only if the output does."""
+    return str(state or "").upper() in ("", "IN_PROGRESS")
 
 
 def mask(code):
@@ -466,6 +481,12 @@ def auth(kvo, user, pw, verify, timeout):
         return None, "could not reach the KVO at %s (%s)" % (kvo, reason)
     except (TimeoutError, OSError) as e:
         return None, "could not reach the KVO at %s (%s)" % (kvo, e)
+    except Exception as e:
+        # http.client's own exceptions (a garbage status line, a truncated
+        # header block) are not OSErrors and urllib does not wrap them in
+        # URLError, so without this they left the teardown's operator a
+        # traceback and exit 1 instead of one line and exit 6
+        return None, "could not reach the KVO at %s (%s)" % (kvo, type(e).__name__)
     try:
         tok = json.loads(body).get("access_token")
     except ValueError:
@@ -560,9 +581,13 @@ def release_rows(kvo, base, tok, targets, verify, deadline, http_timeout):
                "ok": _op_ok(state), "running": _op_running(state)}
         if row["ok"]:
             print("[license]   %s x%s: released" % (mask(code), qty))
+        elif row["running"] and _no_terminal_state(state):
+            print("[license]   %s x%s: outcome UNKNOWN (no terminal state within the time budget; "
+                  "last state %r): not counted as released" % (mask(code), qty, str(state or "")))
         elif row["running"]:
-            print("[license]   %s x%s: outcome UNKNOWN (state %r at the deadline): not counted as released"
-                  % (mask(code), qty, str(state or "")))
+            print("[license]   %s x%s: outcome UNKNOWN (state %r is not one this script counts as "
+                  "released; if the KVO UI shows it released, that word belongs in _OP_DONE): "
+                  "not counted as released" % (mask(code), qty, str(state)))
         else:
             detail = json.dumps(_scrub(result, codes), sort_keys=True)[:300] if result is not None else ""
             row["detail"] = detail

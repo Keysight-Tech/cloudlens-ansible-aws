@@ -42,16 +42,25 @@ FULL_CODES = [r["activationCode"] for r in ROWS]
 
 
 class FakeKVO:
-    """One fake KVO per test. `state_for(code)` decides what an op reports;
+    """One fake KVO per test. `states` decides what an op reports per code;
     `stall` makes that op stay IN_PROGRESS forever; `break_list_after`
-    makes GET licenses answer 500 once a deactivate has been received."""
+    makes GET licenses answer 500 once a deactivate has been received;
+    `keep_zero_rows` keeps a fully released row on the list with quantity
+    0 (the live KVO drops it, so both shapes have to be right);
+    `cross_ref` makes every op's detail name the OTHER codes on the host,
+    in its text and as dict keys; `token_garbage` answers the login with
+    a line that is not an HTTP status line at all."""
 
-    def __init__(self, rows, states=None, stall=(), break_list_after=False, list_body=None):
+    def __init__(self, rows, states=None, stall=(), break_list_after=False, list_body=None,
+                 keep_zero_rows=False, cross_ref=False, token_garbage=False):
         self.rows = [dict(r) for r in rows]
         self.states = states or {}
         self.stall = set(stall)
         self.break_list_after = break_list_after
         self.list_body = list_body
+        self.keep_zero_rows = keep_zero_rows
+        self.cross_ref = cross_ref
+        self.token_garbage = token_garbage
         self.deactivates = []          # bodies, in order
         self.token_posts = []          # parsed form bodies
         self.ops = {}                  # op id -> (code, qty)
@@ -78,6 +87,10 @@ class FakeKVO:
                 if p == "/auth/realms/keysight/protocol/openid-connect/token":
                     form = dict(urllib.parse.parse_qsl(self._body()))
                     fake.token_posts.append(form)
+                    if fake.token_garbage:
+                        self.close_connection = True
+                        self.wfile.write(b"NOPE 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        return None
                     if form.get("password") != PASSWORD:
                         return self._send(401, {"error": "invalid_grant"})
                     return self._send(200, {"access_token": "tok-" + str(len(fake.token_posts))})
@@ -100,7 +113,8 @@ class FakeKVO:
                         return self._send(500, {"message": "internal error"})
                     if fake.list_body is not None:
                         return self._send(*fake.list_body)
-                    return self._send(200, [r for r in fake.rows if r["quantity"] > 0])
+                    return self._send(200, [r for r in fake.rows
+                                            if fake.keep_zero_rows or r.get("quantity", 1) != 0])
                 if p.startswith("/api/v2/licensing/operations/"):
                     rest = p[len("/api/v2/licensing/operations/"):]
                     op, _, tail = rest.partition("/")
@@ -108,13 +122,19 @@ class FakeKVO:
                         return self._send(404, {"error": "no op"})
                     code, qty = fake.ops[op]
                     if tail == "result":
-                        return self._send(200, {"activationCode": code, "quantity": qty, "message": "detail for " + code})
+                        detail = {"activationCode": code, "quantity": qty, "message": "detail for " + code}
+                        if fake.cross_ref:
+                            others = [r["activationCode"] for r in fake.rows if r["activationCode"] != code]
+                            detail["message"] += "; other codes on this host: " + ", ".join(others)
+                            for o in others:
+                                detail[o] = "held"
+                        return self._send(200, detail)
                     if code in fake.stall:
                         return self._send(200, {"state": "IN_PROGRESS"})
                     state = fake.states.get(code, "SUCCESS")
                     if state == "SUCCESS":
                         for r in fake.rows:
-                            if r["activationCode"] == code:
+                            if r["activationCode"] == code and "quantity" in r:
                                 r["quantity"] = max(0, r["quantity"] - qty)
                     return self._send(200, {"state": state})
                 return self._send(404, {"error": "no route " + p})
@@ -135,8 +155,8 @@ def fake(request):
     """fake(**FakeKVO options) -> a running FakeKVO, closed after the test."""
     made = []
 
-    def make(**kw):
-        k = FakeKVO(ROWS, **kw)
+    def make(rows=ROWS, **kw):
+        k = FakeKVO(rows, **kw)
         made.append(k)
         return k
     yield make
@@ -241,10 +261,32 @@ def test_release_all_stalled_op_is_unknown_not_success(fake):
     assert took < 30, "the release did not stop at its overall bound (%.1fs)" % took
     assert "****-1111 x5: released" in p.stdout
     assert "****-2222 x20: outcome UNKNOWN" in p.stdout and "not counted as released" in p.stdout
+    # the reason is the time budget, and says so: the poll never saw a terminal state
+    assert "no terminal state within the time budget; last state 'IN_PROGRESS'" in p.stdout
+    assert "at the deadline" not in p.stdout and "_OP_DONE" not in p.stdout
     assert "1 operation(s) with an UNKNOWN outcome (not success): ****-2222" in p.stderr
     assert "NOT clear" in p.stderr
     # the stalled row never left the KVO, and the re-read says so
     assert "still holds 1 licence(s): ****-2222 x20" in p.stderr
+
+
+def test_release_all_unrecognised_terminal_state_is_unknown_and_names_the_allow_list(fake):
+    kvo = fake(states={"AAAA-1111-BBBB-1111": "COMPLETED"})
+    """A KVO that answers a terminal word this script does not know (here
+    COMPLETED, answered on the first poll) is UNKNOWN and exit 3, as before;
+    but the line must not claim the poll ran out of time. It says the word
+    is not one the script counts as released, and where that word would go
+    if the KVO UI proves it released: the allow-list stays literal SUCCESS."""
+    t0 = time.time()
+    p = run(kvo.base, "--release-all")
+    assert p.returncode == 3, p.stdout + p.stderr
+    assert time.time() - t0 < 15, "an instant terminal answer must not be polled to the deadline"
+    assert "****-1111 x5: outcome UNKNOWN (state 'COMPLETED' is not one this script counts as released" in p.stdout
+    assert "that word belongs in _OP_DONE" in p.stdout and "not counted as released" in p.stdout
+    assert "at the deadline" not in p.stdout and "time budget" not in p.stdout
+    assert "****-2222 x20: released" in p.stdout
+    assert "1 operation(s) with an UNKNOWN outcome (not success): ****-1111" in p.stderr
+    assert "still holds 1 licence(s): ****-1111 x5" in p.stderr
 
 
 def test_release_all_list_unreadable_after_is_unknown_not_clear(fake):
@@ -313,6 +355,20 @@ def test_wrong_password_is_exit_6(kvo):
     assert kvo.deactivates == []
     assert "refused the credentials" in p.stderr and "HTTP 401" in p.stderr
     assert "not-it" not in p.stdout + p.stderr
+
+
+def test_garbage_status_line_is_exit_6_with_one_line(fake):
+    kvo = fake(token_garbage=True)
+    """A login answered with something that is not an HTTP status line
+    raises http.client's own exception, which urllib does not wrap. That
+    used to escape auth() as a traceback and exit 1 in the operator's
+    terminal; it is one line and exit 6, like every other unreachable KVO."""
+    p = run(kvo.base, "--list")
+    assert p.returncode == 6, p.stdout + p.stderr
+    assert "Traceback" not in p.stderr and "Traceback" not in p.stdout
+    lines = [l for l in p.stderr.splitlines() if l.strip()]
+    assert len(lines) == 1, p.stderr
+    assert lines[0].startswith("[license] could not reach the KVO at ") and "BadStatusLine" in lines[0]
 
 
 def test_unreachable_is_exit_6_within_the_bound():
