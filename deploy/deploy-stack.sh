@@ -3618,7 +3618,7 @@ fi
 # immediate, actionable message.
 # ---------------------------------------------------------------------
 check_eip_headroom() {
-  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would check Elastic IP headroom (ec2 describe-addresses, service-quotas get-service-quota)"; return 0; }
+  [[ "$DRY_RUN" == "true" ]] && { dryrun_say "would check Elastic IP headroom (ec2 describe-addresses, service-quotas get-service-quota, ec2 describe-account-attributes)"; return 0; }
   [[ "$ASSIGN_PUBLIC_IP" != "yes" ]] && { note "No public IPs requested, skipping Elastic IP quota check."; return 0; }
 
   local need=1
@@ -3648,10 +3648,26 @@ check_eip_headroom() {
             --service-code ec2 --quota-code L-0263D0A3 \
             --query 'Quota.Value' --output text 2>>"$LOG_FILE" | cut -d. -f1 || true)
   if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
-    # servicequotas:GetServiceQuota is missing from most non-admin roles.
-    # Assume the AWS default and say so, rather than pretend it was read.
-    limit=5; limit_note=" (quota assumed: it could not be read)"
-    warn "Could not read the Elastic IP quota (the AWS error is in ${LOG_FILE}); assuming the AWS default of ${limit}."
+    # servicequotas:GetServiceQuota is missing from most non-admin roles. EC2
+    # itself reports the same number through describe-account-attributes,
+    # which needs only ec2:DescribeAccountAttributes, and it does reflect a
+    # raised quota (verified: an account raised to 200 answers 200 both ways).
+    limit=$(aws "${AWS_REGION_ARG[@]}" ec2 describe-account-attributes \
+              --attribute-names vpc-max-elastic-ips \
+              --query 'AccountAttributes[0].AttributeValues[0].AttributeValue' \
+              --output text 2>>"$LOG_FILE" || true)
+    [[ "$limit" =~ ^[0-9]+$ ]] && limit_note=" (quota read from EC2; the Service Quotas API was refused)"
+  fi
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    # Both refused. An unknown quota is NOT a shortage, and it must never end
+    # a run: a customer with 20 addresses allocated was once told he had -15
+    # free against an assumed default of 5, then asked a question whose
+    # default answer aborts. The addresses are allocated first on purpose, so
+    # if the account really is out the launch fails within a minute, before
+    # any instance starts. Say what is known and carry on.
+    warn "Could not read the Elastic IP quota (the AWS error is in ${LOG_FILE}). ${used} in use, need ${need}."
+    note "Continuing: if the account is out of addresses the launch fails within a minute on AddressLimitExceeded, before any instance starts. Then release unattached addresses or request a quota increase: https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas/L-0263D0A3"
+    return 0
   fi
 
   free=$(( limit - used ))
