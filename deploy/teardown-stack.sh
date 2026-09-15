@@ -676,9 +676,11 @@ if [[ "$STACK_STATUS" != "MISSING" ]]; then
   _kvo_param="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
     --query "Stacks[0].Parameters[?ParameterKey=='DeployKVO'].ParameterValue | [0]" --output text)")"
   # This decides whether the LICENCE gate runs. Getting it wrong in the "no"
-  # direction strands the activation quantity permanently: activation binds it
-  # to a KVO host and there is no release or rehost API. So every branch below
-  # fails CLOSED, assuming a KVO is present whenever it cannot prove otherwise.
+  # direction strands the activation quantity permanently: the counts can be
+  # released only from a LIVE KVO (Product Licensing > Deactivate, or the
+  # licensing API's deactivate operation), and the gate is the last moment
+  # that is possible. So every branch below fails CLOSED, assuming a KVO is
+  # present whenever it cannot prove otherwise.
   case "$(to_lower "${_kvo_param:-}")" in
     yes) HAS_KVO=true ;;
     no)  HAS_KVO=false ;;   # the stack itself says so; KvoInstance is conditional
