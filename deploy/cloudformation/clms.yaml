@@ -292,6 +292,17 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ami]
+      # Keysight ships these images with DeleteOnTermination off, so a deleted
+      # stack terminated its instances and left every root disk behind, billing
+      # until someone noticed (430 GB per stack; 6.4 TB found orphaned once).
+      # Only the flag changes: the size is inherited from the image's snapshot,
+      # so no region can end up with a disk smaller than its image, and the type
+      # is pinned to what the image ships rather than left to a default.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            VolumeType: gp2
       InstanceType: !Ref InstanceType
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]

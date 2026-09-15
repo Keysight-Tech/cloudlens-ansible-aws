@@ -105,5 +105,67 @@ else
   fail "an Elastic IP is associated by instance id on a multi-NIC instance"
 fi
 
+# ---- 3. Every instance built from a Keysight image deletes its root disk -----
+# The product AMIs ship with DeleteOnTermination off. Without an override, a
+# deleted stack terminates its instances and leaves 200 GB + 200 GB + 30 GB of
+# root volumes behind, billing until someone notices. Delete stack must undo
+# everything the stack created, so every instance whose ImageId comes from
+# RegionMap (a Keysight image, unlike the SSM-resolved public test AMIs) has
+# to declare the override on its root device.
+python3 - <<'PY'
+import glob, sys, yaml
+
+class CfnLoader(yaml.SafeLoader):
+    pass
+
+def _tag(loader, node):
+    if isinstance(node, yaml.ScalarNode):
+        return {"__tag__": node.tag, "value": loader.construct_scalar(node)}
+    if isinstance(node, yaml.SequenceNode):
+        return {"__tag__": node.tag, "value": loader.construct_sequence(node, deep=True)}
+    return {"__tag__": node.tag, "value": loader.construct_mapping(node, deep=True)}
+
+CfnLoader.add_multi_constructor("!", lambda l, s, n: _tag(l, n))
+
+def from_region_map(image):
+    """True when ImageId is !FindInMap [RegionMap, ...] in either YAML form."""
+    if isinstance(image, dict):
+        if image.get("__tag__") == "!FindInMap":
+            v = image.get("value")
+            return isinstance(v, list) and bool(v) and v[0] == "RegionMap"
+        if list(image) == ["Fn::FindInMap"]:
+            v = image["Fn::FindInMap"]
+            return isinstance(v, list) and bool(v) and v[0] == "RegionMap"
+    return False
+
+bad = []
+for path in sorted(glob.glob("deploy/cloudformation/*.yaml")):
+    res = (yaml.load(open(path), Loader=CfnLoader) or {}).get("Resources") or {}
+    for name, r in res.items():
+        if r.get("Type") != "AWS::EC2::Instance":
+            continue
+        props = r.get("Properties") or {}
+        if not from_region_map(props.get("ImageId")):
+            continue
+        ok = False
+        for bdm in props.get("BlockDeviceMappings") or []:
+            ebs = bdm.get("Ebs") or {}
+            if bdm.get("DeviceName") == "/dev/sda1" and ebs.get("DeleteOnTermination") is True:
+                ok = True
+        if not ok:
+            bad.append("%s: %s launches a Keysight image without DeleteOnTermination "
+                       "on /dev/sda1" % (path, name))
+
+if bad:
+    for b in bad:
+        print("  " + b)
+    sys.exit(1)
+PY
+if [[ $? -eq 0 ]]; then
+  pass "every instance built from a Keysight image deletes its root disk with the stack"
+else
+  fail "an instance built from a Keysight image would leave its root disk behind"
+fi
+
 printf '\n%d PASS, %d FAIL\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]]

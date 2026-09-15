@@ -607,6 +607,17 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VcontrollerAmi]
+      # Keysight ships these images with DeleteOnTermination off, so a deleted
+      # stack terminated its instances and left every root disk behind, billing
+      # until someone noticed (430 GB per stack; 6.4 TB found orphaned once).
+      # Only the flag changes: the size is inherited from the image's snapshot,
+      # so no region can end up with a disk smaller than its image, and the type
+      # is pinned to what the image ships rather than left to a default.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            VolumeType: gp2
       InstanceType: !Ref VcontrollerInstanceType
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
@@ -642,6 +653,17 @@ Resources:
     Condition: DeployKVO
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", KvoAmi]
+      # Keysight ships these images with DeleteOnTermination off, so a deleted
+      # stack terminated its instances and left every root disk behind, billing
+      # until someone noticed (430 GB per stack; 6.4 TB found orphaned once).
+      # Only the flag changes: the size is inherited from the image's snapshot,
+      # so no region can end up with a disk smaller than its image, and the type
+      # is pinned to what the image ships rather than left to a default.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            VolumeType: gp2
       InstanceType: !Ref KvoInstanceType
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
@@ -862,6 +884,17 @@ Resources:
     Condition: DeployVPB
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", VpbAmi]
+      # Keysight ships these images with DeleteOnTermination off, so a deleted
+      # stack terminated its instances and left every root disk behind, billing
+      # until someone noticed (430 GB per stack; 6.4 TB found orphaned once).
+      # Only the flag changes: the size is inherited from the image's snapshot,
+      # so no region can end up with a disk smaller than its image, and the type
+      # is pinned to what the image ships rather than left to a default.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            VolumeType: gp2
       InstanceType: !Ref VpbInstanceType
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       # SubnetId, SecurityGroupIds and SourceDestCheck live on VpbMgmtEni now:
@@ -1002,6 +1035,17 @@ Resources:
     Condition: TestRhel
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", TestRhelAmi]
+      # Keysight ships these images with DeleteOnTermination off, so a deleted
+      # stack terminated its instances and left every root disk behind, billing
+      # until someone noticed (430 GB per stack; 6.4 TB found orphaned once).
+      # Only the flag changes: the size is inherited from the image's snapshot,
+      # so no region can end up with a disk smaller than its image, and the type
+      # is pinned to what the image ships rather than left to a default.
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            VolumeType: gp3
       InstanceType: t3.small
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       SubnetId: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
