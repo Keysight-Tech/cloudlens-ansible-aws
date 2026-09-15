@@ -95,8 +95,26 @@ SWEEP_ONLY=false          # skip the stack delete, sweep what is already loose
 NO_SWEEP=false
 ASSUME_YES=false          # the ONLY way a non-interactive run may delete
 ACCEPT_LICENCE_LOSS=false # the second confirmation, required when a KVO exists
+RELEASE_LICENCES=false    # --release-licences: release the KVO's licences with no terminal to ask on
+ARG_KVO_USER=""           # --kvo-admin-user / --kvo-admin-pass / --kvo-address
+ARG_KVO_PASS=""
+ARG_KVO_ADDRESS=""
 PROBE_TIMEOUT="${CLOUDLENS_PROBE_TIMEOUT:-25}"
 DELETE_TIMEOUT="${CLOUDLENS_DELETE_TIMEOUT:-2700}"   # 45 minutes
+KVO_HTTP_TIMEOUT="${CLOUDLENS_KVO_HTTP_TIMEOUT:-15}"        # per HTTP call to the KVO
+KVO_RELEASE_TIMEOUT="${CLOUDLENS_KVO_RELEASE_TIMEOUT:-600}" # the whole release, overall
+
+# Where scripts/kvo_license.py comes from when this script is run through
+# `curl | bash` and the repo is not on disk: the same raw tree deploy-stack.sh
+# clones from, fetched into a temp dir that is removed on exit.
+REPO_OWNER="Keysight-Tech"
+REPO_NAME="cloudlens-ansible-aws"
+REPO_RAW="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
+LIC_PY=""                 # the kvo_license.py in use, once located
+LIC_CACHE_DIR=""          # temp dir holding a fetched copy, if one was needed
+LIC_RELEASED=false        # true ONLY on exit 0 from kvo_license.py --release-all,
+                          # or a list the KVO answered with nothing on it
+LIC_RC=0                  # set by lic_run
 
 # Owner tag scripts/deploy-test-workload-vms.sh writes on everything it makes.
 # Evidence class 3 for the resources that script leaves in a stack's VPC.
@@ -360,13 +378,31 @@ Required:
 Confirmation (a non-interactive run needs these, and never assumes them):
   --yes                     Confirm the teardown without a terminal to ask on.
   --accept-licence-loss     Second confirmation, required only when the stack
-                            contains a KVO. Licences can be RELEASED from a
-                            live KVO (Settings > Product Licensing > Deactivate
-                            licenses, or the licensing API's deactivate
-                            operation, proven to return the counts). Once the
-                            KVO is deleted they cannot: the quantity activated
-                            on it is stranded for good. Release first, then
-                            pass this. Read the warning the script prints.
+                            contains a KVO whose licences were NOT released.
+                            Licences can be RELEASED from a live KVO: this
+                            script offers to do it for you before deleting
+                            (Phase 4a, the licensing API's deactivate
+                            operation, proven to return the counts), and the
+                            KVO UI can too (Settings > Product Licensing >
+                            Deactivate licenses). Once the KVO is deleted they
+                            cannot: the quantity still activated on it is
+                            stranded for good. A release that leaves the KVO
+                            clear waives this flag; anything else needs it.
+
+KVO licence release (only when the stack contains a KVO):
+  --release-licences        Release every licence the KVO holds, without
+                            asking. On a terminal the script asks instead
+                            ("Release all N licences ...? [Y/n]", default
+                            yes). Without a terminal and without this flag
+                            nothing is released, exactly as before.
+  --kvo-admin-user USER     KVO login for the release. Defaults: this flag,
+  --kvo-admin-pass PASS     then $CLOUDLENS_KVO_ADMIN_USER / _PASS, then a
+                            prompt on a terminal (admin / admin offered). The
+                            password is never echoed, logged or recorded.
+  --kvo-address ADDR        Where to reach the KVO, if the stack cannot say.
+                            Found from the stack's KvoAddress output (public
+                            IP when it has one, else private), then the
+                            KvoInstance resource, then the instance Name tag.
 
 Scoping (why this is safe to run in a shared account):
   A resource is deleted only when AWS itself ties it to this stack: it is a
@@ -377,7 +413,9 @@ Scoping (why this is safe to run in a shared account):
 
 Env-var overrides:
   CLOUDLENS_REGION, CLOUDLENS_STACK_NAME, CLOUDLENS_PROBE_TIMEOUT,
-  CLOUDLENS_DELETE_TIMEOUT
+  CLOUDLENS_DELETE_TIMEOUT, CLOUDLENS_KVO_ADMIN_USER, CLOUDLENS_KVO_ADMIN_PASS,
+  CLOUDLENS_KVO_HTTP_TIMEOUT (per call, 15s), CLOUDLENS_KVO_RELEASE_TIMEOUT
+  (the whole release, 600s)
 
 Examples:
   # What is this stack leaking, and what is it costing? Deletes nothing.
@@ -386,7 +424,12 @@ Examples:
   # Rehearse the whole teardown, touch nothing.
   bash deploy/teardown-stack.sh --stack-name cloudlens-stack --dry-run
 
-  # Real teardown, no terminal, stack contains a KVO.
+  # Real teardown, no terminal, stack contains a KVO: release its licences
+  # first, then delete. Stops if the release leaves anything on the KVO.
+  bash deploy/teardown-stack.sh --stack-name cloudlens-stack \
+       --region us-east-1 --yes --release-licences
+
+  # Same, but accept losing whatever is still activated on the KVO.
   bash deploy/teardown-stack.sh --stack-name cloudlens-stack \
        --region us-east-1 --yes --accept-licence-loss
 
@@ -399,6 +442,9 @@ Order of operations:
      file BEFORE anything is deleted: volume ids have to be captured while
      they are still attached, because a detached volume remembers nothing.
   3. Report everything found, with GB and estimated monthly cost.
+  4a. List the licences on the stack's KVO and offer to release them all,
+     while the KVO is still alive to release them. A release that leaves the
+     KVO clear means nothing is stranded and step 4's licence gate is skipped.
   4. Warn about stranded KVO licences and take the confirmations.
   5. Delete the stack, then wait for a terminal state.
   6. On DELETE_FAILED, name the blocking resources, offer to remove the ones
@@ -420,6 +466,10 @@ while [[ $# -gt 0 ]]; do
     --no-sweep) NO_SWEEP=true; shift ;;
     -y|--yes) ASSUME_YES=true; shift ;;
     --accept-licence-loss|--accept-license-loss) ACCEPT_LICENCE_LOSS=true; shift ;;
+    --release-licences|--release-licenses) RELEASE_LICENCES=true; shift ;;
+    --kvo-admin-user) ARG_KVO_USER="$2"; shift 2 ;;
+    --kvo-admin-pass) ARG_KVO_PASS="$2"; shift 2 ;;
+    --kvo-address) ARG_KVO_ADDRESS="$2"; shift 2 ;;
     -h|--help) show_help; SCRIPT_DONE=true; exit 0 ;;
     *) warn "Unknown argument: $1"; show_help; SCRIPT_DONE=true; exit 1 ;;
   esac
@@ -437,6 +487,7 @@ fi
 on_exit() {
   local code=$?
   [[ "${BASHPID:-$$}" == "$$" ]] || return 0
+  [[ -n "$LIC_CACHE_DIR" ]] && rm -rf "$LIC_CACHE_DIR" 2>/dev/null
   [[ "$SCRIPT_DONE" == "true" ]] && return 0
   (( code == 0 )) && return 0
   echo
@@ -452,6 +503,7 @@ trap on_exit EXIT
 on_interrupt() {
   echo
   SCRIPT_DONE=true
+  [[ -n "$LIC_CACHE_DIR" ]] && rm -rf "$LIC_CACHE_DIR" 2>/dev/null
   warn "Interrupted in: ${PHASE_NAME}"
   warn "Re-run with --sweep-only to finish the sweep, or --orphans to see what is left."
   exit 130
@@ -829,21 +881,289 @@ if [[ "$AUDIT_ONLY" == "true" ]]; then
 fi
 
 # =====================================================================
+# Phase 4a: release the KVO's licences, while there is still a KVO
+#
+# Activation codes are bound to the KVO host they were activated on. While
+# that host is alive the counts can be returned (the licensing API's
+# deactivate operation: proven, 20 counts recovered); once the stack is
+# deleted they cannot, ever. This phase is the last moment that is possible,
+# so it lists what the KVO holds and offers to release all of it, with
+# scripts/kvo_license.py doing the API work.
+#
+# Fail CLOSED. The only thing that waives the licence gate in Phase 4 is
+# kvo_license.py exiting 0, which it does only when every deactivate
+# reported SUCCESS and the KVO then reports no licence left (or the KVO
+# answered the list with nothing on it to begin with). An unreachable KVO,
+# a refused password, a pending EULA, an operation that failed or ran out
+# of time, a list that could not be read: every one of those is reported
+# with its reason and the gate runs unchanged.
+#
+# Every call here is bounded: the list by lic_run's kill timer, the release
+# by kvo_license.py's own --timeout. Nothing in this phase can hang the
+# teardown, and nothing in it can delete anything.
+# =====================================================================
+
+# The KVO's address, where the stack can say. The KvoAddress output is the
+# stack's own statement of how the KVO is reached: the Elastic IP when the
+# stack has one, else the private IP. When the output cannot be read (an
+# older template, a throttled probe) the KvoInstance resource itself is
+# asked, public address first, and last the instance carrying the Name tag
+# the template writes: the KvoName parameter, else <stack>-kvo. Prints the
+# address or nothing; never fails.
+kvo_address() {
+  local a="" iid="" nm=""
+  if [[ -n "$ARG_KVO_ADDRESS" ]]; then printf '%s' "$ARG_KVO_ADDRESS"; return 0; fi
+  a="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+        --query "Stacks[0].Outputs[?OutputKey=='KvoAddress'].OutputValue | [0]" --output text)" || true)"
+  if [[ -z "$a" ]]; then
+    iid="$(det_clean "$(ro_aws cloudformation describe-stack-resources --stack-name "$STACK_NAME" \
+            --query "StackResources[?LogicalResourceId=='KvoInstance'].PhysicalResourceId | [0]" \
+            --output text)" || true)"
+    if [[ -n "$iid" ]]; then
+      a="$(tokens "$(ro_aws ec2 describe-instances --instance-ids "$iid" \
+            --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]' --output text)" || true)"
+      a="${a%% *}"
+    fi
+  fi
+  if [[ -z "$a" ]]; then
+    nm="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Parameters[?ParameterKey=='KvoName'].ParameterValue | [0]" --output text)" || true)"
+    [[ -n "$nm" ]] || nm="${STACK_NAME}-kvo"
+    a="$(tokens "$(ro_aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${nm}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]' --output text)" || true)"
+    a="${a%% *}"
+  fi
+  [[ "$a" =~ ^[A-Za-z0-9.:-]+$ ]] || a=""
+  printf '%s' "$a"
+  return 0
+}
+
+# scripts/kvo_license.py, wherever this run can get it: a checkout next to
+# this script, the clone deploy-stack.sh makes under $HOME, the current
+# directory, and failing all of those the raw file from the repo, fetched
+# over TLS into a temp dir and kept for this run. A copy that predates the
+# release modes is skipped: argparse would refuse --list and the run would
+# read that as an unreachable KVO. A fetched copy is checked to parse as
+# Python and to carry the mode before it is used. Sets LIC_PY, or leaves it
+# empty. Never fails.
+find_kvo_license_py() {
+  local cand="" tmp=""
+  LIC_PY=""
+  if [[ -n "${CLOUDLENS_KVO_LICENSE_PY:-}" ]]; then
+    # An explicit override is honoured or reported, never quietly replaced
+    # by some other copy.
+    [[ -f "$CLOUDLENS_KVO_LICENSE_PY" ]] && LIC_PY="$CLOUDLENS_KVO_LICENSE_PY"
+    return 0
+  fi
+  for cand in "$SCRIPT_DIR/../scripts/kvo_license.py" "$HOME/${REPO_NAME}/scripts/kvo_license.py" \
+              "$PWD/scripts/kvo_license.py"; do
+    [[ -f "$cand" ]] || continue
+    grep -q -- '--release-all' "$cand" 2>/dev/null || continue
+    LIC_PY="$cand"
+    return 0
+  done
+  command -v curl >/dev/null 2>&1 || return 0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/cloudlens-teardown-lic.XXXXXX" 2>/dev/null || true)"
+  [[ -n "$tmp" ]] || return 0
+  LIC_CACHE_DIR="$tmp"
+  note "scripts/kvo_license.py is not on this machine; fetching it from ${REPO_RAW}"
+  if curl -fsSL --proto '=https' --max-time 30 -o "$tmp/kvo_license.py" "${REPO_RAW}/scripts/kvo_license.py" 2>/dev/null \
+     && grep -q -- '--release-all' "$tmp/kvo_license.py" 2>/dev/null \
+     && python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$tmp/kvo_license.py" 2>/dev/null; then
+    LIC_PY="$tmp/kvo_license.py"
+  fi
+  return 0
+}
+
+# lic_run LIMIT OUTFILE cmd...: run cmd with stdout and stderr in OUTFILE and
+# stdin closed, and kill it after LIMIT seconds. LIC_RC is the command's exit
+# status, or 124 when it was killed at the bound. Same contract as probe: it
+# never fails and never hangs, so a KVO that stopped answering costs a bounded
+# wait and a warning, never the run.
+lic_run() {
+  local limit="$1" out="$2" pid="" ticks=0
+  shift 2
+  LIC_RC=0
+  "$@" >"$out" 2>&1 </dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && (( ticks < limit )); do
+    sleep 1
+    ticks=$((ticks+1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    LIC_RC=124
+    return 0
+  fi
+  wait "$pid" 2>/dev/null && LIC_RC=0 || LIC_RC=$?
+  return 0
+}
+
+# What to do when the release did not happen or did not finish clean: the
+# gate in Phase 4 runs, and the operator is told the two ways back.
+lic_fallback_note() {
+  note "Nothing was released. The licence gate below runs as it always has."
+  note "To release first: re-run this teardown once the cause is fixed and"
+  note "answer yes to the release (or pass --release-licences), or deactivate"
+  note "each code in the KVO UI > Settings > Product Licensing, then re-run."
+}
+
+if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
+  step "Phase 4a: Release KVO licences"
+  echo "  This stack has a KVO. The licence counts activated on it can be returned"
+  echo "  to your entitlement NOW, while the KVO is alive, and never after it is"
+  echo "  deleted. This script can release them for you (the licensing API's"
+  echo "  deactivate operation, what Settings > Product Licensing > Deactivate"
+  echo "  licenses does), and asks before it does."
+  echo
+  KVO_ADDR="$(kvo_address)"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "KVO address: ${KVO_ADDR:-not found (KvoAddress output, KvoInstance, Name tag all empty)}"
+    dryrun_say "would run scripts/kvo_license.py --list against it, then offer to release every"
+    dryrun_say "licence it holds with --release-all (asked on a terminal, --release-licences without one)"
+    dryrun_say "a real run skips the licence-loss gate below only when the release leaves the KVO clear"
+    dryrun_say "nothing is called on the KVO in a dry run"
+  elif [[ -z "$KVO_ADDR" ]]; then
+    warn "Could not find the KVO's address: the stack's KvoAddress output, its"
+    warn "KvoInstance resource and the instance Name tag all came back empty."
+    note "Pass it with --kvo-address ADDR (its public IP, or private from inside the VPC)."
+    lic_fallback_note
+  elif ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 is not available here, and the release runs through scripts/kvo_license.py."
+    lic_fallback_note
+  else
+    find_kvo_license_py
+    if [[ -z "$LIC_PY" ]]; then
+      warn "scripts/kvo_license.py is not on this machine and could not be fetched from ${REPO_RAW}."
+      lic_fallback_note
+    else
+      # Credentials: flags, then the deploy's env names, then a prompt with the
+      # KVO's defaults offered. The password is read without echo, passed to
+      # the script through the environment (never a command line), and never
+      # written anywhere: not the state file, not a log.
+      KVO_USER="${ARG_KVO_USER:-${CLOUDLENS_KVO_ADMIN_USER:-}}"
+      KVO_PASS="${ARG_KVO_PASS:-${CLOUDLENS_KVO_ADMIN_PASS:-}}"
+      if [[ "$INTERACTIVE" == "true" ]]; then
+        echo "  KVO at ${KVO_ADDR}. Its admin login is needed to list and release the licences."
+        if [[ -z "$KVO_USER" ]]; then
+          KVO_USER="$(ask "  KVO admin user [admin]: " "admin")"
+        fi
+        if [[ -z "$KVO_PASS" ]]; then
+          read -rsp "  KVO admin password [admin]: " KVO_PASS || true
+          echo
+          [[ -n "$KVO_PASS" ]] || KVO_PASS="admin"
+        fi
+      fi
+      [[ -n "$KVO_USER" ]] || KVO_USER="admin"
+      [[ -n "$KVO_PASS" ]] || KVO_PASS="admin"
+      export CLOUDLENS_KVO_ADMIN_PASS="$KVO_PASS"
+      LIC_ARGS=(--kvo "$KVO_ADDR" --user "$KVO_USER" --password-env CLOUDLENS_KVO_ADMIN_PASS
+                --insecure --http-timeout "$KVO_HTTP_TIMEOUT")
+
+      _lic_out="$(mktemp "${TMPDIR:-/tmp}/cloudlens-teardown-lic.XXXXXX" 2>/dev/null || true)"
+      if [[ -z "$_lic_out" ]]; then
+        warn "Could not create a temp file for the licence list."
+        lic_fallback_note
+      else
+        note "Listing the licences on KVO ${KVO_ADDR} (bounded: ${KVO_HTTP_TIMEOUT}s per call)..."
+        # token + list, each bounded by the script, and the whole thing by
+        # the kill timer in case the KVO answers nothing at all
+        lic_run $(( KVO_HTTP_TIMEOUT * 3 + 5 )) "$_lic_out" python3 "$LIC_PY" "${LIC_ARGS[@]}" --list
+        sed 's/^/    /' "$_lic_out" 2>/dev/null || true
+        _lic_n="$(sed -n 's/^\[license\] \([0-9][0-9]*\) licence(s) installed on KVO.*/\1/p' "$_lic_out" 2>/dev/null | head -1 || true)"
+        rm -f "$_lic_out" 2>/dev/null || true
+
+        case "$LIC_RC" in
+          0)
+            if [[ "${_lic_n:-}" == "0" ]]; then
+              ok "The KVO holds no licences. Nothing to release, nothing will be stranded."
+              LIC_RELEASED=true
+            elif [[ -z "${_lic_n:-}" ]]; then
+              warn "Could not tell how many licences the KVO holds from the list above."
+              lic_fallback_note
+            else
+              _go=false
+              if [[ "$INTERACTIVE" == "true" ]]; then
+                # Default yes: releasing is the safe direction. The counts go
+                # back to the entitlement and can be activated again anywhere.
+                ask_yn "  Release all ${_lic_n} licences from this KVO now? [Y/n]: " "y" && _go=true
+              elif [[ "$RELEASE_LICENCES" == "true" ]]; then
+                note "Releasing all ${_lic_n} licences (--release-licences)."
+                _go=true
+              else
+                note "No terminal to ask on and no --release-licences: not releasing."
+                note "Pass --release-licences to release them without a prompt."
+              fi
+              if [[ "$_go" == "true" ]]; then
+                note "Each deactivate goes to the Keysight licensing backend and can take up"
+                note "to a minute; progress is printed per licence. Bounded: ${KVO_RELEASE_TIMEOUT}s overall."
+                _rel_rc=0
+                python3 "$LIC_PY" "${LIC_ARGS[@]}" --release-all --timeout "$KVO_RELEASE_TIMEOUT" || _rel_rc=$?
+                case "$_rel_rc" in
+                  0)
+                    ok "All ${_lic_n} licences released. The KVO reports none left: nothing will be stranded."
+                    LIC_RELEASED=true ;;
+                  3)
+                    warn "The release did not leave the KVO clear (the reasons are above): an"
+                    warn "operation failed or its outcome is unknown, or licences remain."
+                    lic_fallback_note ;;
+                  6)
+                    warn "The KVO refused the login or stopped answering during the release."
+                    lic_fallback_note ;;
+                  *)
+                    warn "kvo_license.py exited ${_rel_rc} during the release."
+                    lic_fallback_note ;;
+                esac
+              else
+                lic_fallback_note
+              fi
+            fi ;;
+          6)
+            warn "KVO ${KVO_ADDR} could not be used: unreachable within ${KVO_HTTP_TIMEOUT}s, the"
+            warn "password was refused, or its EULA is pending (the reason is above)."
+            note "Check the address (--kvo-address) and the login (--kvo-admin-user / --kvo-admin-pass,"
+            note "or CLOUDLENS_KVO_ADMIN_USER / CLOUDLENS_KVO_ADMIN_PASS)."
+            lic_fallback_note ;;
+          124)
+            warn "KVO ${KVO_ADDR} did not answer within $(( KVO_HTTP_TIMEOUT * 3 + 5 ))s; gave up listing its licences."
+            lic_fallback_note ;;
+          3)
+            warn "The KVO's licence list could not be read (the reason is above)."
+            lic_fallback_note ;;
+          *)
+            warn "kvo_license.py exited ${LIC_RC} while listing the licences."
+            lic_fallback_note ;;
+        esac
+      fi
+      unset CLOUDLENS_KVO_ADMIN_PASS KVO_PASS
+    fi
+  fi
+fi
+
+# =====================================================================
 # Phase 4: licence warning + confirmation
 #
 # This runs BEFORE the first delete, always, and it is the only reason the
-# confirmation is two steps instead of one.
+# confirmation is two steps instead of one. Phase 4a can waive the licence
+# half of it, and only by reporting the KVO clear.
 # =====================================================================
 step "Phase 4: Confirm"
 
-if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
+if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" && "$LIC_RELEASED" == "true" ]]; then
+  ok "Licences released in Phase 4a and the KVO reports none left: nothing will be"
+  ok "stranded, so no licence-loss confirmation is needed."
+elif [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   echo
   echo -e "${C_RED}${C_BOLD}  LICENCES ARE ABOUT TO BE STRANDED, PERMANENTLY.${C_RESET}"
   echo
   echo "  This stack contains a KVO. KVO activation codes are bound to the KVO"
   echo "  host they were activated on. While that host is alive the counts CAN"
-  echo "  be released (Settings > Product Licensing > Deactivate licenses, or"
-  echo "  the licensing API's deactivate operation: proven, 20 counts recovered)."
+  echo "  be released: this script offers to do it (Phase 4a above, or"
+  echo "  --release-licences with no terminal), and the KVO UI can too"
+  echo "  (Settings > Product Licensing > Deactivate licenses). Both drive the"
+  echo "  licensing API's deactivate operation: proven, 20 counts recovered."
   echo "  Deleting the stack destroys that host, and the quantity still activated"
   echo "  on it is NOT returned afterwards: it is stranded for good."
   echo
@@ -852,8 +1172,11 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   echo "  deleted: 1500 counts lost, with nothing anywhere warning it would happen."
   echo
   echo "  Get them back FIRST, if you ever want them:"
-  echo "    KVO UI > Settings > Product Licensing > deactivate each code"
-  echo "    (then re-run this teardown)"
+  echo "    re-run this teardown and answer yes to the release in Phase 4a"
+  echo "    (or pass --release-licences), or deactivate each code in the"
+  echo "    KVO UI > Settings > Product Licensing, then re-run this teardown."
+  echo "  The release above did not happen or did not leave the KVO clear; the"
+  echo "  reason is printed in Phase 4a."
   echo
   echo "  Continuing destroys the KVO and every licence count activated on it."
   echo
@@ -869,7 +1192,9 @@ if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   else
     fail "This stack has a KVO and there is no terminal to confirm on.
   Deleting it strands the licence quantity activated on it, permanently.
-  Deactivate the codes in KVO first, or re-run with:
+  Release the licences first, with --yes --release-licences (this script
+  does it; a release that leaves the KVO clear needs no other flag) or in
+  the KVO UI, or accept the loss with:
     --yes --accept-licence-loss"
   fi
 fi
