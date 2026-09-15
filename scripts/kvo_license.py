@@ -30,9 +30,11 @@ Non-interactive modes, used by deploy/teardown-stack.sh (see RELEASE MODES below
   python3 kvo_license.py --kvo <ip> --list [--json]
   python3 kvo_license.py --kvo <ip> --release-all
   python3 kvo_license.py --kvo <ip> --release CODE[,QTY]
-Exit: 0 listed / the KVO reports no licence left, 3 an operation failed or its
-outcome is unknown or something remains (the output says which), 6 auth or
-unreachable. These modes never print a whole activation code.
+Exit: 0 listed / the KVO reports no licence left, 2 a flag this script could
+not use, 3 an operation failed or its outcome is unknown or something remains
+(the output says which), 6 auth or unreachable. These modes never print a
+whole activation code. With --json the machine-readable object is the last
+line of stdout on every one of those exits.
 """
 from __future__ import annotations
 import argparse, json, os, sys, time, urllib.request, urllib.error, urllib.parse, ssl
@@ -335,6 +337,13 @@ def prompt_plan(kvo, base, tok, verify):
 # A whole activation code is never printed: it is a credential, and the
 # teardown's output lands in terminals and logs. The last 4 characters are
 # enough to match a row against the KVO UI.
+#
+# With --json the machine-readable object is the LAST line of stdout on
+# every exit path (usage error, refused login, list unreadable, no match,
+# released), and the last line of a 2>&1 capture too: stderr is flushed
+# before it and stdout right after. Every such object carries `exit`; the
+# list and release objects always carry `unreadable` (null once the list
+# was read), so a caller can test the key rather than its presence.
 # =====================================================================
 
 # The states that mean an operation FINISHED and succeeded. An allow-list,
@@ -350,6 +359,7 @@ _OP_DONE = ("SUCCESS",)
 # say the KVO STILL HOLDS something, never enough to say it holds nothing.
 _LIST_KEYS = ("licenses", "licences", "items", "rows", "data")
 
+EXIT_USAGE = 2     # a flag this script could not use
 EXIT_UNKNOWN = 3   # an op failed or its outcome is unknown, or something remains
 EXIT_AUTH = 6      # wrong password, EULA pending, or the KVO did not answer
 
@@ -383,6 +393,21 @@ def _no_terminal_state(state):
     one is a time budget, the other a vocabulary _OP_DONE may be missing,
     and the operator can tell them apart only if the output does."""
     return str(state or "").upper() in ("", "IN_PROGRESS")
+
+
+def _err(msg):
+    """A stderr line, with stdout flushed first so a 2>&1 capture reads in
+    program order (stdout to a file is block-buffered, stderr is not)."""
+    sys.stdout.flush()
+    print(msg, file=sys.stderr)
+
+
+def emit_json(obj):
+    """The --json line. Last on stdout and last in a 2>&1 capture: stderr is
+    flushed before it, stdout right after, and nothing is printed after it."""
+    sys.stderr.flush()
+    print(json.dumps(obj, sort_keys=True))
+    sys.stdout.flush()
 
 
 def mask(code):
@@ -699,59 +724,69 @@ def _print_rows(rows, kvo):
     return views
 
 
-def run_mode(a):
-    """--list / --release-all / --release. Exit codes are the contract the
-    teardown reads: 0, EXIT_UNKNOWN (3), EXIT_AUTH (6)."""
-    verify = not a.insecure
-    base = kvo_base(a.kvo)
-    deadline = time.time() + a.timeout
-    tok, why = auth(a.kvo, a.user, a.password, verify, a.http_timeout)
-    if not tok:
-        if a.json:
-            print(json.dumps({"kvo": a.kvo, "error": why, "exit": EXIT_AUTH}))
-        print("[license] %s" % why, file=sys.stderr)
-        return EXIT_AUTH
+def _parse_release_arg(spec):
+    """(wanted, error) from --release CODE[,QTY]. The code may be given in
+    full or by its last characters as --list shows them; fewer than 4 is
+    refused, because a one-character suffix matches too easily and the
+    result is a released licence nobody asked about."""
+    code, _, q = spec.partition(",")
+    code = code.strip()
+    if not code:
+        return None, "--release needs CODE[,QTY]"
+    if len(code) < 4:
+        return None, "--release needs at least the last 4 characters of the code, as --list shows them"
+    try:
+        qty = int(q.strip()) if q.strip() else None
+    except ValueError:
+        return None, "--release quantity must be a number"
+    return (code, qty), None
 
-    if a.list:
-        h = holdings(base, tok, verify, a.http_timeout)
-        if a.json:
-            out = {"kvo": a.kvo, "count": h["count"], "clear": h["clear"],
-                   "licences": [row_view(r) for r in h["licences"]]}
-            if h.get("unreadable"):
-                out["unreadable"] = h["unreadable"]
-            print(json.dumps(out, sort_keys=True))
-        else:
+
+def run_list(a, base, tok, verify):
+    """--list: the held licences, and exit 0 only when the list was read."""
+    h = holdings(base, tok, verify, a.http_timeout)
+    rc = EXIT_UNKNOWN if h["unreadable"] else 0
+    if h["unreadable"]:
+        _err("[license] the licence list could not be read: %s" % h["unreadable"])
+        if h["licences"]:
+            # rows mined from a wrapped body: the KVO does hold these
             _print_rows(h["rows"], a.kvo)
-        if h.get("unreadable"):
-            print("[license] the licence list could not be read: %s" % h["unreadable"], file=sys.stderr)
-            return EXIT_UNKNOWN
-        return 0
+    else:
+        _print_rows(h["rows"], a.kvo)
+    if a.json:
+        emit_json({"kvo": a.kvo, "count": h["count"], "clear": h["clear"],
+                   "licences": [row_view(r) for r in h["licences"]],
+                   "unreadable": h["unreadable"], "exit": rc})
+    return rc
 
-    # --release-all / --release CODE[,QTY]
-    wanted = None
-    if a.release:
-        code, _, q = a.release.partition(",")
-        code = code.strip()
-        if not code:
-            print("[license] --release needs CODE[,QTY]", file=sys.stderr)
-            return 2
-        try:
-            qty = int(q.strip()) if q.strip() else None
-        except ValueError:
-            print("[license] --release quantity must be a number", file=sys.stderr)
-            return 2
-        wanted = (code, qty)
+
+def run_release(a, base, tok, verify, wanted, deadline):
+    """--release-all / --release CODE[,QTY]. Exit 0 only when every
+    operation succeeded and the KVO then reports nothing held."""
+    def finish(results, after, problems, rc):
+        if a.json:
+            emit_json({"kvo": a.kvo, "results": results,
+                       "released": sum(1 for r in results if r["ok"]),
+                       "failed": sum(1 for r in results if not r["ok"] and not r["running"]),
+                       "unknown": sum(1 for r in results if r["running"]),
+                       "clear": after["clear"],
+                       "remaining": [row_view(r) for r in after["licences"]],
+                       "unreadable": after["unreadable"], "problems": problems, "exit": rc})
+        return rc
+
     rows, why = read_list(base, tok, verify, a.http_timeout)
     if why:
-        print("[license] cannot release what cannot be listed: %s" % why, file=sys.stderr)
-        return EXIT_UNKNOWN
-    views = _print_rows(rows, a.kvo)
+        _err("[license] cannot release what cannot be listed: %s" % why)
+        after = {"clear": False if _held(rows) else None, "licences": _held(rows), "unreadable": why}
+        return finish([], after, ["cannot release what cannot be listed"], EXIT_UNKNOWN)
+    _print_rows(rows, a.kvo)
     targets, problems = _pick_targets(rows, wanted)
     for p in problems:
-        print("[license] %s" % p, file=sys.stderr)
+        _err("[license] %s" % p)
     if problems and not targets:
-        print("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted", file=sys.stderr)
-        return EXIT_UNKNOWN
+        after = {"clear": False if _held(rows) else True, "licences": _held(rows), "unreadable": None}
+        _err("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted")
+        return finish([], after, problems, EXIT_UNKNOWN)
     if not targets:
         print("[license] nothing to release")
     else:
@@ -766,33 +801,53 @@ def run_mode(a):
     # Re-read, and stand only on what the KVO actually says now.
     after = holdings(base, tok, verify, a.http_timeout)
     remaining = [row_view(r) for r in after["licences"]]
+    late = []
     if failed:
-        problems.append("%d operation(s) FAILED: %s" % (len(failed), ", ".join(r["code_last4"] for r in failed)))
+        late.append("%d operation(s) FAILED: %s" % (len(failed), ", ".join(r["code_last4"] for r in failed)))
     if unknown:
-        problems.append("%d operation(s) with an UNKNOWN outcome (not success): %s"
-                        % (len(unknown), ", ".join(r["code_last4"] for r in unknown)))
+        late.append("%d operation(s) with an UNKNOWN outcome (not success): %s"
+                    % (len(unknown), ", ".join(r["code_last4"] for r in unknown)))
     if after["clear"] is None:
-        problems.append("the licence list could not be re-read after the release, so the KVO's state is "
-                        "UNKNOWN, not clear: %s" % after.get("unreadable"))
+        late.append("the licence list could not be re-read after the release, so the KVO's state is "
+                    "UNKNOWN, not clear: %s" % after["unreadable"])
     elif after["clear"] is False:
-        problems.append("the KVO still holds %d licence(s): %s"
-                        % (len(remaining), ", ".join("%s x%s" % (v["code_last4"], _qty_text(v["quantity"]))
-                                                      for v in remaining)))
-    for p in problems:
-        print("[license] %s" % p, file=sys.stderr)
+        late.append("the KVO still holds %d licence(s): %s"
+                    % (len(remaining), ", ".join("%s x%s" % (v["code_last4"], _qty_text(v["quantity"]))
+                                                  for v in remaining)))
+    for p in late:
+        _err("[license] %s" % p)
+    problems += late
     if problems:
-        print("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted", file=sys.stderr)
-    elif wanted is None or not views:
+        _err("[license] NOT clear: the counts still on this KVO will be stranded if it is deleted")
+    else:
         print("[license] released %d licence(s); the KVO reports no licence left. Nothing will be stranded."
               % sum(1 for r in results if r["ok"]))
-    else:
-        print("[license] released %d licence(s); the KVO reports no licence left." % sum(1 for r in results if r["ok"]))
-    if a.json:
-        # last line of stdout, so a caller can take the tail of the output
-        print(json.dumps({"kvo": a.kvo, "results": results, "released": sum(1 for r in results if r["ok"]),
-                          "failed": len(failed), "unknown": len(unknown), "clear": after["clear"],
-                          "remaining": remaining, "unreadable": after.get("unreadable")}, sort_keys=True))
-    return EXIT_UNKNOWN if problems else 0
+    return finish(results, after, problems, EXIT_UNKNOWN if problems else 0)
+
+
+def run_mode(a):
+    """--list / --release-all / --release. Exit codes are the contract the
+    teardown reads: 0, EXIT_USAGE (2), EXIT_UNKNOWN (3), EXIT_AUTH (6)."""
+    verify = not a.insecure
+    base = kvo_base(a.kvo)
+    wanted = None
+    if a.release:
+        wanted, err = _parse_release_arg(a.release)
+        if err:
+            _err("[license] %s" % err)
+            if a.json:
+                emit_json({"kvo": a.kvo, "error": err, "exit": EXIT_USAGE})
+            return EXIT_USAGE
+    deadline = time.time() + a.timeout
+    tok, why = auth(a.kvo, a.user, a.password, verify, a.http_timeout)
+    if not tok:
+        _err("[license] %s" % why)
+        if a.json:
+            emit_json({"kvo": a.kvo, "error": why, "exit": EXIT_AUTH})
+        return EXIT_AUTH
+    if a.list:
+        return run_list(a, base, tok, verify)
+    return run_release(a, base, tok, verify, wanted, deadline)
 
 
 def main():
@@ -825,10 +880,16 @@ def main():
                     help="bound in seconds for each HTTP call in the release modes (default 15)")
     a = ap.parse_args()
     if a.password_env:
+        # an empty value is as good as unset: sending "" to the KVO would
+        # read back as "refused the credentials", and the fix is different
         pw = os.environ.get(a.password_env)
-        if pw is None:
-            print(f"[license] --password-env {a.password_env}: that variable is not set", file=sys.stderr)
-            return 2
+        if not pw:
+            msg = "[license] --password-env %s: that variable is not set%s" % (
+                a.password_env, " (it is set, but empty)" if pw == "" else "")
+            _err(msg)
+            if a.json:
+                emit_json({"kvo": a.kvo, "error": msg[len("[license] "):], "exit": EXIT_USAGE})
+            return EXIT_USAGE
         a.password = pw
     if a.list or a.release_all or a.release:
         return run_mode(a)

@@ -441,6 +441,97 @@ def test_release_one_unknown_code(kvo):
     assert "no installed licence matches ****-9999" in p.stderr
 
 
+def test_release_suffix_shorter_than_4_is_refused(kvo):
+    """A two-character suffix matches too easily, and the result would be
+    a released licence nobody asked about: usage error, nothing touched."""
+    p = run(kvo.base, "--release", "22", "--json")
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert kvo.deactivates == [] and kvo.token_posts == []
+    assert "at least the last 4 characters" in p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out["exit"] == 2 and "at least the last 4" in out["error"]
+
+
+def test_release_one_that_leaves_the_kvo_clear_says_nothing_stranded(fake):
+    kvo = fake(rows=[ROWS[0]])
+    """The one clear message, whichever mode produced it: a --release that
+    leaves the KVO clear ends with the same line as --release-all does."""
+    p = run(kvo.base, "--release", "1111")
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "released 1 licence(s); the KVO reports no licence left. Nothing will be stranded." in p.stdout
+
+
+# ---------------------------------------------------------------------
+# --json: one object, last line of stdout, on every exit path
+# ---------------------------------------------------------------------
+def _last_json(p):
+    """The last line of the COMBINED output, as the teardown reads it (it
+    captures 2>&1 into one file and takes the tail)."""
+    both = p.stdout  # stderr was merged into stdout by the caller
+    return json.loads(both.strip().splitlines()[-1])
+
+
+def run_merged(kvo_base, *args, password=PASSWORD):
+    env = dict(os.environ, KVO_TEST_PASS=password)
+    p = subprocess.run([sys.executable, SCRIPT, "--kvo", kvo_base, "--password-env", "KVO_TEST_PASS",
+                        "--http-timeout", "5", "--timeout", "20"] + list(args),
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60, env=env)
+    for code in FULL_CODES:
+        assert code not in p.stdout
+    assert PASSWORD not in p.stdout
+    return p
+
+
+def test_json_is_the_last_line_on_every_exit_path(fake):
+    # readable list: unreadable present and null
+    kvo = fake()
+    out = _last_json(run_merged(kvo.base, "--list", "--json"))
+    assert out["exit"] == 0 and out["count"] == 2 and "unreadable" in out and out["unreadable"] is None
+    # release ok
+    out = _last_json(run_merged(kvo.base, "--release-all", "--json"))
+    assert out["exit"] == 0 and out["clear"] is True and "unreadable" in out and out["unreadable"] is None
+    assert out["problems"] == []
+    # list unreadable: the stderr reason comes BEFORE the json line in a 2>&1 capture
+    bad = fake(list_body=(200, "<html>eula</html>", "text/html"))
+    p = run_merged(bad.base, "--list", "--json")
+    assert p.returncode == 3
+    out = _last_json(p)
+    assert out["exit"] == 3 and out["clear"] is None and out["unreadable"].startswith("GET licenses answered HTTP 200")
+    assert "could not be read" in p.stdout.splitlines()[0]
+    # cannot list in release mode
+    p = run_merged(bad.base, "--release-all", "--json")
+    assert p.returncode == 3
+    out = _last_json(p)
+    assert out["exit"] == 3 and out["clear"] is None and out["unreadable"] and out["results"] == []
+    assert out["problems"] == ["cannot release what cannot be listed"]
+    # no match
+    p = run_merged(kvo.base, "--release", "ZZZZ-9999", "--json")
+    assert p.returncode == 3
+    out = _last_json(p)
+    assert out["exit"] == 3 and "unreadable" in out and out["unreadable"] is None
+    assert out["problems"] == ["no installed licence matches ****-9999"]
+    # refused login
+    p = run_merged(kvo.base, "--list", "--json", password="not-it")
+    assert p.returncode == 6
+    out = _last_json(p)
+    assert out["exit"] == 6 and "refused the credentials" in out["error"]
+    # --password-env naming an empty variable: usage, not "refused the credentials"
+    p = subprocess.run([sys.executable, SCRIPT, "--kvo", kvo.base, "--password-env", "KVO_TEST_PASS",
+                        "--list", "--json"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                       timeout=30, env=dict(os.environ, KVO_TEST_PASS=""))
+    assert p.returncode == 2, p.stdout
+    assert "KVO_TEST_PASS: that variable is not set (it is set, but empty)" in p.stdout
+    assert _last_json(p)["exit"] == 2
+
+
+def test_password_env_empty_is_a_clean_stop(kvo):
+    p = subprocess.run([sys.executable, SCRIPT, "--kvo", kvo.base, "--password-env", "KVO_TEST_PASS", "--list"],
+                       capture_output=True, text=True, timeout=30, env=dict(os.environ, KVO_TEST_PASS=""))
+    assert p.returncode == 2 and "KVO_TEST_PASS: that variable is not set" in p.stderr
+    assert "refused the credentials" not in p.stderr
+    assert kvo.token_posts == []
+
+
 # ---------------------------------------------------------------------
 # auth / reachability
 # ---------------------------------------------------------------------
