@@ -73,27 +73,69 @@ run() {
   code=$?
 }
 
-# a. The customer's case: describe-addresses allowed, GetServiceQuota refused.
-#    The check must warn once, assume the default quota and say so, and let
-#    the run continue; the AccessDenied text goes to the log, not the terminal.
+# a. The customer's case: describe-addresses allowed, GetServiceQuota refused,
+#    and EC2's own describe-account-attributes allowed (it needs only an EC2
+#    permission and reports the same number). The check must read the quota
+#    from there, say where it came from, and let the run continue; the
+#    AccessDenied text goes to the log, not the terminal.
 run a '' '
   aws() { case "$*" in
     *service-quotas*) refuse AccessDeniedException GetServiceQuota "User: arn:aws:sts::123456789012:assumed-role/ISG_Sales_Engineers/x is not authorized to perform: servicequotas:GetServiceQuota" ;;
+    *describe-account-attributes*) echo 20 ;;
     *describe-addresses*) echo 2 ;;
     *) echo "unexpected: aws $*" >&2; return 1 ;;
   esac; }
   check_eip_headroom
   echo CONTINUED'
 if [[ $code -eq 0 ]] && grep -q '^CONTINUED$' "$OUT"; then
-  pass "a. quota refused: check_eip_headroom returns 0 and the run continues"
+  pass "a. quota refused, EC2 attribute allowed: check_eip_headroom returns 0 and the run continues"
 else failt "a. quota refused: exit $code, out=[$(flat "$OUT")] err=[$(flat "$ERR")]"; fi
-if grep -q '^\[warn\] Could not read the Elastic IP quota (the AWS error is in ' "$OUT" \
-   && grep -q '^\[ok\] Elastic IPs: 2/5 in use, need 3, 3 free (quota assumed: it could not be read)$' "$OUT"; then
-  pass "a. quota refused: one warn names the log; the default of 5 is used and said to be assumed"
+if grep -q '^\[ok\] Elastic IPs: 2/20 in use, need 3, 18 free (quota read from EC2; the Service Quotas API was refused)$' "$OUT" \
+   && ! grep -q 'assuming the AWS default' "$OUT"; then
+  pass "a. quota refused: the real quota is read from EC2 and the line says so"
 else failt "a. quota refused: terminal was [$(flat "$OUT")]"; fi
 if grep -q 'servicequotas:GetServiceQuota' "$LOG" && ! grep -q 'AccessDeniedException' "$OUT"; then
   pass "a. quota refused: the AccessDenied message is in the log and not on the terminal"
 else failt "a. quota refused: log=[$(flat "$LOG")] terminal mentions AccessDenied: $(grep -c AccessDenied "$OUT")"; fi
+
+# a2. Both quota sources refused and 20 addresses already allocated. An
+#     unknown quota is not a shortage: the customer saw "-15 free" against an
+#     assumed 5 and a question whose default answer aborts. Now: one warn with
+#     what is known, one note saying the launch fails fast if the account is
+#     really out, no shortage claim, no prompt, and the run continues.
+run a2 '' '
+  aws() { case "$*" in
+    *service-quotas*) refuse AccessDeniedException GetServiceQuota "not authorized to perform: servicequotas:GetServiceQuota" ;;
+    *describe-account-attributes*) refuse UnauthorizedOperation DescribeAccountAttributes "You are not authorized to perform this operation." ;;
+    *describe-addresses*) echo 20 ;;
+    *) echo "unexpected: aws $*" >&2; return 1 ;;
+  esac; }
+  check_eip_headroom
+  echo CONTINUED'
+if [[ $code -eq 0 ]] && grep -q '^CONTINUED$' "$OUT"; then
+  pass "a2. both quota sources refused: the run continues"
+else failt "a2. both refused: exit $code, out=[$(flat "$OUT")] err=[$(flat "$ERR")]"; fi
+if grep -q '^\[warn\] Could not read the Elastic IP quota (the AWS error is in .*). 20 in use, need 3\.$' "$OUT" \
+   && grep -q 'AddressLimitExceeded' "$OUT" \
+   && ! grep -q 'Not enough Elastic IPs' "$OUT" && ! grep -q 'Continue anyway' "$OUT" && ! grep -q -- '-15' "$OUT"; then
+  pass "a2. both refused: says unknown with the count, never a shortage, never a negative, never a prompt"
+else failt "a2. both refused: terminal was [$(flat "$OUT")]"; fi
+if grep -q 'DescribeAccountAttributes operation' "$LOG" && grep -q 'GetServiceQuota operation' "$LOG"; then
+  pass "a2. both refused: both refusals are in the log"
+else failt "a2. both refused: log=[$(flat "$LOG")]"; fi
+
+# a3. Both refused on an empty account: same, with 0 in use.
+run a3 '' '
+  aws() { case "$*" in
+    *service-quotas*|*describe-account-attributes*) refuse AccessDeniedException X "no" ;;
+    *describe-addresses*) echo 0 ;;
+    *) echo "unexpected: aws $*" >&2; return 1 ;;
+  esac; }
+  check_eip_headroom
+  echo CONTINUED'
+if [[ $code -eq 0 ]] && grep -q '^CONTINUED$' "$OUT" && grep -q '0 in use, need 3\.' "$OUT" && ! grep -q 'Continue anyway' "$OUT"; then
+  pass "a3. both refused, empty account: continues without a prompt"
+else failt "a3. both refused, empty account: exit $code, out=[$(flat "$OUT")]"; fi
 
 # b. describe-addresses itself refused: the check is skipped with a warn that
 #    names the log, and the run continues.
