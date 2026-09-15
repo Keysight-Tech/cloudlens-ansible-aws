@@ -57,6 +57,19 @@ harness='
   refuse() { printf "\nAn error occurred (%s) when calling the %s operation: %s\n" "$1" "$2" "$3" >&2; return 254; }
   LOG_FILE="$1"; HOME="$2"
   source "$3"
+  # The console line prompts through ask(), which the awk above does not
+  # extract, and which only reads when INTERACTIVE=true. INTERACTIVE stays
+  # false here because ensure_key_pair branches on it too. This stand-in does
+  # what the real ask does when interactive: read one line from the case
+  # stdin, answer the default when there is none. PROMPT_PIPE and EVENTS_FILE
+  # exist so nothing trips set -u; empty means "no console attached".
+  PROMPT_PIPE="" EVENTS_FILE="" DONE_EMITTED=false
+  ask() { local ans=""; IFS= read -r ans || true; printf "%s" "${ans:-${2:-}}"; }
+  # fail() and step() on this line also write to the event channel, which is
+  # not under test here (deploy/tests/test_events.sh owns it) and would need
+  # its file and its own helpers. No console is attached: they do nothing.
+  emit_event() { :; }
+  emit_done() { :; }
 '
 rc=0
 pass() { printf 'PASS %s\n' "$1"; }
