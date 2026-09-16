@@ -4942,7 +4942,28 @@ print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)
     aws s3api put-public-access-block --bucket "$bucket" \
       --public-access-block-configuration \
       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null 2>&1 || true
-    ok "Created ${bucket} (private, nothing public)"
+    # Blocking public access is not the same as requiring TLS: without this
+    # deny the bucket still answers plain HTTP, and a CIS scan reports it
+    # (S3.5 / CIS 2.1.1). SSM itself always uses HTTPS, so nothing here loses
+    # access. Versioning keeps a staged installer recoverable and is the
+    # prerequisite for MFA Delete, which only the root user can turn on.
+    aws s3api put-bucket-policy --bucket "$bucket" --policy "{
+      \"Version\": \"2012-10-17\",
+      \"Statement\": [{
+        \"Sid\": \"DenyInsecureTransport\",
+        \"Effect\": \"Deny\",
+        \"Principal\": \"*\",
+        \"Action\": \"s3:*\",
+        \"Resource\": [
+          \"arn:aws:s3:::${bucket}\",
+          \"arn:aws:s3:::${bucket}/*\"
+        ],
+        \"Condition\": { \"Bool\": { \"aws:SecureTransport\": \"false\" } }
+      }]
+    }" >/dev/null 2>&1 || true
+    aws s3api put-bucket-versioning --bucket "$bucket" \
+      --versioning-configuration Status=Enabled >/dev/null 2>&1 || true
+    ok "Created ${bucket} (private, HTTPS only, versioned)"
   fi
 
   # Grant the role the Windows hosts actually run under, read from the
@@ -6007,7 +6028,11 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
       echo "  zone-tapping policy). Create and attach it with:"
       echo "    aws iam create-policy --policy-name CloudLensZoneTap \\"
       echo "      --policy-document file://deploy/iam/cloudlens-zonetap-policy.json"
-      echo "    aws iam attach-user-policy --user-name <user> --policy-arn <arn>"
+      echo "    aws iam create-group --group-name cloudlens-zonetap"
+      echo "    aws iam attach-group-policy --group-name cloudlens-zonetap --policy-arn <arn>"
+      echo "    aws iam add-user-to-group --group-name cloudlens-zonetap --user-name <user>"
+      echo "  Grant it through a group, not straight onto the user: a policy"
+      echo "  attached to a user is a CIS 1.15 finding in a scanned account."
       echo "  A key with NO policy still creates the presence, but then KVO cannot"
       echo "  launch the collector and ZERO sessions appear, with only a KVO alert"
       echo "  'Error getting information from AWS ... check credentials'."

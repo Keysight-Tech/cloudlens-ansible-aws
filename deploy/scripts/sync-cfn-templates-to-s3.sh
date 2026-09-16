@@ -84,6 +84,37 @@ step "Verifying bucket exists + public-read on /$PREFIX/*"
 # URLs. It is recreatable, so --bootstrap builds it rather than pointing the
 # operator at a procedure to run by hand. Everything except /$PREFIX/* stays
 # private: the public grant is scoped to that prefix and nothing else.
+# The bucket policy, in one place so bootstrap and the drift repair below
+# cannot disagree. Two statements: the public read on /$PREFIX/* that the
+# Launch buttons need, and a deny on anything arriving over plain HTTP.
+# The deny is what a CIS scan looks for (S3.5 / CIS 2.1.1); without it the
+# same object is reachable over cleartext and the account reports a finding.
+put_bucket_policy_doc() {
+  aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {
+        \"Sid\": \"PublicReadTemplates\",
+        \"Effect\": \"Allow\",
+        \"Principal\": \"*\",
+        \"Action\": \"s3:GetObject\",
+        \"Resource\": \"arn:aws:s3:::$BUCKET/$PREFIX/*\"
+      },
+      {
+        \"Sid\": \"DenyInsecureTransport\",
+        \"Effect\": \"Deny\",
+        \"Principal\": \"*\",
+        \"Action\": \"s3:*\",
+        \"Resource\": [
+          \"arn:aws:s3:::$BUCKET\",
+          \"arn:aws:s3:::$BUCKET/*\"
+        ],
+        \"Condition\": { \"Bool\": { \"aws:SecureTransport\": \"false\" } }
+      }
+    ]
+  }" >/dev/null
+}
+
 bootstrap_bucket() {
   step "Bootstrapping bucket $BUCKET in $REGION"
   if [[ "$REGION" == "us-east-1" ]]; then
@@ -97,17 +128,13 @@ bootstrap_bucket() {
   aws s3api put-public-access-block --bucket "$BUCKET" \
     --public-access-block-configuration \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false" >/dev/null
-  aws s3api put-bucket-policy --bucket "$BUCKET" --policy "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [{
-      \"Sid\": \"PublicReadTemplates\",
-      \"Effect\": \"Allow\",
-      \"Principal\": \"*\",
-      \"Action\": \"s3:GetObject\",
-      \"Resource\": \"arn:aws:s3:::$BUCKET/$PREFIX/*\"
-    }]
-  }" >/dev/null
-  ok "Bucket created with public-read scoped to /$PREFIX/* only"
+  # Versioning: this bucket was emptied once and every Launch button went dead
+  # with nothing to restore from. Versions make that recoverable, and MFA
+  # Delete (root-only) cannot be turned on without them.
+  aws s3api put-bucket-versioning --bucket "$BUCKET" \
+    --versioning-configuration Status=Enabled >/dev/null
+  put_bucket_policy_doc
+  ok "Bucket created: public-read on /$PREFIX/* only, HTTP denied, versioned"
 }
 
 if ! aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
@@ -132,6 +159,27 @@ else
   warn "Bucket policy does NOT allow public-read on /$PREFIX/*."
   echo "    Repair it with:  bash $0 --bootstrap"
   fail "Nothing uploaded: the Launch buttons would 403."
+fi
+
+# A bucket created before the HTTP deny existed keeps serving cleartext and
+# reports S3.5 / CIS 2.1.1 on the next compliance scan. Repair it in place:
+# the statement only adds a deny, so re-applying is safe at any time.
+if echo "$POLICY" | grep -q "DenyInsecureTransport"; then
+  ok "Plain-HTTP requests are denied"
+else
+  warn "Bucket policy allows plain HTTP; adding the deny now"
+  put_bucket_policy_doc
+  ok "Plain-HTTP requests are now denied (public-read on /$PREFIX/* unchanged)"
+fi
+
+# Versioning is what made the bucket recoverable after it was emptied once.
+if [[ "$(aws s3api get-bucket-versioning --bucket "$BUCKET" --query 'Status' --output text 2>/dev/null)" == "Enabled" ]]; then
+  ok "Versioning is on"
+else
+  warn "Versioning is off; enabling it"
+  aws s3api put-bucket-versioning --bucket "$BUCKET" \
+    --versioning-configuration Status=Enabled >/dev/null
+  ok "Versioning enabled"
 fi
 
 step "Uploading"
