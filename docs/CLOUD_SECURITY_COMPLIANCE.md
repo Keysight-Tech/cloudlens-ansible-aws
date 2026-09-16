@@ -15,6 +15,7 @@ Foundations) and 5.4 (S3 bucket access requirements).
 | `keysight-cloudlens-templates` (public template bucket) | ACL public access blocked, public read scoped to `aws/*` and nothing else, plain HTTP denied, versioning on |
 | `cloudlens-ssm-transfer-<account>` (Windows sensor staging) | All four public access blocks on, plain HTTP denied, versioning on, no bucket policy grant to anyone |
 | `CloudLensZoneTap` IAM policy | Granted through the `cloudlens-zonetap` group, never attached straight to a user |
+| Security groups for the appliances | Built from an admin CIDR the operator chooses. The Launch Stack form has always had the field; the CLI now asks for it too, offering this machine's address as a /32 rather than defaulting silently to 0.0.0.0/0 |
 
 Both rows are repaired in place, not only at creation.
 `deploy/scripts/sync-cfn-templates-to-s3.sh` brings the template bucket up to

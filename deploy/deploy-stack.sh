@@ -296,8 +296,13 @@ KEY_NAME="${CLOUDLENS_KEY_NAME:-}"
 VPB_INGRESS_NICS="${CLOUDLENS_VPB_INGRESS_NICS:-1}"
 VPB_EGRESS_NICS="${CLOUDLENS_VPB_EGRESS_NICS:-1}"
 
-# Who is allowed to reach the mgmt/UI ports. Default open; narrow for prod.
+# Who is allowed to reach the mgmt/UI ports. A flag, the environment, or a
+# replayed profile answers it; otherwise the interview asks, because leaving
+# SSH open to 0.0.0.0/0 is what most corporate policies forbid outright and
+# what a CIS scan reports first (CIS 5.2).
 ADMIN_CIDR="${CLOUDLENS_ADMIN_CIDR:-0.0.0.0/0}"
+ADMIN_CIDR_GIVEN=false
+if [[ -n "${CLOUDLENS_ADMIN_CIDR:-}" ]]; then ADMIN_CIDR_GIVEN=true; fi
 
 # Workload discovery tag: which AWS tag marks EC2s that should get the
 # CloudLens sensor. Default cloudlens=yes (the canonical convention).
@@ -1758,8 +1763,9 @@ vPB multi-NIC (fan-in / fan-out for prod):
   --vpb-egress-nics N       Extra egress NICs       (default: 1)
 
 Access control:
-  --admin-cidr CIDR         Source CIDR allowed to reach UI/SSH ports
-                            (default: 0.0.0.0/0 - narrow this for prod)
+  --admin-cidr CIDR         Source CIDR allowed to reach UI/SSH ports.
+                            Skips the question an interactive run asks, which
+                            offers this machine's address as a /32.
   --no-public-ip            Deploy with private IPs only (no Elastic IPs).
                             For private subnets or no-public-IP orgs; reach
                             the stack over VPN / Direct Connect / peering.
@@ -2054,7 +2060,7 @@ while [[ $# -gt 0 ]]; do
     --stack-name) ARG_STACK="$2"; shift 2 ;;
     --admin-user) DEFAULT_ADMIN_USER="$2"; shift 2 ;;
     --key-name) KEY_NAME="$2"; shift 2 ;;
-    --admin-cidr) ADMIN_CIDR="$2"; shift 2 ;;
+    --admin-cidr) ADMIN_CIDR="$2"; ADMIN_CIDR_GIVEN=true; shift 2 ;;
 
     # Per-VM Name tag overrides
     --vcontroller-name) VCONTROLLER_NAME="$2"; shift 2 ;;
@@ -3112,6 +3118,80 @@ pick_subnet() {
     echo "$pick"
   fi
 }
+
+# An IPv4 CIDR, strictly: four octets 0-255 and a prefix 0-32. Typos here are
+# silent and expensive. "10.0.0.0/8 " or "1.2.3.4" (no prefix) would otherwise
+# reach AWS and fail the stack halfway through, or worse, be accepted as
+# something wider than intended.
+valid_cidr() {
+  local c="${1:-}" ip pfx o
+  [[ "$c" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || return 1
+  ip="${c%/*}"; pfx="${c#*/}"
+  [[ "$pfx" -ge 0 && "$pfx" -le 32 ]] || return 1
+  local IFS=.
+  for o in $ip; do
+    [[ "$o" -ge 0 && "$o" -le 255 ]] || return 1
+  done
+  return 0
+}
+
+# Q0: who may reach the appliances. Asked before the infrastructure fork
+# because it applies either way: a new VPC gets security groups built from it,
+# and an existing VPC gets the same rules on the groups created inside it.
+#
+# The default offered is this machine's public address as a /32, read from
+# AWS's own checkip endpoint. That is the answer a lone operator wants, and
+# seeing it spelled out is what makes someone paste their corporate range
+# instead of pressing Enter on 0.0.0.0/0.
+#
+# Echoes the chosen CIDR on stdout; everything else goes to stderr so the
+# caller can capture it.
+ask_admin_cidr() {
+  local detected="" def="0.0.0.0/0" ans="" tries=0
+  detected="$(curl -fsS --max-time 4 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "$detected" ]] && valid_cidr "${detected}/32"; then
+    def="${detected}/32"
+  fi
+  echo >&2
+  echo "Which network may reach the CloudLens appliances?" >&2
+  echo "  Source CIDR allowed to reach SSH (22), vPB SSH (9022), HTTPS (443)," >&2
+  echo "  and VXLAN (4789, 10800-10801). Narrow it to your admin and sensor network." >&2
+  if [[ "$def" != "0.0.0.0/0" ]]; then
+    echo "  This machine appears to be ${detected}, so ${def} is offered." >&2
+  else
+    echo "  Your public address could not be read, so answer with your own range." >&2
+  fi
+  echo "  Enter a CIDR such as 203.0.113.10/32 or 10.0.0.0/8. 0.0.0.0/0 opens" >&2
+  echo "  these ports to the whole internet and most policies forbid it." >&2
+  while [[ "$tries" -lt 3 ]]; do
+    ans="$(ask "  Admin CIDR [${def}]: " "$def")"
+    if valid_cidr "$ans"; then
+      if [[ "$ans" == "0.0.0.0/0" ]]; then
+        # warn writes on stdout, which here is the return value: redirect it
+        # or the warning text ends up inside ADMIN_CIDR.
+        warn "SSH will be reachable from any address on the internet." >&2
+      fi
+      printf '%s' "$ans"
+      return 0
+    fi
+    tries=$((tries+1))
+    echo "  ${ans} is not an IPv4 CIDR (four octets and a prefix, like 10.0.0.0/8)." >&2
+  done
+  warn "No usable CIDR after 3 tries; using ${def}." >&2
+  if [[ "$def" == "0.0.0.0/0" ]]; then
+    warn "SSH will be reachable from any address on the internet." >&2
+  fi
+  printf '%s' "$def"
+}
+
+# Not asked when an existing security group is supplied: the CIDR is ignored
+# in that case (the operator's own group already decides who gets in), and the
+# Launch Stack form says the same thing about its Admin source CIDR field.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
+      && "$ADMIN_CIDR_GIVEN" != "true" && "$DRY_RUN" != "true" \
+      && -z "$EXISTING_SG_ID" ]]; then
+  ADMIN_CIDR="$(ask_admin_cidr)"
+fi
 
 # Q1: infrastructure. The first architectural fork: everything downstream
 # (subnets, SGs, collector placement, teardown scope) hangs off it.
