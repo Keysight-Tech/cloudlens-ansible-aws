@@ -16,9 +16,12 @@ Foundations) and 5.4 (S3 bucket access requirements).
 | `cloudlens-ssm-transfer-<account>` (Windows sensor staging) | All four public access blocks on, plain HTTP denied, versioning on, no bucket policy grant to anyone |
 | `CloudLensZoneTap` IAM policy | Granted through the `cloudlens-zonetap` group, never attached straight to a user |
 
-`deploy/scripts/sync-cfn-templates-to-s3.sh` repairs the first row in place on
-every run, so a bucket created before these rules existed is brought up to them
-the next time templates are published.
+Both rows are repaired in place, not only at creation.
+`deploy/scripts/sync-cfn-templates-to-s3.sh` brings the template bucket up to
+these rules the next time templates are published, and the deploy script does
+the same for the SSM bucket every time it adopts one from an earlier run. A
+bucket policy neither script wrote is never overwritten: the operator is told
+what statement is missing instead.
 
 ## The one deliberate exception: public read on the template bucket
 

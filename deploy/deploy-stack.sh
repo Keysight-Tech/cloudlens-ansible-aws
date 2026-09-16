@@ -4875,6 +4875,48 @@ for f in (d if isinstance(d, list) else []):
 # homework this script exists to remove. Do it here instead.
 # Returns 1 when it declines or cannot, and the caller keeps its message.
 # ---------------------------------------------------------------------
+# Require HTTPS on the SSM transfer bucket, whether this run created it or
+# adopted one from an earlier run. Blocking public access does not stop
+# cleartext: a fully blocked bucket still answers plain HTTP, and a CIS scan
+# reports it (S3.5 / CIS 2.1.1). SSM always uses HTTPS, so nothing here loses
+# access. Versioning keeps a staged installer recoverable and is the
+# prerequisite for MFA Delete, which only the root user can turn on.
+#
+# A policy this script did not write is never overwritten. The bucket name is
+# predictable, so an operator may have attached their own, and merging JSON in
+# bash is how a statement gets silently dropped. In that case say what is
+# missing and carry on.
+harden_ssm_bucket() {
+  local bucket="$1" pol cur
+  cur="$(probe aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>/dev/null || true)"
+  if [[ -n "$cur" && "$cur" != "None" ]]; then
+    if [[ "$cur" == *"aws:SecureTransport"* ]]; then
+      return 0
+    fi
+    warn "Bucket ${bucket} has its own policy and does not require HTTPS."
+    note "Leaving it untouched. Add a Deny on aws:SecureTransport false to it:"
+    note "  https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html"
+    return 0
+  fi
+  pol="{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Sid\": \"DenyInsecureTransport\",
+      \"Effect\": \"Deny\",
+      \"Principal\": \"*\",
+      \"Action\": \"s3:*\",
+      \"Resource\": [
+        \"arn:aws:s3:::${bucket}\",
+        \"arn:aws:s3:::${bucket}/*\"
+      ],
+      \"Condition\": { \"Bool\": { \"aws:SecureTransport\": \"false\" } }
+    }]
+  }"
+  aws s3api put-bucket-policy --bucket "$bucket" --policy "$pol" >/dev/null 2>&1 || true
+  aws s3api put-bucket-versioning --bucket "$bucket" \
+    --versioning-configuration Status=Enabled >/dev/null 2>&1 || true
+}
+
 ensure_ssm_bucket_now() {
   local have=""
   if [[ -f customer_input.yaml ]] && command -v python3 >/dev/null 2>&1; then
@@ -4910,6 +4952,7 @@ print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)
     _bkt="cloudlens-ssm-transfer-${_acct}"
     if probe aws s3api head-bucket --bucket "$_bkt" >/dev/null 2>&1; then
       SSM_BUCKET_NAME="$_bkt"
+      harden_ssm_bucket "$_bkt"
       ok "Reusing existing Windows SSM transfer bucket: ${_bkt}"
       return 0
     fi
@@ -4929,6 +4972,7 @@ print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)
 
   step "S3 bucket for Windows SSM transfer"
   if probe aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
+    harden_ssm_bucket "$bucket"
     ok "Bucket ${bucket} already exists"
   else
     local mk=0
@@ -4942,27 +4986,7 @@ print(((d.get("aws") or {}).get("ssm_bucket_name") or "").strip())' 2>/dev/null)
     aws s3api put-public-access-block --bucket "$bucket" \
       --public-access-block-configuration \
       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null 2>&1 || true
-    # Blocking public access is not the same as requiring TLS: without this
-    # deny the bucket still answers plain HTTP, and a CIS scan reports it
-    # (S3.5 / CIS 2.1.1). SSM itself always uses HTTPS, so nothing here loses
-    # access. Versioning keeps a staged installer recoverable and is the
-    # prerequisite for MFA Delete, which only the root user can turn on.
-    aws s3api put-bucket-policy --bucket "$bucket" --policy "{
-      \"Version\": \"2012-10-17\",
-      \"Statement\": [{
-        \"Sid\": \"DenyInsecureTransport\",
-        \"Effect\": \"Deny\",
-        \"Principal\": \"*\",
-        \"Action\": \"s3:*\",
-        \"Resource\": [
-          \"arn:aws:s3:::${bucket}\",
-          \"arn:aws:s3:::${bucket}/*\"
-        ],
-        \"Condition\": { \"Bool\": { \"aws:SecureTransport\": \"false\" } }
-      }]
-    }" >/dev/null 2>&1 || true
-    aws s3api put-bucket-versioning --bucket "$bucket" \
-      --versioning-configuration Status=Enabled >/dev/null 2>&1 || true
+    harden_ssm_bucket "$bucket"
     ok "Created ${bucket} (private, HTTPS only, versioned)"
   fi
 
