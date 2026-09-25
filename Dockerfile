@@ -32,11 +32,20 @@ LABEL description="Automated CloudLens sensor deployment for AWS EC2 (Linux + Wi
 # Pinned tool versions (override at build time with --build-arg if needed)
 ARG TERRAFORM_VERSION=1.9.8
 
+# ANSIBLE_COLLECTIONS_PATH is where the collections below are installed and
+# where Ansible must look for them. ansible.cfg pins collections_path to
+# ./collections so a laptop run only ever loads what quickstart.sh installed
+# beside the playbooks; inside the image that directory does not exist, and
+# without this variable Ansible searched only there, found nothing, and every
+# deploy/inventory/cleanup command failed with "unknown plugin
+# amazon.aws.aws_ec2". An environment variable outranks ansible.cfg, and a
+# path outside /work survives the documented "-v $(pwd):/work" mount.
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     ANSIBLE_HOST_KEY_CHECKING=False \
     ANSIBLE_RETRY_FILES_ENABLED=False \
-    ANSIBLE_FORCE_COLOR=True
+    ANSIBLE_FORCE_COLOR=True \
+    ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections
 
 # System deps (unzip is needed to unpack the AWS CLI v2 and Terraform archives)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -81,11 +90,12 @@ RUN pip install --no-cache-dir \
 # community.general). Copy the file first so this layer caches independently.
 COPY requirements.yml /tmp/requirements.yml
 RUN ansible-galaxy collection install -r /tmp/requirements.yml --upgrade \
+        -p "$ANSIBLE_COLLECTIONS_PATH" \
     && rm -f /tmp/requirements.yml
 
 # Install the amazon.aws collection's Python requirements if it ships any
 # (extra boto3/botocore pins). Safe no-op when the file is absent.
-RUN reqs=/root/.ansible/collections/ansible_collections/amazon/aws/requirements.txt; \
+RUN reqs="$ANSIBLE_COLLECTIONS_PATH/ansible_collections/amazon/aws/requirements.txt"; \
     if [ -f "$reqs" ]; then pip install --no-cache-dir -r "$reqs"; fi
 
 # Copy repo content

@@ -17,6 +17,7 @@ on:
     tags: ['v*.*.*']
     paths:
       - 'Dockerfile'
+      - '.dockerignore'
       - 'scripts/docker-entrypoint.sh'
       - 'requirements.yml'
       - 'playbooks/**'
