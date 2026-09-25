@@ -3,7 +3,7 @@
   hosts: "{{ target_group }}"
   become: no
   vars_files:
-    - ../vars/cloudlens.yml
+    - ../vars/cloudlens.yaml
   
   tasks:
     - name: Check if CloudLens is installed

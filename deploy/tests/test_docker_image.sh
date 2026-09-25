@@ -1,100 +1,216 @@
 #!/usr/bin/env bash
-# Checks on the image the "Pull Docker Image" tier serves from GHCR.
+# Checks on the Docker tier: the image customers pull from GHCR and the docs
+# that tell them how to run it.
 #
-# The image is the sensor rollout: its entrypoint runs the amazon.aws.aws_ec2
-# inventory and deploy.yaml / cleanup.yaml. It shipped for two months unable
-# to load a single collection: ansible.cfg pins collections_path to
-# ./collections for laptop runs, the Dockerfile installed them elsewhere, and
-# a local build hid the gap because the builder's own collections/ directory
-# was copied in. Nothing here needs a cloud account.
+# The image once shipped unable to load a single collection, and an audit of
+# the Azure twin then found the same image family could not deploy what the
+# docs promised: a failed login exited 0, customer_input.yaml's discovery
+# settings were ignored, Windows had no way to connect, relative files/ paths
+# never resolved, and shard mode deployed to nobody while printing "complete".
+# Every check below is one of those, and none needs a cloud account.
 #
-# Static checks always run. The runtime checks need a built image:
-#   IMAGE=cloudlens-ansible-aws:local bash deploy/tests/test_docker_image.sh
-# REPO_DIR points the static checks at another checkout, which is how they are
-# proven to go red against the version before the fix.
+# Static checks always run:           bash deploy/tests/test_docker_image.sh
+# Runtime checks need a built image:  IMAGE=<ref> bash deploy/tests/test_docker_image.sh
+# REPO_DIR runs the static checks against another checkout; that is how they
+# are proven to go red against the version before the fix.
 set -uo pipefail
-cd "${REPO_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}" || exit 1
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${REPO_DIR:-$HERE/../..}" || exit 1
 
 PASS=0
 FAIL=0
 pass() { printf 'PASS %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 skip() { printf 'SKIP %s\n' "$1"; }
+# On a failure, show the tail of the last captured output: in CI that is the
+# only way to see why a runtime check failed.
+check() {
+  if eval "$2" >/dev/null 2>&1; then pass "$1"; else
+    fail "$1"
+    if [[ -n "${out:-}" ]]; then printf '%s\n' "$out" | tail -8 | sed 's/^/    | /'; fi
+  fi
+}
 
-# ---- 1. The image tells Ansible where its collections are --------------------
-# ansible.cfg's relative collections_path is right on a laptop and wrong in
-# the image. The environment variable outranks the file.
-env_path="$(grep -oE 'ANSIBLE_COLLECTIONS_PATH=[^ \\]+' Dockerfile | head -1 | cut -d= -f2)"
-if [[ -n "$env_path" ]]; then
-  pass "Dockerfile sets ANSIBLE_COLLECTIONS_PATH ($env_path)"
-else
-  fail "Dockerfile does not set ANSIBLE_COLLECTIONS_PATH, so ansible.cfg's ./collections applies and no collection loads"
-fi
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 
-# ---- 2. The collections are installed into that same path -------------------
-if tr '\n' ' ' < Dockerfile | grep -qE 'ansible-galaxy collection install[^&]*-p "\$ANSIBLE_COLLECTIONS_PATH"'; then
-  pass "ansible-galaxy installs into \$ANSIBLE_COLLECTIONS_PATH"
-else
-  fail "ansible-galaxy does not install into \$ANSIBLE_COLLECTIONS_PATH"
-fi
+# ---------------------------------------------------------------- static ----
+for p in .git customer_input.yaml collections/ 'files/*'; do
+  check ".dockerignore excludes $p" "grep -qxF '$p' .dockerignore"
+done
+check "the image tells Ansible where its collections are" "grep -qE 'ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections' Dockerfile"
+check "ansible-galaxy installs into \$ANSIBLE_COLLECTIONS_PATH" \
+  "tr '\n' ' ' < Dockerfile | grep -qE 'ansible-galaxy collection install[^&]*-p \"\\\$ANSIBLE_COLLECTIONS_PATH\"'"
+check "ansible-core stays below 2.17 (RHEL 7/8 run Python 3.6)" "grep -qE 'ansible-core>=2\.16,<2\.17' Dockerfile"
+check "every collection in requirements.yml has an upper bound" \
+  "python3 -c \"import sys,yaml; c=yaml.safe_load(open('requirements.yml'))['collections']; sys.exit(0 if c and all('<' in str(x.get('version','')) for x in c) else 1)\""
+check "checkout does not persist the job token into .git/config" "grep -q 'persist-credentials: false' .github/workflows/docker-publish.yml"
+check "the workflow smoke-tests the image before it pushes" \
+  "python3 -c \"import sys; s=open('.github/workflows/docker-publish.yml').read(); i=s.find('test_docker_image.sh'); j=s.find('push: true'); sys.exit(0 if 0 <= i < j else 1)\""
+for p in ansible.cfg 'vars/**' 'scripts/**' deploy/shard.sh; do
+  check "a change to $p rebuilds the image" "grep -qF -e \"- '$p'\" .github/workflows/docker-publish.yml"
+done
+check "tuned-ansible.cfg has no inline comment after a value" \
+  "! grep -nE '^[[:space:]]*[A-Za-z_]+[[:space:]]*=[^#]*[[:space:]]#' deploy/tuned-ansible.cfg"
+check "tuned-ansible.cfg does not use the removed yaml callback" \
+  "! grep -qE '^stdout_callback[[:space:]]*=[[:space:]]*yaml' deploy/tuned-ansible.cfg"
 
-# ---- 3. A build never copies in local-only or secret files ------------------
-if [[ -f .dockerignore ]]; then
-  for p in .git collections/ customer_input.yaml; do
-    if grep -qxF "$p" .dockerignore; then
-      pass ".dockerignore excludes $p"
-    else
-      fail ".dockerignore does not exclude $p"
-    fi
+missing=""
+for pb in playbooks/*.yaml; do
+  for vf in $(python3 -c "import sys,yaml
+for play in yaml.safe_load(open(sys.argv[1])) or []:
+    for f in (play.get('vars_files') or []): print(f)" "$pb"); do
+    # customer_input.yaml is the customer's own file, mounted at run time.
+    [[ "$vf" == *customer_input.yaml ]] && continue
+    [[ -f "playbooks/$vf" ]] || missing="$missing $pb:$vf"
   done
-else
-  fail "no .dockerignore: a local build copies collections/ (hiding check 1) and customer_input.yaml (secrets) into a public image"
-fi
+done
+if [[ -z "$missing" ]]; then pass "every vars_files entry exists"; else fail "vars_files missing:$missing"; fi
 
-# ---- Runtime checks against a built image ------------------------------------
+# Written to a file first: bash 3.2 mis-parses a heredoc inside a command substitution.
+cat > "$T/doccheck.py" <<'PY'
+import re
+bad = []
+for path in ("docs/index.html", "README.md"):
+    text = open(path).read().replace("\\\n", " ")
+    for m in re.finditer(r"docker run[^\n<\x60]*cloudlens-ansible-aws:\S+", text):
+        cmd = m.group(0)
+        for need in ("/work/files", "AWS_SECRET_ACCESS_KEY", "/work/customer_input.yaml", "/root/.ssh/"):
+            if need not in cmd:
+                bad.append("%s: missing %s" % (path, need))
+        if "$HOME/.ssh:/root/.ssh" in cmd:
+            bad.append("%s: mounts all of ~/.ssh" % path)
+print("\n".join(sorted(set(bad))))
+PY
+bad_cmds="$(python3 "$T/doccheck.py")"
+if [[ -z "$bad_cmds" ]]; then pass "every documented docker run mounts the input, files/ and a key, and passes the AWS keys"; else fail "documented docker run is incomplete: $bad_cmds"; fi
+
+# shard.sh, run for real with stub ansible commands.
+mkdir -p "$T/shard/deploy" "$T/stubs"
+cp deploy/shard.sh "$T/shard/deploy/shard.sh"
+: > "$T/shard/customer_input.yaml"
+cat > "$T/stubs/ansible-inventory" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${STUB_EMPTY:-0}" == 1 ]]; then echo '{"_meta":{"hostvars":{}}}'; exit 0; fi
+echo '{"_meta":{"hostvars":{"i1":{},"i2":{},"i3":{},"i4":{}}},"os_ubuntu":{"hosts":["i1","i2"]},"os_windows":{"hosts":["i3"]},"ungrouped":{"hosts":["i4"]}}'
+STUB
+cat > "$T/stubs/ansible-playbook" <<'STUB'
+#!/usr/bin/env bash
+limit=""; prev=""
+for a in "$@"; do [[ "$prev" == "--limit" ]] && limit="${a#@}"; prev="$a"; done
+echo "argv: $*"
+[[ "${STUB_NORECAP:-0}" == 1 ]] && exit 0
+echo "PLAY RECAP *****"
+while read -r h; do [[ -n "$h" && "$h" != localhost ]] && printf '%-20s : ok=3    changed=1    unreachable=0    failed=0\n' "$h"; done < "$limit"
+STUB
+chmod +x "$T/stubs/"*
+out="$(PATH="$T/stubs:$PATH" INVENTORY=x SHARD_SIZE=2 LOG_DIR="$T/shard/logs" bash "$T/shard/deploy/shard.sh" 4 5 2>&1)"; rc=$?
+ran="$(cat "$T"/shard/logs/*.log 2>/dev/null | grep -c ' : ok=')"
+if [[ $rc -eq 0 && "$ran" == 4 ]] && grep -q -- '--limit @' "$T"/shard/logs/shard_000.log; then
+  pass "shard.sh deploys every discovered instance across shards with --limit"
+else
+  fail "shard.sh did not deploy the 4 instances (rc=$rc, ran=$ran): $(printf '%s' "$out" | tail -3)"
+fi
+rm -rf "$T/shard/logs"
+PATH="$T/stubs:$PATH" INVENTORY=x STUB_EMPTY=1 LOG_DIR="$T/shard/logs" bash "$T/shard/deploy/shard.sh" >/dev/null 2>&1
+check "shard.sh fails when nothing is discovered" "[[ $? -ne 0 ]]"
+rm -rf "$T/shard/logs"
+PATH="$T/stubs:$PATH" INVENTORY=x STUB_NORECAP=1 SHARD_SIZE=2 LOG_DIR="$T/shard/logs" bash "$T/shard/deploy/shard.sh" >/dev/null 2>&1
+check "shard.sh fails a shard that ran against no hosts" "[[ $? -ne 0 ]]"
+
+# --------------------------------------------------------------- runtime ----
 IMAGE="${IMAGE:-}"
 if [[ -z "$IMAGE" ]]; then
   skip "runtime checks: set IMAGE=<image ref> to run them"
 elif ! docker info >/dev/null 2>&1; then
   skip "runtime checks: docker is not available"
 else
-  in_image() { docker run --rm --platform linux/amd64 --entrypoint bash "$IMAGE" -c "$1" 2>&1; }
+  D=(docker run --rm --platform linux/amd64)
+  in_image() { "${D[@]}" --entrypoint bash "$IMAGE" -c "$1" 2>&1; }
+  FAKE_KEYS=(-e AWS_ACCESS_KEY_ID=AKIAEXAMPLE0000000 -e AWS_SECRET_ACCESS_KEY=x -e AWS_DEFAULT_REGION=us-east-1)
+  cp customer_input.yaml.example "$T/customer_input.yaml"
 
-  # 4. Every collection the playbooks need is visible to Ansible.
+  out="$(in_image 'ansible --version')"
+  check "image: ansible-core is 2.16" "grep -qE 'core 2\.16\.' <<<\"\$out\""
   out="$(in_image 'ansible-galaxy collection list')"
   for c in amazon.aws community.aws ansible.windows community.windows; do
-    if grep -qE "^$c +[0-9]" <<<"$out"; then
-      pass "image: $c is on the collections path"
-    else
-      fail "image: $c is not visible to Ansible"
-    fi
+    check "image: $c is on the collections path" "grep -qE '^$c +[0-9]' <<<\"\$out\""
   done
+  out="$(in_image 'command -v session-manager-plugin && session-manager-plugin --version')"
+  check "image: the Session Manager plugin for Windows over SSM is installed" "grep -q '/session-manager-plugin' <<<\"\$out\""
 
-  # 5. The aws_ec2 inventory plugin loads. With dummy credentials the run must
-  #    fail on AWS authentication, never on an unknown plugin.
   out="$(in_image 'AWS_ACCESS_KEY_ID=AKIAEXAMPLE AWS_SECRET_ACCESS_KEY=x AWS_DEFAULT_REGION=us-east-1 ansible-inventory -i inventory/aws_ec2.yaml --list')"
-  if grep -qi "unknown plugin" <<<"$out"; then
-    fail "image: amazon.aws.aws_ec2 inventory plugin does not load"
-  else
-    pass "image: amazon.aws.aws_ec2 inventory plugin loads"
-  fi
-
-  # 6. Both playbooks pass a syntax check, which resolves every module name.
+  check "image: amazon.aws.aws_ec2 inventory plugin loads" "! grep -qi 'unknown plugin' <<<\"\$out\""
   for pb in deploy.yaml cleanup.yaml; do
-    if in_image "ansible-playbook --syntax-check -i localhost, $pb" >/dev/null; then
-      pass "image: $pb passes --syntax-check"
-    else
-      fail "image: $pb fails --syntax-check"
-    fi
+    out="$(in_image "ansible-playbook --syntax-check -i localhost, $pb -e @customer_input.yaml.example")"; rc=$?
+    check "image: $pb passes --syntax-check" "[[ $rc -eq 0 ]]"
+    check "image: no collection says it does not support this ansible-core ($pb)" "! grep -q 'does not support Ansible version' <<<\"\$out\""
   done
+  out="$(in_image "ANSIBLE_CONFIG=/work/deploy/tuned-ansible.cfg ansible-playbook --syntax-check -i localhost, deploy.yaml -e @customer_input.yaml.example")"; rc=$?
+  check "image: deploy.yaml loads under deploy/tuned-ansible.cfg" "[[ $rc -eq 0 ]]"
 
-  # 7. The entrypoint refuses to deploy without customer_input.yaml.
-  out="$(docker run --rm --platform linux/amd64 "$IMAGE" deploy 2>&1)"
-  if grep -q "Mount customer_input.yaml" <<<"$out"; then
-    pass "image: deploy without customer_input.yaml says what to mount"
-  else
-    fail "image: deploy without customer_input.yaml did not stop with the mount hint"
-  fi
+  out="$(in_image 'ls -a /work; find /usr/share/ansible/collections -name "*.pem" -o -name "*.pfx" | wc -l')"
+  check "image: no .git, no customer_input.yaml, no test fixture keys" \
+    "! grep -qxE '\\.git|customer_input\\.yaml' <<<\"\$out\" && [[ \"\$(tail -1 <<<\"\$out\" | tr -d ' ')\" == 0 ]]"
+
+  out="$("${D[@]}" --user 1000:1000 --entrypoint bash "$IMAGE" -c 'cd /work && ansible-galaxy collection list && ansible-playbook --syntax-check -i localhost, deploy.yaml -e @customer_input.yaml.example' 2>&1)"; rc=$?
+  check "image: a non-root user can load the collections and parse the playbooks" "[[ $rc -eq 0 ]] && grep -q amazon.aws <<<\"\$out\""
+
+  out="$(in_image 'cd /work
+printf "[os_ubuntu]\nu1\n" > inventory/_probe.ini
+cat > playbooks/_probe.yaml <<P
+- hosts: u1
+  gather_facts: no
+  connection: local
+  vars_files: [../vars/cloudlens.yaml]
+  tasks:
+    - debug: {msg: "INSTALLER={{ local_installer_path }} CA={{ local_ca_path }}"}
+P
+ansible-playbook -i inventory/_probe.ini playbooks/_probe.yaml -e @customer_input.yaml.example')"
+  check "image: a relative installer_path resolves under /work/files" \
+    "grep -q 'INSTALLER=/work/playbooks/../files/cloudlens-win-sensor' <<<\"\$out\""
+  check "image: a relative local_ca_path resolves under /work/files" \
+    "grep -q 'CA=/work/playbooks/../files/cloudlenscerts.crt' <<<\"\$out\""
+
+  out="$("${D[@]}" -v "$T/customer_input.yaml:/work/customer_input.yaml:ro" "${FAKE_KEYS[@]}" "$IMAGE" deploy 2>&1)"; rc=$?
+  check "image: deploy with bad AWS keys exits non-zero at discovery" \
+    "[[ $rc -ne 0 ]] && grep -q 'AWS discovery failed' <<<\"\$out\""
+  out="$("${D[@]}" -v "$T/customer_input.yaml:/work/customer_input.yaml:ro" "$IMAGE" deploy 2>&1)"; rc=$?
+  check "image: deploy with no credentials says which to set" "[[ $rc -ne 0 ]] && grep -q 'Set AWS credentials' <<<\"\$out\""
+  mkdir -p "$T/emptydir/customer_input.yaml"
+  out="$("${D[@]}" -v "$T/emptydir/customer_input.yaml:/work/customer_input.yaml" "${FAKE_KEYS[@]}" "$IMAGE" deploy 2>&1)"; rc=$?
+  check "image: a missing customer_input.yaml (Docker made a folder) is named as such" "[[ $rc -ne 0 ]] && grep -q 'is a directory' <<<\"\$out\""
+  out="$("${D[@]}" "${FAKE_KEYS[@]}" "$IMAGE" inventory 2>&1)"; rc=$?
+  check "image: inventory with bad credentials exits non-zero" "[[ $rc -ne 0 ]]"
+
+  # Past discovery: stub the ansible commands to see what deploy runs.
+  mkdir -p "$T/img"
+  cat > "$T/img/ansible-inventory" <<'STUB'
+#!/bin/sh
+if [ "${STUB_EMPTY:-0}" = 1 ]; then echo '{"_meta":{"hostvars":{}}}'; exit 0; fi
+echo '{"_meta":{"hostvars":{"i1":{},"i2":{},"i3":{}}},"os_ubuntu":{"hosts":["i1"]},"os_rhel":{"hosts":["i2"]},"os_windows":{"hosts":["i3"]}}'
+STUB
+  printf '#!/bin/sh\necho "PLAYBOOK ARGV: $*"\n' > "$T/img/ansible-playbook"
+  chmod +x "$T/img/"*
+  STUBS=(-v "$T/img/ansible-inventory:/usr/local/bin/ansible-inventory:ro" -v "$T/img/ansible-playbook:/usr/local/bin/ansible-playbook:ro")
+  out="$("${D[@]}" "${STUBS[@]}" -e STUB_EMPTY=1 -v "$T/customer_input.yaml:/work/customer_input.yaml:ro" "${FAKE_KEYS[@]}" "$IMAGE" deploy 2>&1)"; rc=$?
+  check "image: zero matching instances is an error that names the filters" "[[ $rc -ne 0 ]] && grep -q 'No instance matched' <<<\"\$out\""
+  out="$("${D[@]}" "${STUBS[@]}" -v "$T/customer_input.yaml:/work/customer_input.yaml:ro" "${FAKE_KEYS[@]}" "$IMAGE" deploy 2>&1)"; rc=$?
+  check "image: deploy runs the playbook on the inventory rendered from customer_input.yaml" \
+    "[[ $rc -eq 0 ]] && grep -q 'PLAYBOOK ARGV: -i /tmp/cloudlens-inventory/generated.aws_ec2.yaml deploy.yaml' <<<\"\$out\""
+  check "image: 3 instances get the auto-tuned 20 forks" "grep -q -- '--forks 20' <<<\"\$out\""
+  out="$("${D[@]}" "${STUBS[@]}" -e ANSIBLE_FORKS=7 -v "$T/customer_input.yaml:/work/customer_input.yaml:ro" "${FAKE_KEYS[@]}" "$IMAGE" deploy 2>&1)"
+  check "image: ANSIBLE_FORKS overrides the auto-tuned forks" "grep -q -- '--forks 7' <<<\"\$out\""
+
+  mkdir -p "$T/ssh"
+  ssh-keygen -q -t ed25519 -N '' -f "$T/ssh/id_rsa" >/dev/null 2>&1
+  printf 'Host github.com\n  AddKeysToAgent yes\n  UseKeychain yes\n' > "$T/ssh/config"
+  out="$("${D[@]}" -v "$T/ssh:/root/.ssh:ro" "$IMAGE" ansible all -i 127.0.0.1, -m ping -e ansible_ssh_private_key_file=/root/.ssh/id_rsa 2>&1)"
+  check "image: a mounted ~/.ssh/config with UseKeychain does not break SSH" \
+    "! grep -qi 'Bad configuration option' <<<\"\$out\" && grep -qiE 'refused|timed out|unreachable' <<<\"\$out\""
+
+  out="$("${D[@]}" "$IMAGE" shell -c 'echo shell-ok' 2>&1)"
+  check "image: shell mode passes its arguments to bash" "grep -q shell-ok <<<\"\$out\""
 fi
 
 printf '\n%d PASS, %d FAIL\n' "$PASS" "$FAIL"

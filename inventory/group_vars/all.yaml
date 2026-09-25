@@ -18,7 +18,11 @@ project_key: "{{ cloudlens.project_key }}"
 custom_tags: "{{ cloudlens.custom_tags }}"
 cloudlens_agent_container_name: "{{ cloudlens.agent_container_name | default('cloudlens-agent') }}"
 registry_type: "{{ cloudlens.registry_type | default('insecure') }}"
-local_ca_path: "{{ cloudlens.local_ca_path | default('files/cloudlenscerts.crt') }}"
+# Relative to the repo root (/work in Docker), like the Windows installer path;
+# copy/win_copy would otherwise look under playbooks/files/ and miss it.
+local_ca_path: >-
+  {%- set p = (cloudlens.local_ca_path | default('files/cloudlenscerts.crt', true)) | expanduser -%}
+  {{ p if p.startswith('/') else (playbook_dir ~ '/../' ~ p) }}
 ca_cert_dir: "{{ cloudlens.ca_cert_dir | default('/etc/ssl/certs') }}"
 # Follows registry_type unless set explicitly, so the two CAN differ
 # (e.g. secure registry pull but no cert verification while testing).
