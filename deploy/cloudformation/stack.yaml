@@ -1091,6 +1091,19 @@ Outputs:
   SharedVpcId:
     Description: VPC the stack deployed into.
     Value: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+  SharedSubnetId:
+    Description: Management subnet the appliances live in.
+    Value: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+  SharedSecurityGroupId:
+    Description: Security group on the appliances.
+    Value: !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+  JoinThisNetwork:
+    Description: Parameters to launch another appliance beside this stack, in the same network, from a single-product Launch Stack button or the CLI's --existing-vpc-id.
+    Value: !Sub
+      - "ExistingVpcId=${V} ExistingSubnetId=${S} ExistingSecurityGroupId=${G}"
+      - V: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+        S: !If [CreateVpc, !Ref MgmtSubnet, !Ref ExistingSubnetId]
+        G: !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
   KeyPairUsed:
     Description: EC2 key pair the instances were launched with.
     Value: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]

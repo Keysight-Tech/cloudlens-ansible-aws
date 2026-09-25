@@ -327,6 +327,27 @@ Resources:
       InstanceId: !Ref KvoInstance
 
 Outputs:
+  # The three ids another appliance needs to land in this one's network. A
+  # customer who launched the KVO from its own button and then wants a KVO
+  # or vPB beside it had no way to find them short of the VPC console; the
+  # full-stack template already exposes its VPC, and a stack that hides its
+  # network is a stack that gets a second VPC built next to it.
+  VpcId:
+    Description: VPC this appliance lives in (created by this stack, or the one you supplied).
+    Value: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+  SubnetId:
+    Description: Subnet this appliance lives in.
+    Value: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
+  SecurityGroupId:
+    Description: Security group on this appliance.
+    Value: !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
+  JoinThisNetwork:
+    Description: Parameters to launch a KVO or vPB beside this appliance, in the same network, from their Launch Stack buttons or the CLI.
+    Value: !Sub
+      - "ExistingVpcId=${V} ExistingSubnetId=${S} ExistingSecurityGroupId=${G}"
+      - V: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+        S: !If [CreateVpc, !Ref Subnet, !Ref ExistingSubnetId]
+        G: !If [CreateSecurityGroup, !Ref SecurityGroup, !Ref ExistingSecurityGroupId]
   KeyPairUsed:
     Description: EC2 key pair the instances were launched with.
     Value: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]

@@ -3206,9 +3206,13 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
   INFRA_CHOICE="new"
   if [[ "${infra_choice:-1}" == "2" ]]; then
     INFRA_CHOICE="existing"
-    echo "  Your VPCs:"
+    # The fourth column is the CloudFormation stack that built the VPC, when
+    # one did: a VPC from an earlier CloudLens launch shows up as CloudLens's
+    # own, so an operator adding a KVO or vPB lands it beside the vController
+    # instead of building a second network next to it.
+    echo "  Your VPCs (Stack = the CloudFormation stack that built it, if any):"
     aws ec2 describe-vpcs --region "$REGION" \
-      --query 'Vpcs[].[VpcId,CidrBlock,Tags[?Key==`Name`]|[0].Value]' \
+      --query 'Vpcs[].{VpcId:VpcId,Cidr:CidrBlock,Name:Tags[?Key==`Name`]|[0].Value,Stack:Tags[?Key==`aws:cloudformation:stack-name`]|[0].Value}' \
       --output table 2>/dev/null | sed 's/^/  /' || true
     read -rp "  VPC id for the CloudLens appliances: " EXISTING_VPC_ID || true
     if [[ -n "$EXISTING_VPC_ID" ]]; then

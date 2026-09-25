@@ -15,7 +15,10 @@ FAIL=0
 pass() { printf 'PASS %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-TEMPLATES=(deploy/cloudformation/*.yaml)
+# TEMPLATE_DIR points the suite at another set of templates; that is how a
+# check is proven to go red against the version before it.
+TEMPLATE_DIR="${TEMPLATE_DIR:-deploy/cloudformation}"
+TEMPLATES=("$TEMPLATE_DIR"/*.yaml)
 
 # ---- 1. cfn-lint, errors only -------------------------------------------
 # Warnings are tolerated (the existing ones are about parameters that default
@@ -43,7 +46,7 @@ fi
 # attachments, so a template that does this is a race that rolls whole stacks
 # back. Launching is the only way to see it, which is why it reached a customer.
 python3 - <<'PY'
-import glob, sys, yaml
+import glob, os, sys, yaml
 
 class CfnLoader(yaml.SafeLoader):
     """CloudFormation YAML uses !Ref, !GetAtt, !If and friends. Their meaning
@@ -68,7 +71,7 @@ def ref_name(v):
     return None
 
 bad = []
-for path in sorted(glob.glob("deploy/cloudformation/*.yaml")):
+for path in sorted(glob.glob(os.environ.get("TEMPLATE_DIR","deploy/cloudformation")+"/*.yaml")):
     res = (yaml.load(open(path), Loader=CfnLoader) or {}).get("Resources") or {}
 
     # Instances that are given an extra interface by a separate attachment,
@@ -113,7 +116,7 @@ fi
 # RegionMap (a Keysight image, unlike the SSM-resolved public test AMIs) has
 # to declare the override on its root device.
 python3 - <<'PY'
-import glob, sys, yaml
+import glob, os, sys, yaml
 
 class CfnLoader(yaml.SafeLoader):
     pass
@@ -139,7 +142,7 @@ def from_region_map(image):
     return False
 
 bad = []
-for path in sorted(glob.glob("deploy/cloudformation/*.yaml")):
+for path in sorted(glob.glob(os.environ.get("TEMPLATE_DIR","deploy/cloudformation")+"/*.yaml")):
     res = (yaml.load(open(path), Loader=CfnLoader) or {}).get("Resources") or {}
     for name, r in res.items():
         if r.get("Type") != "AWS::EC2::Instance":
@@ -166,6 +169,46 @@ if [[ $? -eq 0 ]]; then
 else
   fail "an instance built from a Keysight image would leave its root disk behind"
 fi
+
+# ---- 4. Every stack tells you how to land another appliance beside it -------
+# Each single-product template takes ExistingVpcId, ExistingSubnetId and
+# ExistingSecurityGroupId, so a KVO or vPB can join the network a vController
+# already lives in. That only helps if the first stack SAYS what its network
+# is: without VpcId, SubnetId and SecurityGroupId in its Outputs the customer
+# is back in the VPC console, and the second stack builds its own VPC next to
+# the first. The full stack has exposed SharedVpcId since the start; it now
+# names the subnet and security group too, plus one JoinThisNetwork line that
+# can be pasted into the next launch.
+python3 - <<'PY'
+import glob, os, sys, yaml
+
+class CfnLoader(yaml.SafeLoader):
+    pass
+CfnLoader.add_multi_constructor("!", lambda l, s, n: {"__tag__": n.tag})
+
+want_product = {"VpcId", "SubnetId", "SecurityGroupId", "JoinThisNetwork"}
+want_stack = {"SharedVpcId", "SharedSubnetId", "SharedSecurityGroupId", "JoinThisNetwork"}
+join_params = {"ExistingVpcId", "ExistingSubnetId", "ExistingSecurityGroupId"}
+bad = []
+tdir = os.environ.get("TEMPLATE_DIR", "deploy/cloudformation")
+for path in sorted(glob.glob(tdir + "/*.yaml")):
+    t = yaml.load(open(path), Loader=CfnLoader)
+    name = os.path.basename(path)
+    outs = set((t.get("Outputs") or {}).keys())
+    params = set((t.get("Parameters") or {}).keys())
+    want = want_stack if name == "stack.yaml" else want_product
+    missing = want - outs
+    if missing:
+        bad.append(f"{name}: outputs missing {sorted(missing)}")
+    if name != "stack.yaml" and not join_params <= params:
+        bad.append(f"{name}: cannot join an existing network, parameters missing {sorted(join_params - params)}")
+if bad:
+    for b in bad:
+        print("FAIL network outputs: " + b)
+    sys.exit(1)
+print("PASS every template outputs its VpcId, SubnetId, SecurityGroupId and a JoinThisNetwork line; every product template can join an existing network")
+PY
+rc=$?; if [[ $rc -eq 0 ]]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
 
 printf '\n%d PASS, %d FAIL\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]]
