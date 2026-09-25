@@ -31,6 +31,17 @@ Three ways to deploy vController + KVO (optional) + vPB (optional) + sensors end
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
 ```
 
+**One network, every appliance.** The full stack builds a single VPC with
+management, data and tool subnets and puts the vController, the KVO and the
+vPB in it. To add an appliance later beside an existing deployment, take the
+ids the stack prints in its Outputs (`SharedVpcId`, `SharedSubnetId`,
+`SharedSecurityGroupId`, or the one `JoinThisNetwork` line that carries all
+three) and hand them to a single-product Launch Stack button as
+`ExistingVpcId`, `ExistingSubnetId` and `ExistingSecurityGroupId`, or to the
+command line as `--existing-vpc-id`. Every single-product stack prints the
+same three ids, so a vController launched on its own can have a KVO or vPB
+placed beside it instead of in a VPC of its own.
+
 **To remove everything that deployment created**, when you are done. Put your
 stack name in. It audits first, shows what it found with sizes and cost, and
 asks before deleting anything:
