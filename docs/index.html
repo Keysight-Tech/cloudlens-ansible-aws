@@ -449,6 +449,7 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
         </div>
 
         <p class="full-stack-note">Prompts for region and key pair, accepts Marketplace terms, deploys vController, waits for initialization, optionally adds KVO and vPB, then chains to sensor deployment. Run from AWS CloudShell or any machine with the AWS CLI.</p>
+        <p class="full-stack-note"><strong>One network, every appliance.</strong> The full stack builds a single VPC with management, data and tool subnets and puts the vController, the KVO and the vPB in it; nothing here ever builds a second network. To add an appliance later beside an existing deployment, read the three ids the stack prints in its Outputs, <code>SharedVpcId</code>, <code>SharedSubnetId</code> and <code>SharedSecurityGroupId</code> (one <code>JoinThisNetwork</code> line carries all three), and hand them to a single-product Launch Stack button as <code>ExistingVpcId</code>, <code>ExistingSubnetId</code> and <code>ExistingSecurityGroupId</code>, or to the command line as <code>--existing-vpc-id</code>. Every single-product stack now prints the same three ids, so a vController launched on its own can have a KVO or vPB placed beside it instead of in a VPC of its own.</p>
 
         <div class="full-stack-paths">
           <div class="path-card">
