@@ -30,5 +30,10 @@ redhat_ca_cert_dir: "/etc/pki/ca-trust/source/anchors"
 # missing installer fails early with a clear message instead of silently at
 # the copy step (the reason Windows never registered before).
 cloudlens_installer_url: "{{ windows.installer_url | default('') }}"
-local_installer_path: "{{ windows.installer_path | default(playbook_dir + '/../files/cloudlens-win-sensor-6.13.0.359.exe') }}"
+# A relative installer_path is relative to the repo root (/work in the Docker
+# image), where files/ lives. Lookups and win_copy on their own resolve a
+# relative path against playbooks/files/, so "files/..." never matched.
+local_installer_path: >-
+  {%- set p = (windows.installer_path | default('files/cloudlens-win-sensor-6.13.0.359.exe', true)) | expanduser -%}
+  {{ p if p.startswith('/') else (playbook_dir ~ '/../' ~ p) }}
 cloudlens_installer_filename: "{{ windows.installer_filename | default('cloudlens-win-sensor-6.13.0.359.exe') }}"

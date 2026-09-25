@@ -30,9 +30,10 @@ azure_sp_creds.json
 .azure/
 deploy-profile-*.env
 load_aws_creds.sh
-files/*.exe
-files/*.msi
-files/cloudlenscerts.crt
+files/*
+!files/.gitkeep
+logs/
+inventory/generated.*
 
 # terraform and deploy-stack run artefacts
 **/.terraform/

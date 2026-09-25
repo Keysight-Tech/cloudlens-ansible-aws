@@ -527,24 +527,25 @@ aws cloudformation delete-stack --stack-name cloudlens-test-vms --region us-east
           <summary><span class="sc-t">Run from Docker</span></summary>
           <div class="sc-body">
         
-        <p class="lede">Pinned image with Ansible, the AWS SDKs, and pywinrm. Works from your laptop, a CI runner, or any container host.</p>
+        <p class="lede">A ready-built image with Ansible, the AWS SDKs, the Session Manager plugin and pywinrm. Works from your laptop, a CI runner, or any container host.</p>
 
         <div class="full-stack-cmd-wrap">
-          <pre id="docker-cmd"><code>docker run --rm -it \
-  -v $(pwd)/customer_input.yaml:/work/customer_input.yaml \
-  -v $HOME/.ssh:/root/.ssh:ro \
+          <pre id="docker-cmd"><code>docker run --rm -it --platform linux/amd64 \
+  -v "$(pwd)/customer_input.yaml:/work/customer_input.yaml:ro" \
+  -v "$(pwd)/files:/work/files:ro" \
+  -v "$HOME/.ssh/id_rsa:/root/.ssh/id_rsa:ro" \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-  -e AWS_DEFAULT_REGION \
+  -e AWS_SESSION_TOKEN -e AWS_DEFAULT_REGION \
   ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
           <button class="copy-btn" data-copy="docker-cmd" type="button" aria-label="Copy docker run command">Copy</button>
         </div>
 
-        <p class="full-stack-note">AWS credentials are passed via environment variables (use <code>scripts/setup_aws_creds.sh</code> to configure a profile). Same behavior as the CloudShell quickstart, just packaged for CI/CD or repeat customer deployments.</p>
+        <p class="full-stack-note">Run it from the folder that holds <code>customer_input.yaml</code>; discovery uses the <code>aws:</code> settings in it, exactly like the CloudShell quickstart. AWS credentials come in as environment variables (<code>AWS_SESSION_TOKEN</code> only for temporary ones), or use <code>-e AWS_PROFILE -v "$HOME/.aws:/root/.aws:ro"</code>. Windows instances are reached over SSM, so no WinRM password is needed; <code>files/</code> is only for a pre-staged Windows installer and can stay empty. Only the key file is mounted, not all of <code>~/.ssh</code>: a mounted <code>~/.ssh/config</code> is ignored inside the container. The container exits non-zero when the credentials fail, when no instance matches, or when a host fails. Add <code>-v "$(pwd)/logs:/work/logs"</code> to keep <code>ansible.log</code>.</p>
 
         <div class="full-stack-paths">
           <div class="path-card">
             <h4><span class="path-icon" aria-hidden="true">&#128230;</span> Image registry</h4>
-            <p>Image is published to GitHub Container Registry on every push to <code>main</code>: <code>ghcr.io/keysight-tech/cloudlens-ansible-aws</code>.</p>
+            <p>Rebuilt, smoke-tested and published to <code>ghcr.io/keysight-tech/cloudlens-ansible-aws</code> whenever a file in the image changes on <code>main</code>. Every build is also tagged <code>main-&lt;sha&gt;</code>, so a pipeline can pin one.</p>
             <a class="btn btn-secondary" href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/pkgs/container/cloudlens-ansible-aws" target="_blank" rel="noopener">View on ghcr.io</a>
           </div>
           <div class="path-card">
@@ -556,7 +557,14 @@ docker build -t cloudlens-ansible-aws .</code></pre>
           </div>
           <div class="path-card">
             <h4><span class="path-icon" aria-hidden="true">&#129302;</span> CI/CD pattern</h4>
-            <p>Drop the same <code>docker run</code> into GitHub Actions, GitLab CI, Jenkins, or CodeBuild. Mount your <code>customer_input.yaml</code> as a build artifact.</p>
+            <p>GitHub Actions, GitLab CI, Jenkins and CodeBuild have no terminal, so drop <code>-it</code>, and pin a <code>main-&lt;sha&gt;</code> tag instead of <code>latest</code>:</p>
+            <pre><code>docker run --rm --platform linux/amd64 \
+  -v "$PWD/customer_input.yaml:/work/customer_input.yaml:ro" \
+  -v "$PWD/files:/work/files:ro" \
+  -v "$HOME/.ssh/id_rsa:/root/.ssh/id_rsa:ro" \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_SESSION_TOKEN -e AWS_DEFAULT_REGION \
+  ghcr.io/keysight-tech/cloudlens-ansible-aws:main-&lt;sha&gt;</code></pre>
           </div>
         </div>
       </div>
@@ -673,8 +681,14 @@ docker build -t cloudlens-ansible-aws .</code></pre>
                   </div>
                   <div class="path-card">
                     <h4><span class="path-emoji" aria-hidden="true">&#128011;</span> Tier 3: Docker</h4>
-                    <p>Reproducible. Pinned versions. Best for: CI or repeat deployments.</p>
-<pre><code>docker run --rm -it -v $(pwd)/customer_input.yaml:/work/customer_input.yaml ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
+                    <p>The same image every run. Best for: CI or repeat deployments. Details in <a href="#docker">Run from Docker</a>.</p>
+<pre><code>docker run --rm -it --platform linux/amd64 \
+  -v "$(pwd)/customer_input.yaml:/work/customer_input.yaml:ro" \
+  -v "$(pwd)/files:/work/files:ro" \
+  -v "$HOME/.ssh/id_rsa:/root/.ssh/id_rsa:ro" \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+  -e AWS_SESSION_TOKEN -e AWS_DEFAULT_REGION \
+  ghcr.io/keysight-tech/cloudlens-ansible-aws:latest</code></pre>
                   </div>
                 </div>
               </div>
