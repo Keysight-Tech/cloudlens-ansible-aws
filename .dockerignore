@@ -1,0 +1,47 @@
+# What "COPY . /work/" must never pick up from a working copy.
+#
+# Two reasons. First, correctness: a laptop that has run quickstart.sh has a
+# collections/ directory, so a local build silently worked while the CI build
+# of the same commit, which has no such directory, shipped an image that could
+# not load amazon.aws. Excluding it makes both builds identical. Second,
+# secrets: customer_input.yaml holds sensor keys and Windows passwords, and
+# this image is pushed to a public registry.
+.git
+.claude
+.DS_Store
+.vscode
+.idea
+
+# local ansible-galaxy install target and runtime state
+collections/
+.venv/
+.ansible/
+.ansible_facts_cache/
+**/ansible.log
+*.retry
+__pycache__/
+*.pyc
+
+# customer-specific input, credentials and rendered inventory
+customer_input.yaml
+inventory/group_vars/secrets.yaml
+inventory/generated.aws_ec2.yaml
+azure_sp_creds.json
+.azure/
+deploy-profile-*.env
+load_aws_creds.sh
+files/*.exe
+files/*.msi
+files/cloudlenscerts.crt
+
+# terraform and deploy-stack run artefacts
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+crash.log
+crash.*.log
+cloudlens-deploy-stack.log
+cloudlens-deploy-summary.txt
+.cloudlens-deploy-*.state
