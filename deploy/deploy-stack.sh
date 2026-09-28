@@ -6061,10 +6061,22 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
       warn "Skipping; re-run with --only eks after the key exists."
       state_phase eks failed "no project key"
     else
-      # Pods reach the vController over the network the CLUSTER has: the public
-      # address when the manager has one, else its private address (the customer
-      # then needs VPC reachability, which the engine's probe surfaces).
+      # Pods reach the vController over the network the CLUSTER has. A cluster
+      # in the stack's own VPC must use the PRIVATE address: the stack SG admits
+      # 443 from the VPC CIDR and the admin CIDR only, and a pod that goes out
+      # through the internet gateway to the public address arrives from the
+      # node's public IP and is refused ("Unable to register in to the CloudLens
+      # management service", seen live 2026-09-28 on the sample cluster). A
+      # cluster elsewhere uses the public address and needs its egress IPs in
+      # the admin CIDR, which the engine's probe surfaces.
       _eks_clms="${CLMS_PUBLIC_IP:-$CLMS_PRIVATE_IP}"
+      if [[ "$EKS_SAMPLE" == "true" && -n "${CLMS_PRIVATE_IP:-}" ]]; then
+        _eks_clms="$CLMS_PRIVATE_IP"
+      elif [[ -n "$EKS_CLUSTER" && -n "${CLMS_PRIVATE_IP:-}" && -n "${STACK_VPC_ID:-}" ]]; then
+        _eks_vpc=$(probe aws eks describe-cluster --region "$REGION" --name "$EKS_CLUSTER" \
+                   --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null)
+        [[ "$_eks_vpc" == "$STACK_VPC_ID" ]] && _eks_clms="$CLMS_PRIVATE_IP"
+      fi
       _eks_args=(--region "$REGION" --clms-ip "$_eks_clms" --project-key "$_eks_key" \
                  --mode "$EKS_MODE" --stack-name "$STACK_NAME" \
                  --custom-tags "platform=eks,stack=${STACK_NAME}" --yes)
