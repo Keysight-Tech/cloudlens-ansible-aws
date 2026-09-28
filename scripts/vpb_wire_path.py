@@ -230,6 +230,11 @@ def main():
     ap.add_argument("--collection", required=True, help="cloud collection = traffic source")
     ap.add_argument("--cloud-config", required=True, help="cloud config that owns the collection")
     ap.add_argument("--c2dl", default="vpb-c2dl")
+    ap.add_argument("--link-config", default="",
+                    help="attach the C2DL to THIS named cloud config (any type, e.g. a "
+                         "Kubernetes one) instead of every AWS-type config. KVO allows "
+                         "one cloud config per link, so a second vPB serving a second "
+                         "config needs its own link, bound here.")
     ap.add_argument("--tool", default="vpb-egress-tool")
     ap.add_argument("--policy", default="vpb-traffic-policy")
     # A packet-capture host on the egress subnet sees NOTHING from the LOCAL
@@ -390,51 +395,73 @@ def main():
 
     # 6. associate the C2DL to the cloud config (FULL awsConfiguration round-trip)
     log("6/7 updateCloudConfig deviceLinks")
-    q = gql(base, tok, """{ cloudConfigs { name settings {
-              cloudPresence { name } deviceLinks { name }
-              awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
-                mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
-                tags { key value }
-                availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
-              None, verify)
-    # The deviceLink MUST land on the AWS-type cloud config (the one
-    # kvo_aws_mirror.py creates, e.g. "aws-mirror"), NOT on --cloud-config, which
-    # the deploy sets to the sensor CustomCloud ("cloudlens-aws"). A CustomCloud
-    # has no awsConfiguration, so attaching there was silently skipped and the AWS
-    # config never got its deviceLink -> KVO's mirror monitoring-policy commit had
-    # an incomplete path and ZERO mirror sessions were cut. So pick the AWS config
-    # by the presence of awsConfiguration, not by the passed name.
-    configs = q["data"]["cloudConfigs"]
-    aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
-    if not aws_configs:
-        # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
-        # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
-        # there is simply no AWS cloud config to attach the C2DL to.
-        log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
-        log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
-        return 0
-    # EVERY AWS config gets the link, not just the first: the deploy builds one
-    # config per tapped VPC (aws-mirror-<vpcid>), and a config without its
-    # deviceLink delivers ZERO packets to the vPB, silently. The already-linked
-    # check keeps re-runs from re-editing a config (an edit rebuilds its vHub
-    # and briefly stops that VPC's mirroring, so it must happen exactly once).
-    for cc in aws_configs:
-        target = cc["name"]
+    if a.link_config:
+        # One named config, any type. KVO enforces one cloud config per Cloud
+        # to Device Link ("There can only be one Cloud Config associated to a
+        # Cloud To Device Link", live 2026-09-28), so the second vPB's link is
+        # attached to exactly the config it serves (the Kubernetes one in the
+        # lab) and never to the AWS mirror config that owns the first link.
+        q = gql(base, tok, "{ cloudConfigs { name cloudConfigType settings { cloudPresence { name } deviceLinks { name } } } }", None, verify)
+        cc = next((c for c in q["data"]["cloudConfigs"] if c["name"] == a.link_config), None)
+        if not cc:
+            log(f"cloud config '{a.link_config}' does not exist in KVO"); return 5
         st = cc["settings"] or {}
         links = {l["name"] for l in (st.get("deviceLinks") or [])}
         if a.c2dl in links:
-            log(f"  '{a.c2dl}' already linked to {target}")
-            continue
-        aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
-        for az in aws.get("availabilityZones", []):
-            for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
-        # deviceLinks is a LIST of name refs, not a single object.
-        settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
-        if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
-        if not step(base, tok, verify, f"link C2DL to cloud config {target}",
-                    "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
-                    {"n": target, "c": cluster, "s": settings}): return 5
-        log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
+            log(f"  '{a.c2dl}' already linked to {a.link_config}")
+        else:
+            settings = {"deviceLinks": [{"name": a.c2dl}]}
+            if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
+            if not step(base, tok, verify, f"link C2DL to cloud config {a.link_config}",
+                        "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                        {"n": a.link_config, "c": cluster, "s": settings}): return 5
+            log(f"  linked C2DL '{a.c2dl}' to cloud config '{a.link_config}' ({cc['cloudConfigType']})")
+    else:
+        q = gql(base, tok, """{ cloudConfigs { name settings {
+                  cloudPresence { name } deviceLinks { name }
+                  awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
+                    mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
+                    tags { key value }
+                    availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
+                  None, verify)
+        # The deviceLink MUST land on the AWS-type cloud config (the one
+        # kvo_aws_mirror.py creates, e.g. "aws-mirror"), NOT on --cloud-config, which
+        # the deploy sets to the sensor CustomCloud ("cloudlens-aws"). A CustomCloud
+        # has no awsConfiguration, so attaching there was silently skipped and the AWS
+        # config never got its deviceLink -> KVO's mirror monitoring-policy commit had
+        # an incomplete path and ZERO mirror sessions were cut. So pick the AWS config
+        # by the presence of awsConfiguration, not by the passed name.
+        configs = q["data"]["cloudConfigs"]
+        aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
+        if not aws_configs:
+            # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
+            # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
+            # there is simply no AWS cloud config to attach the C2DL to.
+            log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
+            log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
+            return 0
+        # EVERY AWS config gets the link, not just the first: the deploy builds one
+        # config per tapped VPC (aws-mirror-<vpcid>), and a config without its
+        # deviceLink delivers ZERO packets to the vPB, silently. The already-linked
+        # check keeps re-runs from re-editing a config (an edit rebuilds its vHub
+        # and briefly stops that VPC's mirroring, so it must happen exactly once).
+        for cc in aws_configs:
+            target = cc["name"]
+            st = cc["settings"] or {}
+            links = {l["name"] for l in (st.get("deviceLinks") or [])}
+            if a.c2dl in links:
+                log(f"  '{a.c2dl}' already linked to {target}")
+                continue
+            aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
+            for az in aws.get("availabilityZones", []):
+                for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
+            # deviceLinks is a LIST of name refs, not a single object.
+            settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
+            if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
+            if not step(base, tok, verify, f"link C2DL to cloud config {target}",
+                        "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                        {"n": target, "c": cluster, "s": settings}): return 5
+            log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
 
     # 7. monitoring policy
     if a.policy in existing("monitoringPolicies"):
