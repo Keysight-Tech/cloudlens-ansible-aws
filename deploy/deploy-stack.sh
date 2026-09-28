@@ -132,6 +132,7 @@ profile_key_allowed() {
     CLOUDLENS_ENABLE_ZONE_TAPPING|CLOUDLENS_ROLLBACK_ON_FAIL|\
     CLOUDLENS_TAPPING|CLOUDLENS_SENSOR_MODE|CLOUDLENS_WORKLOAD_CHOICE|\
     CLOUDLENS_DISCOVERY_TAG_KEY|CLOUDLENS_DISCOVERY_TAG_VALUE|CLOUDLENS_TEST_VMS|\
+    CLOUDLENS_DISCOVER|CLOUDLENS_DISCOVER_REGIONS|CLOUDLENS_DISCOVER_ACCOUNTS|\
     CLOUDLENS_SOURCE_VPCS|CLOUDLENS_COLLECTOR_ZONE|CLOUDLENS_COLLECTOR_MGMT_SUBNET|\
     CLOUDLENS_COLLECTOR_INGRESS_SUBNET|CLOUDLENS_COLLECTOR_EGRESS_SUBNET|\
     CLOUDLENS_COLLECTOR_MGMT_SG|CLOUDLENS_COLLECTOR_INGRESS_SG|CLOUDLENS_COLLECTOR_EGRESS_SG|\
@@ -319,6 +320,13 @@ CLOUDLENS_GRE_KEY="${CLOUDLENS_GRE_KEY:-64}"
 # collector's mirror arrives with key 64, the vPB's processed output with 200.
 CLOUDLENS_EGRESS_GRE_KEY="${CLOUDLENS_EGRESS_GRE_KEY:-200}"
 DISCOVERY_TAG_KEY="${CLOUDLENS_DISCOVERY_TAG_KEY:-cloudlens}"
+# Discovery of tapped VPCs (scripts/discover_workloads.py): find every VPC that
+# holds tagged workloads and propose its collector placement, instead of
+# typing --source-vpc specs by hand. Off unless asked; the interview offers it.
+DISCOVER="${CLOUDLENS_DISCOVER:-}"
+DISCOVER_REGIONS="${CLOUDLENS_DISCOVER_REGIONS:-}"
+DISCOVER_ACCOUNTS="${CLOUDLENS_DISCOVER_ACCOUNTS:-self}"
+DISCOVER_ROLE="${CLOUDLENS_DISCOVER_ROLE:-OrganizationAccountAccessRole}"
 DISCOVERY_TAG_VALUE="${CLOUDLENS_DISCOVERY_TAG_VALUE:-yes}"
 
 # Rollback: when true AND we created the stack this run, on_error deletes it.
@@ -1877,6 +1885,21 @@ no terminal to ask on, so curl | bash stays fully non-interactive:
                             brought up as DPDK data ports on the vPB itself,
                             and that bring-up is not automated.
   --no-wire-vpb-path        Skip the traffic path step
+  --discover                Find the VPCs to tap instead of naming them: scan
+                            every region in --discover-regions (default: the
+                            deploy region) for running instances carrying the
+                            discovery tag, propose the collector placement per
+                            VPC (subnets tagged cloudlens:role=mgmt/ingress/egress,
+                            else three private subnets in the busiest AZ), and
+                            take every COMPLETE proposal as a --source-vpc spec.
+                            Incomplete ones are listed with what to create.
+                            Writes inventory/discovered.json and one replayable
+                            profile per account and region. Read-only.
+  --discover-regions LIST   Regions to scan, comma separated.
+  --discover-accounts MODE  self (default) or organization: every active
+                            account, through --discover-role.
+  --discover-role NAME      Role assumed in the other accounts
+                            (default: OrganizationAccountAccessRole).
   --with-mirror             Also build the AWS mirror fabric (default: no).
                             Builds presence, cloud config, collection, the
                             collector SVM (mirror target), tool, policy and the
@@ -2027,6 +2050,11 @@ while [[ $# -gt 0 ]]; do
     --wire-vpb-path) WIRE_VPB_PATH=true; shift ;;
     --no-wire-vpb-path) WIRE_VPB_PATH=false; shift ;;
     --with-mirror) WITH_MIRROR=true; shift ;;
+    --discover) DISCOVER=true; shift ;;
+    --no-discover) DISCOVER=false; shift ;;
+    --discover-regions) DISCOVER_REGIONS="$2"; shift 2 ;;
+    --discover-accounts) DISCOVER_ACCOUNTS="$2"; shift 2 ;;
+    --discover-role) DISCOVER_ROLE="$2"; shift 2 ;;
     --no-mirror) WITH_MIRROR=false; shift ;;
     --mirror-access-key) MIRROR_ACCESS_KEY="$2"; shift 2 ;;
     --mirror-secret-key) MIRROR_SECRET_KEY="$2"; shift 2 ;;
@@ -3283,6 +3311,50 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   [[ "${_sm:-1}" == "2" ]] && SENSOR_MODE="kvo" || SENSOR_MODE="standalone"
 fi
 
+# Discovery: run scripts/discover_workloads.py and append every COMPLETE spec
+# it proposes to SOURCE_VPC_SPECS. Read-only against AWS. Under curl | bash
+# the repo is not cloned yet at interview time, so the script is fetched.
+discovery_script() {
+  local local_path="${REPO_DIR:-.}/scripts/discover_workloads.py"
+  [[ -f "$local_path" ]] && { echo "$local_path"; return 0; }
+  [[ -f "${SCRIPT_DIR:-.}/../scripts/discover_workloads.py" ]] && { echo "${SCRIPT_DIR}/../scripts/discover_workloads.py"; return 0; }
+  local tmp; tmp="$(mktemp -t discover_workloads.XXXXXX)" || return 1
+  if curl -fsSL "https://raw.githubusercontent.com/${REPO_OWNER:-Keysight-Tech}/${REPO_NAME:-cloudlens-ansible-aws}/main/scripts/discover_workloads.py" -o "$tmp" 2>/dev/null; then
+    echo "$tmp"; return 0
+  fi
+  rm -f "$tmp"; return 1
+}
+
+run_discovery() {
+  local script regions specs n_before
+  script="$(discovery_script)" || { warn "discover_workloads.py is not available (no local copy, download failed)."; return 1; }
+  command -v python3 >/dev/null 2>&1 || { warn "python3 is required for discovery."; return 1; }
+  regions="${DISCOVER_REGIONS:-$REGION}"
+  note "Discovering tagged workloads in ${regions} (${DISCOVER_ACCOUNTS}); read-only."
+  mkdir -p inventory 2>/dev/null || true
+  specs="$(python3 "$script" --regions "$regions" --tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
+             --accounts "$DISCOVER_ACCOUNTS" --role "$DISCOVER_ROLE" --out inventory/discovered.json \
+             --profile-dir . --print-specs)"
+  local rc=$?
+  case "$rc" in
+    0) ;;
+    3) warn "Discovery found nothing tappable for ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE} in ${regions}."; return 3 ;;
+    4) warn "Discovery could not reach AWS (credentials expired?)."; return 4 ;;
+    *) warn "Discovery failed (exit ${rc}); see the messages above."; return "$rc" ;;
+  esac
+  DISCOVERY_RAN=true
+  n_before=${#SOURCE_VPC_SPECS[@]}
+  local s
+  for s in $specs; do
+    case " ${SOURCE_VPC_SPECS[*]+${SOURCE_VPC_SPECS[*]}} " in
+      *" ${s} "*|*" ${s%%:*} "*) ;;           # already named by the operator
+      *) SOURCE_VPC_SPECS+=("$s") ;;
+    esac
+  done
+  ok "Discovery: $(( ${#SOURCE_VPC_SPECS[@]} - n_before )) VPC(s) added with complete collector placement; details in inventory/discovered.json."
+  return 0
+}
+
 # Q4: workloads. Decided HERE, before anything deploys: a run that reaches
 # the sensor phase and only then discovers there is nothing to tap has asked
 # its questions in the wrong order (seen live: the operator was offered test
@@ -3308,8 +3380,12 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
         DISCOVERY_TAG_EXPLICIT=true
       fi
       _wl_default_vpc="${EXISTING_VPC_ID:-the new VPC this deploy builds}"
-      read -rp "  VPC id(s) they live in, comma separated [${_wl_default_vpc}]: " _wv || true
-      if [[ -n "$_wv" ]]; then
+      read -rp "  VPC id(s) they live in, comma separated, or 'find' to discover them [${_wl_default_vpc}]: " _wv || true
+      if [[ "$_wv" == "find" || "$_wv" == "discover" ]]; then
+        _wv=""
+        [[ "$WITH_MIRROR" == "true" ]] && DISCOVER=true || DISCOVER="${DISCOVER:-true}"
+        run_discovery || true
+      elif [[ -n "$_wv" ]]; then
         for _v in ${_wv//,/ }; do SOURCE_VPC_SPECS+=("$_v"); done
       fi
       # Immediate feedback: say NOW how many hosts that selection matches,
@@ -3401,6 +3477,10 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
   fi
 fi
 
+if [[ "$DISCOVER" == "true" && "${DISCOVERY_RAN:-false}" != "true" && "$DRY_RUN" != "true" ]]; then
+  DISCOVERY_RAN=true
+  run_discovery || true
+fi
 ok "Discovery tag: ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}"
 
 # ---------------------------------------------------------------------
@@ -3513,6 +3593,9 @@ write_profile() {
     [[ "$TEST_WINDOWS" == "yes" ]] && _tv+="windows:${WINDOWS_COUNT},"
     echo "CLOUDLENS_TEST_VMS=${_tv%,}"
     echo "CLOUDLENS_SOURCE_VPCS=${SOURCE_VPC_SPECS[*]+${SOURCE_VPC_SPECS[*]}}"
+    echo "CLOUDLENS_DISCOVER=${DISCOVER:-false}"
+    echo "CLOUDLENS_DISCOVER_REGIONS=${DISCOVER_REGIONS}"
+    echo "CLOUDLENS_DISCOVER_ACCOUNTS=${DISCOVER_ACCOUNTS}"
     echo "CLOUDLENS_COLLECTOR_ZONE=${COLLECTOR_ZONE}"
     echo "CLOUDLENS_COLLECTOR_MGMT_SUBNET=${COLLECTOR_MGMT_SUBNET}"
     echo "CLOUDLENS_COLLECTOR_INGRESS_SUBNET=${COLLECTOR_INGRESS_SUBNET}"
