@@ -155,9 +155,18 @@ if [[ "$CREATE_SAMPLE" == "true" ]]; then
       other_az=$("${AWS[@]}" ec2 describe-availability-zones \
         --query 'AvailabilityZones[?ZoneName!=`'"$first_az"'`].ZoneName | [0]' --output text)
       vpc_cidr=$("${AWS[@]}" ec2 describe-vpcs --vpc-ids "$VPC_ID" --query 'Vpcs[0].CidrBlock' --output text)
-      # carve an unused /24 high in the VPC range
+      # carve an unused /24 high in the VPC range: the first free one counting
+      # down from .250, because a fixed .250 collided with a subnet somebody
+      # else had already put there (seen live 2026-09-28).
       base="${vpc_cidr%.*.*}"
-      new_cidr="${base}.250.0/24"
+      used_cidrs=$("${AWS[@]}" ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
+        --query 'Subnets[].CidrBlock' --output text 2>/dev/null | tr '\t' '\n')
+      new_cidr=""
+      for _n in $(seq 250 -1 200); do
+        _c="${base}.${_n}.0/24"
+        grep -qx "$_c" <<<"$used_cidrs" || { new_cidr="$_c"; break; }
+      done
+      [[ -n "$new_cidr" ]] || fail "no free /24 between ${base}.200.0 and ${base}.250.0 for the second-AZ subnet" 5
       note "The VPC is single-AZ; EKS needs two. Adding ${new_cidr} in ${other_az}."
       second_subnet=$("${AWS[@]}" ec2 create-subnet --vpc-id "$VPC_ID" \
         --cidr-block "$new_cidr" --availability-zone "$other_az" \
@@ -173,6 +182,18 @@ if [[ "$CREATE_SAMPLE" == "true" ]]; then
     SUBNET_IDS="${first_subnet},${second_subnet}"
   fi
   note "Cluster subnets: ${SUBNET_IDS}"
+  # A managed nodegroup in a subnet that does not auto-assign public IPs, in
+  # a VPC with no NAT, never joins the cluster: its nodes cannot reach the EKS
+  # API or pull images (Ec2SubnetInvalidConfiguration, seen live 2026-09-28
+  # on the stack's own data subnet). The sample cluster is throwaway and its
+  # subnets already route to the internet gateway, so turn the flag on there.
+  for _sn in ${SUBNET_IDS//,/ }; do
+    if "${AWS[@]}" ec2 modify-subnet-attribute --subnet-id "$_sn" --map-public-ip-on-launch >/dev/null 2>&1; then
+      note "  ${_sn}: auto-assign public IP enabled for the sample nodes"
+    else
+      warn "  ${_sn}: could not enable auto-assign public IP; the nodegroup may not join"
+    fi
+  done
 
   cluster_role="${STACK_NAME}-eks-cluster-role"
   node_role="${STACK_NAME}-eks-node-role"

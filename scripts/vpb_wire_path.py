@@ -60,6 +60,78 @@ def gql(base, token, query, variables, verify):
     try: return r.json()
     except ValueError: return {"errors": [{"message": r.text[:200]}]}
 
+def introspect_input(base, token, verify, type_name):
+    # four levels of ofType: LIST -> NON_NULL -> INPUT_OBJECT is the usual depth
+    q = ('{ __type(name:"%s"){ inputFields { name type { name kind ofType { name kind ofType { name kind ofType { name kind } } } } } } }' % type_name)
+    d = gql(base, token, q, None, verify)
+    t = (d.get("data", {}) or {}).get("__type") or {}
+    return {f["name"]: f for f in (t.get("inputFields") or [])}
+
+
+def unwrap(t):
+    """(kinds seen, innermost named type) for a GraphQL type reference."""
+    kinds, cur = [], t
+    while cur:
+        kinds.append(cur.get("kind"))
+        if cur.get("name"):
+            return kinds, cur["name"]
+        cur = cur.get("ofType")
+    return kinds, None
+
+
+def introspect_enum(base, token, verify, type_name):
+    d = gql(base, token, '{ __type(name:"%s"){ enumValues { name } } }' % type_name, None, verify)
+    t = (d.get("data", {}) or {}).get("__type") or {}
+    return [e["name"] for e in (t.get("enumValues") or [])]
+
+
+def geneve_processing(base, token, verify):
+    """Find how _MonitoringPolicyInput carries header stripping and build the
+    GENEVE value for it. Returns (field_name, value) or (None, reason)."""
+    fields = introspect_input(base, token, verify, "_MonitoringPolicyInput")
+    if not fields:
+        return None, "could not introspect _MonitoringPolicyInput"
+    cands = [n for n in fields if any(k in n.lower() for k in ("process", "strip", "header"))]
+    if not cands:
+        return None, "no processing field on _MonitoringPolicyInput; fields: %s" % sorted(fields)
+    name = cands[0]
+    kind, tname = unwrap(fields[name]["type"])
+    # a list of processing objects, each with a type enum
+    if "LIST" in kind:
+        sub = introspect_input(base, token, verify, tname) if tname else {}
+        # KVO 3.1.0 (found live 2026-09-28): processings is a list of
+        # _MonitoringPolicyTrafficProcessingInput {priority: Int!,
+        # trafficProcessing: _NameReferenceInput!}, and the predefined
+        # trafficProcessings include one named GENEVE. Reference it by name.
+        if "trafficProcessing" in sub:
+            names = [t.get("name") for t in ((gql(base, token, "{ trafficProcessings { name } }", None, verify)
+                                              .get("data", {}) or {}).get("trafficProcessings") or [])]
+            gen = next((n for n in names if n and "GENEVE" in n.upper()), None)
+            if gen:
+                return name, [{"priority": 1, "trafficProcessing": {"name": gen}}]
+            return None, "no GENEVE among KVO's trafficProcessings: %s" % sorted(set(n for n in names if n))
+        tf = next((f for f in sub if f.lower() in ("type", "processingtype", "headerstripping", "stripping")), None)
+        if tf:
+            _k, ename = unwrap(sub[tf]["type"])
+            vals = introspect_enum(base, token, verify, ename) if ename else []
+            gen = next((v for v in vals if "GENEVE" in v.upper()), None)
+            if gen:
+                return name, [{tf: gen}]
+            return None, "%s.%s has no GENEVE value; enum %s = %s" % (name, tf, ename, vals)
+        return None, "%s is a list of %s with fields %s; no type field" % (name, tname, sorted(sub))
+    # an object with named booleans/enums
+    sub = introspect_input(base, token, verify, tname) if tname else {}
+    gf = next((f for f in sub if "geneve" in f.lower()), None)
+    if gf:
+        return name, {gf: True}
+    if "ENUM" in kind:
+        vals = introspect_enum(base, token, verify, tname)
+        gen = next((v for v in vals if "GENEVE" in v.upper()), None)
+        if gen:
+            return name, gen
+    return None, "%s (%s) has fields %s; nothing names GENEVE" % (name, tname, sorted(sub))
+
+
 def _open_crs(base, token, verify):
     q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
     return [r for r in (q.get("data", {}).get("changeRequests") or []) if r["status"] != "Committed"]
@@ -165,6 +237,16 @@ def main():
     # frames, which AWS will not deliver to another instance. Giving the capture
     # host its own REMOTE tool inside the SAME policy tunnels it a copy of
     # exactly what leaves the vPB egress, so "show me the packets" has an answer.
+    # GENEVE stripping on the policy. A firewall behind an AWS Gateway Load
+    # Balancer sees every session wrapped in GENEVE (UDP 6081, with the GWLB's
+    # TLV options); a mirror of its interface carries that wrapper into the
+    # collector and on to the vPB. KVO UG 3.1.0 (Packet Processing): the vPB
+    # supports L2GRE, ERSPAN, GENEVE and VXLAN header stripping, one option at
+    # a time. The GraphQL field that carries it is not in any document, so it
+    # is introspected at run time and, if it cannot be found, printed for the
+    # operator to set in the UI (exit 6), exactly like kvo_k8s_config.py.
+    ap.add_argument("--strip-geneve", action="store_true",
+                    help="ask KVO to strip GENEVE headers on this policy (firewall-behind-GWLB copies)")
     ap.add_argument("--capture-ip", default="",
                     help="IP of a packet-capture host to attach to the vPB egress "
                          "(adds a REMOTE tool to the same monitoring policy)")
@@ -402,12 +484,30 @@ def main():
                 f"using the real traffic source '{pick}'")
             src = pick
 
+        policy_extra = {}
+        if a.strip_geneve:
+            fname, val = geneve_processing(base, tok, verify)
+            if not fname:
+                log("   GENEVE stripping: %s" % val)
+                log("   Set it in the KVO UI: Monitoring Policies > this policy > Packet Processing > Header Stripping > GENEVE,")
+                log("   then re-run without --strip-geneve. RECORD the field name that worked in this script.")
+                return 6
+            log("   GENEVE stripping via _MonitoringPolicyInput.%s = %s" % (fname, val))
+            # KVO 3.1.0 accepts the setting but refuses the commit when the
+            # policy's destination is a remote (cloud) tool: "Traffic
+            # processings GENEVE applied on monitoring policy ... are not
+            # supported with the remote traffic destination connected to a
+            # cloud vpb-capture-tool" (live 2026-09-28). Strip on the vPB
+            # instead (vPB UG CLI: geneve-strip), or use a LOCAL tool port.
+            log("   NOTE: KVO refuses GENEVE processing when the destination is a REMOTE (cloud) tool;")
+            log("   with a remote capture tool strip GENEVE on the vPB itself (CLI geneve-strip) or use a LOCAL tool port.")
+            policy_extra = {fname: val}
         log("7/7 createMonitoringPolicy")
         if not step(base, tok, verify, "create monitoring policy",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.policy, "c": cluster,
-                     "s": {"source": {"name": src}, "tools": policy_tools,
-                           "runMode": "CONTINUOUSLY", "type": "REGULAR"}}): return 5
+                     "s": dict({"source": {"name": src}, "tools": policy_tools,
+                                "runMode": "CONTINUOUSLY", "type": "REGULAR"}, **policy_extra)}): return 5
         a.collection = src   # so the summary below names what was actually used
 
     v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)

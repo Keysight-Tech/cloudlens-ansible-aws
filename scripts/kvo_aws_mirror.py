@@ -1012,13 +1012,39 @@ def main():
                     # on "still processing" forever. The manual fix that works is a
                     # SINGLE change request that ends in a valid state; splitting it
                     # into clear-then-restore is invalid at the halfway point.
-                    log("sessions not cut yet. KVO cuts them after a change request that")
-                    log("  actually changes something. Nothing here is broken:")
-                    log("  in KVO open Visibility Fabric > Cloud Collections >")
-                    log(f"  {coll_name}, remove the workload selector and add it back")
-                    log(f"  ({selection_desc}), then commit that ONE change request.")
-                    log("  Sessions appear about a minute later. Verify with:")
-                    log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
+                    # The change that reliably makes KVO cut the sessions, done by
+                    # the script instead of the operator: recreate the collection
+                    # and the policy that references it, each step committed and
+                    # valid on its own (policy gone before the collection goes,
+                    # collection back before the policy comes back). Same effect
+                    # as the UI "remove the selector and add it back", automated
+                    # on 2026-09-28 after every lab stack needed the nudge.
+                    log("sessions not cut yet: recreating the collection and its policy so KVO acts")
+                    ok_n = True
+                    for mut, nm in (("deleteMonitoringPolicyByName", policy_name), ("deleteCloudCollectionByName", coll_name)):
+                        cr = open_cr(kvo, tok, "aws-nudge", verify)
+                        if not cr: ok_n = False; break
+                        gql(kvo, tok, "mutation($n:String!,$c:String!){ %s(name:$n, changeID:$c){ uid } }" % mut, {"n": nm, "c": cr}, verify)
+                        if not commit_cr(kvo, tok, cr, verify): ok_n = False; break
+                    if ok_n:
+                        cr = open_cr(kvo, tok, "aws-nudge-collection", verify)
+                        ok_n = bool(cr and create_collection(kvo, tok, cr, coll_name, cluster, args.name, selector, verify) and commit_cr(kvo, tok, cr, verify))
+                    if ok_n:
+                        cr = open_cr(kvo, tok, "aws-nudge-policy", verify)
+                        ok_n = bool(cr and create_monitoring_policy(kvo, tok, cr, policy_name, cluster, coll_name, tool_name, verify) and commit_cr(kvo, tok, cr, verify))
+                    if ok_n:
+                        log("collection and policy recreated; waiting up to 240s for the sessions...")
+                        t_end = time.time() + 240
+                        while time.time() < t_end and session_count(args.region, args.vpc_id) == 0:
+                            time.sleep(15)
+                        n = session_count(args.region, args.vpc_id)
+                    if n > 0:
+                        log(f"OK: {n} traffic mirror session(s) present after the recreate.")
+                    else:
+                        log("sessions still not cut. In KVO open Visibility Fabric > Cloud Collections >")
+                        log(f"  {coll_name}, remove the workload selector and add it back")
+                        log(f"  ({selection_desc}), then commit that ONE change request.")
+                        log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
         else:
             log("!! FAILED: no collector ASG appeared. KVO has the config but did NOT launch the collector.")
             log("   Most common cause: the AwsPresence was REUSED instead of recreated with the key.")

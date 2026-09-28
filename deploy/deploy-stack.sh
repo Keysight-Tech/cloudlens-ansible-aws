@@ -4839,14 +4839,17 @@ ensure_collector_sgs() {
   for id in "$MGMT_SG_ID" "$INGRESS_SG_ID" "$EGRESS_SG_ID"; do
     [[ -z "$id" || "$id" == "None" ]] && { warn "Failed to create a collector SG."; return 1; }
   done
-  # mgmt: 443 from the VPC (CLMS/KVO drive the collector from inside), 22 and
-  # 9022 from the admin only (both are documented troubleshooting SSH ports).
-  # 443 used to be open to ADMIN_CIDR, whose default is 0.0.0.0/0: the control
-  # plane is in-VPC, so the VPC CIDR is both sufficient and far tighter.
+  # mgmt: 443, 22 and 9022 from the VPC, 22 and 9022 from the admin as well.
+  # KVO configures the collector OVER SSH (the KVO guide lists 22 and 9022
+  # inbound from KVO/vController on the vHub), and KVO sits inside the VPC.
+  # 22/9022 used to be admin-only: the collector then booted, registered its
+  # mirror target, and cut zero sessions for ever, with no alert anywhere
+  # (seen live 2026-09-28). 443 used to be open to ADMIN_CIDR, whose default
+  # is 0.0.0.0/0: the control plane is in-VPC, so the VPC CIDR is tighter.
   probe aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$MGMT_SG_ID" \
     --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=${vpc_cidr}}]" \
-                     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" \
-                     "IpProtocol=tcp,FromPort=9022,ToPort=9022,IpRanges=[{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
+                     "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${vpc_cidr}},{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" \
+                     "IpProtocol=tcp,FromPort=9022,ToPort=9022,IpRanges=[{CidrIp=${vpc_cidr}},{CidrIp=${ADMIN_CIDR:-0.0.0.0/0}}]" >/dev/null 2>&1
   # ingress: only what actually arrives there: the mirrored traffic (AWS VPC
   # Traffic Mirroring is VXLAN, UDP 4789) from source ENIs inside the VPC.
   # egress: the tunnel return path (GRE proto 47, VXLAN 4789) from the VPC.
@@ -4956,7 +4959,7 @@ UD
   local iid
   iid=$(probe aws ec2 run-instances --region "$REGION" --image-id "$ami" --instance-type t3.medium \
       --subnet-id "$egress_subnet" --security-group-ids "$sg" --associate-public-ip-address \
-      ${KEY_NAME:+--key-name "$KEY_NAME"} "${prof_arg[@]}" \
+      ${KEY_NAME:+--key-name "$KEY_NAME"} ${prof_arg[@]+"${prof_arg[@]}"} \
       --user-data "file://$ud" \
       --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${STACK_NAME}-tool-receiver},{Key=cloudlens-role,Value=tool-receiver},{Key=cloudlens:stack,Value=${STACK_NAME}}]" \
       --query 'Instances[0].InstanceId' --output text 2>/dev/null)
@@ -5482,6 +5485,7 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
     # stdout is the project key ONLY. Capture it; never echo it.
     KVO_PROJECT_KEY=$(python3 "$ADOPT_SCRIPT" \
         --clms "$CLMS_PUBLIC_IP" --clms-admin-pass "$VC_ADMIN_PASS" \
+        --clms-internal-ip "${CLMS_PRIVATE_IP:-$CLMS_PUBLIC_IP}" \
         --kvo "$KVO_PUBLIC_IP" --name "$CLM_NAME_IN_KVO" \
         --cloud-config "$CLOUD_CONFIG_NAME" --accept-eula --insecure) || KVO_PROJECT_KEY=""
     if [[ -n "$KVO_PROJECT_KEY" ]]; then
@@ -5999,9 +6003,10 @@ fi
 # Kubernetes pods talk to each other INSIDE a node: neither the VM sensor on
 # an EC2 host nor VPC Traffic Mirroring ever sees that traffic. The CloudLens
 # K8s sensor does (DaemonSet per node, or a sidecar per pod), registering into
-# the SAME vController project as the VM sensors, so tap groups, tools, and
-# the vPB path treat pods and VMs identically. scripts/deploy-eks-tapping.sh
-# is the engine and works standalone with the same flags.
+# the vController project KVO provisions for the Kubernetes Cluster presence,
+# so the pod collection can select them and the vPB path treats pods like
+# VMs. scripts/deploy-eks-tapping.sh is the engine and works standalone with
+# the same flags.
 if [[ "$DEPLOY_EKS" == "true" ]]; then
   step "Phase 13b: EKS pod tapping (${EKS_MODE})"
   EKS_SCRIPT="$(find_repo_script scripts/deploy-eks-tapping.sh || true)"
@@ -6011,57 +6016,71 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
     dryrun_say "bash scripts/deploy-eks-tapping.sh --region ${REGION} --clms-ip ${CLMS_PUBLIC_IP:-<clms>} --project-key <key> --mode ${EKS_MODE} --stack-name ${STACK_NAME}$([[ "$EKS_SAMPLE" == "true" ]] && echo " --create-sample --vpc-id ${STACK_VPC_ID:-<vpc>} --sample-app" || echo "${EKS_CLUSTER:+ --cluster ${EKS_CLUSTER}}")"
   elif [[ -z "$EKS_SCRIPT" ]]; then
     warn "scripts/deploy-eks-tapping.sh not found; skipping the EKS step."
-  elif [[ -z "$VC_PROJECT_KEY" ]]; then
-    warn "No vController project key was resolved (Phase 9), so the K8s sensors"
-    warn "would have nothing to register to. Skipping; re-run with --only eks"
-    warn "after the key exists."
-    state_phase eks failed "no project key"
   else
-    # Pods reach the vController over the network the CLUSTER has: the public
-    # address when the manager has one, else its private address (the customer
-    # then needs VPC reachability, which the engine's probe surfaces).
-    _eks_clms="${CLMS_PUBLIC_IP:-$CLMS_PRIVATE_IP}"
-    _eks_args=(--region "$REGION" --clms-ip "$_eks_clms" --project-key "$VC_PROJECT_KEY" \
-               --mode "$EKS_MODE" --stack-name "$STACK_NAME" \
-               --custom-tags "platform=eks,stack=${STACK_NAME}" --yes)
-    [[ -n "$EKS_CLUSTER" ]]           && _eks_args+=(--cluster "$EKS_CLUSTER")
-    [[ "$EKS_SAMPLE" == "true" ]]     && _eks_args+=(--create-sample --vpc-id "$STACK_VPC_ID" --sample-app)
-    [[ -n "$EKS_SENSOR_IMAGE" ]]      && _eks_args+=(--sensor-image "$EKS_SENSOR_IMAGE")
-    [[ -n "$EKS_SENSOR_TAR" ]]        && _eks_args+=(--sensor-tar "$EKS_SENSOR_TAR")
-    if bash "$EKS_SCRIPT" "${_eks_args[@]}"; then
-      state_phase eks done
-      ok "EKS pod tapping deployed. The K8s sensors register into the same"
-      ok "project as the VM sensors and follow the same tool path."
-      # KVO side of the rail: the Kubernetes Cloud Config referencing the
-      # vController, and the pod collection. The policy needs the vPB tool,
-      # which the traffic-path phase creates LATER, so with a vPB coming this
-      # stops before the policy and Phase 16 finishes the binding.
-      K8SWIRE_SCRIPT="$(find_repo_script scripts/kvo_k8s_config.py || true)"
-      if [[ "$KVO_CHAIN_OK" == "true" && -n "$K8SWIRE_SCRIPT" ]]; then
-        _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
-        _k8s_sel=()
-        if [[ -n "${EKS_POD_SELECTOR:-}" ]]; then
-          _k8s_sel=(--pod-selector "pod-name=${EKS_POD_SELECTOR}")
-        elif [[ "$EKS_SAMPLE" == "true" ]]; then
-          _k8s_sel=(--pod-selector 'pod-name=^(web|loadgen)')
-        fi
-        _k8s_pol=()
-        [[ "$DEPLOY_VPB" == "true" ]] && _k8s_pol=(--no-policy)
-        if python3 "$K8SWIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --name "$_k8s_name" \
-             --vcontroller "$CLM_NAME_IN_KVO" --device-link vpb-c2dl \
-             ${_k8s_sel[@]+"${_k8s_sel[@]}"} ${_k8s_pol[@]+"${_k8s_pol[@]}"} \
-             --accept-eula --insecure; then
-          ok "KVO Kubernetes cloud config + pod collection wired."
-        else
-          warn "The KVO Kubernetes wiring did not complete (its output says why,"
-          warn "including the manual UI steps when the schema differs). The"
-          warn "sensors still register and are visible via the vController."
-        fi
+    # KVO side FIRST. The Kubernetes Cluster presence provisions its own
+    # vController project, and the KVO UG (Kubernetes Cluster Cloud Configs)
+    # says the config's creation "was the condition to populate the deployment
+    # data for the sensor": the DaemonSet must register with THAT project's
+    # key, or its pods show up under the VM sensors' project and the pod
+    # collection selects nothing. The VM sensors' key (Phase 9) is only the
+    # fallback for a run without KVO. The policy to the vPB tool is bound in
+    # Phase 16, after the traffic-path step creates the tool.
+    _eks_key="$VC_PROJECT_KEY"
+    K8SWIRE_SCRIPT="$(find_repo_script scripts/kvo_k8s_config.py || true)"
+    if [[ "$KVO_CHAIN_OK" == "true" && -n "$K8SWIRE_SCRIPT" && -n "${KVO_PUBLIC_IP:-}" ]]; then
+      _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
+      _k8s_sel=()
+      if [[ -n "${EKS_POD_SELECTOR:-}" ]]; then
+        _k8s_sel=(--pod-selector "pod-name=${EKS_POD_SELECTOR}")
+      elif [[ "$EKS_SAMPLE" == "true" ]]; then
+        _k8s_sel=(--pod-selector 'pod-name=^(web|loadgen)')
       fi
+      _k8s_keyfile="$(mktemp)"
+      if python3 "$K8SWIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --name "$_k8s_name" \
+           --vcontroller "$CLM_NAME_IN_KVO" --device-link vpb-c2dl \
+           ${_k8s_sel[@]+"${_k8s_sel[@]}"} --no-policy --key-out "$_k8s_keyfile" \
+           --accept-eula --insecure; then
+        ok "KVO Kubernetes presence, cloud config and pod collection wired."
+        _k8s_key="$(tr -d '[:space:]' < "$_k8s_keyfile")"
+        if [[ -n "$_k8s_key" ]]; then
+          _eks_key="$_k8s_key"
+        else
+          warn "KVO returned no project key for '${_k8s_name}'; the DaemonSet uses the VM sensors' key."
+        fi
+      else
+        warn "The KVO Kubernetes wiring did not complete (its output says why,"
+        warn "including the manual UI steps). The DaemonSet uses the VM sensors'"
+        warn "key, so its pods are visible via the vController but not selectable"
+        warn "by the Kubernetes cloud config until it exists."
+      fi
+      rm -f "$_k8s_keyfile"
+    fi
+    if [[ -z "$_eks_key" ]]; then
+      warn "No vController project key (neither the Kubernetes presence nor Phase 9"
+      warn "produced one), so the K8s sensors would have nothing to register to."
+      warn "Skipping; re-run with --only eks after the key exists."
+      state_phase eks failed "no project key"
     else
-      warn "The EKS tapping step did not complete; the rest of the run continues."
-      note "Re-run just this step with: bash deploy/deploy-stack.sh --only eks"
-      state_phase eks failed "deploy-eks-tapping.sh returned non-zero"
+      # Pods reach the vController over the network the CLUSTER has: the public
+      # address when the manager has one, else its private address (the customer
+      # then needs VPC reachability, which the engine's probe surfaces).
+      _eks_clms="${CLMS_PUBLIC_IP:-$CLMS_PRIVATE_IP}"
+      _eks_args=(--region "$REGION" --clms-ip "$_eks_clms" --project-key "$_eks_key" \
+                 --mode "$EKS_MODE" --stack-name "$STACK_NAME" \
+                 --custom-tags "platform=eks,stack=${STACK_NAME}" --yes)
+      [[ -n "$EKS_CLUSTER" ]]           && _eks_args+=(--cluster "$EKS_CLUSTER")
+      [[ "$EKS_SAMPLE" == "true" ]]     && _eks_args+=(--create-sample --vpc-id "$STACK_VPC_ID" --sample-app)
+      [[ -n "$EKS_SENSOR_IMAGE" ]]      && _eks_args+=(--sensor-image "$EKS_SENSOR_IMAGE")
+      [[ -n "$EKS_SENSOR_TAR" ]]        && _eks_args+=(--sensor-tar "$EKS_SENSOR_TAR")
+      if bash "$EKS_SCRIPT" "${_eks_args[@]}"; then
+        state_phase eks done
+        ok "EKS pod tapping deployed. The K8s sensors register into the Kubernetes"
+        ok "cluster's own project and follow the same tool path as the VM sensors."
+      else
+        warn "The EKS tapping step did not complete; the rest of the run continues."
+        note "Re-run just this step with: bash deploy/deploy-stack.sh --only eks"
+        state_phase eks failed "deploy-eks-tapping.sh returned non-zero"
+      fi
     fi
   fi
 fi
@@ -6495,6 +6514,12 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   CAPTURE_ARG=()
   if [[ -n "$CAPTURE_HOST_IP" ]]; then
     CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
+  fi
+  # GENEVE stripping on the policy, for a firewall behind an AWS Gateway Load
+  # Balancer whose interface is mirrored (CLOUDLENS_STRIP_GENEVE=true).
+  STRIP_ARG=()
+  if [[ "${CLOUDLENS_STRIP_GENEVE:-}" == "true" ]]; then
+    STRIP_ARG=(--strip-geneve)
     ok "Capture tool will be wired to ${CAPTURE_HOST_IP} (this is what makes traffic visible)"
   elif [[ "$WIRE_VPB_PATH" == "true" ]]; then
     warn "No capture host address, so NO capture tool will be created."
@@ -6554,7 +6579,8 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --ingress-ip "$VPB_INGRESS_IP" --gre-key "$CLOUDLENS_GRE_KEY" \
          --capture-gre-key "$CLOUDLENS_GRE_KEY" \
          --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
-         "${PORT_ARG[@]}" "${EGRESS_ARG[@]}" "${CAPTURE_ARG[@]}" --insecure; then
+         ${PORT_ARG[@]+"${PORT_ARG[@]}"} ${EGRESS_ARG[@]+"${EGRESS_ARG[@]}"} ${CAPTURE_ARG[@]+"${CAPTURE_ARG[@]}"} \
+         ${STRIP_ARG[@]+"${STRIP_ARG[@]}"} --insecure; then
       ok "vPB traffic path and monitoring policy committed."
 
       # The Kubernetes rail's LAST link: the tool now exists, so bind the pod
