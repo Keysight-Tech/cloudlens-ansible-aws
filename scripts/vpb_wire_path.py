@@ -41,7 +41,8 @@ Sequence (each gotcha below cost a debugging cycle, do not reorder):
 Exit: 0 ok, 2 auth, 3 not licensed, 4 device/deviceConfig not found, 5 step failed.
 """
 from __future__ import annotations
-import argparse, json, sys, time
+import argparse
+import time, json, sys
 import requests
 
 def log(m): print(f"[vpb-path] {m}", file=sys.stderr, flush=True)
@@ -319,6 +320,28 @@ def main():
     if not step(base, tok, verify, "sync vPB ports",
                 "mutation($u:ID!,$cr:String!){ syncDeviceConfigPorts(uid:$u,changeID:$cr,settings:{forceSync:true}){ uid } }",
                 {"u": uid}): return 5
+    # A vPB adopted a moment ago has no data ports in KVO yet: the sync
+    # commits fine and the ingress bind then fails with "Cannot find node
+    # with Label 'Port' and name '<device>:eth1:...'" (live 2026-09-28, the
+    # deploy wired a vPB 40 s after adopting it). The ports show up in
+    # devices.portsStatus a minute or two later; wait for the ingress port,
+    # re-syncing each time, before binding anything.
+    for attempt in range(20):
+        ports = [p["portId"] for d in (gql(base, tok, "{ devices { name portsStatus { portId } } }", None, verify)
+                                        .get("data", {}).get("devices") or [])
+                 if d.get("name") == a.device for p in (d.get("portsStatus") or [])]
+        if a.ingress_port in ports and a.egress_port in ports:
+            if attempt: log(f"   ports {ports} present after {attempt * 15}s")
+            break
+        if attempt == 0:
+            log(f"   data ports not in KVO yet ({ports or 'none'}); waiting for {a.ingress_port}/{a.egress_port} (up to 5 min)")
+        time.sleep(15)
+        step(base, tok, verify, "sync vPB ports",
+             "mutation($u:ID!,$cr:String!){ syncDeviceConfigPorts(uid:$u,changeID:$cr,settings:{forceSync:true}){ uid } }",
+             {"u": uid})
+    else:
+        log(f"   {a.device} still has no {a.ingress_port}/{a.egress_port} in KVO after 5 min; the port")
+        log("   binds below will fail. On the vPB: sudo vpb -c 'show interface-status'.")
 
     # 2. C2DL
     if a.c2dl in existing("c2DLinks"):
