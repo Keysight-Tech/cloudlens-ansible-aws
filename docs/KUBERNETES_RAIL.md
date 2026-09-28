@@ -65,8 +65,32 @@ and the two product rules that decide the design.
 - Sensor logs: `kubectl -n cloudlens logs ds/cloudlens-sensor` shows
   "Control says to rebalance" and a `GR_...` interface to the vPB ingress IP.
 
-## Not automated yet
+## Automated in deploy-stack.sh: one vPB per area
 
-`deploy/deploy-stack.sh` deploys one vPB. A stack that runs both the mirror
-rail and the Kubernetes rail needs a second vPB wired as above; the steps
-are the scripts listed here, in that order.
+`deploy/deploy-stack.sh` does the chain above by itself. `--vpb-rails LIST`
+names the areas that get a vPB of their own (`mirror`, `k8s`); the stack's
+vPB serves the first area, and one more vPB is launched, adopted and wired
+per further area. With no `--vpb-rails` every enabled area gets one, so
+`--with-vpb --with-mirror --with-eks` means two vPBs; the interview asks the
+same question when both areas land on a vPB. `--vpb-rails mirror` keeps the
+pods off any vPB; `--vpb-rails k8s` gives the stack vPB to the pods.
+
+What the deploy does for an extra area:
+
+1. Right after the stack exists, launches `<stack>-vpb-<area>` (same image,
+   type, key, bootstrap and security group as the stack vPB, three
+   interfaces on its subnets) and attaches an Elastic IP; tagged
+   `cloudlens:stack=<stack>` and `cloudlens:vpb-rail=<area>`. It boots while
+   the sensor, EKS and mirror phases run. A vPB with those tags is reused.
+2. Phase 14 adopts it as `<device>-<area>` (a device KVO already lists at
+   that management address is reused under its existing name).
+3. Phase 16 wires it: `--link-config` on the area's cloud config, its own
+   link (`k8s-c2dl`), tools `vpb-<area>-egress-tool` and
+   `vpb-<area>-capture-tool`, policy `<area>-traffic-policy`, GRE keys
+   offset per area. The state ledger records the instance, device and wiring.
+4. The final summary lists each extra vPB; `teardown-stack.sh` terminates
+   them by tag and releases their Elastic IPs.
+
+`bash deploy/tests/test_vpb_rails.sh` pins the area computation and the
+launch shape (three interfaces, no `AssociatePublicIpAddress`, Elastic IP
+attached after, tags, reuse).

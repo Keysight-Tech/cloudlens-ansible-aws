@@ -137,7 +137,8 @@ profile_key_allowed() {
     CLOUDLENS_COLLECTOR_INGRESS_SUBNET|CLOUDLENS_COLLECTOR_EGRESS_SUBNET|\
     CLOUDLENS_COLLECTOR_MGMT_SG|CLOUDLENS_COLLECTOR_INGRESS_SG|CLOUDLENS_COLLECTOR_EGRESS_SG|\
     CLOUDLENS_DEPLOY_EKS|CLOUDLENS_EKS_CLUSTER|CLOUDLENS_EKS_SAMPLE|CLOUDLENS_EKS_MODE|\
-    CLOUDLENS_EKS_POD_SELECTOR|CLOUDLENS_CLOUD_CONFIG|CLOUDLENS_CLM_NAME|CLOUDLENS_VPB_DEVICE_NAME)
+    CLOUDLENS_EKS_POD_SELECTOR|CLOUDLENS_CLOUD_CONFIG|CLOUDLENS_CLM_NAME|CLOUDLENS_VPB_DEVICE_NAME|\
+    CLOUDLENS_VPB_RAILS)
       return 0 ;;
   esac
   return 1
@@ -454,6 +455,15 @@ BOOTSTRAP_VPB=""
 ADOPT_VPB=""
 WIRE_VPB_PATH=""
 WITH_MIRROR=""
+# Which areas get a vPB of their own. KVO allows one cloud config per Cloud to
+# Device Link and a vPB ingress port carries one link, so mirrored VMs (the
+# AWS cloud config) and Kubernetes pods (the K8s cloud config) cannot share a
+# vPB. The stack's own vPB serves the first area listed; the deploy launches,
+# adopts and wires one more vPB per further area. Empty = every enabled area.
+# Proven live 2026-09-28, docs/KUBERNETES_RAIL.md.
+VPB_RAILS="${CLOUDLENS_VPB_RAILS:-}"
+VPB_RAIL_FIRST=""      # the area the stack vPB serves
+VPB_RAILS_EXTRA=""     # space-separated areas that get their own vPB
 MIRROR_ACCESS_KEY="${CLOUDLENS_MIRROR_ACCESS_KEY:-}"
 MIRROR_SECRET_KEY="${CLOUDLENS_MIRROR_SECRET_KEY:-}"
 
@@ -1817,6 +1827,12 @@ Toggles:
   --no-kvo                  Skip KVO deployment
   --with-kvo                Deploy KVO (skip interactive prompt)
   --with-vpb                Deploy vPB (skip interactive prompt)
+  --vpb-rails LIST          Which areas get a vPB of their own: mirror,k8s.
+                            KVO allows one cloud config per Cloud to Device
+                            Link, so mirrored VMs and Kubernetes pods need
+                            separate vPBs. The stack vPB serves the first
+                            area; one more vPB is launched, adopted and wired
+                            per further area. Default: every enabled area.
   --no-vpb                  Skip vPB deployment
   --doctor                  Check this machine and account for everything the
                             deploy needs (credentials, region, Marketplace
@@ -2031,6 +2047,7 @@ while [[ $# -gt 0 ]]; do
     --with-kvo) DEPLOY_KVO=true; shift ;;
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
+    --vpb-rails) VPB_RAILS="$2"; shift 2 ;;
     --no-sensors) CHAIN_SENSORS=false; shift ;;
     --tapping) TAPPING_MODE="$(to_lower "$2")"; shift 2 ;;
     --secure-sensors) SECURE_SENSORS="yes"; shift ;;
@@ -3454,6 +3471,51 @@ fi
 [[ -z "$DEPLOY_EKS" ]] && DEPLOY_EKS=false
 case "$EKS_MODE" in daemonset|sidecar) ;; *) fail "--eks-mode must be daemonset or sidecar (got '$EKS_MODE')" ;; esac
 
+# Turns the answers (vPB, mirror, EKS) and the optional --vpb-rails override
+# into VPB_RAIL_FIRST (served by the stack vPB) and VPB_RAILS_EXTRA (one more
+# vPB each). Areas known: mirror (the AWS cloud config), k8s (the Kubernetes
+# cloud config). An empty override means every enabled area gets a vPB.
+compute_vpb_rails() {
+  VPB_RAIL_FIRST=""; VPB_RAILS_EXTRA=""
+  [[ "$DEPLOY_VPB" == "true" ]] || { VPB_RAILS=""; return 0; }
+  local list="$VPB_RAILS" r seen=""
+  if [[ -z "$list" ]]; then
+    [[ "$WITH_MIRROR" == "true" ]] && list="mirror"
+    [[ "$DEPLOY_EKS" == "true" ]] && list="${list:+$list,}k8s"
+  fi
+  for r in $(printf '%s' "$list" | tr ',' ' '); do
+    case "$r" in
+      mirror|k8s) ;;
+      *) fail "--vpb-rails: unknown area '${r}' (known: mirror, k8s)" ;;
+    esac
+    case " $seen " in *" $r "*) continue ;; esac
+    seen="${seen:+$seen }$r"
+  done
+  VPB_RAILS="$(printf '%s' "$seen" | tr ' ' ',')"
+  set -- $seen
+  VPB_RAIL_FIRST="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  VPB_RAILS_EXTRA="$*"
+}
+# Q4c: one vPB per area. Asked only when the answers so far put two areas on
+# the vPB at once (mirrored VMs and Kubernetes pods).
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && "$DEPLOY_VPB" == "true" && "$DEPLOY_EKS" == "true" && "$WITH_MIRROR" == "true" \
+      && -z "$VPB_RAILS" ]]; then
+  echo
+  echo "Mirrored VMs and Kubernetes pods cannot share one vPB: KVO allows one cloud"
+  echo "config per Cloud to Device Link, and a vPB has one ingress port. The stack"
+  echo "vPB will serve the mirror. Launch a second vPB (${VPB_TYPE}) for the pods?"
+  if ask_yn "  Second vPB for Kubernetes? [Y/n]: " y; then
+    VPB_RAILS="mirror,k8s"
+  else
+    VPB_RAILS="mirror"
+    note "Pods register to the vController but reach no vPB. Add one later with --vpb-rails mirror,k8s."
+  fi
+fi
+compute_vpb_rails
+[[ -n "$VPB_RAILS_EXTRA" ]] && ok "vPB per area: '${VPB_RAIL_FIRST}' on the stack vPB; a vPB of its own for: ${VPB_RAILS_EXTRA}"
+
 # Q5: collector placement, only when the answers so far make it REQUIRED
 # (mirroring into an existing VPC has no stack subnets to derive from).
 # Asked now so Phase 15 executes instead of refusing mid-run.
@@ -3607,6 +3669,7 @@ write_profile() {
     echo "CLOUDLENS_EKS_CLUSTER=${EKS_CLUSTER}"
     echo "CLOUDLENS_EKS_SAMPLE=${EKS_SAMPLE}"
     echo "CLOUDLENS_EKS_MODE=${EKS_MODE}"
+    echo "CLOUDLENS_VPB_RAILS=${VPB_RAILS}"
     echo "CLOUDLENS_EKS_POD_SELECTOR=${EKS_POD_SELECTOR}"
   } > "$f" 2>/dev/null && chmod 600 "$f" 2>/dev/null && PROFILE_FILE="$f"
   return 0
@@ -4190,6 +4253,98 @@ ec2_fact() {
   printf '%s' "$v"
 }
 
+# ---- Extra vPBs, one per further area (see compute_vpb_rails) -------------
+# Launched right after the stack so they boot (KCOS first boot, 10-15 min)
+# while the sensor, EKS and mirror phases run; adopted in Phase 14 and wired in
+# Phase 16. Idempotent by tag: Name=<stack>-vpb-<area>, cloudlens:stack=<stack>,
+# cloudlens:vpb-rail=<area>. Three interfaces on the stack vPB's own subnets
+# and security group, the same bootstrap user data, and an Elastic IP on the
+# management interface: run-instances refuses AssociatePublicIpAddress with
+# several interfaces (seen live 2026-09-28), so the address is attached after.
+vpb_rail_instance_id() {
+  local v
+  v=$(probe aws "${AWS_REGION_ARG[@]}" ec2 describe-instances \
+        --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag:cloudlens:vpb-rail,Values=$1" \
+                  "Name=instance-state-name,Values=pending,running" \
+        --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null)
+  [[ "$v" == "None" ]] && v=""
+  printf '%s' "$v"
+}
+ensure_extra_vpbs_now() {
+  local rail id eni alloc sg ud
+  [[ "$DEPLOY_VPB" == "true" && -n "$VPB_RAILS_EXTRA" ]] || return 0
+  for rail in $VPB_RAILS_EXTRA; do
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dryrun_say "would launch ${STACK_NAME}-vpb-${rail} (${VPB_TYPE}, 3 interfaces on the stack vPB subnets) plus an Elastic IP"
+      continue
+    fi
+    id="$(vpb_rail_instance_id "$rail")"
+    if [[ -n "$id" ]]; then
+      ok "vPB for the ${rail} area: ${id} already exists (reusing)."
+      state_set "VPB_RAIL_$(upper "$rail")_ID" "$id"
+      continue
+    fi
+    if [[ -z "$MGMT_SUBNET_ID" || -z "$INGRESS_SUBNET_ID" || -z "$EGRESS_SUBNET_ID" ]]; then
+      warn "Cannot place the ${rail} vPB: the stack vPB's subnets are unknown. That area stays without a vPB."
+      continue
+    fi
+    sg="$(ec2_fact "${VPB_NAME:-${STACK_NAME}-vpb}" 'SecurityGroups[0].GroupId')"
+    if [[ -z "$sg" ]]; then
+      warn "Cannot read the stack vPB's security group; the ${rail} vPB is not launched."
+      continue
+    fi
+    ud="$(printf '#!/bin/bash\n# Same bootstrap as the stack vPB (CloudFormation VpbInstance UserData).\nset -euo pipefail\ncurl -fsSL %s/scripts/bootstrap-vpb.sh -o /tmp/bootstrap-vpb.sh\nbash /tmp/bootstrap-vpb.sh > /var/log/cloudlens-bootstrap.log 2>&1\n' "$REPO_RAW")"
+    id=$(probe aws "${AWS_REGION_ARG[@]}" ec2 run-instances \
+          --image-id "$VPB_AMI" --instance-type "$VPB_TYPE" --key-name "$KEY_NAME" \
+          --user-data "$ud" --metadata-options HttpTokens=required \
+          --network-interfaces "[{\"DeviceIndex\":0,\"SubnetId\":\"${MGMT_SUBNET_ID}\",\"Groups\":[\"${sg}\"],\"Description\":\"${rail} vPB mgmt\"},{\"DeviceIndex\":1,\"SubnetId\":\"${INGRESS_SUBNET_ID}\",\"Groups\":[\"${sg}\"],\"Description\":\"${rail} vPB ingress\"},{\"DeviceIndex\":2,\"SubnetId\":\"${EGRESS_SUBNET_ID}\",\"Groups\":[\"${sg}\"],\"Description\":\"${rail} vPB egress\"}]" \
+          --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${STACK_NAME}-vpb-${rail}},{Key=cloudlens:stack,Value=${STACK_NAME}},{Key=cloudlens:vpb-rail,Value=${rail}}]" \
+          --query 'Instances[0].InstanceId' --output text 2>/dev/null)
+    if [[ -z "$id" || "$id" == "None" ]]; then
+      warn "Could not launch the ${rail} vPB (run-instances failed). That area stays without a vPB."
+      continue
+    fi
+    state_set "VPB_RAIL_$(upper "$rail")_ID" "$id"
+    probe aws "${AWS_REGION_ARG[@]}" ec2 wait instance-exists --instance-ids "$id" >/dev/null 2>&1 || true
+    eni=$(probe aws "${AWS_REGION_ARG[@]}" ec2 describe-instances --instance-ids "$id" \
+            --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId | [0]' --output text 2>/dev/null)
+    alloc=$(probe aws "${AWS_REGION_ARG[@]}" ec2 allocate-address --domain vpc \
+              --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=${STACK_NAME}-vpb-${rail}},{Key=cloudlens:stack,Value=${STACK_NAME}},{Key=cloudlens:vpb-rail,Value=${rail}}]" \
+              --query AllocationId --output text 2>/dev/null)
+    if [[ -n "$alloc" && "$alloc" != "None" && -n "$eni" && "$eni" != "None" ]]; then
+      probe aws "${AWS_REGION_ARG[@]}" ec2 associate-address --allocation-id "$alloc" --network-interface-id "$eni" >/dev/null 2>&1 \
+        || warn "Elastic IP ${alloc} could not be attached to the ${rail} vPB; attach it by hand."
+    else
+      warn "No Elastic IP for the ${rail} vPB; it is reachable from inside the VPC only."
+    fi
+    ok "Launched the ${rail} vPB: ${id} (${STACK_NAME}-vpb-${rail}). It boots while the next phases run."
+  done
+}
+# vpb_rail_device_in_kvo MGMT-IP -> the KVO device name at that address, or ""
+vpb_rail_device_in_kvo() {
+  kvo_auth "$KVO_PUBLIC_IP" >/dev/null 2>&1 || true
+  kvo_gql "$KVO_PUBLIC_IP" '{ devices { name ip } }' 2>/dev/null \
+    | python3 -c 'import sys,json; d=json.load(sys.stdin); ip=sys.argv[1]; print(next((x["name"] for x in ((d.get("data") or {}).get("devices") or []) if x.get("ip")==ip), ""))' "$1" 2>/dev/null || true
+}
+# vpb_rail_facts AREA -> VPB_R_ID / _PUBLIC_IP / _PRIVATE_IP / _INGRESS_IP / _EGRESS_IP
+vpb_rail_facts() {
+  local rail="$1" id q v
+  VPB_R_ID=""; VPB_R_PUBLIC_IP=""; VPB_R_PRIVATE_IP=""; VPB_R_INGRESS_IP=""; VPB_R_EGRESS_IP=""
+  if [[ "$DRY_RUN" == "true" ]]; then
+    VPB_R_ID="i-dryrun-${rail}"; VPB_R_PUBLIC_IP="203.0.113.22"; VPB_R_PRIVATE_IP="10.0.0.22"
+    VPB_R_INGRESS_IP="10.0.1.22"; VPB_R_EGRESS_IP="10.0.2.22"; return 0
+  fi
+  id="$(vpb_rail_instance_id "$rail")"; [[ -n "$id" ]] || return 1
+  VPB_R_ID="$id"
+  q=$(probe aws "${AWS_REGION_ARG[@]}" ec2 describe-instances --instance-ids "$id" \
+        --query 'Reservations[0].Instances[0].[PublicIpAddress, PrivateIpAddress, NetworkInterfaces[?Attachment.DeviceIndex==`1`].PrivateIpAddress | [0], NetworkInterfaces[?Attachment.DeviceIndex==`2`].PrivateIpAddress | [0]]' --output text 2>/dev/null)
+  set -- $q
+  VPB_R_PUBLIC_IP="${1:-}"; VPB_R_PRIVATE_IP="${2:-}"; VPB_R_INGRESS_IP="${3:-}"; VPB_R_EGRESS_IP="${4:-}"
+  for v in VPB_R_PUBLIC_IP VPB_R_PRIVATE_IP VPB_R_INGRESS_IP VPB_R_EGRESS_IP; do
+    [[ "${!v}" == "None" ]] && eval "$v=''"
+  done
+  [[ -n "$VPB_R_PUBLIC_IP" && -n "$VPB_R_PRIVATE_IP" ]]
+}
 discover_stack_facts() {
   local vc_tag="${VCONTROLLER_NAME:-${STACK_NAME}-vcontroller}"
   local kvo_tag="${KVO_NAME:-${STACK_NAME}-kvo}"
@@ -4324,6 +4479,7 @@ python_chain_ready() {
 }
 
 discover_stack_facts
+ensure_extra_vpbs_now
 
 # =====================================================================
 # Phase 7: Wait for vController init
@@ -6182,6 +6338,40 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]]; then
       state_phase vpb failed "vPB CLI not up in time (KCOS first boot)"
     fi
   fi
+  # Extra vPBs, one per further area (compute_vpb_rails). A device that KVO
+  # already lists at the vPB's management address is reused under its existing
+  # name (adopted by hand, or a resumed run); otherwise it is adopted as
+  # <device>-<area>. Nothing here changes the stack vPB's outcome above.
+  if [[ -n "$VPB_RAILS_EXTRA" && -n "$VPB_ADOPT_SCRIPT" ]] \
+     && [[ "$ADOPT_VPB" == "true" || "$VPB_IN_KVO" == "true" ]]; then
+    for _rail in $VPB_RAILS_EXTRA; do
+      if ! vpb_rail_facts "$_rail"; then
+        warn "The ${_rail} vPB is not running or has no public address; skipping its adoption."
+        continue
+      fi
+      _dev="${VPB_DEVICE_NAME}-${_rail}"
+      if [[ "$DRY_RUN" == "true" ]]; then
+        dryrun_say "python3 scripts/vpb_kvo_adopt.py --vpb ${VPB_R_PUBLIC_IP} --vpb-mgmt-ip ${VPB_R_PRIVATE_IP} --device-name ${_dev} --wait-cli --accept-eula --insecure"
+        continue
+      fi
+      _have="$(vpb_rail_device_in_kvo "$VPB_R_PRIVATE_IP")"
+      if [[ -n "$_have" ]]; then
+        ok "The ${_rail} vPB (${VPB_R_PRIVATE_IP}) is already in KVO as '${_have}' (reusing)."
+        state_set "VPB_RAIL_$(upper "$_rail")_DEVICE" "$_have"
+        continue
+      fi
+      if python3 "$VPB_ADOPT_SCRIPT" \
+           --vpb "$VPB_R_PUBLIC_IP" --vpb-port "$VPB_SSH_PORT" --vpb-user "$ADMIN_USERNAME" \
+           --key "$KEY_PEM" --kvo "$KVO_PUBLIC_IP" --kvo-internal-ip "$KVO_PRIVATE_IP" \
+           --vpb-mgmt-ip "$VPB_R_PRIVATE_IP" --device-name "$_dev" --wait-cli --accept-eula --insecure; then
+        ok "The ${_rail} vPB adopted into KVO as '${_dev}'."
+        state_set "VPB_RAIL_$(upper "$_rail")_DEVICE" "$_dev"
+      else
+        warn "The ${_rail} vPB did not adopt (its CLI takes 10-15 min on first boot)."
+        note "Re-run with --from vpb once it answers; the deploy adopts and wires it then."
+      fi
+    done
+  fi
 fi
 
 # =====================================================================
@@ -6488,6 +6678,60 @@ fi
 # is offered and then reported truthfully rather than claimed as a success.
 # VPB_IN_KVO covers the resume case: the vPB was adopted by an earlier run, so
 # phase 14 skipped, but the traffic path is still worth offering.
+# Extra vPBs: one per further area. Each gets its own Cloud to Device Link
+# (k8s-c2dl for pods), its own tools and policy and distinct GRE keys, on the
+# vPB launched for it (ensure_extra_vpbs_now) and adopted in Phase 14. Runs
+# whether the stack vPB's path was wired just now or on an earlier run, so a
+# resume (--from vpb) still wires a vPB that was adopted late. Proven live
+# 2026-09-28 (docs/KUBERNETES_RAIL.md).
+wire_extra_vpb_rails() {
+  local _i _rail _dev _r_coll _r_cfg _r_link _r_egress _k8s_name
+  _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
+  _i=0
+  for _rail in $VPB_RAILS_EXTRA; do
+    _i=$(( _i + 1 ))
+    _dev="$(state_get "VPB_RAIL_$(upper "$_rail")_DEVICE" 2>/dev/null || true)"
+    [[ -z "$_dev" && "$DRY_RUN" == "true" ]] && _dev="${VPB_DEVICE_NAME}-${_rail}"
+    if [[ -z "$_dev" ]] && vpb_rail_facts "$_rail"; then
+      # The state file may predate the adoption (or be gone): ask KVO which
+      # device sits at the vPB's management address.
+      _dev="$(vpb_rail_device_in_kvo "$VPB_R_PRIVATE_IP")"
+      [[ -n "$_dev" ]] && state_set "VPB_RAIL_$(upper "$_rail")_DEVICE" "$_dev"
+    fi
+    if [[ -z "$_dev" ]] || ! vpb_rail_facts "$_rail"; then
+      warn "The ${_rail} vPB is not adopted or not running; its path is not wired."
+      note "Re-run with --from vpb once it is up: the deploy adopts and wires it."
+      continue
+    fi
+    case "$_rail" in
+      k8s)    _r_coll="${_k8s_name}-collect"; _r_cfg="$_k8s_name"; _r_link=(--link-config "$_k8s_name" --c2dl k8s-c2dl) ;;
+      mirror) _r_coll="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"; _r_cfg="$CLOUD_CONFIG_NAME"; _r_link=() ;;
+    esac
+    _r_egress=()
+    if [[ -n "$VPB_R_EGRESS_IP" ]]; then
+      _r_egress=(--egress-ip "$VPB_R_EGRESS_IP")
+      [[ -n "$VPB_EGRESS_NETMASK" ]] && _r_egress+=(--egress-netmask "$VPB_EGRESS_NETMASK")
+      [[ -n "$VPB_EGRESS_GATEWAY" ]] && _r_egress+=(--egress-gateway "$VPB_EGRESS_GATEWAY")
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dryrun_say "python3 scripts/vpb_wire_path.py --device ${_dev} --collection ${_r_coll} --cloud-config ${_r_cfg} ${_r_link[*]:-} --ingress-ip ${VPB_R_INGRESS_IP} --gre-key $(( CLOUDLENS_GRE_KEY + _i )) --egress-gre-key $(( CLOUDLENS_EGRESS_GRE_KEY + _i )) --tool vpb-${_rail}-egress-tool --policy ${_rail}-traffic-policy --capture-gre-key $(( 300 + _i )) ${CAPTURE_ARG[*]:-} --insecure"
+      continue
+    fi
+    if python3 "$WIRE_SCRIPT" --kvo "$KVO_PUBLIC_IP" --device "$_dev" \
+         --collection "$_r_coll" --cloud-config "$_r_cfg" \
+         --ingress-ip "$VPB_R_INGRESS_IP" --gre-key "$(( CLOUDLENS_GRE_KEY + _i ))" \
+         --egress-gre-key "$(( CLOUDLENS_EGRESS_GRE_KEY + _i ))" \
+         --tool "vpb-${_rail}-egress-tool" --policy "${_rail}-traffic-policy" \
+         --capture-tool "vpb-${_rail}-capture-tool" --capture-gre-key "$(( 300 + _i ))" \
+         ${_r_link[@]+"${_r_link[@]}"} ${PORT_ARG[@]+"${PORT_ARG[@]}"} \
+         ${_r_egress[@]+"${_r_egress[@]}"} ${CAPTURE_ARG[@]+"${CAPTURE_ARG[@]}"} --insecure; then
+      ok "${_rail} area wired on '${_dev}': ${_r_coll} -> vpb-${_rail}-egress-tool (policy ${_rail}-traffic-policy)."
+      state_set "VPB_RAIL_$(upper "$_rail")_WIRED" "true"
+    else
+      warn "The ${_rail} vPB path did not wire; see the messages above. Re-run with --from path."
+    fi
+  done
+}
 if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
    && [[ "$ADOPT_VPB" == "true" || "$VPB_IN_KVO" == "true" ]]; then
   step "Phase 16: vPB traffic path + monitoring policy"
@@ -6513,6 +6757,17 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
 
   WIRE_SCRIPT="$(find_repo_script scripts/vpb_wire_path.py || true)"
   WIRE_COLLECTION="${VPB_COLLECTION:-$CLOUD_CONFIG_NAME}"
+  # The area the stack vPB serves (compute_vpb_rails). For the Kubernetes area
+  # the source is the pod collection and the link goes on the K8s cloud config
+  # (--link-config); the mirror area keeps the default: the mirror collection
+  # and the link on every AWS-type cloud config.
+  LINK_ARG=()
+  _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
+  if [[ "$VPB_RAIL_FIRST" == "k8s" ]]; then
+    WIRE_COLLECTION="${_k8s_name}-collect"
+    LINK_ARG=(--link-config "$_k8s_name" --c2dl k8s-c2dl)
+    ok "The stack vPB serves the Kubernetes area: source ${WIRE_COLLECTION}, link k8s-c2dl on ${_k8s_name}."
+  fi
   # Stand up a capture host so the tapped traffic is actually visible. Opt-out
   # with CLOUDLENS_CAPTURE_HOST=no. Failure here is non-fatal: the vPB path is
   # wired either way, the operator just would not have a tcpdump host.
@@ -6592,13 +6847,17 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
          --capture-gre-key "$CLOUDLENS_GRE_KEY" \
          --egress-gre-key "$CLOUDLENS_EGRESS_GRE_KEY" \
          ${PORT_ARG[@]+"${PORT_ARG[@]}"} ${EGRESS_ARG[@]+"${EGRESS_ARG[@]}"} ${CAPTURE_ARG[@]+"${CAPTURE_ARG[@]}"} \
-         ${STRIP_ARG[@]+"${STRIP_ARG[@]}"} --insecure; then
+         ${STRIP_ARG[@]+"${STRIP_ARG[@]}"} ${LINK_ARG[@]+"${LINK_ARG[@]}"} --insecure; then
       ok "vPB traffic path and monitoring policy committed."
 
       # The Kubernetes rail's LAST link: the tool now exists, so bind the pod
       # collection to it. Idempotent: the config and collection made in the
       # eks phase are reused, only the policy is new.
-      if [[ "$DEPLOY_EKS" == "true" ]]; then
+      # Only when the Kubernetes area has NO vPB of its own: the policy is then
+      # attempted on the stack vPB's link, and kvo_k8s_config.py explains (exit
+      # 11) when that link belongs to another cloud config. With --vpb-rails
+      # including k8s the wiring below creates the policy on the pods' vPB.
+      if [[ "$DEPLOY_EKS" == "true" && ",${VPB_RAILS}," != *",k8s,"* ]]; then
         K8SWIRE_SCRIPT="$(find_repo_script scripts/kvo_k8s_config.py || true)"
         if [[ -n "$K8SWIRE_SCRIPT" ]]; then
           _k8s_name="k8s-${EKS_CLUSTER:-${STACK_NAME}-eks}"
@@ -6735,6 +6994,21 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
       note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
     fi
   fi
+  if [[ -n "$VPB_RAILS_EXTRA" && -n "$WIRE_SCRIPT" ]] \
+     && { [[ "$WIRE_VPB_PATH" == "true" || "$DRY_RUN" == "true" ]] || state_get PHASE_PATH 2>/dev/null | grep -q '^done'; } \
+     && { [[ "$DRY_RUN" == "true" ]] || python_chain_ready; }; then
+    step "Phase 16b: vPB paths for the other areas (${VPB_RAILS_EXTRA})"
+    # The egress tool is REMOTE at the capture host; without --capture-ip the
+    # wire script creates no tool and the egress bind fails. On a resumed run
+    # the first rail's step above may not have created the host, so make sure
+    # of it here (idempotent by tag) before wiring the other areas.
+    if [[ -z "$CAPTURE_HOST_IP" && "${CLOUDLENS_CAPTURE_HOST:-yes}" != "no" && "$DRY_RUN" != "true" ]]; then
+      ensure_capture_host_now || note "No capture host; the other areas' vPB paths get no egress tool."
+    fi
+    CAPTURE_ARG=()
+    [[ -n "$CAPTURE_HOST_IP" ]] && CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
+    wire_extra_vpb_rails
+  fi
 fi
 
 # =====================================================================
@@ -6830,6 +7104,14 @@ fi
 # =====================================================================
 # Phase 18: Final summary
 # =====================================================================
+extra_vpb_summary() {
+  local rail dev
+  for rail in $VPB_RAILS_EXTRA; do
+    dev="$(state_get "VPB_RAIL_$(upper "$rail")_DEVICE" 2>/dev/null || true)"
+    vpb_rail_facts "$rail" 2>/dev/null || { echo "vPB (${rail}):          not running"; continue; }
+    echo "vPB (${rail}):          ${VPB_R_PUBLIC_IP}   ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_R_PUBLIC_IP}   (KVO device: ${dev:-not adopted}; wired: $(state_get "VPB_RAIL_$(upper "$rail")_WIRED" 2>/dev/null || echo no))"
+  done
+}
 step "Phase 18: Final summary"
 
 write_summary() {
@@ -6872,6 +7154,7 @@ Public IP:          ${VPB_PUBLIC_IP}
 Management SSH:     ssh -i ~/.ssh/${KEY_NAME}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP}
 Bootstrap:          runs automatically at first boot (log: /var/log/cloudlens-bootstrap.log)
 vPB CLI:            sudo vpb        (re-run bootstrap manually: curl -sSL ${REPO_RAW}/scripts/bootstrap-vpb.sh | sudo bash)
+$(extra_vpb_summary)
 Note:               SSH is reachable ~5 minutes after deploy
 
 VSUMMARY
