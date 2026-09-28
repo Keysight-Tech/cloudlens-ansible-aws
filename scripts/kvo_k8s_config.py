@@ -83,9 +83,13 @@ def main():
         f, _, r = s.partition("=")
         if not f or not r:
             log(f"--pod-selector must be field=regex (got '{s}')"); return 2
-        selectors.append({"field": f, "tag": f, "regex": r})
+        # `tag` is KVO's identifier for the key (system.tags.<key>, as
+        # cloudPresenceTagsForPresence lists it for the Kubernetes presence:
+        # pod-name, pod-namespace, app, ...); the bare key silently matches
+        # nothing on KVO 3.1.0 (live 2026-09-28, same fault as the AWS rail).
+        selectors.append({"field": f, "tag": "system.tags." + f, "regex": r})
     if not selectors:
-        selectors = [{"field": "pod-name", "tag": "pod-name", "regex": ".*"}]
+        selectors = [{"field": "pod-name", "tag": "system.tags.pod-name", "regex": ".*"}]
         log("WARNING: no --pod-selector given; selecting EVERY pod (pod-name .*).")
         log("  Each selected pod consumes one licence credit (vTAP UG). Narrow it:")
         log("  --pod-selector 'pod-name=^(web|loadgen)'")
