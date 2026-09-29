@@ -1476,11 +1476,24 @@ else
       note "waiting for nodegroup ${_ng} to go (2-5 min)..."
       ro_aws eks wait nodegroup-deleted --cluster-name "$_eks_name" --nodegroup-name "$_ng" || true
     done
-    if del_aws eks delete-cluster --name "$_eks_name"; then
-      note "waiting for the control plane to go (a few minutes)..."
-      ro_aws eks wait cluster-deleted --name "$_eks_name" || true
-      ok "$(did) EKS cluster ${_eks_name}"
-    fi
+    # delete-cluster is refused (ResourceInUseException) while the nodegroup
+    # is still draining, and `eks wait nodegroup-deleted` can return before
+    # it is truly gone. Left unhandled, the control plane survives, its two
+    # ENIs keep the subnets and security groups, and the stack retry fails
+    # again (seen live 2026-09-29). Keep asking for up to ten minutes.
+    _eks_gone=false
+    for _try in $(seq 1 20); do
+      if del_aws eks delete-cluster --name "$_eks_name"; then
+        note "waiting for the control plane to go (a few minutes)..."
+        ro_aws eks wait cluster-deleted --name "$_eks_name" || true
+        ok "$(did) EKS cluster ${_eks_name}"
+        _eks_gone=true
+        break
+      fi
+      [[ "$_try" == "1" ]] && note "EKS refused the cluster delete (${DEL_ERR:-nodegroup still draining}); retrying every 30 s for up to 10 min"
+      sleep 30
+    done
+    [[ "$_eks_gone" == "true" ]] || warn "EKS cluster ${_eks_name} is still there; its ENIs will block the subnets. Delete it, then re-run with --sweep-only."
     for _r in "${STACK_NAME}-eks-cluster-role" "${STACK_NAME}-eks-node-role"; do
       for _pa in $(ro_aws iam list-attached-role-policies --role-name "$_r"                      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
         del_aws iam detach-role-policy --role-name "$_r" --policy-arn "$_pa" || true
