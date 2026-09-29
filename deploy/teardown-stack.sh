@@ -1494,6 +1494,25 @@ else
       sleep 30
     done
     [[ "$_eks_gone" == "true" ]] || warn "EKS cluster ${_eks_name} is still there; its ENIs will block the subnets. Delete it, then re-run with --sweep-only."
+    # The sample cluster's second-AZ subnet is created by deploy-eks-tapping.sh
+    # outside CloudFormation and associated with the stack's route table; left
+    # behind, the route table (and so the stack) cannot delete (live
+    # 2026-09-29). Only subnets in the stack VPC that carry no CloudFormation
+    # stack-name tag are touched, after their route-table associations.
+    if [[ -n "${STACK_VPC_ID:-}" ]]; then
+      for _sn in $(ro_aws ec2 describe-subnets --filters "Name=vpc-id,Values=${STACK_VPC_ID}" \
+                     --query 'Subnets[?!(Tags[?Key==`aws:cloudformation:stack-name`])].SubnetId' --output text 2>/dev/null); do
+        for _as in $(ro_aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=${_sn}" \
+                       --query "RouteTables[].Associations[?SubnetId=='${_sn}'].RouteTableAssociationId" --output text 2>/dev/null); do
+          del_aws ec2 disassociate-route-table --association-id "$_as" || true
+        done
+        if del_aws ec2 delete-subnet --subnet-id "$_sn"; then
+          ok "$(did) subnet ${_sn} (sample cluster, outside CloudFormation)"
+        else
+          warn "could not delete subnet ${_sn}: ${DEL_ERR}"
+        fi
+      done
+    fi
     for _r in "${STACK_NAME}-eks-cluster-role" "${STACK_NAME}-eks-node-role"; do
       for _pa in $(ro_aws iam list-attached-role-policies --role-name "$_r"                      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
         del_aws iam detach-role-policy --role-name "$_r" --policy-arn "$_pa" || true
