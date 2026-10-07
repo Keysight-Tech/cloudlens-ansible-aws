@@ -254,7 +254,9 @@ measure_once() {
 
   # --- vPB counters AFTER ------------------------------------------------------
   AFTER="$(vpb_counters)"
-  if [[ -n "$BEFORE" && -n "$AFTER" ]]; then
+  # Only integers: on a vPB whose rule table has an N/A row the counters come
+  # back as text and $((i1-i0)) dies with "N: unbound variable" (live 2026-09-28).
+  if [[ -n "$BEFORE" && -n "$AFTER" ]] && [[ "$BEFORE $AFTER" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
     read -r i0 p0 <<<"$BEFORE"; read -r i1 p1 <<<"$AFTER"
     head2 "vPB traffic rule (the device's own count, not KVO's opinion)"
     say "  inspected  ${i0} -> ${i1}   (+$((i1-i0)))"

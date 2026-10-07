@@ -103,7 +103,7 @@ def gql(base, token, query, verify, timeout=120, retries=2):
                 time.sleep(10)
     return {"errors": [{"message": f"KVO unreachable after {retries + 1} attempts: {last}"}]}
 
-def kvo_is_licensed(base, token, verify, wait=180):
+def kvo_is_licensed(base, token, verify, wait=900):
     """True once KVO's own licence view shows an installed entitlement.
 
     This must POLL, not ask once. The licensing phase activates over REST
@@ -114,6 +114,12 @@ def kvo_is_licensed(base, token, verify, wait=180):
     licences were in fact fine: REST listed 3, and availableLicenses showed
     KVO-DEVICE installed=5 barely a moment later. The deploy then fell through
     to asking the operator to paste a project key that no longer existed.
+
+    180 s was not enough either: on 2026-09-28 three activations returned
+    SUCCESS and the view stayed empty for more than three minutes, the gate
+    gave up, and every later phase (sensors, vPB, mirror, path) was skipped
+    for a licence that was fine. The wait is now 15 minutes: a licence that
+    really is missing costs a quarter of an hour, a slow view costs nothing.
     """
     deadline = time.time() + wait
     announced = False
@@ -326,7 +332,16 @@ def kvo_create_cloud_config(base, token, clm_uid, cc_name, verify):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--clms", required=True, help="CLMS/vController IP or host")
+    ap.add_argument("--clms", required=True, help="CLMS/vController IP or host, as THIS script reaches it")
+    # The address KVO is told to discover the vController on. KVO sits inside
+    # the VPC: given the public Elastic IP it hairpins through the internet
+    # gateway and arrives from its own public address, which a restricted admin
+    # CIDR refuses ("Could not discover CLMS with Hostname/IP", seen live
+    # 2026-09-28 with --admin-cidr <one host>/32). Same lesson as the vPB's
+    # --kvo-internal-ip: give the device the address it can actually reach.
+    ap.add_argument("--clms-internal-ip", default=None,
+                    help="address KVO uses to reach the vController (default: --clms); "
+                         "pass the private IP when KVO and the vController share the VPC")
     ap.add_argument("--clms-admin-pass", required=True, help="CLMS admin password (known value)")
     ap.add_argument("--kvo", required=True, help="KVO IP or host")
     ap.add_argument("--name", default="cloudlens-manager", help="name for the CLM inside KVO")
@@ -375,7 +390,7 @@ def main():
         return 4
 
     # 4-5. adopt + commit
-    adopted = kvo_adopt(kvo, ktok_probe, args.name, args.clms,
+    adopted = kvo_adopt(kvo, ktok_probe, args.name, args.clms_internal_ip or args.clms,
                         args.kvo_user_email, args.kvo_user_pass, verify)
     if not adopted: return 5
     if adopted == "EXISTS":
@@ -403,7 +418,7 @@ def main():
     log("")
     log("=====================================================================")
     log(f" {args.name} adopted into KVO and CONNECTED.")
-    log(f"   CLMS      https://{args.clms}")
+    log(f"   CLMS      https://{args.clms}  (KVO reaches it at {args.clms_internal_ip or args.clms})")
     log(f"   KVO       https://{args.kvo}")
     log(f"   KVO user  {args.kvo_user_email}")
     if proj_key:

@@ -21,7 +21,7 @@ request, discovered by introspection; see
      -> plugs the presence into the Visibility Fabric (this is what actually
         provisions and starts the AWS-side work, same lesson as CustomCloud).
   3. createCloudCollection {cloudConfig:{name}, tapType: RAW,
-                            resourceSelector:[{field:"tag", tag:"<k>", regex:"<v>"}]}
+                            resourceSelector:[{field:"<k>", tag:"system.tags.<k>", regex:"<v>"}]}
      -> selects which sources to mirror (here: the cloudlens=yes tag). KVO turns
         this into AWS Traffic Mirror Sessions.
 
@@ -386,13 +386,15 @@ def create_aws_cloud_config(base, token, cr, name, cluster, aws_cfg, verify, dev
 
 def create_collection(base, token, cr, name, cluster, cfg_name, selector, verify):
     # selector is the resourceSelector entry list. For the tag form, `field` is
-    # the TAG KEY itself, not the literal string "tag": the KVO UI's
-    # workload-selector dropdown lists the tag keys present on the instances
-    # (Name, cloudlens, instance-id, aws:cloudformation:*), and that is what
-    # goes in `field`. Sending field="tag" produced a selector the UI rendered
-    # as "tag | yes" which matched ZERO hosts, while removing the selector
-    # entirely revealed all 8 interfaces: proof KVO could see them and only the
-    # selector was wrong. `tag` is carried too, since the input accepts it.
+    # the TAG KEY itself (Name, cloudlens, instance-id, aws:cloudformation:*:
+    # what the KVO UI's workload-selector dropdown lists) and `tag` is KVO's
+    # identifier for that key, `system.tags.<key>` (or
+    # `system.cloud_metadata.<key>` for instance-id / interface-id /
+    # subnet-id), exactly as cloudPresenceTagsForPresence returns it. Two
+    # wrong forms are on record: field="tag" (rendered "tag | yes", matched
+    # nothing) and tag=<key> without the system.tags. prefix (KVO 2.13 form,
+    # commit b301357): on KVO 3.1.0 that one matched nothing SILENTLY, live
+    # 2026-09-28. workload_selection.kvo_selector builds the same shape.
     # The instance-id form ({field:"instance-id", regex:"^(i-..|i-..)$"}) comes
     # from resolve_workloads.py, which resolves ANDed tags / exclusions to
     # literal ids so KVO's undocumented multi-entry combination never matters.
@@ -864,7 +866,7 @@ def main():
             tag_key, tag_val = args.source_tag.split("=", 1)
         else:
             tag_key, tag_val = args.source_tag, ".*"
-        selector = [{"field": tag_key, "tag": tag_key, "regex": tag_val}]
+        selector = [{"field": tag_key, "tag": "system.tags." + tag_key, "regex": tag_val}]
         selection_desc = f"tag {tag_key}={tag_val}"
     coll_name = f"{args.name}-collect"
     have_coll = any(c.get("name") == coll_name for c in
@@ -1012,13 +1014,39 @@ def main():
                     # on "still processing" forever. The manual fix that works is a
                     # SINGLE change request that ends in a valid state; splitting it
                     # into clear-then-restore is invalid at the halfway point.
-                    log("sessions not cut yet. KVO cuts them after a change request that")
-                    log("  actually changes something. Nothing here is broken:")
-                    log("  in KVO open Visibility Fabric > Cloud Collections >")
-                    log(f"  {coll_name}, remove the workload selector and add it back")
-                    log(f"  ({selection_desc}), then commit that ONE change request.")
-                    log("  Sessions appear about a minute later. Verify with:")
-                    log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
+                    # The change that reliably makes KVO cut the sessions, done by
+                    # the script instead of the operator: recreate the collection
+                    # and the policy that references it, each step committed and
+                    # valid on its own (policy gone before the collection goes,
+                    # collection back before the policy comes back). Same effect
+                    # as the UI "remove the selector and add it back", automated
+                    # on 2026-09-28 after every lab stack needed the nudge.
+                    log("sessions not cut yet: recreating the collection and its policy so KVO acts")
+                    ok_n = True
+                    for mut, nm in (("deleteMonitoringPolicyByName", policy_name), ("deleteCloudCollectionByName", coll_name)):
+                        cr = open_cr(kvo, tok, "aws-nudge", verify)
+                        if not cr: ok_n = False; break
+                        gql(kvo, tok, "mutation($n:String!,$c:String!){ %s(name:$n, changeID:$c){ uid } }" % mut, {"n": nm, "c": cr}, verify)
+                        if not commit_cr(kvo, tok, cr, verify): ok_n = False; break
+                    if ok_n:
+                        cr = open_cr(kvo, tok, "aws-nudge-collection", verify)
+                        ok_n = bool(cr and create_collection(kvo, tok, cr, coll_name, cluster, args.name, selector, verify) and commit_cr(kvo, tok, cr, verify))
+                    if ok_n:
+                        cr = open_cr(kvo, tok, "aws-nudge-policy", verify)
+                        ok_n = bool(cr and create_monitoring_policy(kvo, tok, cr, policy_name, cluster, coll_name, tool_name, verify) and commit_cr(kvo, tok, cr, verify))
+                    if ok_n:
+                        log("collection and policy recreated; waiting up to 240s for the sessions...")
+                        t_end = time.time() + 240
+                        while time.time() < t_end and session_count(args.region, args.vpc_id) == 0:
+                            time.sleep(15)
+                        n = session_count(args.region, args.vpc_id)
+                    if n > 0:
+                        log(f"OK: {n} traffic mirror session(s) present after the recreate.")
+                    else:
+                        log("sessions still not cut. In KVO open Visibility Fabric > Cloud Collections >")
+                        log(f"  {coll_name}, remove the workload selector and add it back")
+                        log(f"  ({selection_desc}), then commit that ONE change request.")
+                        log(f"    aws ec2 describe-traffic-mirror-sessions --region {args.region}")
         else:
             log("!! FAILED: no collector ASG appeared. KVO has the config but did NOT launch the collector.")
             log("   Most common cause: the AwsPresence was REUSED instead of recreated with the key.")

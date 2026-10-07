@@ -1476,10 +1476,42 @@ else
       note "waiting for nodegroup ${_ng} to go (2-5 min)..."
       ro_aws eks wait nodegroup-deleted --cluster-name "$_eks_name" --nodegroup-name "$_ng" || true
     done
-    if del_aws eks delete-cluster --name "$_eks_name"; then
-      note "waiting for the control plane to go (a few minutes)..."
-      ro_aws eks wait cluster-deleted --name "$_eks_name" || true
-      ok "$(did) EKS cluster ${_eks_name}"
+    # delete-cluster is refused (ResourceInUseException) while the nodegroup
+    # is still draining, and `eks wait nodegroup-deleted` can return before
+    # it is truly gone. Left unhandled, the control plane survives, its two
+    # ENIs keep the subnets and security groups, and the stack retry fails
+    # again (seen live 2026-09-29). Keep asking for up to ten minutes.
+    _eks_gone=false
+    for _try in $(seq 1 20); do
+      if del_aws eks delete-cluster --name "$_eks_name"; then
+        note "waiting for the control plane to go (a few minutes)..."
+        ro_aws eks wait cluster-deleted --name "$_eks_name" || true
+        ok "$(did) EKS cluster ${_eks_name}"
+        _eks_gone=true
+        break
+      fi
+      [[ "$_try" == "1" ]] && note "EKS refused the cluster delete (${DEL_ERR:-nodegroup still draining}); retrying every 30 s for up to 10 min"
+      sleep 30
+    done
+    [[ "$_eks_gone" == "true" ]] || warn "EKS cluster ${_eks_name} is still there; its ENIs will block the subnets. Delete it, then re-run with --sweep-only."
+    # The sample cluster's second-AZ subnet is created by deploy-eks-tapping.sh
+    # outside CloudFormation and associated with the stack's route table; left
+    # behind, the route table (and so the stack) cannot delete (live
+    # 2026-09-29). Only subnets in the stack VPC that carry no CloudFormation
+    # stack-name tag are touched, after their route-table associations.
+    if [[ -n "${STACK_VPC_ID:-}" ]]; then
+      for _sn in $(ro_aws ec2 describe-subnets --filters "Name=vpc-id,Values=${STACK_VPC_ID}" \
+                     --query 'Subnets[?!(Tags[?Key==`aws:cloudformation:stack-name`])].SubnetId' --output text 2>/dev/null); do
+        for _as in $(ro_aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=${_sn}" \
+                       --query "RouteTables[].Associations[?SubnetId=='${_sn}'].RouteTableAssociationId" --output text 2>/dev/null); do
+          del_aws ec2 disassociate-route-table --association-id "$_as" || true
+        done
+        if del_aws ec2 delete-subnet --subnet-id "$_sn"; then
+          ok "$(did) subnet ${_sn} (sample cluster, outside CloudFormation)"
+        else
+          warn "could not delete subnet ${_sn}: ${DEL_ERR}"
+        fi
+      done
     fi
     for _r in "${STACK_NAME}-eks-cluster-role" "${STACK_NAME}-eks-node-role"; do
       for _pa in $(ro_aws iam list-attached-role-policies --role-name "$_r"                      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
@@ -1521,6 +1553,34 @@ else
     fi
   fi
 
+  # ---- Extra vPBs and their Elastic IPs. deploy-stack.sh launches one vPB per
+  # further area (--vpb-rails) outside CloudFormation, tagged
+  # cloudlens:stack=<stack> + cloudlens:vpb-rail=<area>, in whatever VPC the
+  # stack used, and gives each an Elastic IP with the same tags. The sweep
+  # above only covers the stack's own VPC; this covers a customer VPC too, and
+  # the addresses, which would otherwise stay allocated and billed.
+  _rail_ids=$(ro_aws ec2 describe-instances \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
+                "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+      --query 'Reservations[].Instances[].InstanceId' --output text | tr '\t' '\n')
+  for _li in $_rail_ids; do
+    if del_aws ec2 terminate-instances --instance-ids "$_li"; then
+      ok "$(did) extra vPB ${_li}"
+    else
+      warn "could not terminate extra vPB ${_li}: ${DEL_ERR}"
+    fi
+  done
+  [[ -n "$_rail_ids" && "$DRY_RUN" != "true" ]] && ro_aws ec2 wait instance-terminated --instance-ids $_rail_ids 2>/dev/null || true
+  _rail_eips=$(ro_aws ec2 describe-addresses \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
+      --query 'Addresses[].AllocationId' --output text | tr '\t' '\n')
+  for _al in $_rail_eips; do
+    if del_aws ec2 release-address --allocation-id "$_al"; then
+      ok "$(did) Elastic IP ${_al} (extra vPB)"
+    else
+      warn "could not release Elastic IP ${_al}: ${DEL_ERR}"
+    fi
+  done
   # ---- Auto Scaling groups first: a live group re-creates its instances,
   # which re-creates volumes and holds ENIs on the groups below.
   for _a in $SWEEP_ASGS; do

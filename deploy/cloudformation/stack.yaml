@@ -598,9 +598,49 @@ Resources:
         - Description: L2GRE tunnel from CloudLens collector (IP protocol 47, no ports)
           IpProtocol: "47"
           CidrIp: !Ref AdminIngressCidr
+        # Inside the VPC the rules above must not depend on the admin CIDR.
+        # With AdminIngressCidr narrowed to one operator host (the CIS-correct
+        # setting) KVO could not reach the vController on 443, so adoption
+        # failed with "Could not discover CLMS", and every sensor, collector
+        # and mirror source would have been refused the same way. Seen live
+        # 2026-09-28; the open default had hidden it. The self rule below is
+        # added as a separate resource (a group cannot reference itself in
+        # its own ingress list).
+        - Description: sensors and KVO to the vController (VPC)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+        - Description: vController to KVO (VPC)
+          IpProtocol: tcp
+          FromPort: 7443
+          ToPort: 7443
+          CidrIp: !Ref VpcCidr
+        - Description: VXLAN from mirror sources and sensors (VPC)
+          IpProtocol: udp
+          FromPort: 4789
+          ToPort: 4789
+          CidrIp: !Ref VpcCidr
+        - Description: VXLAN Keysight ports (VPC)
+          IpProtocol: udp
+          FromPort: 10800
+          ToPort: 10801
+          CidrIp: !Ref VpcCidr
+        - Description: GRE from collectors and sensors (VPC)
+          IpProtocol: "47"
+          CidrIp: !Ref VpcCidr
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"
+
+  SecurityGroupSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateSecurityGroup
+    Properties:
+      Description: CloudLens appliances talk to each other on every port
+      GroupId: !Ref SecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId: !Ref SecurityGroup
 
   # ---------- vController (always) ----------
   VcontrollerInstance:

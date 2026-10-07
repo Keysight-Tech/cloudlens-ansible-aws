@@ -178,8 +178,15 @@ def kvo_selector(selection, instance_ids, single_vpc):
 
     Two forms, chosen by what is PROVABLY equivalent to the resolved set:
 
-    - The tag form {field: K, tag: K, regex: V}, proven live (commit history:
-      field must be the TAG KEY, not the literal "tag"). Only safe when the
+    - The tag form {field: K, tag: system.tags.K, regex: V}. `tag` is KVO's
+      own identifier for the key, exactly as cloudPresenceTagsForPresence
+      returns it (system.tags.<key> for tags, system.cloud_metadata.<key> for
+      instance-id, interface-id, subnet-id); `field` is the bare key. With
+      tag=K (the KVO 2.13 form, commit b301357) KVO 3.1.0 matches NOTHING and
+      says nothing: 0 credits reserved, no group written to the vController
+      project, no mirror session, no alert. Found live 2026-09-28 after an
+      afternoon of zero sessions; sessions appeared 90 s after the repoint.
+      The tag form is only safe when the
       selection is exactly one tag, nothing was excluded, and discovery is
       confined to this one VPC: KVO applies the selector inside the cloud
       config's VPC on its own, so the vpc filter is implicit.
@@ -208,7 +215,7 @@ def kvo_selector(selection, instance_ids, single_vpc):
     if (selection["mode"] in ("tags", "default") and len(tag_keys) == 1
             and not selection["exclude_ids"] and single_vpc):
         key = tag_keys[0][len("tag:"):]
-        return [{"field": key, "tag": key,
+        return [{"field": key, "tag": "system.tags." + key,
                  "regex": _tag_regex(str(filters[tag_keys[0]]))}]
     chunks, cur, cur_len = [], [], 0
     for i in ids:
@@ -218,5 +225,5 @@ def kvo_selector(selection, instance_ids, single_vpc):
         cur.append(i)
         cur_len += len(i) + 1
     chunks.append(cur)
-    return [{"field": "instance-id", "tag": "instance-id",
+    return [{"field": "instance-id", "tag": "system.cloud_metadata.instance-id",
              "regex": "^(%s)$" % "|".join(c)} for c in chunks]

@@ -41,7 +41,8 @@ Sequence (each gotcha below cost a debugging cycle, do not reorder):
 Exit: 0 ok, 2 auth, 3 not licensed, 4 device/deviceConfig not found, 5 step failed.
 """
 from __future__ import annotations
-import argparse, json, sys, time
+import argparse
+import time, json, sys
 import requests
 
 def log(m): print(f"[vpb-path] {m}", file=sys.stderr, flush=True)
@@ -59,6 +60,78 @@ def gql(base, token, query, variables, verify):
                       json={"query": query, "variables": variables or {}}, verify=verify, timeout=60)
     try: return r.json()
     except ValueError: return {"errors": [{"message": r.text[:200]}]}
+
+def introspect_input(base, token, verify, type_name):
+    # four levels of ofType: LIST -> NON_NULL -> INPUT_OBJECT is the usual depth
+    q = ('{ __type(name:"%s"){ inputFields { name type { name kind ofType { name kind ofType { name kind ofType { name kind } } } } } } }' % type_name)
+    d = gql(base, token, q, None, verify)
+    t = (d.get("data", {}) or {}).get("__type") or {}
+    return {f["name"]: f for f in (t.get("inputFields") or [])}
+
+
+def unwrap(t):
+    """(kinds seen, innermost named type) for a GraphQL type reference."""
+    kinds, cur = [], t
+    while cur:
+        kinds.append(cur.get("kind"))
+        if cur.get("name"):
+            return kinds, cur["name"]
+        cur = cur.get("ofType")
+    return kinds, None
+
+
+def introspect_enum(base, token, verify, type_name):
+    d = gql(base, token, '{ __type(name:"%s"){ enumValues { name } } }' % type_name, None, verify)
+    t = (d.get("data", {}) or {}).get("__type") or {}
+    return [e["name"] for e in (t.get("enumValues") or [])]
+
+
+def geneve_processing(base, token, verify):
+    """Find how _MonitoringPolicyInput carries header stripping and build the
+    GENEVE value for it. Returns (field_name, value) or (None, reason)."""
+    fields = introspect_input(base, token, verify, "_MonitoringPolicyInput")
+    if not fields:
+        return None, "could not introspect _MonitoringPolicyInput"
+    cands = [n for n in fields if any(k in n.lower() for k in ("process", "strip", "header"))]
+    if not cands:
+        return None, "no processing field on _MonitoringPolicyInput; fields: %s" % sorted(fields)
+    name = cands[0]
+    kind, tname = unwrap(fields[name]["type"])
+    # a list of processing objects, each with a type enum
+    if "LIST" in kind:
+        sub = introspect_input(base, token, verify, tname) if tname else {}
+        # KVO 3.1.0 (found live 2026-09-28): processings is a list of
+        # _MonitoringPolicyTrafficProcessingInput {priority: Int!,
+        # trafficProcessing: _NameReferenceInput!}, and the predefined
+        # trafficProcessings include one named GENEVE. Reference it by name.
+        if "trafficProcessing" in sub:
+            names = [t.get("name") for t in ((gql(base, token, "{ trafficProcessings { name } }", None, verify)
+                                              .get("data", {}) or {}).get("trafficProcessings") or [])]
+            gen = next((n for n in names if n and "GENEVE" in n.upper()), None)
+            if gen:
+                return name, [{"priority": 1, "trafficProcessing": {"name": gen}}]
+            return None, "no GENEVE among KVO's trafficProcessings: %s" % sorted(set(n for n in names if n))
+        tf = next((f for f in sub if f.lower() in ("type", "processingtype", "headerstripping", "stripping")), None)
+        if tf:
+            _k, ename = unwrap(sub[tf]["type"])
+            vals = introspect_enum(base, token, verify, ename) if ename else []
+            gen = next((v for v in vals if "GENEVE" in v.upper()), None)
+            if gen:
+                return name, [{tf: gen}]
+            return None, "%s.%s has no GENEVE value; enum %s = %s" % (name, tf, ename, vals)
+        return None, "%s is a list of %s with fields %s; no type field" % (name, tname, sorted(sub))
+    # an object with named booleans/enums
+    sub = introspect_input(base, token, verify, tname) if tname else {}
+    gf = next((f for f in sub if "geneve" in f.lower()), None)
+    if gf:
+        return name, {gf: True}
+    if "ENUM" in kind:
+        vals = introspect_enum(base, token, verify, tname)
+        gen = next((v for v in vals if "GENEVE" in v.upper()), None)
+        if gen:
+            return name, gen
+    return None, "%s (%s) has fields %s; nothing names GENEVE" % (name, tname, sorted(sub))
+
 
 def _open_crs(base, token, verify):
     q = gql(base, token, "{ changeRequests { uid status } }", None, verify)
@@ -158,6 +231,11 @@ def main():
     ap.add_argument("--collection", required=True, help="cloud collection = traffic source")
     ap.add_argument("--cloud-config", required=True, help="cloud config that owns the collection")
     ap.add_argument("--c2dl", default="vpb-c2dl")
+    ap.add_argument("--link-config", default="",
+                    help="attach the C2DL to THIS named cloud config (any type, e.g. a "
+                         "Kubernetes one) instead of every AWS-type config. KVO allows "
+                         "one cloud config per link, so a second vPB serving a second "
+                         "config needs its own link, bound here.")
     ap.add_argument("--tool", default="vpb-egress-tool")
     ap.add_argument("--policy", default="vpb-traffic-policy")
     # A packet-capture host on the egress subnet sees NOTHING from the LOCAL
@@ -165,6 +243,16 @@ def main():
     # frames, which AWS will not deliver to another instance. Giving the capture
     # host its own REMOTE tool inside the SAME policy tunnels it a copy of
     # exactly what leaves the vPB egress, so "show me the packets" has an answer.
+    # GENEVE stripping on the policy. A firewall behind an AWS Gateway Load
+    # Balancer sees every session wrapped in GENEVE (UDP 6081, with the GWLB's
+    # TLV options); a mirror of its interface carries that wrapper into the
+    # collector and on to the vPB. KVO UG 3.1.0 (Packet Processing): the vPB
+    # supports L2GRE, ERSPAN, GENEVE and VXLAN header stripping, one option at
+    # a time. The GraphQL field that carries it is not in any document, so it
+    # is introspected at run time and, if it cannot be found, printed for the
+    # operator to set in the UI (exit 6), exactly like kvo_k8s_config.py.
+    ap.add_argument("--strip-geneve", action="store_true",
+                    help="ask KVO to strip GENEVE headers on this policy (firewall-behind-GWLB copies)")
     ap.add_argument("--capture-ip", default="",
                     help="IP of a packet-capture host to attach to the vPB egress "
                          "(adds a REMOTE tool to the same monitoring policy)")
@@ -232,6 +320,28 @@ def main():
     if not step(base, tok, verify, "sync vPB ports",
                 "mutation($u:ID!,$cr:String!){ syncDeviceConfigPorts(uid:$u,changeID:$cr,settings:{forceSync:true}){ uid } }",
                 {"u": uid}): return 5
+    # A vPB adopted a moment ago has no data ports in KVO yet: the sync
+    # commits fine and the ingress bind then fails with "Cannot find node
+    # with Label 'Port' and name '<device>:eth1:...'" (live 2026-09-28, the
+    # deploy wired a vPB 40 s after adopting it). The ports show up in
+    # devices.portsStatus a minute or two later; wait for the ingress port,
+    # re-syncing each time, before binding anything.
+    for attempt in range(20):
+        ports = [p["portId"] for d in (gql(base, tok, "{ devices { name portsStatus { portId } } }", None, verify)
+                                        .get("data", {}).get("devices") or [])
+                 if d.get("name") == a.device for p in (d.get("portsStatus") or [])]
+        if a.ingress_port in ports and a.egress_port in ports:
+            if attempt: log(f"   ports {ports} present after {attempt * 15}s")
+            break
+        if attempt == 0:
+            log(f"   data ports not in KVO yet ({ports or 'none'}); waiting for {a.ingress_port}/{a.egress_port} (up to 5 min)")
+        time.sleep(15)
+        step(base, tok, verify, "sync vPB ports",
+             "mutation($u:ID!,$cr:String!){ syncDeviceConfigPorts(uid:$u,changeID:$cr,settings:{forceSync:true}){ uid } }",
+             {"u": uid})
+    else:
+        log(f"   {a.device} still has no {a.ingress_port}/{a.egress_port} in KVO after 5 min; the port")
+        log("   binds below will fail. On the vPB: sudo vpb -c 'show interface-status'.")
 
     # 2. C2DL
     if a.c2dl in existing("c2DLinks"):
@@ -308,51 +418,73 @@ def main():
 
     # 6. associate the C2DL to the cloud config (FULL awsConfiguration round-trip)
     log("6/7 updateCloudConfig deviceLinks")
-    q = gql(base, tok, """{ cloudConfigs { name settings {
-              cloudPresence { name } deviceLinks { name }
-              awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
-                mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
-                tags { key value }
-                availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
-              None, verify)
-    # The deviceLink MUST land on the AWS-type cloud config (the one
-    # kvo_aws_mirror.py creates, e.g. "aws-mirror"), NOT on --cloud-config, which
-    # the deploy sets to the sensor CustomCloud ("cloudlens-aws"). A CustomCloud
-    # has no awsConfiguration, so attaching there was silently skipped and the AWS
-    # config never got its deviceLink -> KVO's mirror monitoring-policy commit had
-    # an incomplete path and ZERO mirror sessions were cut. So pick the AWS config
-    # by the presence of awsConfiguration, not by the passed name.
-    configs = q["data"]["cloudConfigs"]
-    aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
-    if not aws_configs:
-        # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
-        # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
-        # there is simply no AWS cloud config to attach the C2DL to.
-        log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
-        log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
-        return 0
-    # EVERY AWS config gets the link, not just the first: the deploy builds one
-    # config per tapped VPC (aws-mirror-<vpcid>), and a config without its
-    # deviceLink delivers ZERO packets to the vPB, silently. The already-linked
-    # check keeps re-runs from re-editing a config (an edit rebuilds its vHub
-    # and briefly stops that VPC's mirroring, so it must happen exactly once).
-    for cc in aws_configs:
-        target = cc["name"]
+    if a.link_config:
+        # One named config, any type. KVO enforces one cloud config per Cloud
+        # to Device Link ("There can only be one Cloud Config associated to a
+        # Cloud To Device Link", live 2026-09-28), so the second vPB's link is
+        # attached to exactly the config it serves (the Kubernetes one in the
+        # lab) and never to the AWS mirror config that owns the first link.
+        q = gql(base, tok, "{ cloudConfigs { name cloudConfigType settings { cloudPresence { name } deviceLinks { name } } } }", None, verify)
+        cc = next((c for c in q["data"]["cloudConfigs"] if c["name"] == a.link_config), None)
+        if not cc:
+            log(f"cloud config '{a.link_config}' does not exist in KVO"); return 5
         st = cc["settings"] or {}
         links = {l["name"] for l in (st.get("deviceLinks") or [])}
         if a.c2dl in links:
-            log(f"  '{a.c2dl}' already linked to {target}")
-            continue
-        aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
-        for az in aws.get("availabilityZones", []):
-            for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
-        # deviceLinks is a LIST of name refs, not a single object.
-        settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
-        if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
-        if not step(base, tok, verify, f"link C2DL to cloud config {target}",
-                    "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
-                    {"n": target, "c": cluster, "s": settings}): return 5
-        log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
+            log(f"  '{a.c2dl}' already linked to {a.link_config}")
+        else:
+            settings = {"deviceLinks": [{"name": a.c2dl}]}
+            if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
+            if not step(base, tok, verify, f"link C2DL to cloud config {a.link_config}",
+                        "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                        {"n": a.link_config, "c": cluster, "s": settings}): return 5
+            log(f"  linked C2DL '{a.c2dl}' to cloud config '{a.link_config}' ({cc['cloudConfigType']})")
+    else:
+        q = gql(base, tok, """{ cloudConfigs { name settings {
+                  cloudPresence { name } deviceLinks { name }
+                  awsConfiguration { imageId sshKeyPair scaleCooldown cloudlensIp
+                    mgmtSecurityGroupIds ingressSecurityGroupIds egressSecurityGroupIds
+                    tags { key value }
+                    availabilityZones { zone instanceType mgmtSubnetId ingressSubnetIds egressSubnetId minSize maxSize } } } } }""",
+                  None, verify)
+        # The deviceLink MUST land on the AWS-type cloud config (the one
+        # kvo_aws_mirror.py creates, e.g. "aws-mirror"), NOT on --cloud-config, which
+        # the deploy sets to the sensor CustomCloud ("cloudlens-aws"). A CustomCloud
+        # has no awsConfiguration, so attaching there was silently skipped and the AWS
+        # config never got its deviceLink -> KVO's mirror monitoring-policy commit had
+        # an incomplete path and ZERO mirror sessions were cut. So pick the AWS config
+        # by the presence of awsConfiguration, not by the passed name.
+        configs = q["data"]["cloudConfigs"]
+        aws_configs = [c for c in configs if (c.get("settings") or {}).get("awsConfiguration")]
+        if not aws_configs:
+            # No AWS mirroring fabric present (sensor-only deploy). The vPB path itself
+            # is complete (ports synced, C2DL created, ingress/egress bound, tool made);
+            # there is simply no AWS cloud config to attach the C2DL to.
+            log("no AWS-type cloud config found (sensor-only deploy); the vPB path is")
+            log("  complete but there is no AWS mirroring fabric to link the C2DL to.")
+            return 0
+        # EVERY AWS config gets the link, not just the first: the deploy builds one
+        # config per tapped VPC (aws-mirror-<vpcid>), and a config without its
+        # deviceLink delivers ZERO packets to the vPB, silently. The already-linked
+        # check keeps re-runs from re-editing a config (an edit rebuilds its vHub
+        # and briefly stops that VPC's mirroring, so it must happen exactly once).
+        for cc in aws_configs:
+            target = cc["name"]
+            st = cc["settings"] or {}
+            links = {l["name"] for l in (st.get("deviceLinks") or [])}
+            if a.c2dl in links:
+                log(f"  '{a.c2dl}' already linked to {target}")
+                continue
+            aws = {k: v for k, v in (st.get("awsConfiguration") or {}).items() if v is not None}
+            for az in aws.get("availabilityZones", []):
+                for k in [k for k, v in list(az.items()) if v is None]: az.pop(k)
+            # deviceLinks is a LIST of name refs, not a single object.
+            settings = {"awsConfiguration": aws, "deviceLinks": [{"name": a.c2dl}]}
+            if st.get("cloudPresence"): settings["cloudPresence"] = {"name": st["cloudPresence"]["name"]}
+            if not step(base, tok, verify, f"link C2DL to cloud config {target}",
+                        "mutation($n:String!,$cr:String!,$c:String,$s:_CloudConfigUpdateInput!){ updateCloudConfig(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
+                        {"n": target, "c": cluster, "s": settings}): return 5
+            log(f"  linked C2DL '{a.c2dl}' to AWS cloud config '{target}'")
 
     # 7. monitoring policy
     if a.policy in existing("monitoringPolicies"):
@@ -402,12 +534,30 @@ def main():
                 f"using the real traffic source '{pick}'")
             src = pick
 
+        policy_extra = {}
+        if a.strip_geneve:
+            fname, val = geneve_processing(base, tok, verify)
+            if not fname:
+                log("   GENEVE stripping: %s" % val)
+                log("   Set it in the KVO UI: Monitoring Policies > this policy > Packet Processing > Header Stripping > GENEVE,")
+                log("   then re-run without --strip-geneve. RECORD the field name that worked in this script.")
+                return 6
+            log("   GENEVE stripping via _MonitoringPolicyInput.%s = %s" % (fname, val))
+            # KVO 3.1.0 accepts the setting but refuses the commit when the
+            # policy's destination is a remote (cloud) tool: "Traffic
+            # processings GENEVE applied on monitoring policy ... are not
+            # supported with the remote traffic destination connected to a
+            # cloud vpb-capture-tool" (live 2026-09-28). Strip on the vPB
+            # instead (vPB UG CLI: geneve-strip), or use a LOCAL tool port.
+            log("   NOTE: KVO refuses GENEVE processing when the destination is a REMOTE (cloud) tool;")
+            log("   with a remote capture tool strip GENEVE on the vPB itself (CLI geneve-strip) or use a LOCAL tool port.")
+            policy_extra = {fname: val}
         log("7/7 createMonitoringPolicy")
         if not step(base, tok, verify, "create monitoring policy",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.policy, "c": cluster,
-                     "s": {"source": {"name": src}, "tools": policy_tools,
-                           "runMode": "CONTINUOUSLY", "type": "REGULAR"}}): return 5
+                     "s": dict({"source": {"name": src}, "tools": policy_tools,
+                                "runMode": "CONTINUOUSLY", "type": "REGULAR"}, **policy_extra)}): return 5
         a.collection = src   # so the summary below names what was actually used
 
     v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)

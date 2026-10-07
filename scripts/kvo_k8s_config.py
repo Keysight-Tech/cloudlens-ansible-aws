@@ -14,13 +14,12 @@ vController on their own. The collection then lists the cluster's pods and a
 Workload Selector narrows them: "the selector 'pod-name' and 'nginx' value,
 will select all pods that start with 'nginx' prefix."
 
-One honest unknown, handled instead of guessed: no document prints the
-GraphQL input shape for the Kubernetes config type. This script INTROSPECTS
-_CloudConfigInput at run time, builds the settings from what the schema
-actually offers, and when nothing matches it prints the real field list plus
-the exact manual UI steps, rather than committing a wrong object. The first
-live run records what worked (the same way the resourceSelector 'field is
-the tag key' fact was pinned by commit b301357).
+The GraphQL shape, pinned live on KVO 3.1.0 (2026-09-28): a KubernetesCluster
+PRESENCE carries the vController (cloudLensManagerId) and KVO provisions its
+vController project + key on creation; the Cloud Config is then
+{cloudConfigType: K8s, cloudPresence: {name}, deviceLinks}. Nothing on
+_CloudConfigInput names a vController. The presence key is what the
+DaemonSet must register with (--key-out hands it to deploy-eks-tapping.sh).
 
 Usage:
   python3 scripts/kvo_k8s_config.py --kvo <ip> \
@@ -29,8 +28,9 @@ Usage:
       [--tool vpb-egress-tool] [--policy k8s-traffic-policy] \
       [--kvo-admin-user admin] [--kvo-admin-pass admin] [--insecure]
 
-Exit codes: 0 wired; 2 bad input; 5 auth/CR failed; 6 the schema offered no
-Kubernetes shape (manual steps printed); 7 collection failed; 10 policy failed.
+Exit codes: 0 wired; 2 bad input; 5 auth/CR failed; 6 presence/config refused
+(manual steps printed); 7 collection failed; 10 policy failed; 11 the config has
+no device link so the policy was not attempted.
 """
 from __future__ import annotations
 import argparse
@@ -38,17 +38,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kvo_aws_mirror import (gql, open_cr, commit_cr, cluster_uid, exists_named,
+from kvo_aws_mirror import (gql, open_cr, commit_cr, cluster_uid, exists_named, clm_info,
                             create_collection, create_monitoring_policy,
                             kvo_token, kvo_accept_eula, log)
-
-
-def introspect_input(base, tok, verify, type_name):
-    q = ('{ __type(name:"%s"){ inputFields { name type { name kind '
-         'ofType { name } } } } }' % type_name)
-    d = gql(base, tok, q, None, verify)
-    t = (d.get("data", {}) or {}).get("__type") or {}
-    return {f["name"]: f for f in (t.get("inputFields") or [])}
 
 
 def main():
@@ -72,11 +64,17 @@ def main():
                     help="stop after the collection (no tool exists yet)")
     ap.add_argument("--kvo-admin-user", default=os.environ.get("KVO_ADMIN_USER", "admin"))
     ap.add_argument("--kvo-admin-pass", default=os.environ.get("KVO_ADMIN_PASS", "admin"))
+    ap.add_argument("--key-out", default="",
+                    help="write the presence's vController project key here (0600); "
+                         "the DaemonSet must register with it")
     ap.add_argument("--accept-eula", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
     verify = not args.insecure
-    kvo = args.kvo
+    # Accept a bare address as well as a URL: the deploy passes the KVO IP, and
+    # requests refuses a URL with no scheme (MissingSchema, seen live 2026-09-28).
+    kvo = args.kvo if args.kvo.startswith(("http://", "https://")) else "https://" + args.kvo
+    kvo = kvo.rstrip("/")
     policy_name = args.policy or f"{args.name}-policy"
     coll_name = f"{args.name}-collect"
 
@@ -85,9 +83,13 @@ def main():
         f, _, r = s.partition("=")
         if not f or not r:
             log(f"--pod-selector must be field=regex (got '{s}')"); return 2
-        selectors.append({"field": f, "tag": f, "regex": r})
+        # `tag` is KVO's identifier for the key (system.tags.<key>, as
+        # cloudPresenceTagsForPresence lists it for the Kubernetes presence:
+        # pod-name, pod-namespace, app, ...); the bare key silently matches
+        # nothing on KVO 3.1.0 (live 2026-09-28, same fault as the AWS rail).
+        selectors.append({"field": f, "tag": "system.tags." + f, "regex": r})
     if not selectors:
-        selectors = [{"field": "pod-name", "tag": "pod-name", "regex": ".*"}]
+        selectors = [{"field": "pod-name", "tag": "system.tags.pod-name", "regex": ".*"}]
         log("WARNING: no --pod-selector given; selecting EVERY pod (pod-name .*).")
         log("  Each selected pod consumes one licence credit (vTAP UG). Narrow it:")
         log("  --pod-selector 'pod-name=^(web|loadgen)'")
@@ -102,63 +104,101 @@ def main():
     if not cluster:
         log("no KVO cluster uid"); return 5
 
-    # 1. The Kubernetes Cloud Config, idempotent by name. NEVER edited when it
-    # exists: the KVO UG documents config edits as destructive for the AWS
-    # type, and there is no documented promise the Kubernetes type is safer.
-    have = any(c.get("name") == args.name for c in
-               (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify)
-                .get("data", {}).get("cloudConfigs") or []))
-    if have:
-        log(f"Kubernetes cloud config '{args.name}' already exists; reusing")
+    # 1. The presence, then the config. In the KVO 3.1.0 schema CloudPresence
+    # is an interface (AwsPresence, CustomCloud, KubernetesCluster, ...) and
+    # _CloudConfigInput has no vController field at all: the vController the
+    # UG's dialog asks for goes on the KubernetesCluster PRESENCE as
+    # cloudLensManagerId, and the Cloud Config only references the presence by
+    # name with cloudConfigType K8s. Same shape as the AWS and Custom Cloud
+    # rails. Found live 2026-09-28 after the introspection guess found nothing.
+    # KVO provisions the vController project for the presence and hands back
+    # its key: the UG says "the creation of the Cloud Config ... was the
+    # condition to populate the deployment data for the sensor", so the
+    # DaemonSet must register with THIS key, not the VM sensors' one.
+    clm = clm_info(kvo, tok, args.vcontroller, verify)
+    if not clm:
+        log(f"vController '{args.vcontroller}' is not known to KVO (Cloud Fabric > "
+            "CloudLens vController). Adopt it first (kvo_adopt_clms.py)."); return 6
+    pres = next((k for k in (gql(kvo, tok, "{ kubernetesClusters { name clmsProjectId clmsProjectApiKey } }",
+                                 None, verify).get("data", {}) or {}).get("kubernetesClusters") or []
+                 if k.get("name") == args.name), None)
+    have_cfg = any(c.get("name") == args.name for c in
+                   (gql(kvo, tok, "{ cloudConfigs { name } }", None, verify)
+                    .get("data", {}).get("cloudConfigs") or []))
+    if pres and have_cfg:
+        log(f"Kubernetes cluster presence + cloud config '{args.name}' already exist; reusing")
     else:
-        fields = introspect_input(kvo, tok, verify, "_CloudConfigInput")
-        if not fields:
-            log("could not introspect _CloudConfigInput; is this KVO reachable?"); return 5
-        # The dialog's vController dropdown must map to SOME input field; find
-        # it by name instead of guessing a spelling.
-        vc_field = next((n for n in fields
-                         if "controller" in n.lower() or n.lower() in ("vcontroller", "clm")), "")
-        if not vc_field:
-            log("The KVO schema offers no vController field on _CloudConfigInput.")
-            log("Its actual input fields are:")
-            for n in sorted(fields):
-                log(f"  {n}")
-            log("Create the config manually instead (KVO UG, Kubernetes Cluster")
-            log("Cloud Configs): Cloud Fabric > Cloud Configs > New Cloud Config >")
-            log(f"Kubernetes Cluster, name '{args.name}', vController")
-            log(f"'{args.vcontroller}', device link '{args.device_link}'. Then")
-            log("re-run this script: the collection and policy steps are schema-safe.")
-            return 6
-        settings = {vc_field: {"name": args.vcontroller}}
-        want_links = []
-        if args.device_link and "deviceLinks" in fields:
-            have_c2dl = {c["name"] for c in
-                         (gql(kvo, tok, "{ c2DLinks { name } }", None, verify)
-                          .get("data", {}).get("c2DLinks") or [])}
-            if args.device_link in have_c2dl:
-                want_links = [{"name": args.device_link}]
-                settings["deviceLinks"] = want_links
-            else:
-                log(f"device link '{args.device_link}' is not in KVO yet; the config "
-                    "is created without it (the vPB path attaches it to every "
-                    "cloud config when it runs).")
         cr = open_cr(kvo, tok, "k8s-cloud-config", verify)
         if not cr: return 5
-        r = gql(kvo, tok,
-                "mutation($n:String!,$c:String!,$cl:String!,$s:_CloudConfigInput!){ "
-                "createCloudConfig(name:$n, changeID:$c, clusterID:$cl, settings:$s){ uid name } }",
-                {"n": args.name, "c": cr, "cl": cluster, "s": settings}, verify)
-        if "errors" in r:
-            log(f"createCloudConfig failed: {r['errors'][0]['message'][:220]}")
-            log(f"settings sent: {settings}")
-            log("If the message names a missing/unknown field, the schema differs")
-            log("from the doc dialog; create it in the UI (steps above under exit 6)")
-            log("and re-run for the collection + policy.")
-            return 6
+        if not pres:
+            r = gql(kvo, tok,
+                    "mutation($n:String!,$c:String!,$s:_KubernetesClusterInput!){ "
+                    "createKubernetesCluster(name:$n, changeID:$c, settings:$s)"
+                    "{ uid name clmsProjectId clmsProjectApiKey } }",
+                    {"n": args.name, "c": cr,
+                     "s": {"cloudLensManagerId": clm["uid"],
+                           "description": "CloudLens Autopilot Kubernetes"}}, verify)
+            if "errors" in r:
+                log(f"createKubernetesCluster failed: {r['errors'][0]['message'][:220]}")
+                log("Create it in the UI instead (KVO UG, Kubernetes Cluster Cloud Configs):")
+                log("Cloud Fabric > Cloud Configs > New Cloud Config > Kubernetes Cluster,")
+                log(f"name '{args.name}', vController '{args.vcontroller}', device link "
+                    f"'{args.device_link}'; then re-run this script.")
+                return 6
+            rows = r.get("data", {}).get("createKubernetesCluster") or []
+            pres = rows[0] if rows else None
+            if not pres:
+                log("createKubernetesCluster returned no rows"); return 6
+        if not have_cfg:
+            settings = {"cloudConfigType": "K8s", "cloudPresence": {"name": args.name}}
+            if args.device_link:
+                have_c2dl = {c["name"] for c in
+                             (gql(kvo, tok, "{ c2DLinks { name } }", None, verify)
+                              .get("data", {}).get("c2DLinks") or [])}
+                # KVO enforces ONE cloud config per Cloud to Device Link: the
+                # commit is refused upfront with "There can only be one Cloud
+                # Config associated to a Cloud To Device Link" (KVO 3.1.0, seen
+                # live 2026-09-28 when the AWS mirror config already owned
+                # vpb-c2dl). A link another config owns is therefore not
+                # attached; the K8s rail needs its own link, on its own vPB
+                # ingress port, to reach the vPB.
+                owner = next((c["name"] for c in
+                              (gql(kvo, tok, "{ cloudConfigs { name settings { deviceLinks { name } } } }",
+                                   None, verify).get("data", {}).get("cloudConfigs") or [])
+                              if args.device_link in
+                              [l.get("name") for l in ((c.get("settings") or {}).get("deviceLinks") or [])]), "")
+                if args.device_link not in have_c2dl:
+                    log(f"device link '{args.device_link}' is not in KVO yet; the config "
+                        "is created without it (the vPB path attaches it to every "
+                        "cloud config when it runs).")
+                elif owner:
+                    log(f"device link '{args.device_link}' is owned by cloud config "
+                        f"'{owner}' and KVO allows one cloud config per link, so the "
+                        "Kubernetes config is created WITHOUT it. Pod traffic cannot "
+                        "reach the vPB until this cluster gets its own link (a second "
+                        "vPB ingress port, or a second vPB).")
+                else:
+                    settings["deviceLinks"] = [{"name": args.device_link}]
+            r = gql(kvo, tok,
+                    "mutation($n:String!,$c:String!,$cl:String!,$s:_CloudConfigInput!){ "
+                    "createCloudConfig(name:$n, changeID:$c, clusterID:$cl, settings:$s){ uid name } }",
+                    {"n": args.name, "c": cr, "cl": cluster, "s": settings}, verify)
+            if "errors" in r:
+                log(f"createCloudConfig failed: {r['errors'][0]['message'][:220]}")
+                log(f"settings sent: {settings}")
+                return 6
         if not commit_cr(kvo, tok, cr, verify): return 5
-        log(f"Kubernetes cloud config '{args.name}' live "
-            f"(vController '{args.vcontroller}' via field '{vc_field}'"
-            + (f", device link {args.device_link}" if want_links else "") + ")")
+        log(f"Kubernetes cluster '{args.name}' live in KVO: presence on vController "
+            f"'{args.vcontroller}', cloud config type K8s"
+            + (", device link " + args.device_link if "deviceLinks" in (settings if not have_cfg else {}) else "") + ")")
+    key = (pres or {}).get("clmsProjectApiKey") or ""
+    if args.key_out:
+        # The DaemonSet registers with this key. Written 0600, never printed.
+        fd = os.open(args.key_out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(key + "\n")
+        log(f"project key for the Kubernetes sensors written to {args.key_out} (mode 600)"
+            if key else f"WARNING: KVO returned no project key for '{args.name}'; {args.key_out} is empty")
 
     # 2. The Cloud Collection with the pod selector. create_collection is the
     # SAME function the AWS rail uses; the pod-name/pod-label field names come
@@ -192,6 +232,20 @@ def main():
     if exists_named(kvo, tok, "monitoringPolicies", policy_name, verify):
         log(f"monitoring policy '{policy_name}' already exists; reusing")
     else:
+        # KVO refuses the policy upfront when the config has no link: "Cloud
+        # Config ... of Cloud Collection ... associated to monitoring policy
+        # ... does not have a device link associated to it" (live 2026-09-28).
+        # Say so and stop instead of leaving an invalid change request behind.
+        links = next(((c.get("settings") or {}).get("deviceLinks") or []
+                      for c in (gql(kvo, tok, "{ cloudConfigs { name settings { deviceLinks { name } } } }",
+                                    None, verify).get("data", {}).get("cloudConfigs") or [])
+                      if c.get("name") == args.name), [])
+        if not links:
+            log(f"cloud config '{args.name}' has no device link, so no policy to "
+                f"'{args.tool}' can be committed (KVO requires one). Give this "
+                "cluster its own Cloud to Device Link on a free vPB ingress port "
+                "(KVO allows one cloud config per link), then re-run.")
+            return 11
         cr = open_cr(kvo, tok, "k8s-policy", verify)
         if not cr: return 10
         pol = create_monitoring_policy(kvo, tok, cr, policy_name, cluster,
