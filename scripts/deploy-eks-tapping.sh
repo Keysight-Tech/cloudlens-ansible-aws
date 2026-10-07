@@ -338,13 +338,22 @@ IMAGE_TAG="${SENSOR_IMAGE##*:}"
 
 sidecar_block() {
   # The documented sidecar container (vTAP UG "Sidecar Deployment"), with
-  # this run's real values. Indented for a containers: list.
+  # this run's real values. Indented for a containers: list. The custom
+  # tags pair is built before the heredoc, not inside it: within a heredoc
+  # bash 3.2 keeps the backslash in front of an escaped double quote, so an
+  # escaped pair inside a ${CUSTOM_TAGS:+...} expansion reached the YAML as
+  # \"--custom_tags\", which the sensor received as a literal argument
+  # (found 2026-10-07 while porting this engine to AKS).
+  local tags_pair=""
+  if [[ -n "$CUSTOM_TAGS" ]]; then
+    tags_pair=",
+                 \"--custom_tags\",\"${CUSTOM_TAGS}\""
+  fi
   cat <<SIDE
         - name: cloudlens-sensor
           image: ${SENSOR_IMAGE}
           args: ["--auto_update","n","--accept_eula","yes","--ssl_verify","no",
-                 "--server","${CLMS_IP}","--project_key","${PROJECT_KEY}"${CUSTOM_TAGS:+,
-                 \"--custom_tags\",\"${CUSTOM_TAGS}\"}]
+                 "--server","${CLMS_IP}","--project_key","${PROJECT_KEY}"${tags_pair}]
           securityContext:
             allowPrivilegeEscalation: true
             capabilities:
