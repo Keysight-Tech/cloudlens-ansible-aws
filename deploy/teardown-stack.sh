@@ -142,6 +142,9 @@ SWEEP_VOLUMES=""      # ids recorded while still attached to stack instances
 SWEEP_SGS=""          # non-stack SGs inside the stack's own VPC
 SWEEP_ASGS=""
 SWEEP_LTS=""
+SWEEP_OWN_INSTANCES=""    # instances the deploy tagged cloudlens:stack=<stack>, any VPC
+SWEEP_MIRROR_TARGETS=""   # traffic mirror targets on this stack's collectors
+SWEEP_MIRROR_FILTERS=""   # the KVO mirror filter for this stack's VPC
 SWEEP_GB=0
 SWEEP_COST="0.00"
 UNATTRIBUTED_GB=0
@@ -645,6 +648,10 @@ else
   STACK_VPC_ID="$(state_get SWEEP_VPC_ID 2>/dev/null || true)"
   [[ "$(state_get SWEEP_STACK_OWNS_VPC 2>/dev/null || true)" == "true" ]] && STACK_OWNS_VPC=true
   SWEEP_VOLUMES="$(state_get SWEEP_VOLUMES 2>/dev/null || true)"
+  SWEEP_OWN_INSTANCES="$(state_get SWEEP_OWN_INSTANCES 2>/dev/null || true)"
+  SWEEP_MIRROR_TARGETS="$(state_get SWEEP_MIRROR_TARGETS 2>/dev/null || true)"
+  SWEEP_MIRROR_FILTERS="$(state_get SWEEP_MIRROR_FILTERS 2>/dev/null || true)"
+  [[ -z "$SWEEP_SGS" ]] && SWEEP_SGS="$(state_get SWEEP_SGS 2>/dev/null || true)"
   if [[ -n "$SWEEP_VOLUMES" || -n "$STACK_VPC_ID" ]]; then
     note "Using the manifest recorded by an earlier run: ${STATE_FILE}"
   else
@@ -659,8 +666,9 @@ if [[ -n "$STACK_VPC_ID" ]]; then
   if [[ "$STACK_OWNS_VPC" == "true" ]]; then
     ok "Stack VPC: ${STACK_VPC_ID} (created by the stack: in scope)"
   else
-    warn "Stack VPC: ${STACK_VPC_ID} (pre-existing / brownfield: OUT of scope)"
-    note "Security groups and ASGs in this VPC will be reported, never deleted."
+    warn "Stack VPC: ${STACK_VPC_ID} (pre-existing / brownfield: the VPC stays)"
+    note "Only what this deploy and its KVO stamped in it is swept (evidence class 4"
+    note "below); anything else in the VPC is reported, never deleted."
   fi
 fi
 [[ -n "$STACK_INSTANCE_IDS" ]] && ok "Stack instances: $(printf '%s' "$STACK_INSTANCE_IDS" | wc -w | tr -d ' ')"
@@ -741,6 +749,88 @@ if [[ "$STACK_OWNS_VPC" == "true" && -n "$STACK_VPC_ID" ]]; then
   done <<< "$_lt_named"
 fi
 
+# ---- evidence class 4: what the deploy and its KVO stamped themselves ----
+# Applies in ANY VPC, a customer's included. A brownfield teardown on
+# 2026-10-07 left the capture host, two KVO collectors (ASG, launch template,
+# mirror targets, filter), four security groups and two volumes behind in the
+# customer VPC, because everything in that VPC had been treated as the
+# customer's. These things carry the deploy's own marks, so they are
+# attributed by mark, never by location:
+#   instances tagged cloudlens:stack=<stack>     the capture host, test VMs
+#   security groups named cloudlens-*-<stack>    collector and receiver groups
+#   collector ASGs tagged cloudlens:ip=<THIS stack's vController private IP>
+#   mirror targets on those collectors' ENIs, and the filter KVO named
+#   cloudlens.mirror_filter.<vpc>, only when the collectors were ours
+if [[ "$STACK_STATUS" != "MISSING" ]]; then
+  _rail_ids="$(tokens "$(ro_aws ec2 describe-instances \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
+      --query 'Reservations[].Instances[].InstanceId' --output text)")"
+  for _i in $(tokens "$(ro_aws ec2 describe-instances \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" \
+                "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+      --query 'Reservations[].Instances[].InstanceId' --output text)"); do
+    in_list "$_i" "$STACK_INSTANCE_IDS" && continue
+    in_list "$_i" "$_rail_ids" && continue          # the rail vPBs have their own sweep
+    SWEEP_OWN_INSTANCES="${SWEEP_OWN_INSTANCES}${SWEEP_OWN_INSTANCES:+ }${_i}"
+  done
+  if [[ -n "$STACK_VPC_ID" ]]; then
+    while IFS=$'\t' read -r _sgid _sgname; do
+      [[ -n "${_sgid:-}" ]] || continue
+      in_list "$_sgid" "$STACK_SG_IDS" && continue
+      in_list "$_sgid" "$SWEEP_SGS" && continue
+      SWEEP_SGS="${SWEEP_SGS}${SWEEP_SGS:+ }${_sgid}"
+      eval "SGNAME_${_sgid//-/_}=\"\$_sgname\""
+    done <<< "$(ro_aws ec2 describe-security-groups \
+      --filters "Name=vpc-id,Values=${STACK_VPC_ID}" "Name=group-name,Values=cloudlens-*-${STACK_NAME}" \
+      --query 'SecurityGroups[].[GroupId,GroupName]' --output text)"
+  fi
+  _vc_id="$(det_clean "$(ro_aws cloudformation describe-stack-resources --stack-name "$STACK_NAME" \
+    --query "StackResources[?LogicalResourceId=='VcontrollerInstance'].PhysicalResourceId | [0]" --output text)")"
+  _vc_ip=""
+  [[ -n "$_vc_id" ]] && _vc_ip="$(det_clean "$(ro_aws ec2 describe-instances --instance-ids "$_vc_id" \
+    --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)")"
+  _coll_ids=""
+  if [[ -n "$_vc_ip" ]]; then
+    while IFS=$'\t' read -r _asgname _lt1 _lt2 _members; do
+      [[ -n "${_asgname:-}" ]] || continue
+      in_list "$_asgname" "$SWEEP_ASGS" || SWEEP_ASGS="${SWEEP_ASGS}${SWEEP_ASGS:+ }${_asgname}"
+      for _id in $(tokens "$_lt1 $_lt2"); do
+        in_list "$_id" "$SWEEP_LTS" || SWEEP_LTS="${SWEEP_LTS}${SWEEP_LTS:+ }${_id}"
+      done
+      for _m in $(printf '%s' "${_members:-}" | tr ',' ' '); do
+        [[ "$_m" == "None" ]] && continue
+        _coll_ids="${_coll_ids}${_coll_ids:+ }${_m}"
+      done
+    done <<< "$(ro_aws autoscaling describe-auto-scaling-groups \
+      --query "AutoScalingGroups[?Tags[?Key=='cloudlens:ip' && Value=='${_vc_ip}']].[AutoScalingGroupName,LaunchTemplate.LaunchTemplateId,MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId,join(',',Instances[].InstanceId)]" \
+      --output text)"
+  fi
+  if [[ -n "$_coll_ids" || -n "$SWEEP_OWN_INSTANCES" ]]; then
+    for _v in $(tokens "$(ro_aws ec2 describe-instances --instance-ids ${_coll_ids} ${SWEEP_OWN_INSTANCES} \
+        --query 'Reservations[].Instances[].BlockDeviceMappings[].Ebs.VolumeId' --output text)"); do
+      in_list "$_v" "$SWEEP_VOLUMES" || SWEEP_VOLUMES="${SWEEP_VOLUMES}${SWEEP_VOLUMES:+ }${_v}"
+    done
+  fi
+  if [[ -n "$_coll_ids" ]]; then
+    _coll_enis="$(tokens "$(ro_aws ec2 describe-instances --instance-ids ${_coll_ids} \
+        --query 'Reservations[].Instances[].NetworkInterfaces[].NetworkInterfaceId' --output text)")"
+    while IFS=$'\t' read -r _tmt _teni; do
+      [[ -n "${_tmt:-}" ]] || continue
+      in_list "${_teni:-}" "$_coll_enis" || continue
+      SWEEP_MIRROR_TARGETS="${SWEEP_MIRROR_TARGETS}${SWEEP_MIRROR_TARGETS:+ }${_tmt}"
+    done <<< "$(ro_aws ec2 describe-traffic-mirror-targets \
+      --query 'TrafficMirrorTargets[].[TrafficMirrorTargetId,NetworkInterfaceId]' --output text)"
+    [[ -n "$STACK_VPC_ID" ]] && SWEEP_MIRROR_FILTERS="$(tokens "$(ro_aws ec2 describe-traffic-mirror-filters \
+      --filters "Name=tag:Name,Values=cloudlens.mirror_filter.${STACK_VPC_ID}" \
+      --query 'TrafficMirrorFilters[].TrafficMirrorFilterId' --output text)")"
+  fi
+  _n_own="$(printf '%s' "$SWEEP_OWN_INSTANCES" | wc -w | tr -d ' ')"
+  _n_coll="$(printf '%s' "$_coll_ids" | wc -w | tr -d ' ')"
+  if (( _n_own + _n_coll > 0 )); then
+    ok "Stamped by this deploy: ${_n_own} instance(s), ${_n_coll} collector(s), $(printf '%s' "$SWEEP_MIRROR_TARGETS" | wc -w | tr -d ' ') mirror target(s)"
+  fi
+fi
+
 # ---- is there a KVO in this stack? ----------------------------------
 if [[ "$STACK_STATUS" != "MISSING" ]]; then
   _kvo_param="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
@@ -792,6 +882,10 @@ if [[ "$AUDIT_ONLY" != "true" && "$DRY_RUN" != "true" && "$STACK_STATUS" != "MIS
   state_set SWEEP_VOLUMES "$SWEEP_VOLUMES"
   state_set SWEEP_ASGS "$SWEEP_ASGS"
   state_set SWEEP_LTS "$SWEEP_LTS"
+  state_set SWEEP_SGS "$SWEEP_SGS"
+  state_set SWEEP_OWN_INSTANCES "$SWEEP_OWN_INSTANCES"
+  state_set SWEEP_MIRROR_TARGETS "$SWEEP_MIRROR_TARGETS"
+  state_set SWEEP_MIRROR_FILTERS "$SWEEP_MIRROR_FILTERS"
   [[ -n "$STATE_FILE" ]] && note "Manifest recorded: ${STATE_FILE}"
 elif [[ "$DRY_RUN" == "true" && "$STACK_STATUS" != "MISSING" ]]; then
   dryrun_say "would record the attribution manifest to ${STATE_FILE}"
@@ -1593,6 +1687,18 @@ else
 
   sweep_rail_vpbs
 
+  # ---- instances the deploy stamped (evidence class 4), in any VPC
+  if [[ -n "$SWEEP_OWN_INSTANCES" ]]; then
+    for _li in $SWEEP_OWN_INSTANCES; do
+      if del_aws ec2 terminate-instances --instance-ids "$_li"; then
+        ok "$(did) instance ${_li} (tagged cloudlens:stack=${STACK_NAME})"
+      else
+        warn "could not terminate ${_li}: ${DEL_ERR}"
+      fi
+    done
+    [[ "$DRY_RUN" != "true" ]] && ro_aws ec2 wait instance-terminated --instance-ids $SWEEP_OWN_INSTANCES 2>/dev/null || true
+  fi
+
   # ---- Auto Scaling groups first: a live group re-creates its instances,
   # which re-creates volumes and holds ENIs on the groups below.
   for _a in $SWEEP_ASGS; do
@@ -1612,6 +1718,34 @@ else
     else
       warn "could not delete launch template ${_l}: ${DEL_ERR}"
       record_failure "$_l" "$DEL_ERR"
+    fi
+  done
+
+  # ---- mirror targets sit on the collectors' ENIs; the filter is shared by
+  # the sessions KVO cut, which go with the collectors. Targets first, then
+  # the filter, after the collectors are gone (the ASG delete above waits).
+  if [[ -n "$SWEEP_MIRROR_TARGETS$SWEEP_MIRROR_FILTERS" && "$DRY_RUN" != "true" ]]; then
+    for _a in $SWEEP_ASGS; do
+      for _try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        [[ "$(ro_aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$_a" --query 'length(AutoScalingGroups)' --output text 2>/dev/null)" == "0" ]] && break
+        sleep 10
+      done
+    done
+  fi
+  for _t in $SWEEP_MIRROR_TARGETS; do
+    if del_aws ec2 delete-traffic-mirror-target --traffic-mirror-target-id "$_t"; then
+      ok "$(did) traffic mirror target ${_t}"
+    else
+      warn "could not delete mirror target ${_t}: ${DEL_ERR}"
+      record_failure "$_t" "$DEL_ERR"
+    fi
+  done
+  for _f in $SWEEP_MIRROR_FILTERS; do
+    if del_aws ec2 delete-traffic-mirror-filter --traffic-mirror-filter-id "$_f"; then
+      ok "$(did) traffic mirror filter ${_f}"
+    else
+      warn "could not delete mirror filter ${_f}: ${DEL_ERR}"
+      record_failure "$_f" "$DEL_ERR"
     fi
   done
 
