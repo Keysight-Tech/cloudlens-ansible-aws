@@ -6127,6 +6127,18 @@ preflight_sensor_ca() {
   return 0
 }
 
+# The address the sensors pull the image from and register to. The deploy
+# finds its sensor targets INSIDE the stack's VPC, so the vController's
+# private address is the one they can reach: the public one goes out through
+# the internet gateway and comes back from the workload's public IP, which the
+# security group refuses unless the admin CIDR is wide open. Seen live
+# 2026-10-07 in an existing VPC: "docker pull <public-ip>/sensor" timed out on
+# every workload while the private address answered /v2/ with 200.
+# CLOUDLENS_SENSOR_MANAGER_ADDR overrides it for workloads elsewhere.
+sensor_manager_addr() {
+  printf '%s' "${CLOUDLENS_SENSOR_MANAGER_ADDR:-${CLMS_PRIVATE_IP:-$CLMS_PUBLIC_IP}}"
+}
+
 write_customer_input_fresh() {
   # Create the file with tight permissions BEFORE writing the project key into
   # it, so the secret is never briefly world-readable.
@@ -6158,7 +6170,7 @@ aws:
   ssh_user_rhel:   "ec2-user"
 
 cloudlens:
-  manager_ip_or_fqdn: "${CLMS_PUBLIC_IP}"
+  manager_ip_or_fqdn: "$(sensor_manager_addr)"
   project_key:        "${SENSOR_PROJECT_KEY}"
   custom_tags:        "DeployedBy=stack Region=${REGION}"
   registry_type:      "${SENSOR_REGISTRY_TYPE:-insecure}"
@@ -6189,7 +6201,7 @@ YAML
 # The project key is passed in the environment and never printed.
 merge_customer_input() {
   command -v python3 >/dev/null 2>&1 || return 3
-  CL_ADDR="$CLMS_PUBLIC_IP" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
+  CL_ADDR="$(sensor_manager_addr)" CL_KEY="$SENSOR_PROJECT_KEY" CL_STAMP="$(date -u +%FT%TZ)" \
   CL_TAG_K="$DISCOVERY_TAG_KEY" CL_TAG_V="$DISCOVERY_TAG_VALUE" \
   CL_TAG_EXPLICIT="${DISCOVERY_TAG_EXPLICIT:-false}" CL_SSM_BUCKET="${SSM_BUCKET_NAME:-}" \
   CL_VPC_ID="${STACK_VPC_ID:-}" \
@@ -7371,7 +7383,12 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
       note "    --collection ${WIRE_COLLECTION} --cloud-config ${CLOUD_CONFIG_NAME} --ingress-ip ${VPB_INGRESS_IP} --insecure"
     fi
   fi
+  # --only <another phase> must not re-wire the other areas: with the path
+  # step not running, PORT_ARG and CAPTURE_ARG are empty and the re-wire
+  # fails for no reason, then tells the operator to re-run from path
+  # (seen with --only sensors, 2026-10-07).
   if [[ -n "$VPB_RAILS_EXTRA" && -n "$WIRE_SCRIPT" ]] \
+     && [[ -z "$ONLY_PHASE" || "$ONLY_PHASE" == "path" ]] \
      && { [[ "$WIRE_VPB_PATH" == "true" || "$DRY_RUN" == "true" ]] || state_get PHASE_PATH 2>/dev/null | grep -q '^done'; } \
      && { [[ "$DRY_RUN" == "true" ]] || python_chain_ready; }; then
     step "Phase 16b: vPB paths for the other areas (${VPB_RAILS_EXTRA})"

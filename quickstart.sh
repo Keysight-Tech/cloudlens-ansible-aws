@@ -394,6 +394,13 @@ if [ -n "$CL_MGR" ]; then
   if curl -skf --max-time 12 -o /dev/null "https://${CL_MGR}/health" 2>/dev/null \
      || curl -sk --max-time 12 -o /dev/null -w '%{http_code}' "https://${CL_MGR}/" 2>/dev/null | grep -qE '^(200|301|302|401|403)$'; then
     ok "CloudLens manager ${CL_MGR} is reachable"
+  elif printf '%s' "$CL_MGR" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)'; then
+    # A private address is the RIGHT one for sensors inside the VPC (the
+    # public address is refused by the security group unless the admin CIDR
+    # is wide open), and this machine is usually outside that VPC. The hosts
+    # do the pull, not this laptop, so unreachable from here is not a verdict.
+    warn "CloudLens manager ${CL_MGR} is a private address this machine cannot reach;"
+    warn "the sensor hosts inside the VPC are the ones that must. Continuing."
   else
     fail "The CloudLens manager in customer_input.yaml is NOT reachable:
         manager_ip_or_fqdn: ${CL_MGR}
