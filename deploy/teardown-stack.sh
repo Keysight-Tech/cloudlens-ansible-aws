@@ -1346,8 +1346,46 @@ wait_for_delete() {
   return 2
 }
 
+# Extra vPBs and their Elastic IPs. deploy-stack.sh launches one vPB per
+# further area (--vpb-rails) outside CloudFormation, tagged
+# cloudlens:stack=<stack> + cloudlens:vpb-rail=<area>, in whatever VPC the
+# stack used, and gives each an Elastic IP with the same tags. They share the
+# stack's security group, so they must go BEFORE the stack delete: with one
+# still running, CloudFormation cannot remove the group and the stack lands in
+# DELETE_FAILED (seen 2026-10-07 on a brownfield stack, where Phase 6 then
+# treats the blocker as out of scope because the VPC is the customer's).
+# Called again from the sweep for anything that appeared in between.
+sweep_rail_vpbs() {
+  local _rail_ids _li _rail_eips _al
+  _rail_ids=$(ro_aws ec2 describe-instances \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
+                "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+      --query 'Reservations[].Instances[].InstanceId' --output text | tr '\t' '\n')
+  for _li in $_rail_ids; do
+    if del_aws ec2 terminate-instances --instance-ids "$_li"; then
+      ok "$(did) extra vPB ${_li}"
+    else
+      warn "could not terminate extra vPB ${_li}: ${DEL_ERR}"
+    fi
+  done
+  [[ -n "$_rail_ids" && "$DRY_RUN" != "true" ]] && ro_aws ec2 wait instance-terminated --instance-ids $_rail_ids 2>/dev/null || true
+  _rail_eips=$(ro_aws ec2 describe-addresses \
+      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
+      --query 'Addresses[].AllocationId' --output text | tr '\t' '\n')
+  for _al in $_rail_eips; do
+    if del_aws ec2 release-address --allocation-id "$_al"; then
+      ok "$(did) Elastic IP ${_al} (extra vPB)"
+    else
+      warn "could not release Elastic IP ${_al}: ${DEL_ERR}"
+    fi
+  done
+  return 0
+}
+
 if [[ "$SWEEP_ONLY" != "true" ]]; then
   step "Phase 5: Delete the stack"
+  # The rail vPBs first (they hold the stack security group open).
+  sweep_rail_vpbs
   if del_aws cloudformation delete-stack --stack-name "$STACK_NAME"; then
     ok "Delete requested for ${STACK_NAME}"
   else
@@ -1553,34 +1591,8 @@ else
     fi
   fi
 
-  # ---- Extra vPBs and their Elastic IPs. deploy-stack.sh launches one vPB per
-  # further area (--vpb-rails) outside CloudFormation, tagged
-  # cloudlens:stack=<stack> + cloudlens:vpb-rail=<area>, in whatever VPC the
-  # stack used, and gives each an Elastic IP with the same tags. The sweep
-  # above only covers the stack's own VPC; this covers a customer VPC too, and
-  # the addresses, which would otherwise stay allocated and billed.
-  _rail_ids=$(ro_aws ec2 describe-instances \
-      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
-                "Name=instance-state-name,Values=running,pending,stopping,stopped" \
-      --query 'Reservations[].Instances[].InstanceId' --output text | tr '\t' '\n')
-  for _li in $_rail_ids; do
-    if del_aws ec2 terminate-instances --instance-ids "$_li"; then
-      ok "$(did) extra vPB ${_li}"
-    else
-      warn "could not terminate extra vPB ${_li}: ${DEL_ERR}"
-    fi
-  done
-  [[ -n "$_rail_ids" && "$DRY_RUN" != "true" ]] && ro_aws ec2 wait instance-terminated --instance-ids $_rail_ids 2>/dev/null || true
-  _rail_eips=$(ro_aws ec2 describe-addresses \
-      --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
-      --query 'Addresses[].AllocationId' --output text | tr '\t' '\n')
-  for _al in $_rail_eips; do
-    if del_aws ec2 release-address --allocation-id "$_al"; then
-      ok "$(did) Elastic IP ${_al} (extra vPB)"
-    else
-      warn "could not release Elastic IP ${_al}: ${DEL_ERR}"
-    fi
-  done
+  sweep_rail_vpbs
+
   # ---- Auto Scaling groups first: a live group re-creates its instances,
   # which re-creates volumes and holds ENIs on the groups below.
   for _a in $SWEEP_ASGS; do

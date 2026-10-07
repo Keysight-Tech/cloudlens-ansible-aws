@@ -51,6 +51,7 @@ Metadata:
           default: Deploy into existing infrastructure (brownfield)
         Parameters:
           - ExistingVpcId
+          - ExistingVpcCidr
           - ExistingSubnetId
           - ExistingDataSubnetId
           - ExistingSecurityGroupId
@@ -98,6 +99,8 @@ Metadata:
         default: Sensor discovery tag value
       ExistingVpcId:
         default: Existing VPC ID (blank to create a shared VPC)
+      ExistingVpcCidr:
+        default: Existing VPC CIDR (deploy-stack.sh fills this in; blank for a new VPC)
       ExistingSubnetId:
         default: Existing subnet ID (required when using an existing VPC)
       ExistingDataSubnetId:
@@ -290,6 +293,17 @@ Parameters:
       Optional. ID of an existing VPC to deploy into (for example vpc-0abc123).
       Leave blank to create a new shared VPC. When set, you must also provide an
       existing subnet ID.
+  ExistingVpcCidr:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. CIDR of the existing VPC (for example 10.60.0.0/16). The
+      security group opens the in-VPC ports (443, 7443, GRE, VXLAN) to this
+      range, so sensors, collectors, mirror sources and KVO discovery inside
+      the customer's VPC reach the appliances. Blank = the new-VPC CIDR above is
+      used, which is wrong for an existing VPC (seen live 2026-10-07: nothing
+      in a 10.60/16 VPC could reach appliances whose rules said 10.99/16).
+      deploy-stack.sh fills this in from the VPC itself.
   ExistingSubnetId:
     Type: String
     Default: ""
@@ -410,6 +424,7 @@ Mappings:
 
 Conditions:
   ExistingVPC: !Not [!Equals [!Ref ExistingVpcId, ""]]
+  HasExistingVpcCidr: !Not [!Equals [!Ref ExistingVpcCidr, ""]]
   CreateVpc: !Not [Condition: ExistingVPC]
   DeployKVO: !Equals [!Ref DeployKVO, "yes"]
   DeployVPB: !Equals [!Ref DeployVPB, "yes"]
@@ -610,25 +625,25 @@ Resources:
           IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: !Ref VpcCidr
+          CidrIp: !If [HasExistingVpcCidr, !Ref ExistingVpcCidr, !Ref VpcCidr]
         - Description: vController to KVO (VPC)
           IpProtocol: tcp
           FromPort: 7443
           ToPort: 7443
-          CidrIp: !Ref VpcCidr
+          CidrIp: !If [HasExistingVpcCidr, !Ref ExistingVpcCidr, !Ref VpcCidr]
         - Description: VXLAN from mirror sources and sensors (VPC)
           IpProtocol: udp
           FromPort: 4789
           ToPort: 4789
-          CidrIp: !Ref VpcCidr
+          CidrIp: !If [HasExistingVpcCidr, !Ref ExistingVpcCidr, !Ref VpcCidr]
         - Description: VXLAN Keysight ports (VPC)
           IpProtocol: udp
           FromPort: 10800
           ToPort: 10801
-          CidrIp: !Ref VpcCidr
+          CidrIp: !If [HasExistingVpcCidr, !Ref ExistingVpcCidr, !Ref VpcCidr]
         - Description: GRE from collectors and sensors (VPC)
           IpProtocol: "47"
-          CidrIp: !Ref VpcCidr
+          CidrIp: !If [HasExistingVpcCidr, !Ref ExistingVpcCidr, !Ref VpcCidr]
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"

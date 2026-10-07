@@ -211,8 +211,23 @@ if ! ansible-galaxy collection install -r requirements.yml -p ./collections --fo
   echo ""
   sed -n '1,12p' "$_gal_log" | sed 's/^/      /'
   rm -f "$_gal_log"
-  fail "ansible-galaxy could not install the required collections (output above).
+  # Galaxy being unreachable (proxy, TLS hiccup, no route) must not stop a
+  # run that already has every collection from an earlier install. Seen live
+  # 2026-10-07: one transient TLS error at galaxy.ansible.com aborted the sensor
+  # chain of a deploy whose ./collections was complete. Check what is really
+  # there before declaring failure; only a missing collection is fatal.
+  _have="$(ansible-galaxy collection list -p ./collections 2>/dev/null | awk 'NF==2 && $1 ~ /\./ {print $1}' | sort -u)"
+  _missing=""
+  for _c in $(awk '/^\s*- name:/ {print $3}' requirements.yml); do
+    echo "$_have" | grep -qx "$_c" || _missing="${_missing} ${_c}"
+  done
+  if [ -z "$_missing" ]; then
+    warn "galaxy.ansible.com unreachable; continuing with the collections already in ./collections"
+  else
+    fail "ansible-galaxy could not install the required collections (output above),
+    and these are not present in ./collections:${_missing}
     Usually a proxy, an expired certificate, or no route to galaxy.ansible.com."
+  fi
 fi
 rm -f "$_gal_log"
 

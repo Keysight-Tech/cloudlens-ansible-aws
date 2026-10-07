@@ -276,6 +276,7 @@ KVO_NAME="${CLOUDLENS_KVO_NAME:-}"
 VPB_NAME="${CLOUDLENS_VPB_NAME:-}"
 
 EXISTING_VPC_ID="${CLOUDLENS_EXISTING_VPC_ID:-}"
+EXISTING_VPC_CIDR=""
 EXISTING_SUBNET_ID="${CLOUDLENS_EXISTING_SUBNET_ID:-}"
 EXISTING_DATA_SUBNET_ID="${CLOUDLENS_EXISTING_DATA_SUBNET_ID:-}"
 EXISTING_TOOL_SUBNET_ID="${CLOUDLENS_EXISTING_TOOL_SUBNET_ID:-}"
@@ -590,6 +591,13 @@ VPB_DEVICE_PASS="ixia"
 # has not run yet (then the factory default is still the live one).
 vc_password_now() {
   local p="${CLOUDLENS_VC_PASSWORD:-}"
+  # A creds file left by an earlier stack names a different vController; its
+  # password is not this appliance's. Reading it anyway sent phase 12 at the
+  # new vController with September's password (2026-10-07).
+  if [[ -z "$p" && -f "$VC_CREDS_FILE" && -n "${CLMS_PUBLIC_IP:-}" ]] \
+     && ! grep -q "$CLMS_PUBLIC_IP" "$VC_CREDS_FILE" 2>/dev/null; then
+    printf '%s' ""; return 0
+  fi
   if [[ -z "$p" && -f "$VC_CREDS_FILE" ]] && command -v python3 >/dev/null 2>&1; then
     p="$(python3 -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("password",""))
@@ -4347,6 +4355,19 @@ deploy_cfn() {
   [[ -n "$KVO_NAME" ]]                && params+=("KvoName=$KVO_NAME")
   [[ -n "$VPB_NAME" ]]                && params+=("VpbName=$VPB_NAME")
   [[ -n "$EXISTING_VPC_ID" ]]         && params+=("ExistingVpcId=$EXISTING_VPC_ID")
+  # The template opens the in-VPC ports to a CIDR; for an existing VPC that
+  # must be the VPC's own range, which only the account can tell us.
+  if [[ -n "$EXISTING_VPC_ID" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      EXISTING_VPC_CIDR="${EXISTING_VPC_CIDR:-10.0.0.0/16}"
+    else
+      EXISTING_VPC_CIDR=$(probe aws "${AWS_REGION_ARG[@]}" ec2 describe-vpcs --vpc-ids "$EXISTING_VPC_ID" \
+                            --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null)
+      [[ -n "$EXISTING_VPC_CIDR" && "$EXISTING_VPC_CIDR" != "None" ]] \
+        || fail "Could not read the CIDR of ${EXISTING_VPC_ID}; the security group rules need it."
+    fi
+    params+=("ExistingVpcCidr=$EXISTING_VPC_CIDR")
+  fi
   [[ -n "$EXISTING_SUBNET_ID" ]]      && params+=("ExistingSubnetId=$EXISTING_SUBNET_ID")
   [[ -n "$EXISTING_DATA_SUBNET_ID" ]] && params+=("ExistingDataSubnetId=$EXISTING_DATA_SUBNET_ID")
   [[ -n "$EXISTING_TOOL_SUBNET_ID" ]] && params+=("ExistingToolSubnetId=$EXISTING_TOOL_SUBNET_ID")
@@ -5944,11 +5965,7 @@ if [[ "$DEPLOY_KVO" == "true" && "$KVO_CHAIN_OK" == "true" ]]; then
 
   # The vController password is whatever phase 9 set. Read it back rather than
   # assuming the factory default, which phase 9 deliberately invalidates.
-  VC_ADMIN_PASS="${CLOUDLENS_VC_PASSWORD:-}"
-  if [[ -z "$VC_ADMIN_PASS" && -f "$VC_CREDS_FILE" ]]; then
-    VC_ADMIN_PASS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("password",""))' \
-                      "$VC_CREDS_FILE" 2>/dev/null || echo "")
-  fi
+  VC_ADMIN_PASS="$(vc_password_now)"
   VC_ADMIN_PASS="${VC_ADMIN_PASS:-Cl0udLens@dm!n}"
 
   # The notice is only printed on the paths that are actually going to adopt.
@@ -7141,18 +7158,18 @@ if [[ "$DEPLOY_VPB" == "true" && "$DEPLOY_KVO" == "true" ]] \
   CAPTURE_ARG=()
   if [[ -n "$CAPTURE_HOST_IP" ]]; then
     CAPTURE_ARG=(--capture-ip "$CAPTURE_HOST_IP")
-  fi
-  # GENEVE stripping on the policy, for a firewall behind an AWS Gateway Load
-  # Balancer whose interface is mirrored (CLOUDLENS_STRIP_GENEVE=true).
-  STRIP_ARG=()
-  if [[ "${CLOUDLENS_STRIP_GENEVE:-}" == "true" ]]; then
-    STRIP_ARG=(--strip-geneve)
     ok "Capture tool will be wired to ${CAPTURE_HOST_IP} (this is what makes traffic visible)"
   elif [[ "$WIRE_VPB_PATH" == "true" ]]; then
     warn "No capture host address, so NO capture tool will be created."
     note "The vPB path still gets wired, but nothing will point at a host you can"
     note "tcpdump, so there will be no way to prove traffic is flowing. The reason"
     note "is above; re-running usually fixes it."
+  fi
+  # GENEVE stripping on the policy, for a firewall behind an AWS Gateway Load
+  # Balancer whose interface is mirrored (CLOUDLENS_STRIP_GENEVE=true).
+  STRIP_ARG=()
+  if [[ "${CLOUDLENS_STRIP_GENEVE:-}" == "true" ]]; then
+    STRIP_ARG=(--strip-geneve)
   fi
   # The egress port's address. The vPB tunnels its OUTPUT to the same host the
   # collector mirrors to, so one tcpdump sees both paths; the different GRE keys

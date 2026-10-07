@@ -925,14 +925,31 @@ def main():
     # parse error on an HTML body and reads as a broken KVO.
     if a.accept_eula:
         accept_eula(a.kvo, verify)
-    try:
-        tok = token(a.kvo, a.user, a.password, verify)
-    except Exception as e:
-        print(f"[license] auth failed: {e}", file=sys.stderr)
-        if not a.accept_eula:
-            print("[license] a freshly booted KVO redirects every request, including this "
-                  "one, until its EULA is accepted. Re-run with --accept-eula.", file=sys.stderr)
-        return 6
+    # A KVO that has just finished its EULA, or just booted, answers the token
+    # endpoint with 502/503 (or refuses the connection) for a few minutes while
+    # Keycloak comes up. That is "not ready yet", not "broken": seen live
+    # 2026-10-07, where one 503 ended the whole KVO branch of a deploy. Wait
+    # for it, bounded, and only then call it a failure.
+    deadline = time.time() + 600
+    tok = None
+    while True:
+        try:
+            tok = token(a.kvo, a.user, a.password, verify)
+            break
+        except Exception as e:
+            msg = str(e)
+            transient = any(k in msg for k in ("502", "503", "504", "could not reach", "did not answer"))
+            if transient and time.time() < deadline:
+                print(f"[license] KVO not ready yet ({msg[:90]}); retrying in 15 s", file=sys.stderr)
+                time.sleep(15)
+                if a.accept_eula:
+                    accept_eula(a.kvo, verify)
+                continue
+            print(f"[license] auth failed: {e}", file=sys.stderr)
+            if not a.accept_eula:
+                print("[license] a freshly booted KVO redirects every request, including this "
+                      "one, until its EULA is accepted. Re-run with --accept-eula.", file=sys.stderr)
+            return 6
     print(f"[license] authed to KVO {a.kvo}")
 
     # already licensed?

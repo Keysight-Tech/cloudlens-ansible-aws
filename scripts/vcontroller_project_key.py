@@ -231,16 +231,26 @@ def rotate_password(session: requests.Session, base_url: str, account_id: str,
     endpoint is a different, challenge/answer flow and rejects a plain payload
     with 409.) Returns True on success.
     """
+    # A fresh appliance can take well over 15 s to answer this call, and a
+    # timeout here is NOT a failure: the change was seen to apply server-side
+    # after the client gave up (2026-10-07), which left admin on a password
+    # nobody had recorded. So: a long timeout, and on any doubt the truth is
+    # established by logging in with the new value rather than assumed.
     try:
         r = session.put(f"{base_url}{EP_PWCHANGE.format(account_id=account_id)}",
                         json={"old_password": old_password, "new_password": new_password},
-                        verify=verify, timeout=15)
+                        verify=verify, timeout=90)
         if r.status_code in (200, 204):
             log("admin password set to the known value")
             return True
-        log(f"password change returned {r.status_code} (continuing): {r.text[:160]}")
+        log(f"password change returned {r.status_code}: {r.text[:160]}")
     except requests.RequestException as exc:
-        log(f"password change non-fatal error: {exc}")
+        log(f"password change request did not complete ({exc}); checking whether it applied")
+    probe = requests.Session()
+    ok, _ = login(probe, base_url, DEFAULT_ADMIN_USER, new_password, verify)
+    if ok:
+        log("the new password is in force (the change applied despite the error)")
+        return True
     return False
 
 
@@ -348,7 +358,18 @@ def main() -> int:
                 "default. If a human already changed it in the UI, pass that "
                 "value with --new-password.")
             return 2
-        # Logged in with the default: complete the forced change now.
+        # Logged in with the default: complete the forced change now. The value
+        # is written to the creds file FIRST, so a timeout mid-change can never
+        # again leave the appliance on a password that exists nowhere.
+        if args.creds_file:
+            try:
+                fd = os.open(args.creds_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as fh:
+                    json.dump({"url": f"{base}/cloudlens/login", "username": DEFAULT_ADMIN_USER,
+                               "password": new_password, "project": args.project,
+                               "project_key": "", "note": "password rotation in progress"}, fh, indent=2)
+            except OSError as exc:
+                log(f"could not pre-write creds file: {exc}")
         if rotate_password(session, base, account_id, DEFAULT_ADMIN_PASS, new_password, verify):
             session = requests.Session()
             ok, account_id = login(session, base, DEFAULT_ADMIN_USER, new_password, verify)
