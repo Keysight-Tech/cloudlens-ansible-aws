@@ -1,7 +1,5 @@
 # Operations Console Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** A product-grade operations UI for the AWS automation, as two faces of one engine: the deploy scripts emit structured events and consume the wizard's profile, so the UI and the CLI cannot drift.
 
 **Architecture:** `deploy/deploy-stack.sh` gains `--events FILE` (JSON lines: phase/resource/check/prompt/login/done, monotonic `seq`) and `--prompt-pipe FIFO` (mid-run prompts answered from the UI). The existing stdlib console (`console/cloudlens_console`) grows an API (`/api/doctor`, `/api/discover`, `/api/plan`, `/api/run`, `/api/answer`, `/events/<job>` with resume, `/api/teardown`, `/api/licences`) and a six-screen wizard whose output is the allowlisted `deploy-profile-<stack>.env` replayed by `deploy-stack.sh --profile`. Deliverable 2 wraps the identical server in a CloudFormation appliance (t3.small, HTTPS on 443 behind the admin CIDR, password in SSM).

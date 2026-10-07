@@ -1,7 +1,5 @@
 # Live Deployment Console Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Let a visitor on the static GitHub Pages docs site run a real CloudLens deployment on their own AWS account and watch it live, by bridging the page to a console running on their own machine.
 
 **Architecture:** The page probes `http://127.0.0.1:8760`. If a console answers, the visitor pastes a one-time pairing code and the panel switches from replaying captured events to streaming real SSE from their machine. Credentials never enter the browser: the console inherits the visitor's shell AWS identity, as it does today. If no console answers, the page silently stays on the replay it already ships.
