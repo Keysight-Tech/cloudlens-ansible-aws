@@ -35,9 +35,9 @@ The CLI below is that engine, unchanged. If the terminal is where you live, star
 
 ## Deploy the full stack with one command
 
-Three ways to deploy vController + KVO (optional) + vPB (optional) + sensors end to end. Same result, different workflows.
+Three ways to stand up vController + KVO (optional) + vPB (optional). Only the bash script carries on past the infrastructure: it mints the project key, licenses KVO, adopts the vController, installs the sensors, taps EKS, adopts the vPB, builds the mirror fabric, wires the vPB path and proves traffic (18 phase steps). The Launch Stack button and the Terraform module build the instances and stop.
 
-> **Naming note:** Keysight rebranded CLMS to **vController** in 2026. **KVO** (Keysight Vision One) is the orchestrator that drives AWS VPC Traffic Mirroring and manages vPB fleets. All three come from the AWS Marketplace AMIs; the stack template deploys them into a shared VPC, with KVO and vPB behind toggles (`DeployKVO` / `DeployVPB`, default yes).
+> **Naming note:** Keysight rebranded CLMS to **vController** in 2026. **KVO** (Keysight Vision Orchestrator) drives AWS VPC Traffic Mirroring and manages vPB fleets. All three come from the AWS Marketplace AMIs; the stack template deploys them into a shared VPC, with KVO and vPB behind toggles (`DeployKVO` / `DeployVPB`, default yes).
 
 ### Bash (recommended)
 
@@ -52,7 +52,11 @@ ids the stack prints in its Outputs (`SharedVpcId`, `SharedSubnetId`,
 `SharedSecurityGroupId`, or the one `JoinThisNetwork` line that carries all
 three) and hand them to a single-product Launch Stack button as
 `ExistingVpcId`, `ExistingSubnetId` and `ExistingSecurityGroupId`, or to the
-command line as `--existing-vpc-id`. Every single-product stack prints the
+command line as `--existing-vpc-id` and `--existing-subnet-id` (plus
+`--existing-sg-id` to reuse the group). The script reads the VPC's CIDR and
+fills the template's `ExistingVpcCidr` parameter so the in-VPC ports open to
+your range. Existing-network deploys run on the CloudFormation engine only:
+`--iac terraform` refuses the `--existing-*` flags. Every single-product stack prints the
 same three ids, so a vController launched on its own can have a KVO or vPB
 placed beside it instead of in a VPC of its own.
 
@@ -86,7 +90,7 @@ licenses, then run the teardown.
 - A bash shell (built-in on macOS / Linux / WSL / AWS CloudShell)
 - AWS CLI v2 authenticated (SSO or access keys), or just run it inside CloudShell
 - A **one-time Marketplace subscription** to the three Keysight AMIs (see below)
-- An EC2 key pair in the target region
+- An EC2 key pair in the target region, or let the script create one: `--key-name NAME` creates it if missing, and without the flag an interactive run lists the region's key pairs to pick from
 
 ### CloudFormation (one click)
 
@@ -94,7 +98,9 @@ licenses, then run the teardown.
   <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https://keysight-cloudlens-templates.s3.us-east-1.amazonaws.com/aws/stack.yaml&stackName=cloudlens-stack"><img src="https://img.shields.io/badge/▶_Launch_Stack-E90029?style=for-the-badge&logo=amazonaws&logoColor=white" alt="Launch Stack"/></a>
 </p>
 
-The button opens the CloudFormation quick-create console with `deploy/cloudformation/stack.yaml` pre-loaded from this repo. Pick your key pair and admin CIDR, acknowledge IAM capabilities, and click Create Stack. About 5 minutes to `CREATE_COMPLETE`; read the Outputs tab for the vController, KVO, and vPB URLs.
+The button opens the CloudFormation quick-create console with `deploy/cloudformation/stack.yaml` pre-loaded from the `keysight-cloudlens-templates` S3 bucket. Pick an existing key pair from the dropdown (the default; `Create a new key pair for me` is the alternative, and the dropdown still needs a value), set the admin CIDR, acknowledge IAM capabilities, and click Create Stack. About 5 minutes to `CREATE_COMPLETE`; read the Outputs tab for the vController, KVO, and vPB URLs.
+
+Maintainers: the sync workflow (`.github/workflows/sync-cfn-templates.yml`) uploads a changed template only when the `AWS_ROLE_ARN` repo secret is set; without it the job exits green and syncs nothing. After a template change run `bash deploy/scripts/sync-cfn-templates-to-s3.sh` locally, then `bash deploy/scripts/check-launch-buttons.sh` to confirm every button resolves.
 
 Prefer the CLI?
 
@@ -115,7 +121,7 @@ aws cloudformation describe-stacks --stack-name cloudlens-stack \
 ```bash
 cd deploy/terraform/stack
 cp terraform.tfvars.example terraform.tfvars
-# edit: region, key_pair_name, admin_cidr, deploy_kvo, deploy_vpb
+# edit: region, key_name (or public_key), ssh_ingress_cidrs, https_ingress_cidrs, deploy_kvo, deploy_vpb
 terraform init && terraform apply
 terraform output
 ```
@@ -138,7 +144,7 @@ Each Terraform module ships its own README, `variables.tf`, and `terraform.tfvar
 
 [CloudLens_Stack_Deployment_Runbook.pdf](docs/CloudLens_Stack_Deployment_Runbook.pdf) is the executive-facing stack guide. [CloudLens_Ansible_AWS_Customer_Runbook.pdf](docs/CloudLens_Ansible_AWS_Customer_Runbook.pdf) is the sensor-deployment runbook. Hand either to procurement or training teams.
 
-All three paths deploy the same AWS resources and chain through vController, KVO (optional), vPB (optional), and sensor deployment.
+All three paths create the same AWS resources. The post-deploy chain (project key, KVO licensing and vController adoption, sensors, EKS, vPB adoption, mirror sessions, the vPB traffic path, the traffic proof) is `deploy-stack.sh`'s. After a Launch Stack deploy, run the script with the same `--stack-name` and `--region`: it finds the stack in CloudFormation and continues from the first unfinished phase.
 
 ### Configuration and overrides (deploy-stack.sh)
 
@@ -148,15 +154,29 @@ Every default is overridable three ways: **CLI flag wins over env var wins over 
 |---|---|---|---|
 | `cloudlens-stack` | `--stack-name <name>` | `CLOUDLENS_STACK_NAME` | CloudFormation stack name |
 | `us-east-1` | `--region <region>` | `CLOUDLENS_REGION` | Region must carry the Marketplace AMIs |
-| (required) | `--key-pair <name>` | `CLOUDLENS_KEY_PAIR` | EC2 key pair for OS SSH |
-| `0.0.0.0/0` | `--admin-cidr <cidr>` | `CLOUDLENS_ADMIN_CIDR` | Narrow to your admin + sensor network |
+| (prompted) | `--key-name <name>` | `CLOUDLENS_KEY_NAME` | EC2 key pair for OS SSH. Created if missing; omit it on a terminal and the script lists the region's key pairs so you can pick one or create a new one |
+| `0.0.0.0/0` (non-interactive fallback only) | `--admin-cidr <cidr>` | `CLOUDLENS_ADMIN_CIDR` | Source CIDR allowed to reach the UI and SSH ports. An interactive run asks and offers this machine's address as a /32. Ignored when `--existing-sg-id` supplies a pre-approved group |
 | `yes` | `--with-kvo` / `--no-kvo` | `CLOUDLENS_DEPLOY_KVO` | Deploy the KVO orchestrator |
 | `yes` | `--with-vpb` / `--no-vpb` | `CLOUDLENS_DEPLOY_VPB` | Deploy the Virtual Packet Broker |
-| `10.99.0.0/16` | `--vpc-cidr <cidr>` | `CLOUDLENS_VPC_CIDR` | Demo VPC CIDR |
+| `10.99.0.0/16` | n/a (template parameter `VpcCidr`, Terraform `vpc_cidr`) | n/a | CIDR of the new shared VPC; only used when no existing VPC is given. Subnets: `MgmtSubnetCidr` 10.99.1.0/24, `DataSubnetCidr` 10.99.11.0/24, `ToolSubnetCidr` 10.99.12.0/24 |
 | (toggle) | `--no-sensors` | n/a | Skip the sensor playbook chain |
 | `false` | `--dry-run` | n/a | Print every aws command, touch nothing |
 | `cloudlens` | `--discovery-tag-key <key>` | `CLOUDLENS_DISCOVERY_TAG_KEY` | Tag key that marks "install sensor here" |
 | `yes` | `--discovery-tag-value <value>` | `CLOUDLENS_DISCOVERY_TAG_VALUE` | Tag value paired with the key above |
+| `standalone` | `--sensor-mode standalone, kvo or none` | `CLOUDLENS_SENSOR_MODE` | Which project key the sensors register with; `kvo` runs licensing and adoption before the sensors because the key does not exist until the Cloud Config provisions it |
+| (prompted) | `--kvo-codes CODE[,QTY]` | n/a | KVO activation code, repeatable; passed to scripts/kvo_license.py |
+| `cloudlens-aws` | `--cloud-config <name>` | `CLOUDLENS_CLOUD_CONFIG` | KVO Cloud Config; creating it provisions the CLM project and its sensor key |
+| `sensors` (asked on a terminal) | `--tapping sensors, mirror, both or none` | `CLOUDLENS_TAPPING` | How workloads are tapped: agent per VM, agentless VPC Traffic Mirroring (Nitro only), or both |
+| `no` | `--with-mirror` / `--no-mirror` | n/a (`CLOUDLENS_TAPPING=mirror` or `both`) | Build the AWS mirror fabric (presence, cloud config, collection, collector SVM, tool, policy, sessions). Needs `--mirror-access-key` / `--mirror-secret-key` (`CLOUDLENS_MIRROR_ACCESS_KEY` / `_SECRET_KEY`): an instance role is not enough |
+| every enabled area | `--vpb-rails mirror,k8s` | `CLOUDLENS_VPB_RAILS` | One vPB per area. KVO allows one cloud config per Cloud to Device Link, so the stack vPB serves the first area and one more vPB is launched, adopted and wired per further area |
+| `no` | `--with-eks`, `--eks-cluster NAME`, `--eks-sample` | `CLOUDLENS_DEPLOY_EKS`, `CLOUDLENS_EKS_CLUSTER`, `CLOUDLENS_EKS_SAMPLE` (also `_EKS_MODE`, `_EKS_POD_SELECTOR`, `_EKS_SENSOR_IMAGE`, `_EKS_SENSOR_TAR`) | Tap EKS pods. `--eks-mode daemonset` (default) or `sidecar`; `--eks-pod-selector REGEX`; `--eks-sensor-image URI` or `--eks-sensor-tar PATH` |
+| `no` | `--discover` | `CLOUDLENS_DISCOVER`, `CLOUDLENS_DISCOVER_REGIONS`, `CLOUDLENS_DISCOVER_ACCOUNTS`, `CLOUDLENS_DISCOVER_ROLE` | Find the VPCs to tap by the discovery tag (`--discover-regions LIST`, `--discover-accounts organization`, `--discover-role NAME`). Read-only; writes inventory/discovered.json and a replayable profile per account and region |
+| n/a | `--doctor` | n/a | Check this machine and account for everything the deploy needs and print the fix for each gap. Deploys nothing. Run it first |
+| n/a | `--profile FILE or URL` | n/a | Replay saved answers; the plan step writes deploy-profile-<stack>.env after any interview |
+| n/a | `--events FILE` | `CLOUDLENS_EVENTS_FILE` | One JSON line per run event; the operations console reads it |
+| `cfn` | `--iac cfn or terraform` | `CLOUDLENS_IAC` | Infrastructure engine. Terraform refuses the `--existing-*` flags |
+| `yes` | `--public-ip` (default) / `--no-public-ip` | `CLOUDLENS_ASSIGN_PUBLIC_IP` | Elastic IPs on the appliances; a full stack needs 3 free. `--no-public-ip` deploys private addresses only, for private subnets, and the UIs are reached over VPN, Direct Connect or peering |
+| (none) | `--existing-vpc-id`, `--existing-subnet-id`, `--existing-data-subnet-id`, `--existing-tool-subnet-id`, `--existing-sg-id` | `CLOUDLENS_EXISTING_VPC_ID`, `_SUBNET_ID`, `_DATA_SUBNET_ID`, `_TOOL_SUBNET_ID`, `_SG_ID` | Deploy into a VPC you already own (see the brownfield section) |
 
 **Three patterns customers use:**
 
@@ -165,15 +185,34 @@ Every default is overridable three ways: **CLI flag wins over env var wins over 
 curl -sSL .../deploy-stack.sh | bash
 
 # 2. Env-var overrides (cleanest for curl|bash)
-CLOUDLENS_KEY_PAIR=my-key CLOUDLENS_ADMIN_CIDR=203.0.113.10/32 curl -sSL .../deploy-stack.sh | bash
+CLOUDLENS_KEY_NAME=my-key CLOUDLENS_ADMIN_CIDR=203.0.113.10/32 curl -sSL .../deploy-stack.sh | bash
 
 # 3. Full prod-style with flags
 bash deploy-stack.sh \
   --stack-name prod-visibility --region us-east-1 \
-  --key-pair prod-key --admin-cidr 10.0.0.0/8 \
+  --key-name prod-key --admin-cidr 10.0.0.0/8 \
   --with-kvo --with-vpb \
   --discovery-tag-key monitoring --discovery-tag-value enabled
 ```
+
+### Deploy into a VPC you already have (brownfield)
+
+```bash
+bash deploy/deploy-stack.sh --region us-east-1 --stack-name cloudlens-brown \
+  --existing-vpc-id vpc-0abc123 --existing-subnet-id subnet-0mgmt \
+  --existing-data-subnet-id subnet-0data --existing-tool-subnet-id subnet-0tool \
+  --key-name my-key --admin-cidr 203.0.113.10/32
+```
+
+- `--existing-vpc-id` plus `--existing-subnet-id` place the appliances in your VPC. `--existing-sg-id` attaches a pre-approved security group instead of creating one (then `--admin-cidr` is ignored).
+- The vPB needs `--existing-data-subnet-id` and `--existing-tool-subnet-id` as well, or it comes up management-only and cannot forward traffic. All three subnets must be in the same availability zone.
+- The script reads the VPC's CIDR and passes it as the template's `ExistingVpcCidr` parameter, so the in-VPC ports (443, 7443, GRE as IP protocol 47, UDP 4789 and UDP 10800-10801) open to your range and not to the new-VPC default 10.99.0.0/16.
+- CloudFormation engine only: `--iac terraform` refuses `--existing-*`.
+- Sensors in an existing VPC register to the vController's private address; `CLOUDLENS_SENSOR_MANAGER_ADDR` overrides it for workloads elsewhere.
+- An existing EKS cluster in that VPC is tapped with `--eks-cluster NAME`.
+- Proven live 2026-10-07 in an existing VPC with an existing EKS cluster and pre-existing tagged workloads: both vPBs adopted and wired (one per rail), the sensor DaemonSet on every node, and the end-to-end traffic proof passing on the mirror path and the vPB path.
+- To rehearse, `bash scripts/lab/brownfield-fixture.sh create` (then `status`, `env`, `destroy`) builds a customer-shaped environment: a VPC with management, data and tool subnets in one zone, two tagged workloads talking HTTP, and an EKS cluster. Nothing in it is CloudLens.
+- Env vars: `CLOUDLENS_EXISTING_VPC_ID`, `CLOUDLENS_EXISTING_SUBNET_ID`, `CLOUDLENS_EXISTING_DATA_SUBNET_ID`, `CLOUDLENS_EXISTING_TOOL_SUBNET_ID`, `CLOUDLENS_EXISTING_SG_ID`.
 
 ---
 
@@ -199,7 +238,7 @@ Related flags:
 |---|---|
 | `--resume` | Continue from the first unfinished phase. The default when there is no terminal. |
 | `--fresh` | Run every phase again, skipping nothing. Still deletes nothing. |
-| `--from PHASE` | Start at a named phase: `stack`, `wait`, `key`, `license`, `adopt`, `sensors`, `vpb`, `path`, `mirror`. |
+| `--from PHASE` | Start at a named phase, in run order: `stack`, `wait`, `bootstrap`, `key`, `license`, `adopt`, `sensors`, `eks`, `vpb`, `mirror`, `path`, `prove`. Names, not numbers: the numbers shift when phases are added. |
 | `--only PHASE` | Run exactly one phase. |
 
 Nothing in the deploy script deletes anything, including under `--fresh`. Teardown
@@ -214,21 +253,24 @@ or `--dry-run` to rehearse the whole teardown. When the stack has a KVO the
 teardown, once you have confirmed it, offers to release the KVO's licences
 before deleting anything (`--release-licences` without a terminal); the KVO
 UI's Settings > Product Licensing > Deactivate licenses does the same by hand.
+`--kvo-admin-user USER`, `--kvo-admin-pass PASS` and `--kvo-address ADDR` give that release its KVO login and address when the defaults (`CLOUDLENS_KVO_ADMIN_USER` / `_PASS`, a prompt on a terminal, the stack's `KvoAddress` output) do not apply.
+
+Before the stack delete the teardown terminates the extra vPBs that `--vpb-rails` launched outside CloudFormation (tagged `cloudlens:stack=<stack>` and `cloudlens:vpb-rail=<area>`) and releases their Elastic IPs, since they hold the stack security group open. After the delete it sweeps unattached volumes, non-stack security groups in the stack's VPC, the collector Auto Scaling Group and launch templates KVO created, the traffic mirror targets on those collectors and, inside a customer VPC, the resources the deploy stamped; a bare `delete-stack` leaves all of that billing. In a pre-existing `--existing-vpc-id` VPC only the VPC itself and the resources the deploy did not stamp are left alone. Without a terminal it needs `--yes`, plus `--accept-licence-loss` when the KVO still holds licences; `--sweep-only` cleans up after a stack that is already gone and `--no-sweep` deletes the stack and stops.
 
 ## Marketplace AMIs (subscribe once per account)
 
-The stack launches Marketplace AMIs. Subscribe once per AWS account, then deploy as many times as you like. Instance types are fixed to the size each AMI is qualified on.
+The stack launches Marketplace AMIs. Subscribe once per AWS account, then deploy as many times as you like. Instance types are limited to the sizes each AMI is qualified on, the `AllowedValues` in `stack.yaml`.
 
 | Component | Role | Instance type | us-east-1 AMI | Marketplace listing |
 |---|---|---|---|---|
-| **vController** (CLMS) | Sensor management + registration | `t3.xlarge` | `ami-0bebd5e730315337e` | Keysight CloudLens Manager |
-| **KVO** (Keysight Vision One) | Orchestrator, Cloud Config, analytics | `c5.2xlarge` | `ami-017c0db8981569380` | Keysight Vision One |
-| **vPB** (Virtual Packet Broker) | Filter, dedup, load balance | `t3.xlarge`, SSH on port **9022** | `ami-0a561b450552b707d` | Keysight CloudLens Virtual Packet Broker |
-| **Collector SVM** | VPC Traffic Mirror collector | auto by KVO | `ami-0c22ade3667f8d35a` | (deployed by KVO Zone Tapping) |
+| **vController** (CLMS) | Sensor management + registration | `t3.xlarge` or `m5.xlarge` | `ami-0bebd5e730315337e` | Keysight CloudLens Manager |
+| **KVO** (Keysight Vision Orchestrator) | Orchestrator, Cloud Config, analytics | `c5.2xlarge` | `ami-017c0db8981569380` | Keysight Vision Orchestrator: the image `kvo-2.13.0-prod-ol4ektflnyxn2` (KVO 2.13.0) that `deploy-stack.sh` resolves by name in each region; Phase 4 prints its subscribe link |
+| **vPB** (Virtual Packet Broker) | Filter, dedup, load balance | `t3.xlarge`, SSH on port **9022** | `ami-0d00b42a9748d580c` | Keysight CloudLens Virtual Packet Broker |
+| **Collector SVM** | VPC Traffic Mirror collector | auto by KVO | resolved per region by name (`cloudlens-vpb-svm-*`, newest) | (launched by KVO into an Auto Scaling Group; subscribe to the vPB listing) |
 
-> First-time launch requires accepting Marketplace terms interactively on the listing pages. This cannot be automated (AWS requires the click-through). The AMIs are region-locked; to deploy outside us-east-1, look up the equivalent AMI IDs first (see [docs/OPERATIONS.md](docs/OPERATIONS.md#9-the-amis-and-how-to-look-them-up-in-another-region)).
+> First-time launch requires accepting Marketplace terms interactively on the listing pages. This cannot be automated (AWS requires the click-through). `stack.yaml` carries the AMIs for us-east-1, us-east-2, us-west-1, us-west-2, ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1, ap-southeast-2, ap-northeast-1 and ap-south-1: pass `--region` and the template's `RegionMap` resolves the region-correct AMIs. Subscribe to the three listings in that region first. For a region outside that list, look up the AMI IDs (see [docs/OPERATIONS.md](docs/OPERATIONS.md#9-the-amis-and-how-to-look-them-up-in-another-region)) and pass them as `CLOUDLENS_VCONTROLLER_AMI`, `CLOUDLENS_KVO_AMI` and `CLOUDLENS_VPB_AMI`.
 
-Default vController UI credentials are `admin / Cl0udLens@dm!n` (force-change on first login). vPB SSH + CLI is `admin / ixia` on port 9022.
+The vController ships with `admin / Cl0udLens@dm!n` and forces a change on first login; the key phase of the deploy (`--from key`) completes that change to a known value and writes the working login to a mode-600 creds file and to `cloudlens-deploy-summary.txt`. The vPB is reached with the EC2 key pair: `ssh -i <key>.pem -p 9022 admin@<vpb-ip>`, then `sudo vpb -c '<command>'` for the CLI once `scripts/bootstrap-vpb.sh` has run. `admin / ixia` is the device login KVO uses when it adopts the vPB (`scripts/vpb_kvo_adopt.py`), not an SSH password.
 
 ---
 
@@ -251,7 +293,7 @@ cp customer_input.yaml.example customer_input.yaml
 vim customer_input.yaml   # set vController IP + project_key + region + ssh_key_path
 
 # 3. Tag your target EC2 instances:
-#    cloudlens=yes   os=ubuntu|rhel|windows   env=prod
+#    cloudlens=yes   (optional: os=ubuntu|rhel|windows   env=prod)
 
 # 4. Run
 bash quickstart.sh
@@ -260,10 +302,12 @@ bash quickstart.sh
 ### What it does
 
 1. **Discovers** running EC2 instances matching `aws.tag_filters` in `customer_input.yaml` (default `cloudlens=yes`) via the `amazon.aws.aws_ec2` dynamic inventory plugin
-2. **Groups** them by `os` tag (ubuntu_prod_vms, redhat_prod_vms, windows_prod_vms)
+2. **Classifies** each host into `os_ubuntu`, `os_rhel` or `os_windows`: by an `os` tag when present, else by what AWS reports (`platform`, `platform_details`), else by probing the host (`playbooks/classify.yaml`). The legacy `*_prod_vms` groups still exist for labs that target them
 3. **Connects** via SSH (Linux), SSM Session Manager, or WinRM (Windows)
 4. **Installs** the CloudLens sensor: Docker on Ubuntu, Podman on RHEL, MSI on Windows
 5. **Registers** each sensor with vController using the project key
+
+`quickstart.sh` installs the Ansible collections it needs; if galaxy.ansible.com is unreachable but they are already in `./collections`, it warns and continues. A private manager address is accepted: the sensors inside the VPC pull from it, so this machine not reaching it is not a verdict. The Windows sensor is off by default (Windows traffic is already captured by VPC Traffic Mirroring); turn it on with `CLOUDLENS_WINDOWS_SENSOR=true bash quickstart.sh` or `windows: {enabled: true}` in `customer_input.yaml`.
 
 ### Tag your instances
 
@@ -272,8 +316,8 @@ CloudLens Ansible discovers instances by tag. Apply these to every target:
 | Tag | Value | Required? |
 |---|---|---|
 | `cloudlens` | `yes` | Only if you keep the default `tag_filters` |
-| `os` | `ubuntu` / `rhel` / `windows` | Yes: it selects the sensor install method |
-| `env` | `prod` / `dev` / `qa` | Yes: `deploy.yaml` targets the `*_prod_vms` groups |
+| `os` | `ubuntu` / `rhel` / `windows` | No: it wins when present; otherwise AWS platform details and a probe classify the host |
+| `env` | `prod` / `dev` / `test` | No: `deploy.yaml` targets the `os_*` groups. `env` only feeds the legacy `*_prod_vms`, `*_dev_vms` and `*_test_vms` groups |
 
 Bulk-tag a region:
 
@@ -401,11 +445,12 @@ Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | 1 to 50 | 50 | No | 5 to 10 min |
 | 51 to 200 | 100 | No | 10 to 20 min |
 | 201 to 800 | 200 | No | 15 to 30 min |
-| 801 to 2,000 | 400 | Yes (auto) | 30 to 60 min |
+| 801 to 2,000 | 400 | No | 30 to 60 min |
 | 2,001 to 5,000 | 800 | Yes | 1 to 2 hr |
-| 10,000+ | 2,500+ | Yes (AWX) | 4+ hr |
+| 5,001 to 10,000 | 1,500 | Yes | 2 to 4 hr |
+| 10,000+ | 2,500+ | Yes | 4+ hr |
 
-Auto-tunes based on discovered instance count. See [docs/SCALING.md](docs/SCALING.md) for KVO infrastructure sizing and VPC Traffic Mirroring limits.
+Parallelism is the Ansible `forks` setting. The deploy reads it from `ANSIBLE_FORKS` in the environment, then `deploy.forks` in `customer_input.yaml`, and otherwise picks a value from the fleet size (20 forks up to 50 instances, 50 up to 500, 200 up to 2,000, 500 beyond); `deploy/tuned-ansible.cfg` sets 200, and `--forks` on `ansible-playbook` overrides a single run. Above 2,000 instances the deploy shards: `deploy/shard.sh` splits the discovered inventory into shards of 500 (`SHARD_SIZE`) and runs one `ansible-playbook` per shard in parallel, each with its own `--forks` (200 per shard by default). The timing bands in [docs/SCALING.md](docs/SCALING.md) are the reference; it also covers KVO infrastructure sizing and VPC Traffic Mirroring limits.
 
 ---
 
@@ -433,7 +478,7 @@ You can run **both** in the same AWS account; they do not conflict. The sibling 
 | `ssh -p 9022` times out | Security group missing TCP/9022, or KCOS still booting | Add SG rule; wait 10 to 15 min after `running` |
 | SSM "0 target instances" | Missing IAM role or SSM Agent stopped | Attach `AmazonSSMManagedInstanceCore`; check `aws ssm describe-instance-information` |
 | Sensor not in vController UI | Wrong project key or 443 blocked | Fresh key from Settings > Projects > API Keys; open egress to 443 |
-| `UnsupportedOperation` on stack create | Wrong instance type for a Marketplace AMI | KVO must be c5.2xlarge; vController and vPB t3.xlarge |
+| `UnsupportedOperation` on stack create | Wrong instance type for a Marketplace AMI | KVO must be c5.2xlarge and the vPB t3.xlarge; the vController takes t3.xlarge or m5.xlarge |
 | Instances fail to launch | Not subscribed to the Marketplace AMIs | Subscribe once per account, then redeploy |
 
 Full reference: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
@@ -452,6 +497,13 @@ Full reference: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and [docs/OPE
 | [docs/SE_DEMO_PLAYBOOK.md](docs/SE_DEMO_PLAYBOOK.md) | 30-minute SE demo script |
 | [docs/SE_PROSPECT_EMAIL.md](docs/SE_PROSPECT_EMAIL.md) | SE outreach email templates |
 | [docs/CUSTOMER_EMAIL.md](docs/CUSTOMER_EMAIL.md) | Post-signature customer comms |
+| [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | The automation tracks and the scripts behind each phase |
+| [docs/BROWNFIELD_READINESS.md](docs/BROWNFIELD_READINESS.md) | Deploying into an existing VPC |
+| [docs/DISCOVERY.md](docs/DISCOVERY.md) | `--discover`: find the VPCs to tap across regions and accounts |
+| [docs/KUBERNETES_RAIL.md](docs/KUBERNETES_RAIL.md) | EKS pod tapping: presence, DaemonSet, its own vPB |
+| [docs/AWS_ZONE_TAPPING.md](docs/AWS_ZONE_TAPPING.md) | VPC Traffic Mirroring sequence and the vPB numbers |
+| [docs/CLOUD_SECURITY_COMPLIANCE.md](docs/CLOUD_SECURITY_COMPLIANCE.md) | Security and compliance notes for the stack |
+| [console/README.md](console/README.md) | The operations console: screens, contracts, limits |
 
 ## Related repositories
 
@@ -469,4 +521,4 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
-**Version:** v1.0.0 (June 2026)
+**Version:** see the git log; last functional change 2026-10-07 (brownfield proof: existing VPC, existing EKS cluster, both vPB rails).

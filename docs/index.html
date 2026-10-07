@@ -106,7 +106,7 @@
             Verified on real AWS
           </span>
           <h1>CloudLens Autopilot for AWS</h1>
-          <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (small deployments) or 30 to 60 minutes (thousands of instances). A full 3-component stack (vController + KVO + vPB) was launched live in AWS us-east-1 and reached CREATE_COMPLETE. Linux, Windows, and agentless AWS VPC Traffic Mirroring, fully automated. The mirror session was verified end to end: tapped workload traffic reached the tool, confirmed packet by packet.</p>
+          <p class="lede">Deploy CloudLens sensors to your EC2 instances in 5 to 10 minutes (up to 50 instances) or 30 to 60 minutes (up to 2,000). A full 3-component stack (vController + KVO + vPB) was launched live in AWS us-east-1 and reached CREATE_COMPLETE. Linux, Windows, and agentless AWS VPC Traffic Mirroring, fully automated. The mirror session was verified end to end: tapped workload traffic reached the tool, confirmed packet by packet.</p>
           <p style="margin:6px 0 18px;font-size:0.95rem;">
             &#128196; <a href="CloudLens_AWS_ZoneTapping_EndToEnd.pdf" target="_blank" rel="noopener" style="font-weight:600;">Read the end-to-end runbook (PDF)</a>
             &nbsp;&#183;&nbsp; stack creation to a proven, packet-verified mirror, with the full architecture, every object, and the live evidence.
@@ -234,7 +234,7 @@
             <h3>Vision Orchestrator (KVO) <span class="new-tag">NEW</span></h3>
             <p>Optional. Centralizes the vPB fleet and automates AWS VPC Traffic Mirroring.</p>
             <ul>
-              <li>Version from the Marketplace AMI (KVO 2.13.x)</li>
+              <li>Version: KVO 2.13.0, the Marketplace image the stack resolves (<code>kvo-2.13.0-prod</code>). The 2026-09-28 and 2026-10-07 proofs ran KVO 3.1.0</li>
               <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;kvo-ip&gt;</code> (port 9022, not 22)</li>
               <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/kvo.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
@@ -289,15 +289,17 @@ terraform apply -var key_name=my-keypair -var deploy_kvo=true -var deploy_vpb=tr
           <h3>&#127970; Deploy into an existing VPC (brownfield)</h3>
           <p>Name a VPC and subnet and the stack creates <strong>no networking at all</strong>: no VPC, no subnets, no internet gateway, no routes. The instances land beside the workloads they monitor.</p>
           <ul>
-            <li><code>ExistingVpcId</code> + <code>ExistingSubnetId</code> &mdash; required together</li>
-            <li><code>ExistingDataSubnetId</code> &mdash; optional, puts the vPB data plane in its own subnet</li>
-            <li><code>ExistingSecurityGroupId</code> &mdash; optional, attaches a pre-approved SG instead of creating one. <code>AdminIngressCidr</code> is then ignored.</li>
+            <li><code>ExistingVpcId</code> + <code>ExistingSubnetId</code>: required together (CLI: <code>--existing-vpc-id</code>, <code>--existing-subnet-id</code>)</li>
+            <li><code>ExistingDataSubnetId</code> + <code>ExistingToolSubnetId</code>: supply BOTH to give the vPB its ingress and egress data plane in your VPC. Without both the vPB comes up management-only and cannot forward traffic. All three subnets must be in the same Availability Zone (CLI: <code>--existing-data-subnet-id</code>, <code>--existing-tool-subnet-id</code>)</li>
+            <li><code>ExistingVpcCidr</code>: the CIDR the security group opens the in-VPC ports (443, 7443, GRE as IP protocol 47, UDP 4789 and UDP 10800-10801) to. The CLI reads it from the VPC for you; set it by hand on the Launch Stack form, or nothing in your VPC reaches the appliances</li>
+            <li><code>ExistingSecurityGroupId</code>: optional, attaches a pre-approved SG instead of creating one. <code>AdminIngressCidr</code> is then ignored, and you open 22, 9022, 443, 7443, GRE (IP protocol 47), UDP 4789 and UDP 10800-10801 yourself (CLI: <code>--existing-sg-id</code>)</li>
           </ul>
           <p class="muted">Leave <code>ExistingVpcId</code> blank and the four CIDR fields build a fresh VPC instead. That single field is the greenfield / brownfield switch.</p>
           <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
-  --existing-vpc-id vpc-0abc123 \
-  --existing-subnet-id subnet-0def456 \
+  --existing-vpc-id vpc-0abc123 --existing-subnet-id subnet-0def456 \
+  --existing-data-subnet-id subnet-0data --existing-tool-subnet-id subnet-0tool \
   --existing-sg-id sg-0aaa111</code></pre>
+          <p class="muted">Brownfield is CloudFormation only: the Terraform engine has no existing-network variables and the CLI refuses <code>--iac terraform</code> with any <code>--existing-*</code> flag rather than build a second VPC. Sensors inside your VPC register to the vController's private address (the public one is refused by the security group unless the admin CIDR is wide open); <code>CLOUDLENS_SENSOR_MANAGER_ADDR</code> overrides it for workloads elsewhere. Proven live on 2026-10-07 in an existing 10.60/16 VPC with an existing EKS cluster and pre-existing tagged workloads: VM sensors, the mirror rail and the Kubernetes rail all passed traffic.</p>
         </div>
 
         <div class="prereq-card">
@@ -318,16 +320,19 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 #    (or do it in the KVO: Settings > Product Licensing > Deactivate licenses).
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/teardown-stack.sh | bash -s -- --stack-name YOUR-STACK --region us-east-1</code></pre>
           <p class="muted">Every run ends with <code>deploy-report-&lt;stack&gt;-&lt;region&gt;.html</code>: what was built, where to sign in, what is tapped, how each phase ended, how to verify, and the exact teardown command. Passwords stay in the mode-600 files it points to, never in the page. Profiles never contain secrets either: licence codes and keys are always typed at the moment of use.</p>
+          <p class="muted">A run that stops partway is re-run with <code>--resume</code> (the default with no terminal): it checks the real system and skips what is done. <code>--events FILE</code> appends one JSON line per phase change, discovered resource and prompt; the operations console reads it and, with <code>--prompt-pipe</code>, answers the run's questions from the page.</p>
         </div>
 
         <div class="prereq-card">
           <h3>&#127919; Tap the customer's workloads, wherever they are</h3>
           <p>Both tapping paths resolve <strong>one selection</strong> from <code>customer_input.yaml</code>: ANDed <code>tag_filters</code>, explicit <code>instance_ids</code>, and <code>tapping.exclude_instance_ids</code> drive sensors and agentless mirroring identically, so the two can never target different hosts. The run reports the split up front: which hosts get sensors, which interfaces get mirror sessions (AWS mirrors Nitro instances only), and how many licence credits that demands.</p>
           <ul>
-            <li><code>--tapping sensors|mirror|both|none</code> &mdash; one answer for both paths</li>
-            <li><code>--source-vpc-id vpc-...</code> &mdash; tap a VPC other than the CloudLens one; repeat it (or list <code>aws.source_vpc_ids</code> in <code>customer_input.yaml</code>) and one KVO fabric is built per VPC</li>
-            <li><code>--source-vpc vpc:az:mgmt:ingress:egress</code> &mdash; same, with that VPC's collector placement inline (three distinct subnets in the tapped VPC)</li>
-            <li><code>--eks-cluster NAME</code> / <code>--eks-sample</code> &mdash; tap Kubernetes pods in EKS. Pod-to-pod traffic inside a node is invisible to VM sensors and VPC mirroring; the CloudLens K8s sensor sees it. DaemonSet (one sensor per node, fully automated: image pushed to ECR, applied with kubectl, no helm needed) or sidecar (per-pod; your apps get a rendered snippet, never an automatic restart). <code>--eks-sample</code> builds a small test cluster plus a demo app generating continuous pod-to-pod HTTP. K8s sensors register into the same project as the VM sensors and follow the same tool path.</li>
+            <li><code>--tapping sensors|mirror|both|none</code>: one answer for both paths</li>
+            <li><code>--source-vpc-id vpc-...</code>: tap a VPC other than the CloudLens one; repeat it (or list <code>aws.source_vpc_ids</code> in <code>customer_input.yaml</code>) and one KVO fabric is built per VPC</li>
+            <li><code>--source-vpc vpc:az:mgmt:ingress:egress</code>: same, with that VPC's collector placement inline (three distinct subnets in the tapped VPC)</li>
+            <li><code>--eks-cluster NAME</code> / <code>--eks-sample</code>: tap Kubernetes pods in EKS. Pod-to-pod traffic inside a node is invisible to VM sensors and VPC mirroring; the CloudLens K8s sensor sees it. DaemonSet (one sensor per node, fully automated: image pushed to ECR, applied with kubectl, no helm needed) or sidecar (per-pod; your apps get a rendered snippet, never an automatic restart). <code>--eks-sample</code> builds a small test cluster plus a demo app generating continuous pod-to-pod HTTP. K8s sensors register into the same project as the VM sensors and follow the same tool path. For an existing cluster the deploy creates the KVO Kubernetes presence first and the DaemonSet registers with that presence's key; a cluster inside the CloudLens VPC is pointed at the vController's private address.</li>
+            <li><code>--vpb-rails mirror,k8s</code>: which areas get a vPB of their own. KVO allows one cloud config per Cloud-to-Device Link, so mirrored VMs and Kubernetes pods cannot share a vPB ingress port. The stack vPB serves the first area; the deploy launches, adopts and wires one more vPB per further area (tagged <code>cloudlens:stack</code> / <code>cloudlens:vpb-rail</code>, swept by the teardown). Default: every enabled area.</li>
+            <li><code>--discover</code> (with <code>--discover-regions</code> and <code>--discover-accounts self|organization</code>): find the VPCs to tap instead of naming them. Scans for running instances carrying the discovery tag, proposes the collector placement per VPC, takes every complete proposal as a <code>--source-vpc</code> spec, writes <code>inventory/discovered.json</code> and a replayable profile per account and region. Read-only.</li>
           </ul>
           <p class="muted">A tapped VPC that is not the CloudLens VPC needs a route to the manager and KVO on 443 and to the tool from the collector egress subnet (VPC peering or Transit Gateway); the run states exactly that when it applies.</p>
           <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
@@ -347,12 +352,12 @@ curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/
 
         <div class="prereq-card">
           <h3>&#128273; SSH key pair: use an existing one or have it created</h3>
-          <p>A brand new AWS account has no key pairs, which used to block the wizard entirely. Now you choose:</p>
+          <p>The Launch Stack form asks for a <code>KeyPairAction</code>:</p>
           <ul>
-            <li><strong>Create a new key pair for me</strong> (default) &mdash; the stack creates <code>&lt;StackName&gt;-key</code>, EC2 stores the private key in SSM Parameter Store, and the stack outputs the exact command to download it</li>
-            <li><strong>Use an existing key pair</strong> &mdash; type the name in <code>KeyPairName</code></li>
+            <li><strong>Use an existing key pair</strong> (default): pick it from the <code>KeyPairName</code> dropdown, which lists the key pairs in that region</li>
+            <li><strong>Create a new key pair for me</strong>: the stack creates <code>&lt;StackName&gt;-key</code>, EC2 stores the private key in SSM Parameter Store, and the stack outputs the exact command to download it. AWS still requires a value in the <code>KeyPairName</code> dropdown: pick any entry, it is ignored</li>
           </ul>
-          <p class="muted">The CLI lists the key pairs in your region and lets you pick one or create a new one. In the console it is a text box rather than a dropdown, because CloudFormation cannot make a key pair dropdown optional: a dropdown must always resolve to an existing key, which is exactly what blocks a first deploy.</p>
+          <p class="muted">If that dropdown is empty the account has no key pairs at all: create one in the EC2 console first, or use the CLI installer, which lists the key pairs in your region and lets you pick one or create a new one.</p>
           <pre><code># Download the auto-created private key (the stack prints this command)
 aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;region&gt; \
   --with-decryption --query Parameter.Value --output text &gt; my-key.pem &amp;&amp; chmod 400 my-key.pem</code></pre>
@@ -400,8 +405,8 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           <li>
             <span class="dt-time">0:39</span>
             <div>
-              <strong>Elastic IP pre-check</strong>
-              <p>A short Lambda confirms the account has enough Elastic IPs for this stack. <strong>This is the gate:</strong> if it fails, the stack stops here with a message naming the shortfall and no instance is ever launched. See <a href="#faq">Common issues</a>.</p>
+              <strong>Elastic IP headroom (CLI only)</strong>
+              <p><code>deploy-stack.sh</code> checks the Elastic IP quota (Phase 4b) before it creates the stack and names the addresses to free. <strong>This is the gate:</strong> a shortfall stops the run before any instance is launched. A stack launched from the Launch Stack button has no such check and rolls back on the last address instead. See <a href="#faq">Common issues</a>.</p>
             </div>
           </li>
           <li>
@@ -428,7 +433,7 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
         </ol>
 
         <div class="callout callout-warn">
-          <strong>CREATE_COMPLETE is not "ready to log in".</strong> CloudFormation finishes when the EC2 instances are running, but the CloudLens appliances are still booting. Allow roughly <strong>15 minutes</strong> before the vController UI responds, and about <strong>5 minutes</strong> before vPB accepts SSH on port 9022. A full stack with KVO and vPB takes longer to reach CREATE_COMPLETE than the single-component timing above.
+          <strong>CREATE_COMPLETE is not "ready to log in".</strong> CloudFormation finishes when the EC2 instances are running, but the CloudLens appliances are still booting. Allow roughly <strong>15 minutes</strong> before the vController UI responds, and <strong>10 to 15 minutes</strong> before vPB accepts SSH on port 9022. A full stack with KVO and vPB takes longer to reach CREATE_COMPLETE than the single-component timing above.
         </div>
 
         <p class="muted">If the stack rolls back, open the Events tab and sort oldest first: the first <code>CREATE_FAILED</code> row is the real cause, everything after it is cleanup.</p>
@@ -448,7 +453,7 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           <button class="copy-btn" data-copy="full-stack-cmd" type="button" aria-label="Copy curl command">Copy</button>
         </div>
 
-        <p class="full-stack-note">Prompts for region and key pair, accepts Marketplace terms, deploys vController, waits for initialization, optionally adds KVO and vPB, then chains to sensor deployment. Run from AWS CloudShell or any machine with the AWS CLI.</p>
+        <p class="full-stack-note">Prompts for region and key pair, shows the Marketplace subscribe link for each AMI and waits for you to confirm (AWS has no API to accept terms), deploys the stack, waits for initialization, licenses and adopts into KVO, installs sensors, wires the vPB path and the mirror, then proves the traffic path. Run from AWS CloudShell or any machine with the AWS CLI. Run <code>--doctor</code> first to find every gap before anything is built.</p>
         <p class="full-stack-note"><strong>One network, every appliance.</strong> The full stack builds a single VPC with management, data and tool subnets and puts the vController, the KVO and the vPB in it; nothing here ever builds a second network. To add an appliance later beside an existing deployment, read the three ids the stack prints in its Outputs, <code>SharedVpcId</code>, <code>SharedSubnetId</code> and <code>SharedSecurityGroupId</code> (one <code>JoinThisNetwork</code> line carries all three), and hand them to a single-product Launch Stack button as <code>ExistingVpcId</code>, <code>ExistingSubnetId</code> and <code>ExistingSecurityGroupId</code>, or to the command line as <code>--existing-vpc-id</code>. Every single-product stack now prints the same three ids, so a vController launched on its own can have a KVO or vPB placed beside it instead of in a VPC of its own.</p>
 
         <div class="full-stack-paths">
@@ -485,9 +490,9 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy the teardown command">Copy</button>
         </div>
 
-        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so on any stack launched before 15 September 2026 the root volumes survive as <code>available</code> and keep billing; the templates now override that, and this script sweeps such volumes either way. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script deletes the stack and sweeps the volumes, security groups, scaling groups and launch templates it can attribute to it. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
+        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so on any stack launched before 15 September 2026 the root volumes survive as <code>available</code> and keep billing; the templates now override that, and this script sweeps such volumes either way. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script first terminates any extra vPB the deploy launched per area (<code>--vpb-rails</code>, tagged <code>cloudlens:stack</code> and <code>cloudlens:vpb-rail</code>) and releases their Elastic IPs, because they share the stack security group and a running one leaves the stack delete in DELETE_FAILED. It then deletes the stack and sweeps what it can attribute to it: the volumes, the security groups, the collector Auto Scaling group and its launch templates, the mirror targets, and the resources the deploy stamped inside a customer VPC. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
 
-        <p class="full-stack-note"><strong>It only removes what your deployment built.</strong> Nothing is deleted unless AWS itself ties it to your stack, by stack membership, by living in the VPC that stack created, or by an owner tag naming it. Anything without that evidence is reported and left alone, because in a shared account "it was unattached" is not proof of ownership. Brownfield deploys into an existing VPC (<code>--existing-vpc-id</code>) switch the VPC rule off entirely: that network is the customer's, and its other contents are none of the script's business. Stack name and region are yours to pass, so the same command is safe in any account.</p>
+        <p class="full-stack-note"><strong>It only removes what your deployment built.</strong> Nothing is deleted unless AWS itself ties it to your stack, by stack membership, by living in the VPC that stack created, or by an owner tag naming it. Anything without that evidence is reported and left alone, because in a shared account "it was unattached" is not proof of ownership. In a pre-existing VPC (<code>--existing-vpc-id</code>) the VPC-membership rule is switched off: the VPC itself and anything the deploy did not stamp are left alone, and only the resources the deploy and its KVO tagged inside it are swept. Stack name and region are yours to pass, so the same command is safe in any account.</p>
 
         <p class="full-stack-note">Add <code>--orphans</code> to audit without deleting, <code>--dry-run</code> to print every command it would run, or <code>--sweep-only</code> to clean up after a stack that is already gone. Nothing is removed without an explicit confirmation, or <code>--yes</code> in a pipeline.</p>
       </div>
@@ -503,18 +508,19 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
         <p class="lede">For SE demos or first-call verification: stand up 3 throwaway workload EC2 instances (Ubuntu 22.04 + RHEL 9 + Windows Server 2022) tagged with a discovery tag, then run the stack with the matching tag flags. Proves sensors install on every supported OS in one pass.</p>
 
         <div class="full-stack-cmd-wrap">
-          <pre><code id="test-fixture-cmd"># 1. Stand up the 3 test workload instances (default tag: cloudlens=yes)
+          <pre><code id="test-fixture-cmd"># Simplest: let the stack launch its own throwaway workloads, tagged with the discovery tag
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --test-vms ubuntu,rhel,windows
+
+# Or stand the 3 instances up first with a custom tag (default: monitoring=enabled), then deploy against that tag
 curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/scripts/deploy-test-workload-vms.sh | bash
+curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- --discovery-tag-key monitoring --discovery-tag-value enabled
 
-# 2. Deploy the CloudLens stack, then run sensor deployment against the tagged instances
-curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash
-
-# 3. Cleanup when done
-aws cloudformation delete-stack --stack-name cloudlens-test-vms --region us-east-1</code></pre>
+# Cleanup: the fixture script prints the exact terminate-instances command for its three instances;
+# --test-vms workloads are part of the stack and go with the teardown</code></pre>
           <button type="button" class="copy-btn" data-copy="test-fixture-cmd" aria-label="Copy command">Copy</button>
         </div>
 
-        <p class="full-stack-note">The fixture launches three instances tagged <code>cloudlens=yes</code> with an <code>os</code> tag per platform. The sensor deployment installs on all three and they register with vController. Total round trip: about 25 to 30 minutes. Override the tag pair with <code>TESTVMS_TAG_KEY</code> / <code>TESTVMS_TAG_VALUE</code> environment variables if you want to mirror a customer's existing convention.</p>
+        <p class="full-stack-note">The fixture launches three instances (Ubuntu 22.04, RHEL 9, Windows Server 2022) tagged <code>monitoring=enabled</code> by default with an <code>os</code> tag per platform; override the pair with <code>TESTVMS_TAG_KEY</code> / <code>TESTVMS_TAG_VALUE</code> to mirror a customer's convention. <code>--test-vms</code> takes an optional count per OS (<code>ubuntu:3,rhel:2,windows</code>, 1 to 10 each); the Windows VM needs <code>--windows-instance-profile</code> with AmazonSSMManagedInstanceCore or the sensor step cannot reach it. Total round trip: about 25 to 30 minutes.</p>
       </div>
         </details>
       </div>
@@ -638,13 +644,13 @@ python3 -m cloudlens_console</code></pre>
                 <span class="step-time">5 minutes</span>
               </summary>
               <div class="step-body">
-                <p>The deployment discovers instances by tag. Apply these to every target instance:</p>
+                <p>The deployment discovers instances by one tag. Apply <code>cloudlens=yes</code> to every target instance; the other two are optional:</p>
                 <table class="step-table">
                   <thead><tr><th>Tag</th><th>Value</th></tr></thead>
                   <tbody>
-                    <tr><td><code>cloudlens</code></td><td><code>yes</code></td></tr>
-                    <tr><td><code>os</code></td><td><code>ubuntu</code> or <code>rhel</code> or <code>windows</code></td></tr>
-                    <tr><td><code>env</code></td><td><code>prod</code> (or <code>dev</code>, <code>qa</code>)</td></tr>
+                    <tr><td><code>cloudlens</code></td><td><code>yes</code> (required: the discovery tag for both the sensor and the mirror paths)</td></tr>
+                    <tr><td><code>os</code></td><td>optional: <code>ubuntu</code>, <code>rhel</code> or <code>windows</code>. Without it the OS is read from what AWS reports, and Linux hosts it cannot name are probed</td></tr>
+                    <tr><td><code>env</code></td><td>optional grouping: <code>prod</code>, <code>dev</code> or <code>test</code></td></tr>
                   </tbody>
                 </table>
                 <p>Tag a single instance:</p>
@@ -850,7 +856,7 @@ python3 -m cloudlens_console</code></pre>
           <div class="sc-body">
         <header class="section-head">
           
-          <p>Drag the slider to see the estimated deployment time for your fleet size.</p>
+          <p>Drag the slider to see the estimated deployment time for your fleet size. The bands and times are the ones in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/SCALING.md" target="_blank" rel="noopener">docs/SCALING.md</a>: the readout follows its seven bands and the bars group them at 50, 800, 2,000 and 10,000 instances. Forks is the Ansible <code>forks</code> setting: the deploy picks 20 up to 50 instances, 50 up to 500, 200 up to 2,000 and 500 per shard beyond, <code>deploy/tuned-ansible.cfg</code> sets <code>forks = 200</code> as the playbook default, and <code>--forks</code> on <code>ansible-playbook</code> overrides a single run. Above 2,000 instances <code>deploy/shard.sh</code> splits the inventory into shards of 500 and runs one playbook per shard in parallel.</p>
         </header>
         <div class="scaling">
           <div class="scaling-controls">
@@ -871,16 +877,16 @@ python3 -m cloudlens_console</code></pre>
               </div>
               <div class="readout big">
                 <span class="readout-label">Estimated time</span>
-                <strong id="time-readout">15 to 30 min</strong>
+                <strong id="time-readout">10 to 20 min</strong>
               </div>
             </div>
           </div>
           <div class="scale-bars" role="list">
             <div class="bar" role="listitem" data-band="1-50"><div class="fill"></div><span>1 to 50</span><em>5 to 10 min</em></div>
-            <div class="bar" role="listitem" data-band="50-500"><div class="fill"></div><span>50 to 500</span><em>15 to 30 min</em></div>
-            <div class="bar" role="listitem" data-band="500-2000"><div class="fill"></div><span>500 to 2,000</span><em>30 to 60 min</em></div>
-            <div class="bar" role="listitem" data-band="2000-10000"><div class="fill"></div><span>2,000 to 10,000</span><em>30 to 60 min (sharded)</em></div>
-            <div class="bar" role="listitem" data-band="10000+"><div class="fill"></div><span>10,000+</span><em>1 to 2 hr (AWX)</em></div>
+            <div class="bar" role="listitem" data-band="50-500"><div class="fill"></div><span>51 to 800</span><em>10 to 30 min</em></div>
+            <div class="bar" role="listitem" data-band="500-2000"><div class="fill"></div><span>801 to 2,000</span><em>30 to 60 min</em></div>
+            <div class="bar" role="listitem" data-band="2000-10000"><div class="fill"></div><span>2,001 to 10,000</span><em>1 to 4 hr, sharded</em></div>
+            <div class="bar" role="listitem" data-band="10000+"><div class="fill"></div><span>10,000+</span><em>4+ hr, sharded</em></div>
           </div>
         </div>
       </div>
@@ -896,7 +902,7 @@ python3 -m cloudlens_console</code></pre>
           <div class="sc-body">
         <header class="section-head">
           
-          <p>A full 3-component stack was launched via CloudFormation in us-east-1 and reached CREATE_COMPLETE, then the full pipeline was proven end to end: KVO licensing, vController and vPB adoption, 3-OS sensor registration, and agentless AWS mirror sessions.</p>
+          <p>A full 3-component stack was launched via CloudFormation in us-east-1 and reached CREATE_COMPLETE, then the full pipeline was proven end to end: KVO licensing, vController and vPB adoption, 3-OS sensor registration, and agentless AWS mirror sessions. On 2026-10-07 the same pipeline was proven in an environment it did not build: an existing 10.60/16 VPC with three subnets, two pre-existing tagged workloads and an existing EKS cluster, deployed with the <code>--existing-*</code> flags, <code>--eks-cluster</code> and <code>--vpb-rails mirror,k8s</code>. 5,516 GRE packets reached the tool from the mirror and stack-vPB paths and 3,929 passed on the Kubernetes vPB with pod-to-pod HTTP inside its tunnel.</p>
         </header>
         <div class="metrics-grid">
           <div class="metric">
@@ -952,8 +958,8 @@ python3 -m cloudlens_console</code></pre>
           <article class="card">
             <span class="num-badge">1</span>
             <h3>Accept the KVO EULA</h3>
-            <p>KVO blocks all access, including the API, until the EULA is accepted in the browser. Open <code>https://&lt;kvo-ip&gt;</code>, read the Keysight Software EULA, click <strong>Agree</strong>, then log in with <code>admin / admin</code>.</p>
-            <div class="callout-warning">This must be done in the browser. The CLI cannot accept the EULA on your behalf.</div>
+            <p>KVO blocks all access, including the API, until the EULA is accepted. Open <code>https://&lt;kvo-ip&gt;</code>, read the Keysight Software EULA, click <strong>Agree</strong>, then log in with <code>admin / admin</code>.</p>
+            <div class="callout-warning">By hand this is a browser step. The deploy accepts it for you in the licensing phase (<code>scripts/kvo_license.py --accept-eula</code>, a legal acceptance the script states before it does it) and activates your codes with <code>--kvo-codes CODE[,QTY]</code>; the adoption phase then uses the same acceptance.</div>
           </article>
 
           <article class="card">
@@ -965,21 +971,22 @@ python3 -m cloudlens_console</code></pre>
           <article class="card">
             <span class="num-badge">3</span>
             <h3>Adopt vController and provision the key</h3>
-            <p>From KVO: <strong>Inventory, CloudLens Manager, Discover</strong>. Enter the vController private IP and the admin credentials (<code>admin / Cl0udLens@dm!n</code>), and <strong>commit the change request</strong> KVO raises. Status must turn <strong>CONNECTED</strong>.</p>
+            <p>From KVO: <strong>Inventory, CloudLens Manager, Discover</strong>. Enter a name, the vController private IP and the credentials of a KVO user created on the vController (a non-admin user; the deploy posts it to <code>/cloudlens/api/v1/admin/kvo_users</code>), never the <code>admin</code> factory login, and <strong>commit the change request</strong> KVO raises. Status must turn <strong>CONNECTED</strong>.</p>
             <p>Then create the Cloud Config, <strong>Visibility Fabric, Cloud Configs, New, Custom Cloud</strong>. This provisions the real project on the vController and returns the sensor key; skip it and the key is a phantom that won't register sensors.</p>
           </article>
 
           <article class="card">
             <span class="num-badge">4</span>
             <h3>Adopt the vPB into KVO</h3>
-            <p>SSH to the vPB on port <code>9022</code> (not 22). The <code>kvo</code> command is an <strong>interactive context</strong>, not flat commands, run <code>sudo vpb</code> and enter it:</p>
-            <pre data-lang="vpb-cli"><code>CloudLensVPB# kvo
+            <p>SSH to the vPB on port <code>9022</code> (not 22) with the EC2 key pair, run <code>sudo vpb</code>, point the vPB at the KVO licence server first, then enter the <code>kvo</code> context. It is an <strong>interactive context</strong>, not flat commands:</p>
+            <pre data-lang="vpb-cli"><code>CloudLensVPB# license server &lt;kvo-private-ip&gt; type advanced
+CloudLensVPB# kvo
 CloudLensVPB-kvo# ip &lt;kvo-private-ip&gt;
 CloudLensVPB-kvo# port 443
 CloudLensVPB-kvo# enable      # prints "KVO enabled"
 CloudLensVPB-kvo# exit</code></pre>
             <div class="callout-warning">Running <code>kvo ip &lt;x&gt;</code> / <code>kvo enable</code> as flat commands does not enable KVO. You must enter the context first.</div>
-            <p>The vPB <strong>self-announces</strong> and appears under <strong>Inventory, Devices, Auto Discovery</strong> within ~30 s. Adopt it with <strong>Control the adopted device</strong> enabled, KVO consumes a device license, the vPB is <strong>auto-licensed</strong>, comes up <strong>Online</strong>, and KVO auto-creates its Device Config.</p>
+            <p>The vPB <strong>self-announces</strong> and appears under <strong>Inventory, Devices, Auto Discovery</strong> within ~30 s. Adopt it with <strong>Control the adopted device</strong> enabled: KVO consumes a device licence and <strong>applies the vPB licence on adoption</strong> (the CLI's licence-server warning clears within about 30 seconds), the vPB comes up <strong>Online</strong>, and KVO auto-creates its Device Config. The deploy does all of this in the vPB adoption phase (<code>--from vpb</code>).</p>
           </article>
 
           <article class="card">
@@ -991,7 +998,7 @@ CloudLensVPB-kvo# exit</code></pre>
               <li><strong>eth2 (egress)</strong> &rarr; a <strong>Tool</strong> (your analyzer / NPB).</li>
               <li>A <strong>Monitoring Policy</strong> ties source &rarr; vPB &rarr; tool.</li>
             </ul>
-            <p>A tapping vPB needs 3 NICs (mgmt / ingress / egress), the stack wires these automatically when Zone Tapping is enabled.</p>
+            <p>A tapping vPB needs 3 NICs (mgmt / ingress / egress). The stack creates them whenever it builds the VPC, and in an existing VPC when you name both <code>ExistingDataSubnetId</code> and <code>ExistingToolSubnetId</code>; without both the vPB is management-only. <code>--vpb-ingress-nics</code> / <code>--vpb-egress-nics</code> add more. The deploy's path phase binds them and builds the Cloud-to-Device Link, tool and policy for you; Zone Tapping (<code>EnableZoneTapping</code>) is only the IAM opt-in that lets KVO drive VPC Traffic Mirroring.</p>
           </article>
         </div>
       </div>
@@ -1007,37 +1014,40 @@ CloudLensVPB-kvo# exit</code></pre>
           <div class="sc-body">
         <header class="section-head">
           
-          <p class="lede">Skip this if you used the disposable test fixture, those instances are already configured. Deploying sensors to existing customer EC2 instances? Prep them with the included script in scan-then-fix mode.</p>
+          <p class="lede">Skip this if you used the disposable test fixture, those instances are already configured. Deploying sensors to existing customer EC2 instances? Check the operator side with the doctor, then tag and prepare each target by hand.</p>
         </header>
 
         <div class="info-grid">
           <article class="card">
             <h3>IAM role</h3>
-            <p class="muted-note">Auto-fix: Yes</p>
-            <p>Each instance needs <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. The prep script creates a <code>CloudLens-SSM-Role</code> and attaches it for you. If the instance already has an IAM role, the script adds the SSM policy to it instead of replacing.</p>
+            <p class="muted-note">Fix: one CLI command, Step 2</p>
+            <p>Each instance needs <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile. Attach the policy to the instance's existing role, or create a role with it and attach the instance profile. The deploy's <code>--windows-instance-profile NAME</code> names the profile for the Windows test VM.</p>
           </article>
 
           <article class="card">
             <h3>SSM Agent</h3>
-            <p class="muted-note">Auto-fix: Mostly</p>
+            <p class="muted-note">Fix: pre-installed on most images, Step 3 for RHEL</p>
             <p>Pre-installed on Amazon Linux, Ubuntu 16.04+, Windows Server 2016+. Must be installed manually on RHEL/CentOS, commands below.</p>
           </article>
 
           <article class="card">
             <h3>Tags</h3>
-            <p class="muted-note">Auto-fix: Yes</p>
-            <p>The script auto-detects each instance OS and applies <code>cloudlens=yes</code> plus the correct <code>os</code> tag (<code>ubuntu</code>, <code>rhel</code>, or <code>windows</code>).</p>
+            <p class="muted-note">Fix: one CLI command, Step 2</p>
+            <p>Apply <code>cloudlens=yes</code>. An <code>os</code> tag (<code>ubuntu</code>, <code>rhel</code> or <code>windows</code>) is optional: without it the OS is read from what AWS reports, and Linux hosts it cannot name are probed.</p>
           </article>
         </div>
 
-        <h3 class="sub-head">Step 1 - Scan your environment first</h3>
-        <p>Run scan-only mode to see what is missing before changing anything:</p>
-        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --scan-only</code></pre>
+        <h3 class="sub-head">Step 1 - Check the operator side</h3>
+        <p>The doctor checks this machine and account (credentials, region, Marketplace subscriptions, quotas, key pair, tooling, network) and prints the exact fix for each gap. It deploys nothing:</p>
+        <pre data-lang="bash"><code>bash deploy/deploy-stack.sh --doctor --region us-east-1</code></pre>
 
-        <h3 class="sub-head">Step 2 - Auto-fix every issue</h3>
-        <p>Once you have reviewed the scan, run with <code>--auto-fix</code> to remediate every gap in one shot:</p>
-        <pre data-lang="bash"><code>./scripts/deploy.sh --region us-east-1 --profile customer --auto-fix</code></pre>
-        <p>Omit <code>--auto-fix</code> for interactive mode, the script prompts before each change.</p>
+        <h3 class="sub-head">Step 2 - Prepare each target instance</h3>
+        <pre data-lang="bash"><code># Tag it so discovery finds it
+aws ec2 create-tags --resources i-0123456789abcdef0 --tags Key=cloudlens,Value=yes Key=os,Value=ubuntu Key=env,Value=prod
+# Give it the SSM policy (SSM connection path, required for Windows)
+aws iam attach-role-policy --role-name &lt;instance-role&gt; --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+# Confirm the agent registered
+aws ssm describe-instance-information --region us-east-1</code></pre>
 
         <h3 class="sub-head">Step 3 - Manual SSM Agent install (when Instance Connect is not available)</h3>
         <div class="info-grid">
@@ -1084,9 +1094,9 @@ Restart-Service AmazonSSMAgent</code></pre>
         <div class="info-grid">
           <article class="card">
             <h3>Tag targets first</h3>
-            <p>Apply the marker tag <code>cloudlens = yes</code> and an <code>os</code> tag to every target instance. Without these the deployment skips the host.</p>
+            <p>Apply the marker tag <code>cloudlens = yes</code> to every target instance; without it the deployment skips the host. The <code>os</code> tag is optional and only overrides what AWS reports about the instance:</p>
             <table class="step-table">
-              <thead><tr><th>OS</th><th>Tag <code>os</code></th></tr></thead>
+              <thead><tr><th>OS</th><th>Tag <code>os</code> (optional)</th></tr></thead>
               <tbody>
                 <tr><td>Ubuntu / Debian</td><td><code>ubuntu</code></td></tr>
                 <tr><td>RHEL / CentOS / Amazon Linux</td><td><code>rhel</code></td></tr>
@@ -1097,7 +1107,7 @@ Restart-Service AmazonSSMAgent</code></pre>
 
           <article class="card">
             <h3>IAM role on every target</h3>
-            <p>Each instance needs the managed policy <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile for the SSM connection path. The included prep step can attach this for you and verify the SSM Agent is running.</p>
+            <p>Each instance needs the managed policy <code>AmazonSSMManagedInstanceCore</code> attached to its instance profile for the SSM connection path. Attach it with one CLI command and confirm the agent registered (see Preparing existing customer VMs above).</p>
           </article>
 
           <article class="card">
@@ -1146,7 +1156,7 @@ ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
           <article class="card">
             <span class="num-badge">3</span>
             <h3>Create a Cloud Config and a tool</h3>
-            <p>On KVO: <strong>Cloud Fabric, Cloud Configs, New, AWS</strong>. Supply the region and source VPC, the collector image (auto-resolved per region), the SSH key and mgmt / ingress / egress subnets, then commit, KVO deploys an auto-scaling group of collector Service VMs. Under <strong>Visibility Fabric, Tools</strong> create the destination tool (Local or Remote) the mirrored traffic is forwarded to.</p>
+            <p>On KVO: <strong>Cloud Fabric, Cloud Configs, New, AWS</strong>. Supply the region and source VPC, the collector image (KVO resolves it by name, <code>cloudlens-vpb-svm-*</code>, at run time), the SSH key and mgmt / ingress / egress subnets, then commit, KVO deploys an auto-scaling group of collector Service VMs. Under <strong>Visibility Fabric, Tools</strong> create the destination tool (Local or Remote) the mirrored traffic is forwarded to.</p>
           </article>
 
           <article class="card">
@@ -1176,16 +1186,16 @@ ansible-playbook deploy.yaml -e @customer_input.yaml</code></pre>
           <article class="card">
             <h3>Step 1 - Remove sensors</h3>
             <pre data-lang="bash"><code># Remove sensors from all tagged targets
-bash cleanup.yaml
+bash scripts/cleanup.sh
 
-# Or via the playbook
+# Or run the playbook directly
 ansible-playbook cleanup.yaml -e @customer_input.yaml</code></pre>
           </article>
 
           <article class="card">
             <h3>Step 2 - Destroy infrastructure</h3>
-            <p>Terraform path:</p>
-            <pre data-lang="bash"><code>cd deploy/terraform
+            <p>Terraform path. Release the KVO licences first, in the KVO UI under Settings &gt; Product Licensing &gt; Deactivate licenses: once the KVO instance is destroyed the quantity still activated on it is stranded for good. Then destroy from the root you applied: <code>deploy/terraform</code> is the flat root module that <code>deploy-stack.sh --iac terraform</code> drives, <code>deploy/terraform/stack</code> the composed module shown above.</p>
+            <pre data-lang="bash"><code>cd deploy/terraform          # or deploy/terraform/stack if you applied the stack module
 terraform destroy</code></pre>
             <p>CloudFormation path, use the teardown script rather than a bare delete-stack:</p>
             <pre data-lang="bash"><code>bash deploy/teardown-stack.sh \
@@ -1217,10 +1227,10 @@ terraform destroy</code></pre>
               <thead><tr><th>Item</th><th>What to know</th></tr></thead>
               <tbody>
                 <tr><td>vPB <code>kvo</code></td><td>An interactive context, enter <code>kvo</code>, then <code>ip</code> / <code>port 443</code> / <code>enable</code> / <code>exit</code>. Flat commands don't enable it.</td></tr>
-                <tr><td>vPB license</td><td>Auto-applied on adoption from KVO's device licenses, no manual license server.</td></tr>
+                <tr><td>vPB license</td><td>Point the vPB at KVO first (<code>license server &lt;kvo-private-ip&gt; type advanced</code>, before the <code>kvo</code> context); KVO then applies the licence on adoption from its device licences. No credit is applied by hand.</td></tr>
                 <tr><td>AWS mirroring</td><td>Nitro sources only (t3 / m5 / c5 / r5+). Non-Nitro, use sensors.</td></tr>
                 <tr><td>Source tag</td><td><code>cloudlens=yes</code> drives both the sensor and the mirror paths.</td></tr>
-                <tr><td>Key ports</td><td><code>443</code> vController / KVO API &middot; <code>9022</code> vPB SSH &middot; <code>8443</code> KVO&harr;collector.</td></tr>
+                <tr><td>Key ports</td><td><code>443</code> vController / KVO API &middot; <code>7443</code> vController to KVO (in-VPC) &middot; <code>22</code> / <code>9022</code> SSH (KVO and vPB on 9022) &middot; <code>4789</code> + <code>10800-10801</code> UDP VXLAN &middot; IP protocol <code>47</code> L2GRE from the collectors.</td></tr>
                 <tr><td>After CREATE_COMPLETE</td><td>Appliances need ~15 min to initialize before the UI accepts a login.</td></tr>
               </tbody>
             </table>
@@ -1232,7 +1242,7 @@ terraform destroy</code></pre>
               <tbody>
                 <tr><td>KVO</td><td><code>admin</code></td><td><code>admin</code></td></tr>
                 <tr><td>vController</td><td><code>admin</code></td><td><code>Cl0udLens@dm!n</code></td></tr>
-                <tr><td>vPB SSH (port 9022)</td><td><code>ec2-user</code></td><td>key pair</td></tr>
+                <tr><td>vPB SSH (port 9022)</td><td><code>admin</code></td><td>EC2 key pair (<code>ssh -i &lt;key&gt;.pem -p 9022 admin@&lt;vpb-ip&gt;</code>, then <code>sudo vpb</code> for the CLI)</td></tr>
               </tbody>
             </table>
             <p class="muted-note">Change these on first login. Default passwords are not for production.</p>
@@ -1243,12 +1253,13 @@ terraform destroy</code></pre>
             <table class="step-table">
               <thead><tr><th>Subnet</th><th>CIDR</th><th>Purpose</th></tr></thead>
               <tbody>
-                <tr><td>Management</td><td><code>10.0.1.0/24</code></td><td>SSH, HTTPS, REST API</td></tr>
-                <tr><td>Data</td><td><code>10.0.2.0/24</code></td><td>Sensor traffic (mirror / VXLAN)</td></tr>
-                <tr><td>Tool</td><td><code>10.0.3.0/24</code></td><td>Processed traffic to tools</td></tr>
+                <tr><td>VPC</td><td><code>10.99.0.0/16</code></td><td>One shared VPC for every appliance</td></tr>
+                <tr><td>Management</td><td><code>10.99.1.0/24</code></td><td>vController, KVO, vPB mgmt interface: SSH, HTTPS, REST API</td></tr>
+                <tr><td>Data</td><td><code>10.99.11.0/24</code></td><td>vPB ingress, receives mirrored traffic</td></tr>
+                <tr><td>Tool</td><td><code>10.99.12.0/24</code></td><td>vPB egress, forwards to monitoring tools</td></tr>
               </tbody>
             </table>
-            <p class="muted-note">CIDRs are configurable in the CloudFormation parameters.</p>
+            <p class="muted-note">CIDRs are configurable in the CloudFormation parameters (only used when ExistingVpcId is blank).</p>
           </article>
 
           <article class="card">
@@ -1288,7 +1299,7 @@ terraform destroy</code></pre>
               <p>Re-run the same command with <code>--resume</code>. It checks the real system rather than a state file: CloudFormation for the stack, the vController API, the KVO licensing API. Everything already finished is skipped and it picks up at the first unfinished step, usually in about a minute.</p>
               <pre><code>curl -sSL https://raw.githubusercontent.com/Keysight-Tech/cloudlens-ansible-aws/main/deploy/deploy-stack.sh | bash -s -- \
   --region us-east-1 --stack-name cloudlens-stack --resume</code></pre>
-              <p>Related: <code>--fresh</code> runs every phase again and skips nothing; <code>--from PHASE</code> starts at a named phase (<code>stack</code>, <code>wait</code>, <code>key</code>, <code>license</code>, <code>adopt</code>, <code>sensors</code>, <code>vpb</code>, <code>path</code>, <code>mirror</code>); <code>--only PHASE</code> runs exactly one.</p>
+              <p>Related: <code>--fresh</code> runs every phase again and skips nothing; <code>--from PHASE</code> starts at a named phase (<code>stack</code>, <code>wait</code>, <code>bootstrap</code>, <code>key</code>, <code>license</code>, <code>adopt</code>, <code>sensors</code>, <code>eks</code>, <code>vpb</code>, <code>mirror</code>, <code>path</code>, <code>prove</code>); <code>--only PHASE</code> runs exactly one. Names, not numbers: the run has 18 numbered phase steps (plus 3b, 4b, 13b and 16b) and the numbers shift when a phase is added, these names do not.</p>
               <p class="muted">Nothing in the deploy script deletes anything, including under <code>--fresh</code>. Teardown is a separate, explicitly confirmed command.</p>
             </div>
           </details>
@@ -1324,7 +1335,7 @@ terraform destroy</code></pre>
             <div class="faq-body">
               <p><strong>The vPB image uses port 9022 for SSH, NOT the default port 22.</strong> Keysight CloudLens OS (KCOS) binds sshd only to <code>9022</code> on the public interface. Connections to <code>:22</code> time out forever even after the instance is fully booted.</p>
               <p><strong>What to do:</strong> wait 10 to 15 minutes after deploy succeeds for KCOS to initialize, then:</p>
-              <pre data-lang="bash"><code>ssh -p 9022 admin@&lt;vpb-public-ip&gt;   # OS shell
+              <pre data-lang="bash"><code>ssh -i &lt;key&gt;.pem -p 9022 admin@&lt;vpb-public-ip&gt;   # KCOS shell, EC2 key pair, no password
 sudo vpb                                # vPB CLI</code></pre>
               <p><strong>Security group rule:</strong> make sure the security group on the vPB management ENI allows inbound TCP on port 9022. The stack template opens this automatically; if you deployed via a custom path, add the rule manually.</p>
               <p><strong>Same vController note:</strong> the web UI on port 443 is usually ready within 60 seconds, but full system initialization (registry and project creation) takes around 15 minutes.</p>
@@ -1335,7 +1346,7 @@ sudo vpb                                # vPB CLI</code></pre>
             <summary>Inventory finds 0 instances</summary>
             <div class="faq-body">
               <p><strong>Cause:</strong> tags missing or misspelled.</p>
-              <p><strong>Fix:</strong> verify with <code>aws ec2 describe-tags --filters "Name=resource-id,Values=i-0123..."</code>. The cloudlens, os, and env tags must all be present.</p>
+              <p><strong>Fix:</strong> verify with <code>aws ec2 describe-tags --filters "Name=resource-id,Values=i-0123..."</code>. The <code>cloudlens=yes</code> tag must be present; <code>os</code> and <code>env</code> are optional.</p>
             </div>
           </details>
 
@@ -1367,9 +1378,12 @@ sudo vpb                                # vPB CLI</code></pre>
             <summary>How long should this take?</summary>
             <div class="faq-body">
               <p><strong>1 to 50 instances:</strong> 5 to 10 minutes.</p>
-              <p><strong>50 to 500 instances:</strong> 15 to 30 minutes.</p>
-              <p><strong>500 to 2000 instances:</strong> 30 to 60 minutes.</p>
-              <p><strong>Thousands:</strong> sharded automatically, 30 to 60 minutes for up to 10K.</p>
+              <p><strong>51 to 200:</strong> 10 to 20 minutes.</p>
+              <p><strong>201 to 800:</strong> 15 to 30 minutes.</p>
+              <p><strong>801 to 2,000:</strong> 30 to 60 minutes.</p>
+              <p><strong>2,001 to 5,000:</strong> 1 to 2 hours, sharded.</p>
+              <p><strong>5,001 to 10,000:</strong> 2 to 4 hours, sharded.</p>
+              <p><strong>10,000+:</strong> 4 hours or more, sharded. The full table, with the parallelism per band, is in <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/docs/SCALING.md" target="_blank" rel="noopener">docs/SCALING.md</a>.</p>
             </div>
           </details>
 

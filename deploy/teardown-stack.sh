@@ -363,9 +363,14 @@ Usage:
   bash deploy/teardown-stack.sh --stack-name NAME [--region REGION] [options]
 
 Deletes the CloudFormation stack AND sweeps what the stack leaves behind:
-unattached EBS volumes, non-stack security groups sitting in the stack's VPC,
-and the collector Auto Scaling Group / launch templates KVO creates outside
-CloudFormation. Deleting the stack alone leaves all of that billing.
+the extra vPBs that --vpb-rails launched outside CloudFormation and their
+Elastic IPs (terminated BEFORE the stack delete), unattached EBS volumes,
+non-stack security groups sitting in the stack's VPC, the collector Auto
+Scaling Group / launch templates KVO creates outside CloudFormation, the
+traffic mirror targets and filter on those collectors, and whatever the
+deploy stamped inside a customer VPC (instances tagged cloudlens:stack=<stack>,
+security groups named cloudlens-*-<stack>). Deleting the stack alone leaves
+all of that billing.
 
 Nothing is deleted without an explicit confirmation: a yes on a terminal, or
 --yes when there is no terminal. There is no default that destroys.
@@ -424,9 +429,13 @@ KVO licence release (only when the stack contains a KVO):
 Scoping (why this is safe to run in a shared account):
   A resource is deleted only when AWS itself ties it to this stack: it is a
   member of the stack, or it was attached to an instance that was, or it lives
-  in the VPC the stack itself created (never a brownfield --existing-vpc-id
-  VPC), or it carries a tag naming the stack. Anything else is reported and
-  left alone. An unattached volume with no such evidence is somebody else's.
+  in the VPC the stack itself created, or it carries the deploy's own mark (a
+  cloudlens:stack=<stack> tag, a cloudlens-*-<stack> security group name, a
+  collector ASG tagged with this stack's vController address). In a
+  pre-existing VPC (--existing-vpc-id) the VPC itself and everything the deploy
+  did not stamp are left alone: only the stamped resources are swept. Anything
+  else is reported and left alone. An unattached volume with no such evidence
+  is somebody else's.
 
 Env-var overrides:
   CLOUDLENS_REGION, CLOUDLENS_STACK_NAME, CLOUDLENS_PROBE_TIMEOUT,
@@ -466,10 +475,17 @@ Order of operations:
      KVO clear means nothing is stranded and step 4b is skipped.
   4b. Warn about stranded KVO licences and take the licence-loss
      confirmation (the typed stack name, or --accept-licence-loss).
-  5. Delete the stack, then wait for a terminal state.
+  5. Terminate the rail vPBs that --vpb-rails launched (tagged
+     cloudlens:vpb-rail) and release their Elastic IPs, THEN delete the stack
+     and wait for a terminal state. They share the stack's security group,
+     so with one still running the delete lands in DELETE_FAILED.
   6. On DELETE_FAILED, name the blocking resources, offer to remove the ones
      that are attributable, and retry the delete.
-  7. Sweep the volumes, security groups, ASGs and launch templates.
+  7. Sweep what the delete leaves, in this order: any rail vPB that appeared
+     in between, the instances the deploy stamped (cloudlens:stack=<stack>,
+     in any VPC, a customer's included), the collector ASGs and launch
+     templates, the traffic mirror targets and filter, the security groups,
+     and last the volumes (only those now 'available').
 HLP
 }
 

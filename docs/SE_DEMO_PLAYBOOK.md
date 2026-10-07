@@ -82,9 +82,31 @@ the shape you fill in.
 The shared EC2 key pair used by the orchestrator is the single credential you
 carry to a demo.
 
+### Customer-shaped variant (brownfield)
+
+To show CloudLens dropping into a VPC the customer already runs:
+`bash scripts/lab/brownfield-fixture.sh create --admin-cidr <you>/32` builds a
+10.60/16 VPC with mgmt, data and tool subnets in one zone, two tagged workloads
+talking HTTP, and an EKS cluster running the sample app; `env` prints the ids.
+Deploy into it with `--existing-vpc-id --existing-subnet-id
+--existing-data-subnet-id --existing-tool-subnet-id --eks-cluster <name>
+--vpb-rails mirror,k8s --with-mirror`. The deploy fills `ExistingVpcCidr`,
+registers sensors to the vController's private address, and the report
+`deploy-report-<stack>-<region>.html` is the hand-off page. `destroy` removes
+the fixture afterwards.
+
 ---
 
 ## Pre-demo checklist (do 30 minutes before the call)
+
+0. **Run the doctor the day before**
+
+   ```bash
+   bash deploy/deploy-stack.sh --doctor --region us-east-1
+   ```
+
+   It checks credentials, region, Marketplace subscriptions, quotas, key pair
+   and tooling, deploys nothing, and prints the fix for each gap.
 
 1. **Confirm AWS auth is fresh**
 
@@ -133,6 +155,8 @@ carry to a demo.
 
    ```bash
    scripts/prove_traffic.sh --vpc-id <vpc-id> --key ~/.ssh/<demo-key>.pem
+   # or, the same check as phase 17 of the deploy:
+   bash deploy/deploy-stack.sh --stack-name <stack> --region us-east-1 --only prove
    ```
 
    You want `PASS` on both lines. If the mirror path fails with 0 sessions, the
@@ -196,13 +220,21 @@ In KVO, navigate to `Cloud Fabric > Cloud Configs > New > AWS`. Show the shape:
 - Region `us-east-1`, the demo VPC, and the mgmt/data subnets
 - Commit
 
+Say that the deploy built this with `--with-mirror` (presence, cloud config,
+collection, collector, tool, policy, sessions) and that `--only mirror` rebuilds
+it. If asked what can go wrong: KVO needs three distinct collector subnets in
+one zone (mgmt, ingress, egress) or the config commits cleanly and cuts zero
+sessions; the deploy names them with `--collector-zone` and
+`--collector-*-subnet` in a customer VPC.
+
 Say: **"This is the only screen the security team touches. Point KVO at the VPC,
 commit, and KVO stands up the collector SVMs and the mirror sessions for you."**
 
 Then SSH into the vPB console to show the data-plane config is real:
 
 ```bash
-ssh -p 9022 admin@<vpb-eip>
+ssh -i ~/.ssh/<demo-key>.pem -p 9022 admin@<vpb-eip>
+sudo vpb
 CloudLensVPB# show kvo
 CloudLensVPB# show statistics
 ```
@@ -244,8 +276,9 @@ Three honest upsell cards:
 1. **KVO** for single pane of glass across many vPBs and many vControllers
 2. **eBPF kTLS hook** for TLS payload visibility on Linux (no cert distribution,
    no MITM)
-3. **CloudLens K8s DaemonSet on EKS** for full-packet visibility into
-   containerized workloads that VPC Traffic Mirroring alone does not reach
+3. **CloudLens K8s DaemonSet on EKS**, shipped: `--eks-cluster` taps an existing
+   cluster today, for the pod-to-pod traffic VPC Traffic Mirroring alone does
+   not reach
 
 Hand them three artifacts:
 
@@ -268,9 +301,15 @@ nodes with session affinity, that is the vPB. KVO also gives you fleet-wide
 policy instead of per-ENI clicking.
 
 **Q: "What about EKS / containers?"**
-A: VPC Traffic Mirroring taps the ENI, so it sees pod traffic that egresses the
-node ENI. For pod-to-pod inside a node, deploy the CloudLens K8s DaemonSet. Both
-land in the same vPB.
+A: VPC Traffic Mirroring taps the ENI, so it sees what leaves the node. Pod-to-pod
+inside a node is invisible to it and to VM sensors; the CloudLens K8s sensor sees
+it. The deploy taps it with `--eks-cluster NAME` (your cluster) or `--eks-sample`
+(a two-node test cluster with a demo app): KVO Kubernetes presence first, then the
+DaemonSet with that presence's key, image pushed to ECR, applied with kubectl. It
+lands on its own vPB (`--vpb-rails mirror,k8s`), because KVO allows one cloud
+config per Cloud-to-Device Link. Proven live 2026-10-07 against an existing
+cluster: 3,929 packets passed on the Kubernetes vPB with pod-to-pod HTTP inside
+its tunnel.
 
 **Q: "Can we audit your code?"**
 A: All open source. https://github.com/Keysight-Tech/cloudlens-ansible-aws.
@@ -315,8 +354,16 @@ Costs run in the low tens of dollars per day with the full lab up (the
 than two weeks, tear down to save cost; rebuild in ~30 min when needed.
 
 ```bash
-bash demo/teardown.sh                       # deletes the demo stack + workload instances
-aws cloudformation delete-stack --stack-name cloudlens-demo --region us-east-1
+# Audit first: what is loose and what it costs, deletes nothing
+bash deploy/teardown-stack.sh --stack-name <stack> --region us-east-1 --orphans
+
+# Tear it down: confirms, offers to release the KVO licences while the KVO is alive
+# (a bare delete-stack strands them for good), terminates any --vpb-rails vPB first,
+# deletes the stack, sweeps volumes, security groups, the collector ASG and launch templates
+bash deploy/teardown-stack.sh --stack-name <stack> --region us-east-1
+
+# Then the demo-only extras (workload instances, tool receiver, demo VPC), if you built them with the orchestrator
+bash demo/teardown.sh
 ```
 
 To rebuild fresh:
@@ -333,7 +380,7 @@ prints all the EIPs in a state file.
 ## Where this came from
 
 This kit mirrors the mature Azure demo kit, ported to AWS: vController is the
-new name for CLMS, KVO is Keysight Vision One, and the data path is AWS-native
+new name for CLMS, KVO is Keysight Vision Orchestrator, and the data path is AWS-native
 VPC Traffic Mirroring instead of Azure vTAP. Every wall hit during a build is
 documented in `docs/OPERATIONS.md`. Every command in this playbook has been run
 against a real AWS account.

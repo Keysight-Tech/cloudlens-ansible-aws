@@ -209,12 +209,19 @@
 
   function fmt(n) { return n.toLocaleString('en-US'); }
 
+  // Times are the seven bands in docs/SCALING.md. Forks follow the deploy's
+  // size-based default (20 up to 50 instances, 50 up to 500, 200 up to 2,000,
+  // 500 per shard beyond) and the deploy shards above 2,000 instances. The
+  // five bar ids group the seven bands at 50, 800, 2,000 and 10,000.
   function bandFor(n) {
     if (n <= 50) return { id: '1-50', forks: 20, sharded: false, time: '5 to 10 min' };
+    if (n <= 200) return { id: '50-500', forks: 50, sharded: false, time: '10 to 20 min' };
     if (n <= 500) return { id: '50-500', forks: 50, sharded: false, time: '15 to 30 min' };
+    if (n <= 800) return { id: '50-500', forks: 200, sharded: false, time: '15 to 30 min' };
     if (n <= 2000) return { id: '500-2000', forks: 200, sharded: false, time: '30 to 60 min' };
-    if (n <= 10000) return { id: '2000-10000', forks: 500, sharded: true, time: '30 to 60 min (sharded)' };
-    return { id: '10000+', forks: 1000, sharded: true, time: '1 to 2 hr (AWX)' };
+    if (n <= 5000) return { id: '2000-10000', forks: 500, sharded: true, time: '1 to 2 hr, sharded' };
+    if (n <= 10000) return { id: '2000-10000', forks: 500, sharded: true, time: '2 to 4 hr, sharded' };
+    return { id: '10000+', forks: 500, sharded: true, time: '4+ hr, sharded' };
   }
 
   function updateScaling() {

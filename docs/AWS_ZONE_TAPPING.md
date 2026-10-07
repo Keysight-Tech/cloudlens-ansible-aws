@@ -44,31 +44,39 @@ from the KVO 3.0.1 User Guide, Ch.10). Pick ONE:
 **A. Greenfield - bake it into the stack (recommended).** The KVO instance
 launches with the profile already attached, so every deployment is ready.
 
-- CloudFormation: deploy with `EnableZoneTapping=yes` (needs `CAPABILITY_NAMED_IAM`).
-- Terraform: set `enable_zone_tapping = "true"`.
+- From the deploy: `bash deploy/deploy-stack.sh --enable-zone-tapping` (env
+  `CLOUDLENS_ENABLE_ZONE_TAPPING=yes`) passes it to whichever engine runs
+  (`deploy-stack.sh:4352`, `:4424`). Needs IAM-create rights; default no.
+- CloudFormation directly: `EnableZoneTapping=yes` (needs `CAPABILITY_NAMED_IAM`).
+- Terraform directly: `enable_zone_tapping = true`.
+
+The instance profile does not replace the access key on the Cloud Config (see
+Credentials below); it is supplementary.
 
 Leave it off and the base suite still deploys with **no IAM required** - important
 for SEs whose principal cannot create IAM roles.
 
 ### Collector security group ports (the documented set)
 
-The collector security group(s) you pass (`--mgmt-sg` etc.) must allow, inbound:
+The collector security group(s) you pass (`--mgmt-sg` / `--ingress-sg` /
+`--egress-sg` to the script, `--collector-mgmt-sg` / `--collector-ingress-sg` /
+`--collector-egress-sg` to the deploy) must allow, inbound:
 
-- **mgmt: TCP 443 from the control plane** (CLMS/KVO drive the collector; KVO
-  UG, AWS Cloud Configs) plus **TCP 22 and 9022 from the admin** for
-  troubleshooting SSH.
-- **ingress: UDP 4789 from the sources** (AWS VPC Traffic Mirroring is VXLAN;
-  the mirrored traffic itself).
-- **egress: GRE (IP protocol 47) or UDP 4789**, matching `--tool-encap`, for
-  the tunnel toward the tool.
+- **mgmt: TCP 443 from the VPC CIDR** (the control plane, CLMS and KVO, is
+  in-VPC) plus **TCP 22 and 9022 from the VPC CIDR and from the admin CIDR**.
+  KVO configures the collector over SSH (the KVO guide lists 22 and 9022
+  inbound from KVO/vController on the vHub). With 22/9022 open to the admin
+  only, the collector boots, registers its mirror target and cuts zero sessions
+  for ever with no alert anywhere (seen live 2026-09-28).
+- **ingress: UDP 4789 and GRE (IP protocol 47) from the VPC CIDR** (AWS VPC
+  Traffic Mirroring is VXLAN; the mirrored traffic itself).
+- **egress: GRE (IP protocol 47) and UDP 4789 from the VPC CIDR**, the tunnel
+  return path toward the tool, whichever `--tool-encap` is in use.
 
-`ensure_collector_sgs` in deploy-stack.sh creates exactly this set. Field note:
-TCP 8443 was once suspected in a zero-sessions case, but no Keysight document
-requires it for the collector (a KB scan of all 108 indexed documents finds
-8443 only in the physical Vision E10S/E40 guides), and both proven causes of
-that symptom were elsewhere: an incomplete cloud config (no availabilityZones),
-and a presence reused without its key so the collector never relaunched. Chase
-those first, not a firewall.
+`ensure_collector_sgs` in deploy-stack.sh creates exactly this set
+(`deploy-stack.sh:5353-5373`); all three supplied means nothing is created and
+no `ec2:CreateSecurityGroup` right is needed, and `--no-create-collector-sgs`
+makes a missing one an input error.
 
 **B. Brownfield - KVO already running.** Attach the profile in place:
 
@@ -80,9 +88,41 @@ scripts/kvo_enable_zonetap_iam.sh --instance-name <stack>-kvo --region <region>
 Idempotent. After it runs, reboot KVO (or restart its services) so the app picks
 up the instance-role credentials.
 
-**C. No IAM at all - access keys.** Create a user with the same policy, generate
-keys, and pass them to the mirroring script with `--aws-access-key/--aws-secret-key`.
-Simpler, but long-lived keys; A or B is preferred.
+**C. Access keys (required by the Cloud Config in practice).** Create a user
+with the same policy, generate keys, and pass them to the deploy with
+`--mirror-access-key` / `--mirror-secret-key` (env `CLOUDLENS_MIRROR_ACCESS_KEY`
+/ `CLOUDLENS_MIRROR_SECRET_KEY`), or to the mirroring script with
+`--aws-access-key` / `--aws-secret-key`. Long-lived keys, but `createAwsPresence`
+rejects an empty `accessKeyId`, so A or B alone does not satisfy KVO (see
+Credentials below).
+
+## From the deploy
+
+`deploy/deploy-stack.sh` runs this rail as the `mirror` phase (`--only mirror`
+or `--from mirror` reruns it). Turn it on with `--with-mirror`, or with
+`--tapping mirror` / `--tapping both`, which picks sensors and mirroring from
+one answer; it needs KVO (`--with-kvo`). KVO's AWS credentials come from
+`--mirror-access-key` / `--mirror-secret-key`. The deploy resolves the
+selection, runs `kvo_aws_mirror.py` with
+`--selection inventory/generated.workloads.json`, points the tool at the vPB
+ingress IP (`--tool-remote-ip`, L2GRE, key `CLOUDLENS_GRE_KEY`, default 64) and
+verifies the collector launches.
+
+For an existing VPC name the collector placement: `--collector-zone AZ`,
+`--collector-mgmt-subnet`, `--collector-ingress-subnet`,
+`--collector-egress-subnet` (three distinct subnets in one AZ), optionally
+`--collector-mgmt-sg` / `--collector-ingress-sg` / `--collector-egress-sg` (all
+three supplied means none is created), `--no-create-collector-sgs`, and
+`--collector-max N` for the fleet ceiling. To tap VPCs other than the CloudLens
+one, repeat `--source-vpc-id ID` or
+`--source-vpc vpc:az:mgmt:ingress:egress[:sgs]`, or let `--discover` (with
+`--discover-regions`, `--discover-accounts organization`) find them from the
+discovery tag (`docs/DISCOVERY.md`).
+
+The `prove` phase (`--from prove`) then counts the VPC's mirror sessions,
+generates traffic on the tapped workloads and measures what arrives at the
+capture host by GRE key (collector key 64, vPB key 200); it changes no
+configuration and retries for up to ten minutes while the collector registers.
 
 ## Configure the mirroring (any SE runs this)
 
@@ -133,60 +173,74 @@ empty` is server-side input validation, so KVO's instance profile (options A/B)
 does NOT satisfy the Cloud Config on its own. Until a live run proves
 otherwise, treat A/B as supplementary and the access key as required.
 
-The script runs the three-object KVO chain (AWS presence -> Aws Cloud Config ->
-Cloud Collection), each in a committed change request.
+The script runs the whole fabric, each step a committed change request and
+idempotent on name (`scripts/kvo_aws_mirror.py:663-1070`):
 
-## REQUIRED MANUAL STEP: re-create the Cloud Collection
+0. Stuck-fabric guard: a config that exists with no collector ASG is incomplete
+   and is rebuilt; a presence reused without its key never relaunches the
+   collector, so the presence is recreated WITH the key. `--force-rebuild`
+   tears the whole fabric down first (needs the access keys).
+1. AWS presence.
+2. AWS cloud config (what provisions and starts the AWS-side work;
+   `availabilityZones` must be set or KVO launches no collector).
+3. Cloud collection from `--selection` or `--source-tag`.
+4. Remote tool (`--tool-remote-ip`, `--tool-encap`).
+5. Monitoring policy collection -> tool.
+6. Optional packet-capture receiver (`--tool-receiver-ip`).
+7. Verify: wait up to `--verify-timeout` (300 s) for the collector ASG, then up
+   to 15 minutes for the collector's mirror target, then count the sessions. No
+   ASG is a loud failure (exit 12, with the `--force-rebuild` fix printed). Zero
+   sessions after the target exists triggers the automated nudge described in
+   the next section.
 
-**The automation builds the whole fabric, but KVO does not cut the mirror
-sessions until the Cloud Collection is committed again. This step is yours, and
-without it you will sit at zero sessions with nothing reporting an error.**
+Before the cloud config is committed (the presence, idempotent on name, is
+created first) the preflight validates the collector subnets (exist, in the
+tapped VPC, one AZ, pairwise distinct) and reports Nitro eligibility per source,
+AZ coverage (interfaces in an AZ with no collector are never tapped) and licence
+demand per tapped interface, and derives `--max-size` from the interface count
+(10 per Service VM, plus one spare).
 
-Confirmed on four separate stacks. Every one of them ended with a complete,
-correct fabric - AWS presence, Cloud Config, Cloud Collection, collector running
-and registered, tool, monitoring policy, zero open change requests, no alerts -
-and **zero traffic mirror sessions**, until a human re-committed the collection.
+## Why sessions can sit at zero, and what the script does about it
 
-### Do it in this order
+Every early stack ended with a complete, correct fabric (presence, Cloud Config,
+Cloud Collection, collector running and registered, tool, monitoring policy,
+zero open change requests, no alerts) and zero traffic mirror sessions until a
+human re-committed the collection. The ordering is the cause: KVO cuts sessions
+only when it acts on the collection AFTER the collector has registered its
+mirror target, and the collection was committed before that.
 
-1. **Wait for the collector to register its mirror target.** Before that exists
-   there is nothing for a session to attach to, and re-committing early achieves
-   nothing:
+Since 2026-09-28 the script does the nudge itself
+(`scripts/kvo_aws_mirror.py:1000-1050`). After the collector registers its
+target (the first AWS write it makes; allow 10 to 15 minutes, the vpb-svm image
+is heavy), if `describe-traffic-mirror-sessions` still shows none for the VPC,
+it deletes the monitoring policy, then the collection, then recreates the
+collection and the policy, each in its own committed change request that leaves
+KVO in a valid state, and waits up to 240 s for the sessions. Expect one session
+per tapped source ENI about a minute later.
 
-   ```bash
-   aws ec2 describe-traffic-mirror-targets --region <region>
-   ```
+### If it still shows zero
 
-   The collector boots from a heavy image; allow 10 to 15 minutes.
+Rerun the mirror phase (`--from mirror`): it repeats the recreate of the
+collection and the policy. The KVO UI route is the last resort: open
+Visibility Fabric > Cloud Collections > the collection (default
+`aws-mirror-collect`), remove the workload selector and add it back, and commit
+that as ONE change request. Do not clear the selector in one commit and restore
+it in another: the collection is empty in between, the policy that references
+it fails validation with "Monitoring policy ... has an empty cloud collection",
+the change request sticks at InProgress and KVO serialises every later commit
+behind it. Recovery is discarding that change request. The script avoids this
+by recreating the objects rather than editing the selector.
 
-2. **In KVO:** Cloud Fabric > Cloud Collections > select the collection (default
-   `aws-mirror-collect`) > re-create or re-edit it > **commit that ONE change
-   request**.
+Two other causes of zero sessions produce the same quiet symptom and are checked
+by the script first: a cloud config with no availability zones (KVO launches no
+collector, so no ASG ever appears), and a presence reused without its key (the
+collector never relaunches). Both end in
+`--force-rebuild --aws-access-key <AK> --aws-secret-key <SK>`.
 
-3. **Sessions appear about a minute later:**
-
-   ```bash
-   aws ec2 describe-traffic-mirror-sessions --region <region>
-   ```
-
-   Expect one session per tagged source ENI.
-
-### Do it as a SINGLE change request
-
-Clearing the workload selector in one commit and restoring it in another leaves
-the collection empty in between. The monitoring policy that references it then
-fails validation with *"Monitoring policy ... has an empty cloud collection"*,
-the change request sticks at **InProgress**, and KVO serialises every later
-commit behind it. That wedges the deployment and needs the change request
-discarded to recover. Make the edit and commit once.
-
-### Why this is not automated
-
-It was, briefly, and it was reverted. Automating the clear-then-restore produced
-exactly the wedge described above on a live deployment. Doing it safely requires
-one change request carrying both edits, which the API path did not reliably
-produce. Until that is solved, this stays a deliberate manual step rather than an
-automation that can break a working stack.
+The deploy's `prove` phase counts the sessions before measuring. A count of
+zero means the recreate in the mirror phase has not taken yet: rerun it with
+`--from mirror`, which repeats the recreate, rather than editing the collection
+by hand.
 
 ## Verify (do not trust "done" - check AWS)
 
@@ -199,21 +253,30 @@ aws ec2 describe-traffic-mirror-targets  --region <region>
 and in KVO: **Visibility Fabric > Cloud Configs** shows the Aws config, and the
 Global Dashboard shows the collectors. A session per tagged source ENI = working.
 
-## If you are sending through the vPB: the same re-commit fixes it
+## If you are sending through the vPB: the egress tool must be REMOTE
 
-**Confirmed on a live stack: re-committing the Cloud Collection also makes the
-vPB forward traffic.** One action fixes both symptoms. You do not need to
-re-create the C2DL, rebuild the monitoring policy, or configure anything on the
-vPB by hand.
-
-Before the re-commit the vPB receives everything and forwards nothing:
+A vPB that receives everything and forwards nothing looks like this:
 
 ```bash
 sudo vpb -c 'show traffic-rule-packet-counters'
 TR1 | 9998 | Inspected 1,756,817 | Passed 0 | Denied 1,756,817
 ```
 
-After it, measured under generated load:
+The cause was the egress tool. An earlier release created it as type LOCAL,
+which is the bare port: the vPB put raw frames onto an AWS subnet and AWS
+dropped every one not addressed to an ENI, so Inspected climbed into the
+millions while Passed stayed at 0. `scripts/vpb_wire_path.py` now creates the
+tool as REMOTE with `reachableFrom DEVICE_CONFIG` and binds eth2 with its ip,
+netmask and gateway, so the vPB ORIGINATES an L2GRE tunnel out of eth2 to the
+tool, which AWS routes normally (`vpb_wire_path.py:366-376`). Proven live:
+Passed went 0 to 145,037 and the tool captured the tapped payload with the vPB
+egress IP as the outer source. `--wire-vpb-path` in the deploy runs this
+script. A pre-existing LOCAL tool is detected and the three-commit conversion
+is printed (policy to the capture tool only, delete and recreate the tool as
+REMOTE and rebind eth2, add it back to the policy); the script never deletes a
+tool a policy still references.
+
+After the fix, under generated load:
 
 ```bash
 sudo vpb -c 'show traffic-rule-packet-counters'
@@ -225,21 +288,9 @@ eth1   RX 33,237 pkts / 36.3 MB    mirrored traffic arriving
 eth2   TX 16,542 pkts / 17.4 MB    traffic leaving toward the tool
 ```
 
-`Passed` climbing and `eth2 TX` climbing together mean traffic is flowing through
-the broker end to end.
-
-**Why it works:** ordering. The C2DL, the tools and the monitoring policy are all
-created before the Cloud Collection has live sources and before the collector has
-registered, so KVO computes the device rule against an incomplete picture.
-Re-committing the collection makes KVO recompute everything downstream, the
-device rule included.
-
-**Two things worth knowing:**
-
-The rule still reads `L2 Filter: VLAN ID: 1` while passing traffic, so that
-filter is not itself a fault, and roughly half the packets are still denied in a
-near-exact 50/50 split. That is worth understanding but it does not block
-anything: traffic flows.
+`Passed` climbing and `eth2 TX` climbing together mean traffic is flowing
+through the broker end to end. The rule still reads `L2 Filter: VLAN ID: 1`
+while passing traffic, so that filter is not itself a fault.
 
 The KVO alert *"Tunnel of type GRE: Remote destination not reachable"* is a
 **false alarm**. The security group permits GRE but not ICMP, so KVO's
@@ -264,6 +315,6 @@ Counters tell you traffic is denied. Only `show traffic-rule-status` tells you w
 | Where capture happens | inside the VM | AWS mirrors the ENI |
 | Install per VM | yes (docker/podman/Windows svc) | none |
 | Needs KVO AWS IAM | no | yes (this doc) |
-| Selection | `cloudlens=yes` tag | `cloudlens=yes` tag |
+| Selection | the one selection in `customer_input.yaml` (ANDed tags, instance ids, exclusions, or an external inventory), default tag `cloudlens=yes` | the same selection, resolved per VPC by `scripts/resolve_workloads.py` and Nitro-filtered; `--source-tag` is the hand-run fallback |
 
 Both register under the same CLM/KVO project, so you can mix them per workload.

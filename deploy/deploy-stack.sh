@@ -862,7 +862,7 @@ ask_yn() {
 # Short, STABLE names, not numbers: numbers shift every time a phase is added
 # and this script has to survive years of that.
 #   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
-#   vpb=14  path=15  mirror=16
+#   eks=13b  vpb=14  mirror=15  path=16 (and 16b)  prove=17
 # ---------------------------------------------------------------------
 PHASE_ORDER="stack wait bootstrap key license adopt sensors eks vpb mirror path prove"
 
@@ -1937,7 +1937,8 @@ Re-running a deploy (resume):
                             deletes nothing.
   --from PHASE              Start at PHASE and run everything after it.
   --only PHASE              Run exactly one phase.
-                            PHASE is one of the stable short names:
+                            PHASE is one of the stable short names, listed
+                            here in the order they run:
                               stack    deploy the stack            (phase 6)
                               wait     wait for the vController    (phase 7)
                               bootstrap vPB bootstrap over SSH     (phase 8)
@@ -1945,9 +1946,10 @@ Re-running a deploy (resume):
                               license  KVO licensing               (phase 11)
                               adopt    adopt CLMS + Cloud Config   (phase 12)
                               sensors  sensor install              (phase 13)
+                              eks      EKS pod tapping             (phase 13b)
                               vpb      adopt the vPB into KVO      (phase 14)
-                              path     vPB traffic path            (phase 15)
-                              mirror   AWS mirror session          (phase 16)
+                              mirror   AWS mirror session          (phase 15)
+                              path     vPB traffic path            (phases 16 + 16b)
                               prove    generate traffic + measure  (phase 17)
                             Names, not numbers: numbers shift when phases are
                             added, these do not.
@@ -2002,13 +2004,25 @@ Test workloads (optional, deployed into the stack's own subnet):
                             AmazonSSMManagedInstanceCore. Without it the VM
                             deploys but the sensor step cannot reach it.
   --test-vms LIST           Comma list of throwaway VMs to deploy alongside the
-                            stack. Each entry takes an optional :N count
-                            (1-10): "ubuntu:3,rhel:2,windows" = 3 Ubuntu,
-                            2 RHEL, 1 Windows. Original single-name form
-                            stack so you can prove the sensor path immediately:
+                            stack, so you can prove the sensor path at once.
+                            Each entry takes an optional :N count (1-10):
+                            "ubuntu:3,rhel:2,windows" = 3 Ubuntu, 2 RHEL,
+                            1 Windows. The single-name form still works:
                             ubuntu, rhel, windows, all, or none (default none).
-                            They are tagged with the discovery tag below, so the
-                            sensor step finds them with no extra work.
+                            They are tagged with the discovery tag (the next
+                            two options), so the sensor step finds them with
+                            no extra work.
+  --discovery-tag-key KEY   Tag key that marks the workloads to tap.
+                            Default cloudlens ($CLOUDLENS_DISCOVERY_TAG_KEY).
+  --discovery-tag-value VAL Tag value that goes with it. Default yes
+                            ($CLOUDLENS_DISCOVERY_TAG_VALUE). Running instances
+                            carrying KEY=VALUE are what the sensor step
+                            installs on, and what the mirror step selects when
+                            customer_input.yaml carries no aws filters of its
+                            own. Either flag typed on the command line replaces
+                            the tag filters an existing customer_input.yaml
+                            holds, and skips the "tag that marks them" question
+                            an interactive run asks.
 
 Deploy into existing infrastructure (brownfield):
   --existing-vpc-id ID      Deploy into a VPC you already own (needs subnet).
@@ -2097,9 +2111,9 @@ Toggles:
   --no-rollback             Force keep-partial behavior (default).
   -h, --help                Show this help
 
-Post-deploy chain (phases 10-16). Every one of these is prompted for when it
-is not given, and every prompt falls back to the default shown when there is
-no terminal to ask on, so curl | bash stays fully non-interactive:
+Post-deploy chain (phases 8 and 10 to 17). Every one of these is prompted for
+when it is not given, and every prompt falls back to the default shown when
+there is no terminal to ask on, so curl | bash stays fully non-interactive:
   --sensor-mode MODE        Which project key the sensors register with:
                               standalone  the key minted directly on the
                                           vController in phase 9 (default)
@@ -2216,7 +2230,8 @@ Example (into existing private infra, no public IPs):
                 --existing-subnet-id subnet-0def456 --existing-sg-id sg-0aaa111 \
                 --no-public-ip --key-name my-ec2-key
 
-What it does (phases):
+What it does (phases, numbered as the run's own banners number them; the
+name in brackets is the --from / --only name):
   1. Banner + environment detection (CloudShell vs local)
   2. Pre-flight checks (aws CLI, caller identity)
   3. Customer input (region, stack name, key pair, toggles)
@@ -2224,24 +2239,33 @@ What it does (phases):
      status table and an offer to continue from the first unfinished phase
      (--resume / --fresh / --from / --only)
   4. Marketplace AMI subscription check (vController + KVO + vPB)
+ 4b. Elastic IP headroom (only when the stack is about to be created)
   5. Infra engine selection (CloudFormation or Terraform)
-  6. Deploy the stack (vController + optional KVO + optional vPB)
-  7. Wait for vController to initialize (~15 minutes)
-  8. vPB post-deploy bootstrap over SSH (--bootstrap-vpb)
-  9. vController project key + working UI login
+  6. Deploy the stack (vController + optional KVO + optional vPB) [stack]
+  7. Wait for vController to initialize (~15 minutes) [wait]
+  8. vPB post-deploy bootstrap over SSH (--bootstrap-vpb) [bootstrap]
+  9. vController project key + working UI login [key]
  10. Sensor mode: standalone, KVO-managed, or none (--sensor-mode)
- 11. KVO product licensing (KVO mode only, --kvo-codes)
+ 11. KVO product licensing (KVO mode only, --kvo-codes) [license]
  12. Adopt the vController into KVO + create the Cloud Config, which
      provisions the project key KVO-managed sensors use (--cloud-config)
+     [adopt]
  13. Sensor chain (optional, runs quickstart.sh with the key phase 10 chose)
- 14. Adopt the vPB into KVO (--adopt-vpb)
- 15. vPB traffic path + monitoring policy (--wire-vpb-path)
- 16. AWS mirror session (--with-mirror, off by default)
- 17. Final summary written to cloudlens-deploy-summary.txt
+     [sensors]
+13b. EKS pod tapping (--with-eks, --eks-cluster or --eks-sample) [eks]
+ 14. Adopt the vPB into KVO (--adopt-vpb) [vpb]
+ 15. AWS mirror session (--with-mirror, off by default) [mirror]
+ 16. vPB traffic path + monitoring policy (--wire-vpb-path) [path]
+16b. vPB paths for the other areas (--vpb-rails), part of the path phase
+ 17. Prove the traffic path end to end: generate traffic and measure what
+     reaches the tool [prove]
+ 18. Final summary written to cloudlens-deploy-summary.txt
 
 Phases 11 and 12 deliberately run BEFORE the sensors: in KVO-managed mode the
 project key does not exist until the Cloud Config provisions it, and a sensor
-installed with the phase 9 key registers to the wrong project.
+installed with the phase 9 key registers to the wrong project. The mirror
+phase runs BEFORE the vPB traffic path: the path attaches its Cloud to Device
+Link to the AWS cloud config that the mirror phase creates.
 
 Any phase from 6 onwards is skipped on a re-run when the real system says it is
 already done. Re-run this script as often as you like: it picks up where it
@@ -7424,28 +7448,47 @@ if [[ "$DEPLOY_VPB" == "true" || "$WITH_MIRROR" == "true" ]] \
   PROVE_SCRIPT="$(find_repo_script scripts/prove_traffic.sh || true)"
 
   # ORDERING, and it is not optional: AWS cuts no mirror session until the Cloud
-  # Collection is (re)committed in KVO AFTER the collector has registered its
-  # mirror target. Everything upstream can be perfect and the session count still
-  # be zero. Proving before that step has happened measures a path that does not
-  # exist yet and reports a working deployment as broken, so ask AWS how many
-  # sessions exist and say plainly what to do when the answer is none.
+  # Collection is committed in KVO AFTER the collector has registered its mirror
+  # target. The mirror phase does that itself: once the collector registers the
+  # target and no session follows, it recreates the collection and the policy
+  # and waits for the sessions. Everything upstream can still be perfect with a
+  # session count of zero here (the collector was still booting when the mirror
+  # phase ended, or the recreate produced nothing). Proving against zero sessions
+  # measures a path that does not exist yet and reports a working deployment as
+  # broken, so ask AWS how many sessions exist and say plainly what to do when
+  # the answer is none.
   if [[ "$DRY_RUN" != "true" ]]; then
     SESSION_COUNT="$(vpc_mirror_session_count)"
     if [[ "${SESSION_COUNT:-0}" == "0" ]]; then
       warn "This VPC has 0 traffic mirror sessions, so nothing is being copied yet."
       echo
-      echo "  This is the ONE step the automation cannot do for you, and it is"
-      echo "  expected at this point in a fresh deploy. Do it now:"
+      echo "  The deploy cuts these itself: the mirror phase waits for the collector"
+      echo "  to register its mirror target, and when no session follows it recreates"
+      echo "  the collection and the monitoring policy in KVO and waits for them."
+      echo "  Zero sessions here means the collector was still booting when the"
+      echo "  mirror phase ended (10-15 min for the vpb-svm image), or that the"
+      echo "  automated recreate did not produce any."
       echo
+      echo "  Check the mirror target first; nothing can attach before it exists:"
+      echo "    aws ec2 describe-traffic-mirror-targets --region ${REGION}"
+      echo
+      echo "  No target yet: wait for the collector, then re-run the mirror phase"
+      echo "  (--only mirror; it asks for the mirror access key again). It repeats"
+      echo "  the automated recreate."
+      echo
+      echo "  Target present but still 0 sessions: recreate the collection by hand."
       echo "    1. open KVO:  https://${KVO_PUBLIC_IP:-<kvo>}"
-      echo "    2. Cloud Configs > ${CLOUD_CONFIG_NAME:-<your cloud config>} > Cloud Collections"
-      echo "    3. edit the collection and re-commit it as ONE change request"
+      echo "    2. Visibility Fabric > Cloud Collections > aws-mirror-collect"
+      echo "    3. remove the workload selector and add it back, then commit that"
+      echo "       as ONE change request that ends in a valid state. A clear in one"
+      echo "       commit and a restore in another leaves the collection empty in"
+      echo "       between, and the policy that references it then fails validation."
       echo
       echo "  AWS cuts one session per tagged workload within about a minute."
       echo "  Watch for them with:"
       echo "    aws ec2 describe-traffic-mirror-sessions --region ${REGION} --query 'length(TrafficMirrorSessions)'"
       echo
-      if ask_yn "  Re-commit it now, then press y to run the proof [y/N]: " n; then
+      if ask_yn "  Sessions present now? Press y to run the proof [y/N]: " n; then
         SESSION_COUNT="$(vpc_mirror_session_count)"
         ok "This VPC now has ${SESSION_COUNT} mirror session(s)."
       else

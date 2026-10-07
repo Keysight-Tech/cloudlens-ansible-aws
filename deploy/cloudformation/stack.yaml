@@ -337,7 +337,8 @@ Parameters:
       (for example sg-0abc123). Blank = the template creates one scoped to your
       Admin source CIDR. Supply your own when your org requires pre-approved
       security groups. You are responsible for opening SSH (22), vPB SSH (9022),
-      HTTPS (443), and VXLAN (4789, 10800-10801).
+      HTTPS (443), KVO (7443), GRE (IP protocol 47) and VXLAN (UDP 4789,
+      UDP 10800-10801) from the VPC and your admin CIDR.
   VpcCidr:
     Type: String
     Default: 10.99.0.0/16

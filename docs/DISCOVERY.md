@@ -24,7 +24,12 @@ account in scope and each region:
    INCOMPLETE with what to create. It is never guessed into a broken fabric.
 3. `inventory/discovered.json`, a table on the terminal, and one replayable
    profile per account and region (`deploy-profile-discovered-<account>-<region>.env`,
-   mode 600, allowlisted `CLOUDLENS_*` keys only).
+   mode 600, allowlisted keys only: `CLOUDLENS_REGION`,
+   `CLOUDLENS_DISCOVERY_TAG_KEY`, `CLOUDLENS_DISCOVERY_TAG_VALUE`,
+   `CLOUDLENS_SOURCE_VPCS`). Replay one with
+   `bash deploy/deploy-stack.sh --profile deploy-profile-discovered-<account>-<region>.env`;
+   every question the profile answers is skipped, and the rest are asked as
+   usual.
 
 ## From the deploy
 
@@ -49,8 +54,14 @@ and the deploy continues with the rest.
 
 ```bash
 python3 scripts/discover_workloads.py --regions us-east-1,us-east-2 --tag cloudlens=yes \
-    --accounts organization --out inventory/discovered.json --profile-dir .
+    --accounts organization --role OrganizationAccountAccessRole \
+    --out inventory/discovered.json --profile-dir .
 ```
+
+Other flags: `--subnet-role-tag KEY` changes the subnet tag that names the
+collector role (default `cloudlens:role`); `--print-specs` prints one complete
+`--source-vpc` spec per line on stdout and nothing else, for piping into
+another tool.
 
 Exit codes: 0 at least one complete spec, 3 nothing tappable, 2 bad input,
 4 AWS unreachable for the calling identity.
@@ -62,9 +73,12 @@ Exit codes: 0 at least one complete spec, 3 nothing tappable, 2 bad input,
   delegated administrator) and `sts:AssumeRole` on the role in each member
   account. A refused ListAccounts scans this account only and says so; an
   account whose role cannot be assumed is reported, not skipped silently.
-- KVO still needs its own credentials per account for the mirror phase
-  (an instance role is not enough for the AWS presence). Discovery finds the
-  VPCs; it does not create the presence.
+- KVO still needs its own credentials per account for the mirror phase (an
+  instance role is not enough: `createAwsPresence` fails with "accessKeyId
+  cannot be empty"). Pass them to the deploy as `--mirror-access-key` /
+  `--mirror-secret-key` (env `CLOUDLENS_MIRROR_ACCESS_KEY` /
+  `CLOUDLENS_MIRROR_SECRET_KEY`). Discovery finds the VPCs; it does not
+  create the presence.
 
 ## Test
 
