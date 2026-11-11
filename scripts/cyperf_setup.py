@@ -514,6 +514,16 @@ def main():
         return 0
 
     okay, st = start_test(api, sid)
+    # Right after the agents' interfaces change (a fresh boot, a template
+    # update) the controller can refuse the configuration with "could not find
+    # NETMASK on test interface": the agent has not reported its address yet.
+    # Seen live; the same start succeeded a minute later.
+    tries = 0
+    while not okay and tries < 3 and "NETMASK" in str(st.get("testDetails", "")):
+        tries += 1
+        log("an agent's test interface is not ready yet; retrying the start in 60 s (%s of 3)" % tries)
+        time.sleep(60)
+        okay, st = start_test(api, sid)
     result["test"] = str(st.get("status", "unknown"))
     write_result(args.result_file, result)
     if not okay:
