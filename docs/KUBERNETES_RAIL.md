@@ -8,7 +8,7 @@ existing EKS cluster (`--eks-cluster`) with `--vpb-rails mirror,k8s`: 3,929
 packets passed on the k8s vPB with pod-to-pod HTTP inside its tunnel while
 the mirror rail delivered 5,516 GRE packets at the tool. Both proofs ran
 KVO (Keysight Vision Orchestrator) 3.1.0, the same release the stack now
-launches from the AWS Marketplace (image `kvo-3.1.0-prod`, resolved by name in
+launches from the AWS Marketplace (image `kvo-3.1.1-prod`, resolved by name in
 `deploy/deploy-stack.sh` and pinned per region in the `stack.yaml`
 RegionMap). This page is the repeatable chain and the two product rules
 that decide the design.

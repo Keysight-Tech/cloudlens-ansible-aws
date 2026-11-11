@@ -34,7 +34,7 @@ The stack pins the CloudLens Marketplace AMIs. A one-time Marketplace subscripti
 | Component | AMI | Instance type |
 |---|---|---|
 | vController (CLMS) | `ami-0b15df4defb740754` | `t3.xlarge` |
-| KVO | `ami-04b79ded0ffdaaed3` | `c5.2xlarge` (enforced) |
+| KVO | `ami-05fac835d2aa4e81a` | `c5.2xlarge` (enforced) |
 | vPB | `ami-0e78d35898708162b` | `t3.xlarge` (enforced) |
 | Collector SVM (v6.14.1) | `ami-03547c03fd3babb82` | reference, not deployed by this stack |
 

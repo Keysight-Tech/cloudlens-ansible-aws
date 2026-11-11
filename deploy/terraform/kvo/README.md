@@ -33,7 +33,7 @@ The KVO Marketplace AMI is qualified on **c5.2xlarge only**. The `instance_type`
 | `admin_username` | `cloudlens` | OS admin user (for the ssh_command output) |
 | `key_name` | `""` | Existing EC2 key pair name |
 | `public_key` | `""` | SSH public key to import as a new key pair |
-| `ami_id` | `ami-04b79ded0ffdaaed3` | KVO Marketplace AMI |
+| `ami_id` | `ami-05fac835d2aa4e81a` | KVO Marketplace AMI |
 | `instance_type` | `c5.2xlarge` | Fixed: c5.2xlarge only |
 | `root_volume_size` | `128` | Root EBS volume size in GB |
 | `existing_vpc_id` | `""` | Existing VPC to deploy into (blank creates a new VPC) |
@@ -64,8 +64,8 @@ Subscribe once in the AWS Marketplace console before applying:
 ```bash
 #   https://console.aws.amazon.com/marketplace
 # The AMI ID used by this module (us-east-1):
-#   ami-04b79ded0ffdaaed3  (Keysight Vision Orchestrator)
-aws ec2 describe-images --image-ids ami-04b79ded0ffdaaed3 --region us-east-1
+#   ami-05fac835d2aa4e81a  (Keysight Vision Orchestrator)
+aws ec2 describe-images --image-ids ami-05fac835d2aa4e81a --region us-east-1
 ```
 
 Without an active subscription, `terraform apply` fails with an OptInRequired error at instance launch.

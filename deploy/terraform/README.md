@@ -53,7 +53,7 @@ the modules enforce this with `validation` blocks:
 | Component            | AMI (us-east-1)        | Instance type   |
 |----------------------|------------------------|-----------------|
 | vController (CLMS)   | ami-0b15df4defb740754  | t3.xlarge       |
-| KVO                  | ami-04b79ded0ffdaaed3  | c5.2xlarge only |
+| KVO                  | ami-05fac835d2aa4e81a  | c5.2xlarge only |
 | vPB                  | ami-0e78d35898708162b  | t3.xlarge only  |
 
 Each AMI requires an active AWS Marketplace subscription before launch.

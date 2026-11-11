@@ -458,7 +458,7 @@ Default us-east-1 AMIs baked into the stack:
 | Component | Instance type | us-east-1 AMI |
 |---|---|---|
 | vController (CLMS) | `t3.xlarge` | `ami-0b15df4defb740754` |
-| KVO (Keysight Vision Orchestrator) | `c5.2xlarge` | `ami-04b79ded0ffdaaed3` |
+| KVO (Keysight Vision Orchestrator) | `c5.2xlarge` | `ami-05fac835d2aa4e81a` |
 | vPB (Virtual Packet Broker) | `t3.xlarge` | `ami-0e78d35898708162b` |
 
 The collector Service VM has no fixed id: KVO launches it at run time from the
@@ -469,7 +469,7 @@ To find the equivalent AMI in another region after you subscribe:
 
 ```bash
 for n in CloudLens-vController-Virtual-Appliance-AWS-6.14.1-45-prod-m4ufj3qrd4shm \
-         kvo-3.1.0-prod-ol4ektflnyxn2 \
+         kvo-3.1.1-prod-ol4ektflnyxn2 \
          cloudlens-vpb-kvo-3.16.0-4-prod-ltzj3zafoveok; do
   aws ec2 describe-images --region <region> --owners 679593333241 \
     --filters "Name=name,Values=$n" --query "Images[0].[ImageId,Name]" --output text

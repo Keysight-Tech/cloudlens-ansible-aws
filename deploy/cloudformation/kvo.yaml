@@ -147,29 +147,29 @@ Parameters:
 Mappings:
   RegionMap:
     us-east-1:
-      Ami: ami-04b79ded0ffdaaed3
+      Ami: ami-05fac835d2aa4e81a
     us-east-2:
-      Ami: ami-00873a9b9ce0ec400
+      Ami: ami-01c5d1ddbce99b5db
     us-west-1:
-      Ami: ami-06802cb9637470411
+      Ami: ami-02e49f29ae8e5f8d2
     us-west-2:
-      Ami: ami-037088eedf82321e2
+      Ami: ami-00470220e37076764
     eu-west-1:
-      Ami: ami-016fa7b59b7cce0b8
+      Ami: ami-02809c28d8d6eee5e
     eu-west-2:
-      Ami: ami-0027626e1eb699f6f
+      Ami: ami-0aa6ace66040c8b68
     eu-central-1:
-      Ami: ami-0d7101cbfbcc7fcc7
+      Ami: ami-0da753620f67c393b
     ca-central-1:
-      Ami: ami-00f2efd183f348051
+      Ami: ami-075d4063414878e60
     ap-southeast-1:
-      Ami: ami-0ecccddb9233068b8
+      Ami: ami-02e58f43028f6ebd1
     ap-southeast-2:
-      Ami: ami-0a76e577ebbc620aa
+      Ami: ami-06d523a7b34220770
     ap-northeast-1:
-      Ami: ami-0b5eba4dfc873149f
+      Ami: ami-019d6f22f24f55d94
     ap-south-1:
-      Ami: ami-015eb87c8865c5fe9
+      Ami: ami-094ef90c2f60d9189
 
 Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, ""]

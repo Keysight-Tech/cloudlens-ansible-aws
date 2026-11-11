@@ -42,7 +42,7 @@ CFT_TEMPLATE="${REPO_ROOT}/deploy/cloudformation/stack.yaml"
 
 # Marketplace AMIs (us-east-1) + instance sizes for the CloudLens appliances.
 AMI_VCONTROLLER="ami-0b15df4defb740754"; TYPE_VCONTROLLER="t3.xlarge"   # CLMS / vController
-AMI_KVO="ami-04b79ded0ffdaaed3";         TYPE_KVO="c5.2xlarge"          # KVO
+AMI_KVO="ami-05fac835d2aa4e81a";         TYPE_KVO="c5.2xlarge"          # KVO
 AMI_VPB="ami-0e78d35898708162b";         TYPE_VPB="t3.xlarge"           # vPB
 VPB_SSH_PORT=9022                                                        # vPB SSH is on 9022, not 22
 

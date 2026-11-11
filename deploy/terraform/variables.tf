@@ -61,7 +61,7 @@ variable "controller_type" {
 variable "kvo_ami" {
   description = "KVO Marketplace AMI id."
   type        = string
-  default     = "ami-04b79ded0ffdaaed3"
+  default     = "ami-05fac835d2aa4e81a"
 }
 variable "kvo_type" {
   type    = string

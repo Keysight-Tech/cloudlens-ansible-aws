@@ -40,7 +40,7 @@ Banners 1 to 5 (environment, pre-flight, customer input, Marketplace subscriptio
 | Product | Role | Instance type | us-east-1 AMI |
 |---|---|---|---|
 | **vController** (CloudLens Manager, CLMS) | Sensor management and registration; every sensor registers to it on first start | `t3.xlarge` (default) or `m5.xlarge` | `ami-0b15df4defb740754` |
-| **KVO** (Keysight Vision Orchestrator) | Orchestrator: licensing, Cloud Config, vPB control, AWS Zone Tapping | `c5.2xlarge` only | `ami-04b79ded0ffdaaed3` |
+| **KVO** (Keysight Vision Orchestrator) | Orchestrator: licensing, Cloud Config, vPB control, AWS Zone Tapping | `c5.2xlarge` only | `ami-05fac835d2aa4e81a` |
 | **vPB** (Virtual Packet Broker) | Filter, dedup, load balance; three network interfaces (mgmt, ingress, egress). CLI login is the EC2 key pair on port 9022, then `sudo vpb`; there is no password | `t3.xlarge` only | `ami-0e78d35898708162b` |
 | **Collector SVM** (Service VM) | AWS VPC Traffic Mirror target; KVO launches it into an Auto Scaling Group during the mirror phase | `t3.xlarge`: the default of `--collector-type` on `scripts/kvo_aws_mirror.py`, not a `deploy-stack.sh` flag | Resolved per region by name at run time (`cloudlens-vpb-svm-*`, newest), never a fixed id |
 
