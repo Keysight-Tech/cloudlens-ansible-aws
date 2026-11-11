@@ -63,6 +63,7 @@ class Api:
             self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_NONE
         self.token = None
+        self.transient_wait = 600
         self.user = None
         self.password = None
 
@@ -93,9 +94,22 @@ class Api:
             return status, text
 
     def call(self, method, path, body=None, ok=(200, 201, 202, 204), timeout=30):
-        status, out = self.raw(method, path, body=body, timeout=timeout)
-        if status == 401 and self.login():
+        # A controller that has just started issuing tokens still answers 502,
+        # 503 or 504 from the services behind its gateway for a few minutes
+        # (seen live on Azure: licensing returned 503 seconds after the first
+        # successful login). Those are "not yet", never "no": wait them out.
+        deadline = time.time() + self.transient_wait
+        said = False
+        while True:
             status, out = self.raw(method, path, body=body, timeout=timeout)
+            if status == 401 and self.login():
+                status, out = self.raw(method, path, body=body, timeout=timeout)
+            if status not in (0, 502, 503, 504) or time.time() >= deadline:
+                break
+            if not said:
+                log("%s is not serving yet (HTTP %s); waiting for the controller's services" % (path.split("?")[0], status))
+                said = True
+            time.sleep(10)
         if status not in ok:
             raise RuntimeError("%s %s -> HTTP %s: %s" % (method, path, status, str(out)[:400]))
         return out
