@@ -335,6 +335,36 @@ def build_session(api, name, client, server, app_name, mbps, duration):
     return sid
 
 
+def ensure_dut(api, sid, host):
+    """Route the test through a device under test (the relay VM): the client
+    agent connects to `host`, which forwards to the server agent. -> True when
+    the session was changed. An empty host switches the DUT off."""
+    path = "/api/v2/sessions/%s/config/config/NetworkProfiles/1/DUTNetworkSegment/1" % sid
+    cur = api.call("GET", path) or {}
+    want_active = bool(host)
+    if bool(cur.get("active")) == want_active and (not host or cur.get("host") == host):
+        return False
+    st = test_state(api, sid)
+    if str(st.get("status", "")).upper() in ("STARTED", "STARTING", "CONFIGURING"):
+        log("stopping the running test to change its path")
+        api.call("POST", "/api/v2/sessions/%s/test-run/operations/stop" % sid, body={})
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            if str(test_state(api, sid).get("status", "")).upper() in ("STOPPED", "ERROR", "READY", ""):
+                break
+            time.sleep(5)
+    if host:
+        api.call("PATCH", path, body={"active": True, "host": host})
+        # The relay only forwards: nothing on it answers CyPerf's own HTTP
+        # health probe, so that probe would mark a working path as down.
+        api.raw("PATCH", path + "/HTTPHealthCheck", body={"Enabled": False})
+        log("traffic path: client agent -> %s (relay) -> server agent" % host)
+    else:
+        api.call("PATCH", path, body={"active": False})
+        log("traffic path: client agent -> server agent, direct")
+    return True
+
+
 def start_test(api, sid, max_seconds=600):
     st = test_state(api, sid)
     if str(st.get("status", "")).upper() in ("STARTED", "STARTING", "CONFIGURING"):
@@ -379,6 +409,9 @@ def main():
     ap.add_argument("--duration", type=int, default=28800, help="test duration in seconds (default 8 hours)")
     ap.add_argument("--app", default="HTTP App", help="application from the CyPerf library (default 'HTTP App')")
     ap.add_argument("--session-name", default="CloudLens traffic")
+    ap.add_argument("--dut-host", default=None,
+                    help="send the traffic through this address (a relay VM that forwards to the server agent, "
+                         "so a sensor on it sees every packet). Empty string = direct. Omitted = leave as is")
     ap.add_argument("--license-qty", type=int, default=1, help="activation quantity (default 1: one per deployment)")
     ap.add_argument("--wait-api", type=int, default=1500, help="seconds to wait for the controller (default 25 min)")
     ap.add_argument("--wait-agents", type=int, default=600)
@@ -467,6 +500,8 @@ def main():
                             args.app, args.mbps, args.duration)
         log("session '%s' created: %s at %s Mbps for %s s" % (args.session_name, args.app, args.mbps, args.duration))
     result["session"] = sid
+    if args.dut_host is not None:
+        ensure_dut(api, sid, args.dut_host.strip())
 
     if not licensed:
         result["test"] = "not started (no licence)"

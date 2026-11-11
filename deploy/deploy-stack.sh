@@ -420,6 +420,12 @@ DEPLOY_CYPERF="${CLOUDLENS_DEPLOY_CYPERF:-}"
 CYPERF_LICENSE_CODE="${CLOUDLENS_CYPERF_LICENSE_CODE:-}"
 CYPERF_LICENSE_FILE="${CLOUDLENS_CYPERF_LICENSE_FILE:-}"
 CYPERF_AGENT_TYPE="${CLOUDLENS_CYPERF_AGENT_TYPE:-c5.2xlarge}"
+# Windows sensor. Blank = decided after the interview: ON when this run chains
+# sensors and asked for Windows test VMs, because someone who picked Windows
+# workloads and sensor tapping expects a sensor on them. The installer is
+# pulled by the Windows host from the vController itself (the static
+# agent-update path), never copied from this machine.
+WINDOWS_SENSOR="${CLOUDLENS_WINDOWS_SENSOR:-}"
 CYPERF_TEST_SUBNET="${CLOUDLENS_CYPERF_TEST_SUBNET:-}"
 CYPERF_MBPS="${CLOUDLENS_CYPERF_MBPS:-10}"
 # Marketplace product codes (stable across releases and regions). The newest
@@ -2116,6 +2122,14 @@ Toggles:
                             tee); a run can still exit with no done, so the
                             console treats process exit as terminal either
                             way.
+  --windows-sensor / --no-windows-sensor
+                            Install the CloudLens sensor on Windows hosts too.
+                            Default: yes when the run chains sensors and
+                            includes Windows test VMs (--test-vms windows:N),
+                            otherwise no. The Windows host downloads the
+                            installer from the vController itself; nothing is
+                            copied from this machine. Same as
+                            CLOUDLENS_WINDOWS_SENSOR=true.
   --with-cyperf / --no-cyperf
                             Add a Keysight CyPerf traffic generator: one
                             controller, one client agent and one server agent
@@ -2347,6 +2361,8 @@ while [[ $# -gt 0 ]]; do
     --eks-sensor-image) EKS_SENSOR_IMAGE="$2"; shift 2 ;;
     --eks-sensor-tar) EKS_SENSOR_TAR="$2"; shift 2 ;;
     --eks-pod-selector) EKS_POD_SELECTOR="$2"; shift 2 ;;
+    --windows-sensor) WINDOWS_SENSOR=true; shift ;;
+    --no-windows-sensor) WINDOWS_SENSOR=false; shift ;;
     --with-cyperf) DEPLOY_CYPERF=true; shift ;;
     --no-cyperf) DEPLOY_CYPERF=false; shift ;;
     --cyperf-license-file) DEPLOY_CYPERF=true; CYPERF_LICENSE_FILE="$2"; shift 2 ;;
@@ -3840,6 +3856,24 @@ if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" !=
     DEPLOY_CYPERF=false
   fi
 fi
+# Windows sensor: settle it here, once, and export it. Every later step
+# (the SSM bucket, the installer discovery, quickstart.sh) reads
+# CLOUDLENS_WINDOWS_SENSOR.
+if [[ -z "$WINDOWS_SENSOR" ]]; then
+  if [[ "$CHAIN_SENSORS" == "true" && "$TEST_WINDOWS" == "yes" ]]; then
+    WINDOWS_SENSOR=true
+  elif [[ "$CHAIN_SENSORS" == "true" && "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" \
+          && "$DRY_RUN" != "true" && "${WORKLOAD_CHOICE:-}" == "existing" ]]; then
+    echo
+    echo "Windows hosts among your tagged workloads: install the CloudLens sensor on"
+    echo "them too? The host downloads the installer from the vController itself."
+    if ask_yn "  Install the Windows sensor? [y/N]: " n; then WINDOWS_SENSOR=true; else WINDOWS_SENSOR=false; fi
+  else
+    WINDOWS_SENSOR=false
+  fi
+fi
+case "$(to_lower "$WINDOWS_SENSOR")" in true|yes|1) WINDOWS_SENSOR=true ;; *) WINDOWS_SENSOR=false ;; esac
+export CLOUDLENS_WINDOWS_SENSOR="$WINDOWS_SENSOR"
 [[ -z "$DEPLOY_CYPERF" ]] && DEPLOY_CYPERF=false
 if [[ "$DEPLOY_CYPERF" == "true" ]]; then
   case "$CYPERF_AGENT_TYPE" in c5.2xlarge|c5n.9xlarge) ;; *) fail "--cyperf-agent-type must be c5.2xlarge or c5n.9xlarge (the sizes Keysight supports on AWS), got: ${CYPERF_AGENT_TYPE}" ;; esac
@@ -3986,6 +4020,8 @@ _twl=""
 [[ "$TEST_RHEL" == "yes" ]]    && _twl+="rhel:${RHEL_COUNT} "
 [[ "$TEST_WINDOWS" == "yes" ]] && _twl+="windows:${WINDOWS_COUNT} "
 [[ -n "$_twl" ]] && printf "  %-22s %s\n" "Test workloads:" "$_twl"
+[[ "$CHAIN_SENSORS" == "true" ]] && printf "  %-22s %s\n" "Windows sensor:" \
+  "$([[ "$WINDOWS_SENSOR" == "true" ]] && echo "yes (the host pulls the installer from the vController)" || echo "no (--windows-sensor to install it)")"
 [[ "$DEPLOY_EKS" == "true" ]] && printf "  %-22s %s\n" "EKS pod tapping:" \
   "${EKS_MODE}$([[ "$EKS_SAMPLE" == "true" ]] && echo ", sample cluster + demo app" || echo ", cluster: ${EKS_CLUSTER:-discovered}")"
 [[ "$DEPLOY_CYPERF" == "true" ]] && printf "  %-22s %s\n" "CyPerf generator:" \
@@ -6837,7 +6873,7 @@ PY
       fi
       if [[ "${CLOUDLENS_WINDOWS_SENSOR:-false}" != "true" ]]; then
         note "Windows sensor: skipped (Windows is tapped agentlessly by traffic"
-        note "  mirroring). To install it: CLOUDLENS_WINDOWS_SENSOR=true re-run."
+        note "  mirroring). To install it: re-run with --windows-sensor."
       fi
       ok "Launching quickstart.sh from $QS_DIR"
       if ( cd "$QS_DIR" && CLOUDLENS_WINDOWS_SENSOR="${CLOUDLENS_WINDOWS_SENSOR:-false}" bash quickstart.sh ); then

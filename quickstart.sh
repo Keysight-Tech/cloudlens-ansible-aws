@@ -577,11 +577,13 @@ if [ "$DISCOVERED" = "0" ]; then
   fail "Nothing to deploy. Fix the discovery above and re-run."
 fi
 
-# === Windows sensor: opt-in ===
-# Off unless asked for. Windows is already tapped agentlessly by AWS VPC Traffic
-# Mirroring, so the sensor adds nothing that visibility depends on, while its
-# prerequisite chain is long enough to fail a run in which every Linux sensor
-# installed correctly.
+# === Windows sensor ===
+# On when asked for: CLOUDLENS_WINDOWS_SENSOR=true (deploy-stack.sh sets it when
+# the run chains sensors and includes Windows test VMs, or with
+# --windows-sensor), or windows.enabled in customer_input.yaml. The Windows
+# host downloads the installer from the vController itself. Proven live on
+# Server 2022 on 2026-11-11: 58.9 MB pulled over the private address, installer
+# exit 0, service running, sensor in its control loop with the vController.
 WIN_SENSOR="${CLOUDLENS_WINDOWS_SENSOR:-}"
 if [ -z "$WIN_SENSOR" ]; then
   WIN_SENSOR="$(python3 - <<'PYEOF' 2>/dev/null || true

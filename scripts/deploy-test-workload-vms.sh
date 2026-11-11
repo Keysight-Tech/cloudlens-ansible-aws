@@ -180,7 +180,7 @@ echo "  Region:          $REGION"
 echo "  Discovery tag:   $DISCOVERY_TAG_KEY=$DISCOVERY_TAG_VALUE"
 echo "  Env tag:         $ENV_TAG"
 echo "  Key pair:        $KEY_NAME"
-echo "  Instances:       $UBUNTU_NAME (Ubuntu 22.04), $RHEL_NAME (RHEL 9), $WIN_NAME (Win 2022)"
+echo "  Instances:       ${UBUNTU_COUNT} x Ubuntu 22.04, ${RHEL_COUNT} x RHEL 9, ${WINDOWS_COUNT} x Windows Server 2022 (names ${NAME_PREFIX}-<os>-<n>)"
 echo
 # --yes, or no terminal to ask on. Without this the script read EOF from a
 # pipe or a nohup, took it for "no", and exited 0 having created nothing:

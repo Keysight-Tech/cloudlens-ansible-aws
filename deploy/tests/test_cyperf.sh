@@ -80,8 +80,10 @@ if dry "$S/off.log" --with-kvo --with-vpb --tapping mirror --sensor-mode none; t
 else
   bad_ "dry run without the option failed: $(tail -3 "$S/off.log")"
 fi
-if grep -qi 'cyperf' "$S/off.log"; then
-  bad_ "a deployment that did not ask for CyPerf mentions it: $(grep -i cyperf "$S/off.log" | head -2)"
+# The checkout's own path may contain the word (a folder named after the
+# work), so it is removed before looking.
+if sed "s|$PWD||g" "$S/off.log" | grep -qi 'cyperf'; then
+  bad_ "a deployment that did not ask for CyPerf mentions it: $(sed "s|$PWD||g" "$S/off.log" | grep -i cyperf | head -2)"
 else
   ok_ "without the option nothing about CyPerf is launched, asked or printed"
 fi
