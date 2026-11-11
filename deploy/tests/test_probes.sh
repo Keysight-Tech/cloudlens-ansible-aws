@@ -284,8 +284,8 @@ p5=$(grep -n '^step "Phase 5: ' "$SCRIPT" | cut -d: -f1)
 if [[ -n "$p4b" && -n "$p4" && -n "$call" && -n "$p5" ]] && (( p4 < p4b && p4b < call && call < p5 )); then
   pass "i. the Elastic IP check runs under its own Phase 4b banner, after Phase 4 and before Phase 5"
 else failt "i. banner: phase4=${p4:-none} phase4b=${p4b:-none} call=${call:-none} phase5=${p5:-none}"; fi
-if grep -q '^PHASE_ORDER="stack wait bootstrap key license adopt sensors eks vpb mirror path prove"$' "$SCRIPT"; then
-  pass "i. PHASE_ORDER, the resume ledger, is unchanged"
+if grep -q '^PHASE_ORDER="stack wait bootstrap key license adopt sensors eks cyperf vpb mirror path prove"$' "$SCRIPT"; then
+  pass "i. PHASE_ORDER, the resume ledger, is the known list (cyperf added 2026-11-11)"
 else failt "i. PHASE_ORDER changed: $(grep -n '^PHASE_ORDER=' "$SCRIPT")"; fi
 
 exit $rc

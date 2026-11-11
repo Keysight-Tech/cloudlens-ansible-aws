@@ -155,6 +155,7 @@ profile_key_allowed() {
     CLOUDLENS_ENABLE_ZONE_TAPPING|CLOUDLENS_ROLLBACK_ON_FAIL|\
     CLOUDLENS_TAPPING|CLOUDLENS_SENSOR_MODE|CLOUDLENS_WORKLOAD_CHOICE|\
     CLOUDLENS_DISCOVERY_TAG_KEY|CLOUDLENS_DISCOVERY_TAG_VALUE|CLOUDLENS_TEST_VMS|\
+    CLOUDLENS_DEPLOY_CYPERF|\
     CLOUDLENS_DISCOVER|CLOUDLENS_DISCOVER_REGIONS|CLOUDLENS_DISCOVER_ACCOUNTS|\
     CLOUDLENS_SOURCE_VPCS|CLOUDLENS_COLLECTOR_ZONE|CLOUDLENS_COLLECTOR_MGMT_SUBNET|\
     CLOUDLENS_COLLECTOR_INGRESS_SUBNET|CLOUDLENS_COLLECTOR_EGRESS_SUBNET|\
@@ -246,7 +247,7 @@ SUPPORTED_CFN_REGIONS="us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-w
 # supported region. The template itself resolves AMIs from its own RegionMap.
 MARKETPLACE_OWNER="679593333241"
 CLMS_AMI_NAME="CloudLens-vController-Virtual-Appliance-AWS-6.14.1-45-prod-m4ufj3qrd4shm"
-KVO_AMI_NAME="kvo-3.1.0-prod-ol4ektflnyxn2"
+KVO_AMI_NAME="kvo-3.1.1-prod-ol4ektflnyxn2"
 VPB_AMI_NAME="cloudlens-vpb-kvo-3.16.0-4-prod-ltzj3zafoveok"
 
 # us-east-1 fallback ids (used if name resolution fails, e.g. offline dry-run).
@@ -258,7 +259,7 @@ VPB_AMI_OVERRIDE="${CLOUDLENS_VPB_AMI:-}"
 CLMS_AMI="${CLMS_AMI_OVERRIDE:-ami-0b15df4defb740754}"
 CLMS_TYPE="${CLOUDLENS_VCONTROLLER_TYPE:-t3.xlarge}"
 # KVO (Keysight Vision Orchestrator)
-KVO_AMI="${KVO_AMI_OVERRIDE:-ami-04b79ded0ffdaaed3}"
+KVO_AMI="${KVO_AMI_OVERRIDE:-ami-05fac835d2aa4e81a}"
 KVO_TYPE="${CLOUDLENS_KVO_TYPE:-c5.2xlarge}"
 # vPB (Virtual Packet Broker) - management SSH is on port 9022, not 22
 VPB_AMI="${VPB_AMI_OVERRIDE:-ami-0e78d35898708162b}"
@@ -410,6 +411,27 @@ EKS_SENSOR_TAR="${CLOUDLENS_EKS_SENSOR_TAR:-}"
 # Which pods the KVO collection selects (a pod-name regex). Unset = every pod,
 # with a licence warning: each selected pod consumes one credit (vTAP UG).
 EKS_POD_SELECTOR="${CLOUDLENS_EKS_POD_SELECTOR:-}"
+# CyPerf traffic generator (optional): one controller plus a client and a
+# server agent in the stack's VPC, as the add-on stack <stack>-cyperf. Blank =
+# the interview asks; flags/env win. The licence activation code is a secret:
+# it comes from the environment, a mode-600 file or a hidden prompt, and is
+# never written to the profile, the state file, the events or a command line.
+DEPLOY_CYPERF="${CLOUDLENS_DEPLOY_CYPERF:-}"
+CYPERF_LICENSE_CODE="${CLOUDLENS_CYPERF_LICENSE_CODE:-}"
+CYPERF_LICENSE_FILE="${CLOUDLENS_CYPERF_LICENSE_FILE:-}"
+CYPERF_AGENT_TYPE="${CLOUDLENS_CYPERF_AGENT_TYPE:-c5.2xlarge}"
+CYPERF_TEST_SUBNET="${CLOUDLENS_CYPERF_TEST_SUBNET:-}"
+CYPERF_MBPS="${CLOUDLENS_CYPERF_MBPS:-10}"
+# Marketplace product codes (stable across releases and regions). The newest
+# image of each is resolved at deploy time, so a new CyPerf release needs no
+# edit here.
+CYPERF_CONTROLLER_PRODUCT="8nmwoluc06w5z6vbutcwyueje"
+CYPERF_AGENT_PRODUCT="zskzjts7t5crpmiic5drkq0j"
+CYPERF_ADMIN_USER="admin"
+CYPERF_FACTORY_PASS='CyPerf&Keysight#1'
+CYPERF_ADDRESS=""; CYPERF_PRIVATE_IP=""; CYPERF_CLIENT_IP=""; CYPERF_SERVER_IP=""
+CYPERF_LAUNCH_OK=false
+CYPERF_RESULT=""
 CHAIN_SENSORS=""
 # One input for the tapping method: sensors | mirror | both | none. Sets
 # CHAIN_SENSORS and WITH_MIRROR together; the specific flags still win.
@@ -477,6 +499,7 @@ SKIP_VPB=false;     REASON_VPB=""
 SKIP_PATH=false;    REASON_PATH=""
 SKIP_MIRROR=false;  REASON_MIRROR=""
 SKIP_PROVE=false;   REASON_PROVE=""
+SKIP_CYPERF=false;  REASON_CYPERF=""
 
 # Post-deploy orchestration (phases 10-16). Blank = prompt, and every prompt
 # falls back to the documented default when there is no terminal to ask on.
@@ -867,9 +890,9 @@ ask_yn() {
 # Short, STABLE names, not numbers: numbers shift every time a phase is added
 # and this script has to survive years of that.
 #   stack=6  wait=7  bootstrap=8  key=9  license=11  adopt=12  sensors=13
-#   eks=13b  vpb=14  mirror=15  path=16 (and 16b)  prove=17
+#   eks=13b  cyperf=13c  vpb=14  mirror=15  path=16 (and 16b)  prove=17
 # ---------------------------------------------------------------------
-PHASE_ORDER="stack wait bootstrap key license adopt sensors eks vpb mirror path prove"
+PHASE_ORDER="stack wait bootstrap key license adopt sensors eks cyperf vpb mirror path prove"
 
 phase_index() {
   local want="$1" i=1 p
@@ -912,6 +935,7 @@ phase_label() {
     adopt)   printf '%s' "Adopt CLMS into KVO" ;;
     sensors) printf '%s' "Sensors" ;;
     eks)     printf '%s' "EKS pod tapping" ;;
+    cyperf)  printf '%s' "CyPerf traffic generator" ;;
     vpb)     printf '%s' "vPB in KVO" ;;
     path)    printf '%s' "vPB traffic path" ;;
     mirror)  printf '%s' "AWS mirror" ;;
@@ -959,6 +983,7 @@ phase_applicable() {
   case "$1" in
     sensors) [[ "$CHAIN_SENSORS" == "false" || "$SENSOR_MODE" == "none" ]] && return 1 ;;
     eks)     [[ "$DEPLOY_EKS" != "true" ]] && return 1 ;;
+    cyperf)  [[ "$DEPLOY_CYPERF" != "true" ]] && return 1 ;;
   esac
   return 0
 }
@@ -1876,6 +1901,9 @@ resume_load_inputs() {
   if [[ -z "$SENSOR_MODE" ]] && v="$(state_get SENSOR_MODE)" && [[ -n "$v" ]]; then
     case "$v" in standalone|kvo|none) SENSOR_MODE="$v"; note "Sensor mode from the previous run: ${SENSOR_MODE}" ;; esac
   fi
+  if [[ -z "$DEPLOY_CYPERF" ]] && v="$(state_get DEPLOY_CYPERF)" && [[ "$v" == "true" ]]; then
+    DEPLOY_CYPERF=true; note "CyPerf traffic generator from the previous run: yes"
+  fi
   if v="$(state_get CLOUD_CONFIG)" && [[ -n "$v" ]] && [[ "$CLOUD_CONFIG_NAME" == "cloudlens-aws" ]]; then
     CLOUD_CONFIG_NAME="$v"
   fi
@@ -1952,6 +1980,7 @@ Re-running a deploy (resume):
                               adopt    adopt CLMS + Cloud Config   (phase 12)
                               sensors  sensor install              (phase 13)
                               eks      EKS pod tapping             (phase 13b)
+                              cyperf   CyPerf traffic generator    (phase 13c)
                               vpb      adopt the vPB into KVO      (phase 14)
                               mirror   AWS mirror session          (phase 15)
                               path     vPB traffic path            (phases 16 + 16b)
@@ -2087,6 +2116,22 @@ Toggles:
                             tee); a run can still exit with no done, so the
                             console treats process exit as terminal either
                             way.
+  --with-cyperf / --no-cyperf
+                            Add a Keysight CyPerf traffic generator: one
+                            controller, one client agent and one server agent
+                            (3 x c5.2xlarge) in the stack's VPC, as the add-on
+                            stack <stack>-cyperf. The agents register, the
+                            licence is applied and application traffic is
+                            started. With --tapping mirror the agents are
+                            tagged so their traffic is tapped.
+  --cyperf-license-file F   File holding the CyPerf activation code (implies
+                            --with-cyperf). Or set CLOUDLENS_CYPERF_LICENSE_CODE,
+                            or answer the hidden prompt. Never pass the code as
+                            an argument. Quantity 1 is activated per deploy.
+  --cyperf-mbps N           Traffic rate of the generated test (default 10).
+  --cyperf-agent-type T     c5.2xlarge (default) or c5n.9xlarge.
+  --cyperf-test-subnet ID   Subnet for the agents' test interfaces (default:
+                            the stack's data subnet).
   --with-eks / --no-eks     Tap Kubernetes pods in EKS with CloudLens sensors.
   --eks-cluster NAME        Tap THIS existing EKS cluster (implies --with-eks).
   --eks-sample              Create a small test cluster (2x t3.medium, ~15 min)
@@ -2258,6 +2303,8 @@ name in brackets is the --from / --only name):
  13. Sensor chain (optional, runs quickstart.sh with the key phase 10 chose)
      [sensors]
 13b. EKS pod tapping (--with-eks, --eks-cluster or --eks-sample) [eks]
+13c. CyPerf traffic generator: licence, agents, start traffic
+     (--with-cyperf) [cyperf]
  14. Adopt the vPB into KVO (--adopt-vpb) [vpb]
  15. AWS mirror session (--with-mirror, off by default) [mirror]
  16. vPB traffic path + monitoring policy (--wire-vpb-path) [path]
@@ -2300,6 +2347,12 @@ while [[ $# -gt 0 ]]; do
     --eks-sensor-image) EKS_SENSOR_IMAGE="$2"; shift 2 ;;
     --eks-sensor-tar) EKS_SENSOR_TAR="$2"; shift 2 ;;
     --eks-pod-selector) EKS_POD_SELECTOR="$2"; shift 2 ;;
+    --with-cyperf) DEPLOY_CYPERF=true; shift ;;
+    --no-cyperf) DEPLOY_CYPERF=false; shift ;;
+    --cyperf-license-file) DEPLOY_CYPERF=true; CYPERF_LICENSE_FILE="$2"; shift 2 ;;
+    --cyperf-agent-type) CYPERF_AGENT_TYPE="$2"; shift 2 ;;
+    --cyperf-test-subnet) CYPERF_TEST_SUBNET="$2"; shift 2 ;;
+    --cyperf-mbps) CYPERF_MBPS="$2"; shift 2 ;;
     --with-kvo) DEPLOY_KVO=true; shift ;;
     --with-vpb) DEPLOY_VPB=true; shift ;;
     --no-vpb) DEPLOY_VPB=false; shift ;;
@@ -3770,6 +3823,49 @@ fi
 [[ -z "$DEPLOY_EKS" ]] && DEPLOY_EKS=false
 case "$EKS_MODE" in daemonset|sidecar) ;; *) fail "--eks-mode must be daemonset or sidecar (got '$EKS_MODE')" ;; esac
 
+# Q4d: a real traffic generator. The test VMs only ping and curl; CyPerf plays
+# application traffic between a client and a server agent, which is what a
+# demo or a sizing run wants to see arrive at the tool.
+if [[ "$INTERACTIVE" == "true" && "$FOUND_DEPLOYMENT" != "true" && "$DRY_RUN" != "true" \
+      && -z "$DEPLOY_CYPERF" ]]; then
+  echo
+  echo "Do you want a Keysight CyPerf traffic generator in this deployment?"
+  echo "  It adds a CyPerf controller, a client agent and a server agent"
+  echo "  (3 x c5.2xlarge, billed while they run), registers the agents and"
+  echo "  starts application traffic between them. Needs a CyPerf licence"
+  echo "  activation code (for example 938-1010-01, 10 agents / 10 Gbps)."
+  if ask_yn "  Deploy CyPerf for traffic generation? [y/N]: " n; then
+    DEPLOY_CYPERF=true
+  else
+    DEPLOY_CYPERF=false
+  fi
+fi
+[[ -z "$DEPLOY_CYPERF" ]] && DEPLOY_CYPERF=false
+if [[ "$DEPLOY_CYPERF" == "true" ]]; then
+  case "$CYPERF_AGENT_TYPE" in c5.2xlarge|c5n.9xlarge) ;; *) fail "--cyperf-agent-type must be c5.2xlarge or c5n.9xlarge (the sizes Keysight supports on AWS), got: ${CYPERF_AGENT_TYPE}" ;; esac
+  [[ "$CYPERF_MBPS" =~ ^[0-9]+$ ]] && (( CYPERF_MBPS >= 1 && CYPERF_MBPS <= 10000 )) \
+    || fail "--cyperf-mbps must be a whole number of Mbps between 1 and 10000, got: ${CYPERF_MBPS}"
+  if [[ -n "$CYPERF_LICENSE_FILE" ]]; then
+    [[ -r "$CYPERF_LICENSE_FILE" ]] || fail "--cyperf-license-file: cannot read ${CYPERF_LICENSE_FILE}"
+    CYPERF_LICENSE_CODE="$(tr -d '[:space:]' < "$CYPERF_LICENSE_FILE")"
+  fi
+  # Asked up front, with the other questions, so the run never stops later to
+  # wait for it. Hidden input: the code is spendable entitlement.
+  if [[ -z "$CYPERF_LICENSE_CODE" && "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" \
+        && "$FOUND_DEPLOYMENT" != "true" ]]; then
+    echo "  CyPerf licence: paste the activation code (input is hidden). Press"
+    echo "  Enter to skip: CyPerf is still deployed and connected, and traffic"
+    echo "  starts once a code is applied (re-run with --only cyperf)."
+    CYPERF_LICENSE_CODE="$(ask_secret "  CyPerf activation code: ")"
+    CYPERF_LICENSE_CODE="$(printf '%s' "$CYPERF_LICENSE_CODE" | tr -d '[:space:]')"
+  fi
+  if [[ "$CHAIN_SENSORS" == "true" && "$WITH_MIRROR" != "true" ]]; then
+    note "CyPerf agents are appliances and cannot host a CloudLens sensor: with"
+    note "sensor tapping only, their traffic is generated but not tapped. Use"
+    note "--tapping mirror (or both) to see CyPerf traffic at the tool."
+  fi
+fi
+
 # Turns the answers (vPB, mirror, EKS) and the optional --vpb-rails override
 # into VPB_RAIL_FIRST (served by the stack vPB) and VPB_RAILS_EXTRA (one more
 # vPB each). Areas known: mirror (the AWS cloud config), k8s (the Kubernetes
@@ -3892,6 +3988,8 @@ _twl=""
 [[ -n "$_twl" ]] && printf "  %-22s %s\n" "Test workloads:" "$_twl"
 [[ "$DEPLOY_EKS" == "true" ]] && printf "  %-22s %s\n" "EKS pod tapping:" \
   "${EKS_MODE}$([[ "$EKS_SAMPLE" == "true" ]] && echo ", sample cluster + demo app" || echo ", cluster: ${EKS_CLUSTER:-discovered}")"
+[[ "$DEPLOY_CYPERF" == "true" ]] && printf "  %-22s %s\n" "CyPerf generator:" \
+  "controller c5.2xlarge + 2 agents ${CYPERF_AGENT_TYPE}, ${CYPERF_MBPS} Mbps, licence $([[ -n "$CYPERF_LICENSE_CODE" ]] && echo "supplied" || echo "NOT supplied (traffic will not start)")"
 printf "  %-22s %s\n" "Admin CIDR:" "$ADMIN_CIDR"
 printf "  %-22s %s\n" "Public IPs:" "$ASSIGN_PUBLIC_IP"
 if [[ -n "$EXISTING_VPC_ID" ]]; then
@@ -3970,6 +4068,7 @@ write_profile() {
     echo "CLOUDLENS_EKS_MODE=${EKS_MODE}"
     echo "CLOUDLENS_VPB_RAILS=${VPB_RAILS}"
     echo "CLOUDLENS_EKS_POD_SELECTOR=${EKS_POD_SELECTOR}"
+    echo "CLOUDLENS_DEPLOY_CYPERF=${DEPLOY_CYPERF}"
   } > "$f" 2>/dev/null && chmod 600 "$f" 2>/dev/null && PROFILE_FILE="$f"
   return 0
 }
@@ -4005,6 +4104,7 @@ state_set DEPLOY_EKS "$DEPLOY_EKS"
 state_set EKS_CLUSTER "$EKS_CLUSTER"
 state_set EKS_MODE "$EKS_MODE"
 state_set EKS_SAMPLE "$EKS_SAMPLE"
+state_set DEPLOY_CYPERF "$DEPLOY_CYPERF"
 state_set ADMIN_USER "$ADMIN_USERNAME"
 state_set CLOUD_CONFIG "$CLOUD_CONFIG_NAME"
 state_set CLM_NAME "$CLM_NAME_IN_KVO"
@@ -4126,6 +4226,10 @@ fi
 check_ami_subscription "vController" "$CLMS_AMI"
 [[ "$DEPLOY_KVO" == "true" ]] && check_ami_subscription "KVO" "$KVO_AMI"
 [[ "$DEPLOY_VPB" == "true" ]] && check_ami_subscription "vPB" "$VPB_AMI"
+if [[ "$DEPLOY_CYPERF" == "true" && "$DRY_RUN" != "true" && "$SKIP_STACK" != "true" ]]; then
+  printf "  %-12s %s\n" "CyPerf" "https://aws.amazon.com/marketplace/pp/prodview-ty2icqjtg2hmu (Controller)"
+  printf "  %-12s %s\n" "" "https://aws.amazon.com/marketplace/pp/prodview-qb3p4dxetsx6a (Agent)"
+fi
 
 if [[ "$DRY_RUN" != "true" ]]; then
   echo
@@ -4154,6 +4258,7 @@ check_eip_headroom() {
   local need=1
   [[ "$DEPLOY_KVO" == "true" ]] && need=$((need+1))
   [[ "$DEPLOY_VPB" == "true" ]] && need=$((need+1))
+  [[ "${DEPLOY_CYPERF:-false}" == "true" ]] && need=$((need+1))
 
   # Every probe below is read-only and optional, and each one MUST be unable
   # to end the run. Under `set -euo pipefail` an assignment carries its
@@ -4831,8 +4936,191 @@ python_chain_ready() {
   [[ "$PY_CHAIN_OK" == "true" ]]
 }
 
+# ---------------------------------------------------------------------
+# CyPerf traffic generator, infrastructure half (--with-cyperf).
+#
+# Launched here, straight after the stack, and configured much later in its
+# own phase [cyperf]: the controller needs 10 to 15 minutes before its API
+# and its login service answer, and that wait overlaps the vController wait,
+# licensing and adoption instead of adding to them.
+#
+# It is a SEPARATE CloudFormation stack, <stack>-cyperf, built from
+# deploy/cloudformation/addons/cyperf.yaml (modelled on Keysight's own
+# github.com/Keysight/cyperf templates): the main template stays untouched,
+# an existing deployment can gain CyPerf with --only cyperf, and teardown
+# removes it as one unit before the main stack.
+# ---------------------------------------------------------------------
+cyperf_stack_output() {
+  local key="$1"
+  [[ "$DRY_RUN" == "true" ]] && { echo "203.0.113.20"; return 0; }
+  aws "${AWS_REGION_ARG[@]}" cloudformation describe-stacks --stack-name "${STACK_NAME}-cyperf" \
+    --query "Stacks[0].Outputs[?OutputKey=='${key}'].OutputValue | [0]" --output text 2>/dev/null || echo ""
+}
+
+# cyperf_newest_ami PRODUCT_CODE -> "ami-id name" of the newest Marketplace image
+cyperf_newest_ami() {
+  local code="$1" out
+  out="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-images --owners aws-marketplace \
+           --filters "Name=product-code,Values=${code}" "Name=state,Values=available" \
+           --query 'sort_by(Images,&CreationDate)[-1].[ImageId,Name]' --output text 2>/dev/null || echo "")"
+  [[ "$out" == "None"* ]] && out=""
+  printf '%s' "$out"
+}
+
+# "26.1" out of either image name. Controller: ...releasecyperf2610-...
+# Agent: ...-agent-26-1-3-876-...
+cyperf_release_of() {
+  local name="$1" r=""
+  if [[ "$name" =~ releasecyperf([0-9][0-9])([0-9]) ]]; then
+    r="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  elif [[ "$name" =~ agent-([0-9]+)-([0-9]+)- ]]; then
+    r="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  fi
+  printf '%s' "$r"
+}
+
+cyperf_read_outputs() {
+  CYPERF_ADDRESS="$(cyperf_stack_output ControllerAddress)"
+  CYPERF_PRIVATE_IP="$(cyperf_stack_output ControllerPrivateIp)"
+  CYPERF_CLIENT_IP="$(cyperf_stack_output ClientAgentControlIp)"
+  CYPERF_SERVER_IP="$(cyperf_stack_output ServerAgentControlIp)"
+  local v
+  for v in CYPERF_ADDRESS CYPERF_PRIVATE_IP CYPERF_CLIENT_IP CYPERF_SERVER_IP; do
+    if [[ "${!v}" == "None" ]]; then printf -v "$v" '%s' ''; fi
+  done
+  [[ -n "$CYPERF_ADDRESS" && -n "$CYPERF_CLIENT_IP" && -n "$CYPERF_SERVER_IP" ]]
+}
+
+launch_cyperf_now() {
+  [[ "$DEPLOY_CYPERF" == "true" ]] || return 0
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "aws cloudformation deploy --stack-name ${STACK_NAME}-cyperf --template-file deploy/cloudformation/addons/cyperf.yaml (CyPerf controller c5.2xlarge + client agent + server agent ${CYPERF_AGENT_TYPE}, newest Marketplace images)"
+    CYPERF_ADDRESS="203.0.113.20"; CYPERF_PRIVATE_IP="10.0.0.20"
+    CYPERF_CLIENT_IP="10.0.0.21"; CYPERF_SERVER_IP="10.0.0.22"
+    CYPERF_LAUNCH_OK=true
+    return 0
+  fi
+  if ! run_phase cyperf; then
+    # Not this run's job (--only something else, or --from a later phase).
+    # Read what an earlier run built so the summary can still name it.
+    if cyperf_read_outputs; then CYPERF_LAUNCH_OK=true; fi
+    return 0
+  fi
+  banner "CyPerf traffic generator: launching the controller and two agents"
+  if cyperf_read_outputs; then
+    ok "CyPerf stack ${STACK_NAME}-cyperf already exists (controller ${CYPERF_ADDRESS}); not launching it again."
+    CYPERF_LAUNCH_OK=true
+    return 0
+  fi
+  local tpl ctrl agent ctrl_ami agent_ami ctrl_rel agent_rel vpc_cidr test_subnet mgmt_subnet
+  tpl="$(find_repo_script deploy/cloudformation/addons/cyperf.yaml || true)"
+  if [[ -z "$tpl" ]]; then
+    warn "deploy/cloudformation/addons/cyperf.yaml not found; CyPerf is skipped."
+    return 0
+  fi
+  ctrl="$(cyperf_newest_ami "$CYPERF_CONTROLLER_PRODUCT")"
+  agent="$(cyperf_newest_ami "$CYPERF_AGENT_PRODUCT")"
+  ctrl_ami="${ctrl%%[[:space:]]*}"; agent_ami="${agent%%[[:space:]]*}"
+  if [[ -z "$ctrl_ami" || -z "$agent_ami" ]]; then
+    warn "No Keysight CyPerf Marketplace image is visible in ${REGION} (controller: ${ctrl_ami:-none}, agent: ${agent_ami:-none})."
+    warn "CyPerf is skipped; the rest of the deployment continues."
+    return 0
+  fi
+  ctrl_rel="$(cyperf_release_of "$ctrl")"; agent_rel="$(cyperf_release_of "$agent")"
+  ok "CyPerf controller image: ${ctrl#*[[:space:]]} (${ctrl_ami})"
+  ok "CyPerf agent image:      ${agent#*[[:space:]]} (${agent_ami})"
+  if [[ -n "$ctrl_rel" && -n "$agent_rel" && "$ctrl_rel" != "$agent_rel" ]]; then
+    warn "The newest controller is release ${ctrl_rel} and the newest agent is ${agent_rel}."
+    warn "Keysight publishes them together; a mismatch can stop agents registering."
+  fi
+
+  mgmt_subnet="${MGMT_SUBNET_ID:-}"
+  [[ -z "$mgmt_subnet" || "$mgmt_subnet" == "None" ]] && mgmt_subnet="${EXISTING_SUBNET_ID:-}"
+  # The agents' test interfaces go in the data subnet: the one the vPB ingress
+  # port sits in. Flag > brownfield input > what the stack built.
+  test_subnet="${CYPERF_TEST_SUBNET:-${EXISTING_DATA_SUBNET_ID:-}}"
+  if [[ -z "$test_subnet" && -n "${INGRESS_SUBNET_ID:-}" && "$INGRESS_SUBNET_ID" != "None" ]]; then
+    test_subnet="$INGRESS_SUBNET_ID"
+  fi
+  if [[ -z "$test_subnet" && "$IAC" != "terraform" ]]; then
+    test_subnet="$(aws "${AWS_REGION_ARG[@]}" cloudformation describe-stack-resource \
+                     --stack-name "$STACK_NAME" --logical-resource-id DataSubnet \
+                     --query 'StackResourceDetail.PhysicalResourceId' --output text 2>/dev/null || echo "")"
+    [[ "$test_subnet" == "None" ]] && test_subnet=""
+  fi
+  if [[ -z "$mgmt_subnet" || -z "$test_subnet" || -z "${STACK_VPC_ID:-}" ]]; then
+    warn "CyPerf needs the VPC, a management subnet and a test subnet, and one is unknown"
+    warn "(vpc=${STACK_VPC_ID:-?} mgmt=${mgmt_subnet:-?} test=${test_subnet:-?})."
+    warn "Name the test subnet with --cyperf-test-subnet SUBNET_ID and re-run with --only cyperf."
+    return 0
+  fi
+  vpc_cidr="$(aws "${AWS_REGION_ARG[@]}" ec2 describe-vpcs --vpc-ids "$STACK_VPC_ID" \
+                --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null || echo "")"
+  if [[ -z "$vpc_cidr" || "$vpc_cidr" == "None" ]]; then
+    warn "Could not read the CIDR of ${STACK_VPC_ID}; CyPerf is skipped."
+    return 0
+  fi
+
+  local -a cy_params=(
+    "ParentStackName=$STACK_NAME"
+    "VpcId=$STACK_VPC_ID"
+    "VpcCidr=$vpc_cidr"
+    "MgmtSubnetId=$mgmt_subnet"
+    "TestSubnetId=$test_subnet"
+    "KeyPairName=$KEY_NAME"
+    "AdminIngressCidr=$ADMIN_CIDR"
+    "AssignPublicIp=$ASSIGN_PUBLIC_IP"
+    "ControllerAmi=$ctrl_ami"
+    "AgentAmi=$agent_ami"
+    "AgentInstanceType=$CYPERF_AGENT_TYPE"
+  )
+  # Mark the agents as tap sources only when the agentless mirror is the one
+  # tapping. With sensors in play the same tag would send the sensor install
+  # to two appliances that cannot host one.
+  if [[ "$WITH_MIRROR" == "true" && "$CHAIN_SENSORS" != "true" ]]; then
+    cy_params+=("SourceTagKey=$DISCOVERY_TAG_KEY" "SourceTagValue=$DISCOVERY_TAG_VALUE")
+    note "The agents carry ${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}, so the mirror collection taps their traffic."
+  fi
+  note "Creating stack ${STACK_NAME}-cyperf (about 4 minutes; the controller then needs 10 to 15 more to boot)..."
+  if aws "${AWS_REGION_ARG[@]}" cloudformation deploy --stack-name "${STACK_NAME}-cyperf" \
+       --template-file "$tpl" --no-fail-on-empty-changeset \
+       --tags "cloudlens:stack=${STACK_NAME}" "cloudlens:owner=deploy-stack-cyperf" \
+       --parameter-overrides "${cy_params[@]}" >>"$LOG_FILE" 2>&1; then
+    if cyperf_read_outputs; then
+      CYPERF_LAUNCH_OK=true
+      state_set CYPERF_STACK "${STACK_NAME}-cyperf"
+      state_set CYPERF_ADDRESS "$CYPERF_ADDRESS"
+      emit_event resource kind=cyperf address="$CYPERF_ADDRESS" client="$CYPERF_CLIENT_IP" server="$CYPERF_SERVER_IP"
+      ok "CyPerf controller at ${CYPERF_ADDRESS}; agents ${CYPERF_CLIENT_IP} (client) and ${CYPERF_SERVER_IP} (server)."
+    else
+      warn "The CyPerf stack deployed but its outputs could not be read."
+    fi
+  else
+    warn "The CyPerf stack did not deploy; the rest of the run continues."
+    warn "Most common cause: this account is not subscribed to the Keysight CyPerf"
+    warn "Controller and Agent products in AWS Marketplace (links printed in Phase 4)."
+    note "Reason from CloudFormation:"
+    aws "${AWS_REGION_ARG[@]}" cloudformation describe-stack-events --stack-name "${STACK_NAME}-cyperf" \
+      --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatusReason] | [0:3]" \
+      --output text 2>/dev/null | sed 's/^/    /' || true
+    state_phase cyperf failed "the CyPerf CloudFormation stack did not deploy"
+  fi
+  return 0
+}
+
+announce_cyperf_login() {
+  local ip="${CYPERF_ADDRESS:-}"
+  [[ -n "$ip" && "$ip" != "None" ]] || return 0
+  watch_header
+  echo "    https://${ip}/"
+  echo "    ${CYPERF_ADMIN_USER} / ${CYPERF_FACTORY_PASS}   (CyPerf factory default: change it under Settings)"
+  emit_event login component=cyperf url="https://${ip}/" user="$CYPERF_ADMIN_USER" password_in="CyPerf factory default"
+  echo
+}
+
 discover_stack_facts
 ensure_extra_vpbs_now
+launch_cyperf_now
 
 # =====================================================================
 # Phase 7: Wait for vController init
@@ -6675,6 +6963,67 @@ if [[ "$DEPLOY_EKS" == "true" ]]; then
 fi
 
 # =====================================================================
+# Phase 13c: CyPerf traffic generator (configure, licence, start traffic)
+# =====================================================================
+# scripts/cyperf_setup.py waits for the controller, accepts its EULA, applies
+# the licence activation code (quantity 1: one activation per deployment),
+# waits for both agents, builds a client-to-server application test and starts
+# it. It is safe to re-run: a licensed controller is not licensed twice and a
+# running test is left running.
+if [[ "$DEPLOY_CYPERF" == "true" ]]; then
+  step "Phase 13c: CyPerf traffic generator"
+  CYPERF_SCRIPT="$(find_repo_script scripts/cyperf_setup.py || true)"
+  if ! run_phase cyperf; then
+    skip_note "the CyPerf step"
+  elif [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "CLOUDLENS_CYPERF_LICENSE_CODE=<$([[ -n "$CYPERF_LICENSE_CODE" ]] && echo "supplied, hidden" || echo "none")> python3 scripts/cyperf_setup.py --controller ${CYPERF_ADDRESS:-<controller>} --client-ip ${CYPERF_CLIENT_IP:-<client>} --server-ip ${CYPERF_SERVER_IP:-<server>} --mbps ${CYPERF_MBPS} --insecure"
+  elif [[ "$CYPERF_LAUNCH_OK" != "true" ]]; then
+    warn "The CyPerf instances are not there (see the launch step above); nothing to configure."
+    note "Fix the cause, then: bash deploy/deploy-stack.sh --only cyperf"
+  elif [[ -z "$CYPERF_SCRIPT" ]]; then
+    warn "scripts/cyperf_setup.py not found; CyPerf is deployed but not configured."
+    state_phase cyperf failed "cyperf_setup.py not found"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 is not usable here; CyPerf is deployed but not configured."
+    state_phase cyperf failed "python3 missing"
+  else
+    announce_cyperf_login
+    # A resume or an --only run reaches here without the interview: ask now.
+    if [[ -z "$CYPERF_LICENSE_CODE" && "$INTERACTIVE" == "true" ]]; then
+      echo "  CyPerf needs a licence before it will run traffic. Paste the"
+      echo "  activation code (hidden), or press Enter to leave it unlicensed."
+      CYPERF_LICENSE_CODE="$(ask_secret "  CyPerf activation code: ")"
+      CYPERF_LICENSE_CODE="$(printf '%s' "$CYPERF_LICENSE_CODE" | tr -d '[:space:]')"
+    fi
+    _cy_result="$(mktemp)"
+    _cy_rc=0
+    # The code travels in the environment, never on the command line.
+    CLOUDLENS_CYPERF_LICENSE_CODE="$CYPERF_LICENSE_CODE" \
+      python3 "$CYPERF_SCRIPT" --controller "$CYPERF_ADDRESS" --insecure \
+        --client-ip "$CYPERF_CLIENT_IP" --server-ip "$CYPERF_SERVER_IP" \
+        --mbps "$CYPERF_MBPS" --session-name "${STACK_NAME} traffic" \
+        --result-file "$_cy_result" || _cy_rc=$?
+    CYPERF_RESULT="$(tr -d '\n' < "$_cy_result" 2>/dev/null || true)"
+    rm -f "$_cy_result"
+    case "$_cy_rc" in
+      0) state_phase cyperf done
+         ok "CyPerf is licensed, both agents are connected and traffic is running (${CYPERF_MBPS} Mbps, client to server)." ;;
+      3) state_phase cyperf failed "no licence activation code"
+         warn "CyPerf is deployed and both agents are connected, but it has NO licence,"
+         warn "so the test cannot start. Apply a code and start traffic with:"
+         note "  bash deploy/deploy-stack.sh --stack-name ${STACK_NAME} --region ${REGION} --only cyperf --with-cyperf --cyperf-license-file <file holding the code>" ;;
+      4) state_phase cyperf failed "licence activation was refused"
+         warn "The CyPerf controller refused the activation code (its message is above)."
+         warn "Check the code, its expiry and its remaining quantity in KSM, then re-run"
+         note "  bash deploy/deploy-stack.sh --stack-name ${STACK_NAME} --region ${REGION} --only cyperf --with-cyperf" ;;
+      *) state_phase cyperf failed "cyperf_setup.py returned ${_cy_rc}"
+         warn "The CyPerf step did not complete; the rest of the run continues."
+         note "Re-run just this step with: bash deploy/deploy-stack.sh --only cyperf --with-cyperf" ;;
+    esac
+  fi
+fi
+
+# =====================================================================
 # Phase 14: Adopt the vPB into KVO
 # =====================================================================
 # scripts/vpb_kvo_adopt.py accepts the vPB EULA, turns KVO on over SSH (the vPB
@@ -7605,6 +7954,20 @@ Note:               SSH is reachable ~5 minutes after deploy
 VSUMMARY
   fi
 
+  if [[ "$DEPLOY_CYPERF" == "true" && -n "${CYPERF_ADDRESS:-}" ]]; then
+    cat <<YSUMMARY
+--- CyPerf traffic generator ---
+Controller UI:      https://${CYPERF_ADDRESS}/   (${CYPERF_ADMIN_USER} / factory default password, change it under Settings)
+Client agent:       ${CYPERF_CLIENT_IP} (control interface)
+Server agent:       ${CYPERF_SERVER_IP} (control interface)
+State:              $(state_get PHASE_CYPERF 2>/dev/null || echo "not configured")
+Traffic:            ${CYPERF_MBPS} Mbps application traffic, client to server, on the agents' test interfaces
+Stack:              ${STACK_NAME}-cyperf (removed by teardown-stack.sh, licence released first)
+Start/stop:         in the controller UI, or re-run: bash deploy/deploy-stack.sh --only cyperf --with-cyperf
+
+YSUMMARY
+  fi
+
   cat <<CSUMMARY
 --- Post-deploy chain ---
 Sensor mode:        ${SENSOR_MODE:-none}   (project key source: ${KEY_SOURCE:-none})
@@ -7667,13 +8030,15 @@ secure_run_file "$SUMMARY_FILE"
 # missing .pem used to end with a cheerful "Done" and no hint it was incomplete.
 completion_report() {
   local pending=() p name val
-  for p in sensors vpb mirror path prove; do
+  for p in sensors cyperf vpb mirror path prove; do
+    [[ "$p" == "cyperf" && "$DEPLOY_CYPERF" != "true" ]] && continue
     val="$(state_get "PHASE_$(upper "$p")" 2>/dev/null || echo '')"
     case "$val" in
       done*|"dry-run"*) continue ;;                # done (or dry-run) counts as covered
     esac
     case "$p" in
       sensors) name="Linux/Windows sensors" ;;
+      cyperf)  name="CyPerf traffic generator" ;;
       vpb)     name="vPB adopted" ;;
       mirror)  name="AWS mirror sessions" ;;
       path)    name="vPB traffic path" ;;
@@ -7731,6 +8096,7 @@ code,pre{background:#f4f4f4;padding:2px 5px;border-radius:3px}pre{padding:12px;o
 <tr><td>vController (CloudLens Manager)</td><td>${CLMS_PUBLIC_IP:-${CLMS_PRIVATE_IP:-?}}</td><td>https://${CLMS_PUBLIC_IP:-${CLMS_PRIVATE_IP:-?}}/cloudlens/login, user <code>admin</code>; password in <code>${VC_CREDS_FILE}</code></td></tr>
 $([[ "$DEPLOY_KVO" == "true" ]] && echo "<tr><td>KVO (Vision Orchestrator)</td><td>${KVO_PUBLIC_IP:-?}</td><td>https://${KVO_PUBLIC_IP:-?}/, user <code>${KVO_ADMIN_USER:-admin}</code></td></tr>")
 $([[ "$DEPLOY_VPB" == "true" ]] && echo "<tr><td>vPB (virtual Packet Broker)</td><td>${VPB_PUBLIC_IP:-?}</td><td><code>ssh -i ~/.ssh/${e_key}.pem -p ${VPB_SSH_PORT} ${ADMIN_USERNAME}@${VPB_PUBLIC_IP:-?}</code></td></tr>")
+$([[ "$DEPLOY_CYPERF" == "true" && -n "${CYPERF_ADDRESS:-}" ]] && echo "<tr><td>CyPerf controller (traffic generator)</td><td>${CYPERF_ADDRESS}</td><td>https://${CYPERF_ADDRESS}/, user <code>${CYPERF_ADMIN_USER}</code>, factory default password; agents ${CYPERF_CLIENT_IP:-?} and ${CYPERF_SERVER_IP:-?}</td></tr>")
 </table>
 <p class="muted">Network: $([[ -n "$EXISTING_VPC_ID" ]] && echo "deployed into your existing VPC ${e_vpc} (subnet ${e_sub}); no network resources were created" || echo "new VPC $(_esc "${STACK_VPC_ID:-}") built by the stack").</p>
 <h2>What is being tapped</h2><ul>${tap}</ul>

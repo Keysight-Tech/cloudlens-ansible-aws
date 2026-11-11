@@ -65,7 +65,7 @@ var READS={
    once) and prove (the whole path) are not in it: those only redden the
    timeline row, because reddening a node there would be a guess. */
 var PHASE_NODE={wait:"vcontroller",key:"vcontroller",bootstrap:"vpb",vpb:"vpb",path:"vpb",
-  license:"kvo",adopt:"kvo",mirror:"kvo",sensors:"workloads",eks:"eks"};
+  license:"kvo",adopt:"kvo",mirror:"kvo",sensors:"workloads",eks:"eks",cyperf:"cyperf"};
 
 var LOG_MAX=400;         // the drawer keeps the tail, as the instrument does
 // A phase list is a dozen short names. Anything longer than this is a frame
@@ -282,9 +282,9 @@ var $=function(id){return document.getElementById(id);};
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
 
 var NODE_LABEL={vpc:"VPC",subnet:"subnet",vcontroller:"vController",kvo:"KVO",vpb:"vPB",
-  workloads:"workloads",eks:"EKS"};
+  workloads:"workloads",eks:"EKS",cyperf:"CyPerf"};
 // the instrument's own icon set, so this screen speaks the diagram's language
-var NODE_ICON={vpc:"vpc",subnet:"vpc",vcontroller:"clms",kvo:"kvo",vpb:"vpb",workloads:"vm",eks:"coll"};
+var NODE_ICON={vpc:"vpc",subnet:"vpc",vcontroller:"clms",kvo:"kvo",vpb:"vpb",workloads:"vm",eks:"coll",cyperf:"vm"};
 /* the mark on a timeline row. A row that is pending, or one a status of
    start/running arrived for, is drawn by CSS from the row's own class (a dot
    and a spinner); deploy-stack.sh reports a phase only when it ENDS, so

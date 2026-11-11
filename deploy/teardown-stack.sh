@@ -1672,9 +1672,77 @@ sweep_rail_vpbs() {
   return 0
 }
 
+# The CyPerf add-on stack. deploy-stack.sh --with-cyperf builds the traffic
+# generator (controller + client agent + server agent, their security group
+# and Elastic IP) as its own CloudFormation stack, <stack>-cyperf, inside the
+# main stack's VPC. It goes BEFORE the main stack: its interfaces sit in the
+# main stack's subnets, so a greenfield VPC cannot be deleted around them.
+# Evidence of ownership: the stack tag cloudlens:stack names THIS stack, which
+# only deploy-stack.sh writes. A stack that merely has the same name prefix
+# is left alone.
+# The controller's licence is released first, for the same reason as KVO's:
+# an activation is returned to the entitlement only while the controller that
+# holds it is alive.
+sweep_cyperf_stack() {
+  local cy="${STACK_NAME}-cyperf" st owner addr py waited=0
+  st="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$cy" \
+        --query 'Stacks[0].StackStatus' --output text | first_line)")"
+  [[ -z "$st" ]] && return 0
+  owner="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$cy" \
+        --query "Stacks[0].Tags[?Key=='cloudlens:stack'].Value | [0]" --output text | first_line)")"
+  if [[ "$owner" != "$STACK_NAME" ]]; then
+    warn "A stack named ${cy} exists but is not tagged cloudlens:stack=${STACK_NAME}; leaving it alone."
+    return 0
+  fi
+  note "CyPerf add-on stack ${cy} (${st}) belongs to this deployment."
+  addr="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$cy" \
+        --query "Stacks[0].Outputs[?OutputKey=='ControllerAddress'].OutputValue | [0]" --output text | first_line)")"
+  py=""
+  for _c in "$SCRIPT_DIR/../scripts/cyperf_setup.py" "$HOME/${REPO_NAME}/scripts/cyperf_setup.py" "$PWD/scripts/cyperf_setup.py"; do
+    [[ -f "$_c" ]] && { py="$_c"; break; }
+  done
+  if [[ "$DRY_RUN" == "true" ]]; then
+    dryrun_say "would release the CyPerf licence on ${addr:-the controller} (cyperf_setup.py --release-license), then delete stack ${cy}"
+    return 0
+  fi
+  if [[ "$AUDIT_ONLY" == "true" ]]; then
+    note "--orphans: ${cy} is reported, not deleted."
+    return 0
+  fi
+  if [[ -n "$addr" && -n "$py" ]] && command -v python3 >/dev/null 2>&1; then
+    if python3 "$py" --controller "$addr" --insecure --release-license; then
+      ok "CyPerf licence released (or none was installed): the activation returns to your entitlement."
+    else
+      warn "The CyPerf licence could NOT be released (controller unreachable or it refused)."
+      warn "Its activation stays consumed until Keysight support resets it. Continuing."
+    fi
+  else
+    warn "CyPerf licence not released: $([[ -z "$addr" ]] && echo "no controller address" || echo "scripts/cyperf_setup.py or python3 not found")."
+  fi
+  if del_aws cloudformation delete-stack --stack-name "$cy"; then
+    ok "Delete requested for ${cy}"
+  else
+    warn "delete-stack was rejected for ${cy}: ${DEL_ERR}"
+    return 0
+  fi
+  while (( waited < 900 )); do
+    st="$(det_clean "$(ro_aws cloudformation describe-stacks --stack-name "$cy" \
+          --query 'Stacks[0].StackStatus' --output text | first_line)")"
+    case "$st" in
+      ""|DELETE_COMPLETE) ok "Stack ${cy} deleted."; return 0 ;;
+      DELETE_FAILED) warn "Stack ${cy} is DELETE_FAILED; the main stack's delete may fail on its VPC."; return 0 ;;
+    esac
+    sleep 15; waited=$(( waited + 15 ))
+  done
+  warn "Stack ${cy} is still ${st} after 15 minutes; continuing."
+  return 0
+}
+
 if [[ "$SWEEP_ONLY" != "true" ]]; then
   step "Phase 5: Delete the stack"
   # The rail vPBs first (they hold the stack security group open).
+  # The CyPerf add-on stack before that: it lives in this stack's subnets.
+  sweep_cyperf_stack
   sweep_rail_vpbs
   if del_aws cloudformation delete-stack --stack-name "$STACK_NAME"; then
     ok "Delete requested for ${STACK_NAME}"

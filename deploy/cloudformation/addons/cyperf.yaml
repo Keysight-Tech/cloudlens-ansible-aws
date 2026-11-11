@@ -1,0 +1,247 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  CloudLens deploy add-on: Keysight CyPerf traffic generator (one controller,
+  one client agent, one server agent) inside the VPC of an existing CloudLens
+  stack. Launched by deploy/deploy-stack.sh --with-cyperf as the separate stack
+  <stack>-cyperf, removed by deploy/teardown-stack.sh before the main stack.
+  Modelled on github.com/Keysight/cyperf deployment/aws/cloudformation
+  (controller_and_agent_pair, existing VPC).
+
+# This file lives in addons/ on purpose: the Launch Stack button check and the
+# S3 sync glob deploy/cloudformation/*.yaml, and test_templates.sh holds every
+# template there to the "joinable single product" contract. An add-on that
+# only makes sense next to a parent stack is neither.
+
+Parameters:
+  ParentStackName:
+    Type: String
+    Description: Name of the CloudLens stack this add-on belongs to (tag value for cloudlens:stack).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+    Description: CIDR of the VPC. CyPerf agents and controller accept traffic from it.
+  MgmtSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for the controller and for each agent's control interface (eth0).
+  TestSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for each agent's test interface (eth1). Test traffic runs client to server here.
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+  AdminIngressCidr:
+    Type: String
+    Description: CIDR allowed to reach the controller UI (443) and SSH (22).
+  AssignPublicIp:
+    Type: String
+    Default: "yes"
+    AllowedValues: ["yes", "no"]
+    Description: Give the controller an Elastic IP. "no" keeps it private (VPN or bastion access).
+  ControllerAmi:
+    Type: AWS::EC2::Image::Id
+    Description: Keysight CyPerf Controller Marketplace AMI (resolved newest by the deploy script).
+  AgentAmi:
+    Type: AWS::EC2::Image::Id
+    Description: Keysight CyPerf Agent Marketplace AMI, same release as the controller.
+  ControllerInstanceType:
+    Type: String
+    Default: c5.2xlarge
+    AllowedValues: [c5.2xlarge]
+    Description: The only controller size Keysight supports on AWS.
+  AgentInstanceType:
+    Type: String
+    Default: c5.2xlarge
+    AllowedValues: [c5.2xlarge, c5n.9xlarge]
+    Description: Agent sizes Keysight supports on AWS.
+  SourceTagKey:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional tag put on both agents so the CloudLens mirror collection taps
+      them (the stack's discovery tag). Empty = agents are not marked as tap sources.
+  SourceTagValue:
+    Type: String
+    Default: ""
+  AgentAuthUsername:
+    Type: String
+    Default: admin
+    Description: Controller account the agents register with.
+  AgentAuthPassword:
+    Type: String
+    NoEcho: true
+    Default: "CyPerf&Keysight#1"
+    Description: Password of that account. The default is the documented product default.
+
+Conditions:
+  ControllerHasEip: !Equals [!Ref AssignPublicIp, "yes"]
+  TagAsSource: !Not [!Equals [!Ref SourceTagKey, ""]]
+
+Resources:
+  CyPerfSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "CyPerf controller and agents for ${ParentStackName}"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref AdminIngressCidr, Description: Controller UI and API from the admin network}
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref AdminIngressCidr, Description: SSH from the admin network}
+        - {IpProtocol: "-1", CidrIp: !Ref VpcCidr, Description: Agent registration and test traffic inside the VPC}
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+
+  ControllerEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref MgmtSubnetId
+      GroupSet: [!Ref CyPerfSecurityGroup]
+      Description: !Sub "${ParentStackName} CyPerf controller"
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-controller"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+
+  ControllerEip:
+    Type: AWS::EC2::EIP
+    Condition: ControllerHasEip
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-controller"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+
+  ControllerEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: ControllerHasEip
+    Properties:
+      AllocationId: !GetAtt ControllerEip.AllocationId
+      NetworkInterfaceId: !Ref ControllerEni
+
+  ControllerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ControllerAmi
+      InstanceType: !Ref ControllerInstanceType
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+        - {DeviceIndex: "0", NetworkInterfaceId: !Ref ControllerEni}
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: {VolumeSize: 100, VolumeType: gp3, DeleteOnTermination: true}
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-controller"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+        - {Key: "cloudlens:role", Value: cyperf-controller}
+
+  ClientControlEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref MgmtSubnetId
+      GroupSet: [!Ref CyPerfSecurityGroup]
+      Description: !Sub "${ParentStackName} CyPerf client agent control"
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-client-control"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+  ClientTestEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref TestSubnetId
+      GroupSet: [!Ref CyPerfSecurityGroup]
+      Description: !Sub "${ParentStackName} CyPerf client agent test"
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-client-test"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+  ServerControlEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref MgmtSubnetId
+      GroupSet: [!Ref CyPerfSecurityGroup]
+      Description: !Sub "${ParentStackName} CyPerf server agent control"
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-server-control"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+  ServerTestEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref TestSubnetId
+      GroupSet: [!Ref CyPerfSecurityGroup]
+      Description: !Sub "${ParentStackName} CyPerf server agent test"
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-server-test"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+
+  # Agents register themselves: Appsec_init is Keysight's own first-boot hook
+  # (same call as the Keysight/cyperf CloudFormation templates). The controller
+  # address is its private IP because all three sit in one VPC.
+  ClientAgentInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: ControllerInstance
+    Properties:
+      ImageId: !Ref AgentAmi
+      InstanceType: !Ref AgentInstanceType
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+        - {DeviceIndex: "0", NetworkInterfaceId: !Ref ClientControlEni}
+        - {DeviceIndex: "1", NetworkInterfaceId: !Ref ClientTestEni}
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: {VolumeSize: 8, VolumeType: gp3, DeleteOnTermination: true}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          cd /opt/keysight/tiger/active/bin/
+          sh /opt/keysight/tiger/active/bin/Appsec_init ${ControllerEni.PrimaryPrivateIpAddress} --username "${AgentAuthUsername}" --password "${AgentAuthPassword}" --fingerprint "" >> /var/log/Appsec_init.log
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-client"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+        - {Key: "cloudlens:role", Value: cyperf-client}
+        - !If [TagAsSource, {Key: !Ref SourceTagKey, Value: !Ref SourceTagValue}, !Ref "AWS::NoValue"]
+
+  ServerAgentInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: ControllerInstance
+    Properties:
+      ImageId: !Ref AgentAmi
+      InstanceType: !Ref AgentInstanceType
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+        - {DeviceIndex: "0", NetworkInterfaceId: !Ref ServerControlEni}
+        - {DeviceIndex: "1", NetworkInterfaceId: !Ref ServerTestEni}
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: {VolumeSize: 8, VolumeType: gp3, DeleteOnTermination: true}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          cd /opt/keysight/tiger/active/bin/
+          sh /opt/keysight/tiger/active/bin/Appsec_init ${ControllerEni.PrimaryPrivateIpAddress} --username "${AgentAuthUsername}" --password "${AgentAuthPassword}" --fingerprint "" >> /var/log/Appsec_init.log
+      Tags:
+        - {Key: Name, Value: !Sub "${ParentStackName}-cyperf-server"}
+        - {Key: "cloudlens:stack", Value: !Ref ParentStackName}
+        - {Key: "cloudlens:role", Value: cyperf-server}
+        - !If [TagAsSource, {Key: !Ref SourceTagKey, Value: !Ref SourceTagValue}, !Ref "AWS::NoValue"]
+
+Outputs:
+  ControllerAddress:
+    Description: Address to reach the CyPerf controller on (Elastic IP, or the private IP without one).
+    Value: !If [ControllerHasEip, !Ref ControllerEip, !GetAtt ControllerEni.PrimaryPrivateIpAddress]
+  ControllerPrivateIp:
+    Value: !GetAtt ControllerEni.PrimaryPrivateIpAddress
+  ControllerUiUrl:
+    Value: !If
+      - ControllerHasEip
+      - !Sub "https://${ControllerEip}"
+      - !Sub "https://${ControllerEni.PrimaryPrivateIpAddress}"
+  ClientAgentControlIp:
+    Value: !GetAtt ClientControlEni.PrimaryPrivateIpAddress
+  ServerAgentControlIp:
+    Value: !GetAtt ServerControlEni.PrimaryPrivateIpAddress
+  ClientAgentTestIp:
+    Value: !GetAtt ClientTestEni.PrimaryPrivateIpAddress
+  ServerAgentTestIp:
+    Value: !GetAtt ServerTestEni.PrimaryPrivateIpAddress
+  ControllerInstanceId:
+    Value: !Ref ControllerInstance
+  ClientAgentInstanceId:
+    Value: !Ref ClientAgentInstance
+  ServerAgentInstanceId:
+    Value: !Ref ServerAgentInstance

@@ -35,7 +35,7 @@ Events v2: the script's own side channel.
              still to come; the phase events below only ever report one that
              has already ended.
   phase    - name, status (done|failed|skipped), reason
-  resource - kind (vpc|subnet|vcontroller|kvo|vpb|workloads|eks) plus what
+  resource - kind (vpc|subnet|vcontroller|kvo|vpb|workloads|eks|cyperf) plus what
              that kind has: id, role, zone, ip, private_ip, ingress_ip,
              egress_ip, count, tag, mode, filter, created, cluster
              (workloads carries count, tag, mode, filter and, when the
@@ -43,7 +43,7 @@ Events v2: the script's own side channel.
   check    - item, status (pass|warn|fail), fix                  (--doctor)
   prompt   - question, default, kind (text|secret); the script's own id
              ("p3", what the prompt pipe answers to) arrives as prompt_id
-  login    - component (vcontroller|kvo|vpb), url, user, password_in: WHERE
+  login    - component (vcontroller|kvo|vpb|cyperf), url, user, password_in: WHERE
              the password lives, never the password
   done     - status (ok|failed|interrupted|declined), phase, reason, code,
              mode, report, profile. The same type as the console's own done,

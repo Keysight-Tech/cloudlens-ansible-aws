@@ -9,7 +9,7 @@ mirror the Azure ARM templates in the sibling `cloudlens-ansible-azure` repo.
 Marketplace AMIs for 12 regions: us-east-1, us-east-2, us-west-1, us-west-2,
 ca-central-1, eu-west-1, eu-west-2, eu-central-1, ap-southeast-1,
 ap-southeast-2, ap-northeast-1, ap-south-1. All regions pin the same product
-versions (vController 6.14.1-45, KVO 3.1.0, vPB 3.16.0-4, the newest Marketplace images),
+versions (vController 6.14.1-45, KVO 3.1.1, vPB 3.16.0-4, the newest Marketplace images),
 so the stack deploys identical software everywhere. The template resolves the
 right AMIs from `AWS::Region`, so just launch it in your target region (the docs
 site has a region picker, or change `region=` in the console URL). Subscribe to
@@ -52,7 +52,7 @@ will work. See `.github/workflows/sync-cfn-templates.yml` for the CI path
 | Component | AMI | Instance type |
 | --- | --- | --- |
 | vController (CLMS) | `ami-0b15df4defb740754` | `t3.xlarge` |
-| KVO | `ami-04b79ded0ffdaaed3` | `c5.2xlarge` (only supported size) |
+| KVO | `ami-05fac835d2aa4e81a` | `c5.2xlarge` (only supported size) |
 | vPB | `ami-0e78d35898708162b` | `t3.xlarge` (only supported size) |
 
 The vPB exposes OS-level SSH on **port 9022** (not 22). Security groups open
@@ -167,3 +167,7 @@ template-managed security group).
 
 Stack outputs include public IP, private IP, console URL, and the SSH command
 for each deployed instance.
+
+## Add-ons
+
+`addons/cyperf.yaml` is not a Launch Stack template: it is the Keysight CyPerf traffic generator (controller, client agent, server agent) that `deploy-stack.sh --with-cyperf` deploys as `<stack>-cyperf` into the VPC of an existing stack, and that `teardown-stack.sh` removes before the main stack. It is modelled on the templates in github.com/Keysight/cyperf (`deployment/aws/cloudformation/controller_and_agent_pair`).
