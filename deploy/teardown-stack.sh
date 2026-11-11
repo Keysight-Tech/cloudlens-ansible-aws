@@ -266,8 +266,10 @@ ro_aws() { probe aws "${AWS_REGION_ARG[@]}" "$@"; }
 det_clean() { local v="$1"; [[ "$v" == "None" ]] && v=""; printf '%s' "$v"; }
 
 # First NON-BLANK line: the AWS CLI v2 leads its error output with a blank one.
+# Takes the text as its argument, or on stdin when called as a pipe filter.
 first_line() {
-  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' 2>/dev/null | head -1 || true
+  if (( $# > 0 )); then printf '%s\n' "$1"; else cat; fi \
+    | grep -v '^[[:space:]]*$' 2>/dev/null | head -1 || true
 }
 
 # Collapse tabs/newlines from `--output text` into a single space-separated
@@ -1802,6 +1804,10 @@ if [[ "$SWEEP_ONLY" != "true" ]]; then
           if del_aws ec2 delete-security-group --group-id "$_sg"; then
             ok "$(did) ${_sg}"
             DELETED_SGS=$(( DELETED_SGS + 1 ))
+          elif [[ "$DEL_ERR" == *InvalidGroup.NotFound* ]]; then
+            # Listed in Phase 2, removed since (the CyPerf add-on stack takes
+            # its own group with it). Gone is the goal: it must not block the retry.
+            note "${_sg} is already gone."
           else
             warn "could not delete ${_sg}: ${DEL_ERR}"
             _remaining="${_remaining}${_remaining:+ }${_sg}"

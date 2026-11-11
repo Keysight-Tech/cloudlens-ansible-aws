@@ -173,7 +173,7 @@ STUB
     ro_aws() { aws "${AWS_REGION_ARG[@]}" "$@" 2>/dev/null || true; }
     del_aws() { aws "${AWS_REGION_ARG[@]}" "$@"; }
     det_clean() { local v="$1"; [[ "$v" == "None" ]] && v=""; printf '%s' "$v"; }
-    first_line() { head -1; }
+    eval "$(awk '/^first_line\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$TEARDOWN")"   # the real helper, under set -u
     ok() { :; }; warn() { :; }; note() { :; }; dryrun_say() { :; }
     cd "$S"; . "$S/sweep.sh"; sweep_cyperf_stack ) >/dev/null 2>&1
 }
