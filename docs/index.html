@@ -221,7 +221,7 @@
             <h3>CloudLens vController <span class="rebrand-tag">formerly CLMS</span></h3>
             <p>Central management for sensors. Required for any sensor deployment.</p>
             <ul>
-              <li>Version from the Marketplace AMI (CLMS_6.12.x)</li>
+              <li>Version: vController 6.14.1, the Marketplace image the stack resolves (<code>CloudLens-vController-Virtual-Appliance-AWS-6.14.1-45</code>)</li>
               <li>One instance, <code>t3.xlarge</code>, ready in about 15 minutes</li>
               <li>Access: web UI over HTTPS (appliance shell uses password auth, not your key pair)</li>
               <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/clms" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/clms.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
@@ -234,7 +234,7 @@
             <h3>Vision Orchestrator (KVO) <span class="new-tag">NEW</span></h3>
             <p>Optional. Centralizes the vPB fleet and automates AWS VPC Traffic Mirroring.</p>
             <ul>
-              <li>Version: KVO 2.13.0, the Marketplace image the stack resolves (<code>kvo-2.13.0-prod</code>). The 2026-09-28 and 2026-10-07 proofs ran KVO 3.1.0</li>
+              <li>Version: KVO 3.1.0, the Marketplace image the stack resolves (<code>kvo-3.1.0-prod</code>), the release the 2026-09-28 and 2026-10-07 proofs ran</li>
               <li>One instance, <code>c5.2xlarge</code> (Marketplace-fixed)</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;kvo-ip&gt;</code> (port 9022, not 22)</li>
               <li>Code: <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/tree/main/deploy/terraform/kvo" target="_blank" rel="noopener">Terraform module</a> &middot; <a href="https://github.com/Keysight-Tech/cloudlens-ansible-aws/blob/main/deploy/cloudformation/kvo.yaml" target="_blank" rel="noopener">CloudFormation template</a></li>
@@ -247,7 +247,7 @@
             <h3>Virtual Packet Broker (vPB)</h3>
             <p>Optional. For inline traffic processing and VXLAN aggregation.</p>
             <ul>
-              <li>Version from the Marketplace AMI (vPB-KVO 3.13.x)</li>
+              <li>Version: vPB 3.16.0-4, the Marketplace image the stack resolves (<code>cloudlens-vpb-kvo-3.16.0-4</code>)</li>
               <li>One instance, <code>t3.xlarge</code>, multi-ENI layout</li>
               <li>SSH: <code>ssh -p 9022 admin@&lt;vpb-ip&gt;</code> (NOT port 22)</li>
               <li>Bootstrap runs automatically at first boot (EC2 user data): kubeconfig + <code>sudo vpb</code> ready on first SSH</li>
@@ -490,7 +490,7 @@ aws ssm get-parameter --name /ec2/keypair/&lt;key-pair-id&gt; --region &lt;regio
           <button class="copy-btn" data-copy="teardown-cmd" type="button" aria-label="Copy the teardown command">Copy</button>
         </div>
 
-        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so on any stack launched before 15 September 2026 the root volumes survive as <code>available</code> and keep billing; the templates now override that, and this script sweeps such volumes either way. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script first terminates any extra vPB the deploy launched per area (<code>--vpb-rails</code>, tagged <code>cloudlens:stack</code> and <code>cloudlens:vpb-rail</code>) and releases their Elastic IPs, because they share the stack security group and a running one leaves the stack delete in DELETE_FAILED. It then deletes the stack and sweeps what it can attribute to it: the volumes, the security groups, the collector Auto Scaling group and its launch templates, the mirror targets, and the resources the deploy stamped inside a customer VPC. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
+        <p class="full-stack-note">Deleting the CloudFormation stack on its own is not enough, and that surprises people. The Marketplace AMIs set <code>DeleteOnTermination=false</code>, so on any stack launched before 15 September 2026 the root volumes survive as <code>available</code> and keep billing; the templates now override that, and this script sweeps such volumes either way. KVO creates the collector Auto Scaling group and its security groups outside CloudFormation, so the stack cannot see them, and a VPC still holding them cannot be deleted. CloudFormation can then report <code>DELETE_COMPLETE</code> and still leave the whole network standing. This script first terminates any extra vPB the deploy launched per area (<code>--vpb-rails</code>, tagged <code>cloudlens:stack</code> and <code>cloudlens:vpb-rail</code>) and releases their Elastic IPs, because they share the stack security group and a running one leaves the stack delete in DELETE_FAILED. It then deletes the stack and sweeps what it can attribute to it: the volumes, the security groups, the collector Auto Scaling group and its launch templates, the mirror sessions KVO cut from each tapped workload to those collectors (first: a live session keeps AWS from deleting its target and filter, and deleting one stops only the mirror copies), the mirror targets and filter, and the resources the deploy stamped inside a customer VPC. If the VPC itself outlives the stack, run <code>--orphans</code> afterwards to see what is still standing, and remove the VPC by hand.</p>
 
         <p class="full-stack-note"><strong>It only removes what your deployment built.</strong> Nothing is deleted unless AWS itself ties it to your stack, by stack membership, by living in the VPC that stack created, or by an owner tag naming it. Anything without that evidence is reported and left alone, because in a shared account "it was unattached" is not proof of ownership. In a pre-existing VPC (<code>--existing-vpc-id</code>) the VPC-membership rule is switched off: the VPC itself and anything the deploy did not stamp are left alone, and only the resources the deploy and its KVO tagged inside it are swept. Stack name and region are yours to pass, so the same command is safe in any account.</p>
 
@@ -1267,9 +1267,9 @@ terraform destroy</code></pre>
             <table class="step-table">
               <thead><tr><th>Product</th><th>Instance</th></tr></thead>
               <tbody>
-                <tr><td>vController (CLMS_6.12.x)</td><td><code>t3.xlarge</code></td></tr>
-                <tr><td>KVO (2.13.x)</td><td><code>c5.2xlarge</code> only</td></tr>
-                <tr><td>vPB-KVO (3.13.x)</td><td><code>t3.xlarge</code></td></tr>
+                <tr><td>vController (6.14.1)</td><td><code>t3.xlarge</code></td></tr>
+                <tr><td>KVO (3.1.0)</td><td><code>c5.2xlarge</code> only</td></tr>
+                <tr><td>vPB-KVO (3.16.0)</td><td><code>t3.xlarge</code></td></tr>
               </tbody>
             </table>
             <p class="muted-note">KVO has an AWS Marketplace instance-type restriction and cannot be changed.</p>

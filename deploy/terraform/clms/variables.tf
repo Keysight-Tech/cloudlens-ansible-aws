@@ -37,7 +37,7 @@ variable "public_key" {
 variable "ami_id" {
   description = "CloudLens vController (formerly CLMS) Marketplace AMI ID. Requires a one-time Marketplace subscription on the account. Default is the us-east-1 CloudLens vController image."
   type        = string
-  default     = "ami-0bebd5e730315337e"
+  default     = "ami-0b15df4defb740754"
 }
 
 variable "instance_type" {

@@ -864,7 +864,8 @@ def main():
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="admin")
     ap.add_argument("--codes", nargs="*", default=None,
-                    help="activation codes, each optionally CODE,QTY; omit to be prompted (TTY only)")
+                    help="activation codes, each optionally CODE,QTY; omit to read CLOUDLENS_KVO_CODES "
+                         "(space separated) or, failing that, to be prompted (TTY only)")
     ap.add_argument("--accept-eula", action="store_true",
                     help="Accept the KVO EULA if pending. A fresh KVO blocks ALL auth, "
                          "including the token endpoint, until this is done. Legal acceptance.")
@@ -906,6 +907,11 @@ def main():
 
     plan = []
     interactive = False
+    # Codes are consumable entitlement, so the deploy hands them over in the
+    # environment rather than on the command line, where any process listing
+    # on the operator's machine would show them. --codes still wins if given.
+    if a.codes is None and os.environ.get("CLOUDLENS_KVO_CODES", "").strip():
+        a.codes = os.environ["CLOUDLENS_KVO_CODES"].split()
     if a.codes:
         for c in a.codes:
             if "," in c:
@@ -1037,7 +1043,14 @@ def main():
     # phases that need the others fail later for reasons that read as unrelated.
     # Say which parts of the deployment are covered, while the operator still
     # has their codes to hand.
-    products = " ".join(str(L.get("product", "")) for L in (final or [])).lower()
+    # Match on the feature names as well as the product: KSM labels both the
+    # credit pool and the vPB feature licence product "CloudLens", and only the
+    # feature (CL-CREDIT, CL.vPB.ADVPERM) tells them apart. Matching the product
+    # alone reported the vPB licence missing while it was installed (2026-10-15).
+    products = " ".join(
+        " ".join([str(L.get("product", ""))] +
+                 [str(f.get("name", "")) for f in (L.get("features") or []) if isinstance(f, dict)])
+        for L in (final or []) if isinstance(L, dict)).lower()
     checks = [
         ("KVO device licences", "adopting the vController and the vPB",
          any(k in products for k in ("kvo-device", "visionorchestrator", "kvo device"))),

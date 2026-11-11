@@ -27,7 +27,7 @@ admin_username = "cloudlens"
 
 # OPTIONAL: vPB Marketplace AMI (us-east-1). Requires a one-time Marketplace
 # subscription on the account.
-ami_id = "ami-0a561b450552b707d"
+ami_id = "ami-0e78d35898708162b"
 
 # NOTE: instance_type is fixed to t3.xlarge. The vPB AMI is qualified on
 # t3.xlarge only and the module rejects any other value.

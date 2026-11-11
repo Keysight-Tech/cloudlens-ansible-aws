@@ -53,8 +53,11 @@ fail() { printf '  FAIL  %s\n' "$*"; }
 pass() { printf '  PASS  %s\n' "$*"; }
 
 AWSQ=(aws --region "$REGION")
+# IdentitiesOnly: every call passes -i, and without it an ssh-agent holding six
+# or more keys offers them all first, sshd stops at MaxAuthTries, and a working
+# host reads as "could not start tcpdump" or an undriven workload.
 SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-     -o ConnectTimeout=15 -o BatchMode=yes -o LogLevel=ERROR)
+     -o ConnectTimeout=15 -o BatchMode=yes -o LogLevel=ERROR -o IdentitiesOnly=yes)
 
 # --- can we talk to AWS at all? ----------------------------------------------
 # Ask BEFORE any describe-* call. Without this, an expired SSO token makes every
@@ -199,7 +202,7 @@ measure_once() {
   # The capture must be running BEFORE the traffic starts, or the first packets
   # are missed and a working path looks half broken.
   "${SSH[@]}" -i "$KEY_PEM" "ubuntu@${TOOL_PUB}" \
-    "sudo rm -f /tmp/prove.pcap; nohup sudo timeout $((DURATION+5)) tcpdump -i any -nn 'proto 47' -w /tmp/prove.pcap >/dev/null 2>&1 &" \
+    "IF=\$(ip -o route show default | awk '{print \$5; exit}'); sudo rm -f /tmp/prove.pcap; nohup sudo timeout $((DURATION+5)) tcpdump -i \"\${IF:-any}\" -nn 'proto 47' -w /tmp/prove.pcap >/dev/null 2>&1 &" \
     || { fail "could not start tcpdump on the tool"; exit 4; }
   sleep 3
 

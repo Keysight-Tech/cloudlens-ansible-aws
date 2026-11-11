@@ -7,8 +7,8 @@ deploy itself, in an existing VPC the deploy did not build, against an
 existing EKS cluster (`--eks-cluster`) with `--vpb-rails mirror,k8s`: 3,929
 packets passed on the k8s vPB with pod-to-pod HTTP inside its tunnel while
 the mirror rail delivered 5,516 GRE packets at the tool. Both proofs ran
-KVO (Keysight Vision Orchestrator) 3.1.0; the KVO the stack launches from
-the AWS Marketplace is 2.13.0 (image `kvo-2.13.0-prod`, resolved by name in
+KVO (Keysight Vision Orchestrator) 3.1.0, the same release the stack now
+launches from the AWS Marketplace (image `kvo-3.1.0-prod`, resolved by name in
 `deploy/deploy-stack.sh` and pinned per region in the `stack.yaml`
 RegionMap). This page is the repeatable chain and the two product rules
 that decide the design.

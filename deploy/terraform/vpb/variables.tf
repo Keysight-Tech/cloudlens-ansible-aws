@@ -37,7 +37,7 @@ variable "public_key" {
 variable "ami_id" {
   description = "vPB Marketplace AMI ID. Requires a one-time Marketplace subscription on the account. Default is the us-east-1 CloudLens vPB image."
   type        = string
-  default     = "ami-0a561b450552b707d"
+  default     = "ami-0e78d35898708162b"
 }
 
 variable "instance_type" {

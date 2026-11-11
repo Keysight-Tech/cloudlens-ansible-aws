@@ -41,9 +41,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFT_TEMPLATE="${REPO_ROOT}/deploy/cloudformation/stack.yaml"
 
 # Marketplace AMIs (us-east-1) + instance sizes for the CloudLens appliances.
-AMI_VCONTROLLER="ami-0bebd5e730315337e"; TYPE_VCONTROLLER="t3.xlarge"   # CLMS / vController
-AMI_KVO="ami-017c0db8981569380";         TYPE_KVO="c5.2xlarge"          # KVO
-AMI_VPB="ami-0a561b450552b707d";         TYPE_VPB="t3.xlarge"           # vPB
+AMI_VCONTROLLER="ami-0b15df4defb740754"; TYPE_VCONTROLLER="t3.xlarge"   # CLMS / vController
+AMI_KVO="ami-04b79ded0ffdaaed3";         TYPE_KVO="c5.2xlarge"          # KVO
+AMI_VPB="ami-0e78d35898708162b";         TYPE_VPB="t3.xlarge"           # vPB
 VPB_SSH_PORT=9022                                                        # vPB SSH is on 9022, not 22
 
 # Networking: one demo VPC with mgmt / data / tool subnets (no peering needed).

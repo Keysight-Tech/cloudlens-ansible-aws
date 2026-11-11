@@ -51,7 +51,7 @@ variable "deploy_vpb" {
 variable "controller_ami" {
   description = "vController / CLMS Marketplace AMI id."
   type        = string
-  default     = "ami-0bebd5e730315337e"
+  default     = "ami-0b15df4defb740754"
 }
 variable "controller_type" {
   type    = string
@@ -61,7 +61,7 @@ variable "controller_type" {
 variable "kvo_ami" {
   description = "KVO Marketplace AMI id."
   type        = string
-  default     = "ami-017c0db8981569380"
+  default     = "ami-04b79ded0ffdaaed3"
 }
 variable "kvo_type" {
   type    = string
@@ -71,7 +71,7 @@ variable "kvo_type" {
 variable "vpb_ami" {
   description = "vPB Marketplace AMI id."
   type        = string
-  default     = "ami-0a561b450552b707d"
+  default     = "ami-0e78d35898708162b"
 }
 variable "vpb_type" {
   type    = string

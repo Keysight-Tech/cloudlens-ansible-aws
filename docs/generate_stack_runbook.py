@@ -576,8 +576,10 @@ def build_prerequisites(doc: Document) -> None:
         doc, "Region note",
         "Default region is us-east-1 and the AMIs are region-locked. To deploy "
         "elsewhere, look up the equivalent Marketplace AMI IDs first: aws ec2 "
-        "describe-images --owners aws-marketplace --filters "
-        "Name=name,Values=*CloudLens*Manager* --region <region>. See "
+        "describe-images --owners 679593333241 --filters "
+        "Name=name,Values=<image name> --region <region>, with the exact "
+        "image names deploy-stack.sh pins (CLMS_AMI_NAME, KVO_AMI_NAME, "
+        "VPB_AMI_NAME). See "
         "docs/OPERATIONS.md section 9.",
     )
     doc.add_page_break()

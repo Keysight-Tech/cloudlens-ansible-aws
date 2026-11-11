@@ -48,7 +48,7 @@ variable "clms_instance_name" {
 variable "clms_ami_id" {
   description = "vController Marketplace AMI ID (us-east-1)."
   type        = string
-  default     = "ami-0bebd5e730315337e"
+  default     = "ami-0b15df4defb740754"
 }
 
 variable "clms_instance_type" {
@@ -87,7 +87,7 @@ variable "kvo_instance_name" {
 variable "kvo_ami_id" {
   description = "KVO Marketplace AMI ID (us-east-1)."
   type        = string
-  default     = "ami-017c0db8981569380"
+  default     = "ami-04b79ded0ffdaaed3"
 }
 
 variable "kvo_instance_type" {
@@ -126,7 +126,7 @@ variable "vpb_instance_name" {
 variable "vpb_ami_id" {
   description = "vPB Marketplace AMI ID (us-east-1)."
   type        = string
-  default     = "ami-0a561b450552b707d"
+  default     = "ami-0e78d35898708162b"
 }
 
 variable "vpb_instance_type" {

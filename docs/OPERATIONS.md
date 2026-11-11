@@ -457,9 +457,9 @@ Default us-east-1 AMIs baked into the stack:
 
 | Component | Instance type | us-east-1 AMI |
 |---|---|---|
-| vController (CLMS) | `t3.xlarge` | `ami-0bebd5e730315337e` |
-| KVO (Keysight Vision Orchestrator) | `c5.2xlarge` | `ami-017c0db8981569380` |
-| vPB (Virtual Packet Broker) | `t3.xlarge` | `ami-0d00b42a9748d580c` |
+| vController (CLMS) | `t3.xlarge` | `ami-0b15df4defb740754` |
+| KVO (Keysight Vision Orchestrator) | `c5.2xlarge` | `ami-04b79ded0ffdaaed3` |
+| vPB (Virtual Packet Broker) | `t3.xlarge` | `ami-0e78d35898708162b` |
 
 The collector Service VM has no fixed id: KVO launches it at run time from the
 newest `cloudlens-vpb-svm-*` Marketplace image in the region (same subscription
@@ -468,16 +468,19 @@ as the vPB listing), so it is not in the table or the `RegionMap`.
 To find the equivalent AMI in another region after you subscribe:
 
 ```bash
-aws ec2 describe-images --region <region> --owners aws-marketplace \
-  --filters "Name=name,Values=*CloudLens*Manager*" \
-  --query "reverse(sort_by(Images,&CreationDate))[0].{id:ImageId,name:Name}"
+for n in CloudLens-vController-Virtual-Appliance-AWS-6.14.1-45-prod-m4ufj3qrd4shm \
+         kvo-3.1.0-prod-ol4ektflnyxn2 \
+         cloudlens-vpb-kvo-3.16.0-4-prod-ltzj3zafoveok; do
+  aws ec2 describe-images --region <region> --owners 679593333241 \
+    --filters "Name=name,Values=$n" --query "Images[0].[ImageId,Name]" --output text
+done
 ```
 
 The `RegionMap` in `deploy/cloudformation/stack.yaml` already carries
 vController, KVO, vPB and the RHEL test AMI for 12 regions, and
 `deploy-stack.sh` resolves them from `--region`. Only for a region outside that
 list: repeat the lookup with the image names `deploy-stack.sh` resolves
-(`KVO_AMI_NAME` and `VPB_AMI_NAME`, matched by exact name against the
+(`CLMS_AMI_NAME`, `KVO_AMI_NAME` and `VPB_AMI_NAME`, matched by exact name against the
 Marketplace owner `679593333241` in `resolve_ami_by_name`), add the ids to the
 `RegionMap`, and re-sync the templates to S3.
 
@@ -489,7 +492,7 @@ Marketplace owner `679593333241` in `resolve_ami_by_name`), add the ids to the
 |---|---|
 | `quickstart.sh` | Customer-facing one-command sensor deploy. Reads `customer_input.yaml`, runs `deploy.yaml` Ansible playbook. |
 | `deploy/deploy-stack.sh` | The whole pipeline in 18 phase steps (12 resumable names: stack wait bootstrap key license adopt sensors eks vpb mirror path prove): stack via CloudFormation (default) or Terraform, vController key, KVO licensing and adoption, sensors, EKS, vPB adoption, mirror, vPB path, traffic proof, HTML report. `--doctor`, `--profile`, `--events`, `--discover`, `--resume`. |
-| `deploy/teardown-stack.sh` | Deletes the stack and sweeps what it leaves, in order: rail vPBs, stamped instances, collector ASGs and launch templates, mirror targets and filter, security groups, volumes; offers to release the KVO licences while the KVO is alive. `--orphans`, `--dry-run`, `--sweep-only`, `--yes`, `--release-licences` with `--kvo-admin-user USER`, `--kvo-admin-pass PASS` (prefer the `CLOUDLENS_KVO_ADMIN_PASS` variable: a flag value sits in shell history and in `ps`) and `--kvo-address ADDR` when the stack cannot say where the KVO is. |
+| `deploy/teardown-stack.sh` | Deletes the stack and sweeps what it leaves, in order: rail vPBs, stamped instances, collector ASGs and launch templates, mirror sessions to those collectors (AWS refuses to delete a target or filter a session still uses), mirror targets and filter, security groups, volumes; offers to release the KVO licences while the KVO is alive. `--orphans`, `--dry-run`, `--sweep-only`, `--yes`, `--release-licences` with `--kvo-admin-user USER`, `--kvo-admin-pass PASS` (prefer the `CLOUDLENS_KVO_ADMIN_PASS` variable: a flag value sits in shell history and in `ps`) and `--kvo-address ADDR` when the stack cannot say where the KVO is. |
 | `scripts/kvo_license.py`, `scripts/kvo_adopt_clms.py`, `scripts/vpb_kvo_adopt.py`, `scripts/vpb_wire_path.py`, `scripts/kvo_aws_mirror.py`, `scripts/kvo_k8s_config.py` | The KVO automation the phases call: licensing, vController adoption and Cloud Config, vPB adoption, vPB path and policy, AWS mirror fabric, Kubernetes presence. Each runs standalone. |
 | `scripts/deploy-eks-tapping.sh` | The EKS rail: DaemonSet or sidecar sensors, image to ECR, sample cluster. |
 | `scripts/bootstrap-vpb.sh` | vPB first-boot bootstrap (run by the stack's user data and by phase 8): kubeconfig and the `sudo vpb` wrapper. |

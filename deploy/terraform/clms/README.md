@@ -29,7 +29,7 @@ After about 15 minutes the vController console is reachable at the `clms_ui_url`
 | `admin_username` | `cloudlens` | OS admin user (for the ssh_command output) |
 | `key_name` | `""` | Existing EC2 key pair name |
 | `public_key` | `""` | SSH public key to import as a new key pair |
-| `ami_id` | `ami-0bebd5e730315337e` | CloudLens vController Marketplace AMI |
+| `ami_id` | `ami-0b15df4defb740754` | CloudLens vController Marketplace AMI |
 | `instance_type` | `t3.xlarge` | Instance type (t3.xlarge / t3.2xlarge / m5.xlarge / m5.2xlarge) |
 | `root_volume_size` | `128` | Root EBS volume size in GB |
 | `existing_vpc_id` | `""` | Existing VPC to deploy into (blank creates a new VPC) |
@@ -65,8 +65,8 @@ The CloudLens AMIs are Marketplace images. Subscribe once in the AWS Marketplace
 # Look up the product/offer for the AMI, then subscribe in the Marketplace console:
 #   https://console.aws.amazon.com/marketplace
 # The AMI ID used by this module (us-east-1):
-#   ami-0bebd5e730315337e  (CloudLens vController)
-aws ec2 describe-images --image-ids ami-0bebd5e730315337e --region us-east-1
+#   ami-0b15df4defb740754  (CloudLens vController)
+aws ec2 describe-images --image-ids ami-0b15df4defb740754 --region us-east-1
 ```
 
 Without an active subscription, `terraform apply` fails with an OptInRequired error at instance launch.

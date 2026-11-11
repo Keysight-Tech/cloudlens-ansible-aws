@@ -27,6 +27,13 @@
 #      AWS zone tapping. KVO builds them with the IAM role the stack grants,
 #      outside CloudFormation, so the stack has no idea they exist. Left
 #      behind, the ASG rebuilds its instance every time someone terminates it.
+#   5. The traffic mirror sessions KVO cuts from each tapped workload ENI to
+#      those collectors, then their targets and filter. The KVO goes with the
+#      stack, so nothing else ever removes the sessions, and one left behind
+#      keeps its target and filter undeletable and still takes the mirror
+#      copies on its ENI. Deleting a session never touches workload traffic.
+#      A session is this stack's only when it sends to one of those
+#      collectors' targets, as AWS reports it at the moment of the delete.
 #
 # ---------------------------------------------------------------------
 # SCOPING RULE. This is the one rule the whole script rests on.
@@ -145,6 +152,10 @@ SWEEP_LTS=""
 SWEEP_OWN_INSTANCES=""    # instances the deploy tagged cloudlens:stack=<stack>, any VPC
 SWEEP_MIRROR_TARGETS=""   # traffic mirror targets on this stack's collectors
 SWEEP_MIRROR_FILTERS=""   # the KVO mirror filter for this stack's VPC
+SWEEP_MIRROR_SESSIONS=""  # sessions KVO cut from workload ENIs to those targets
+MIRROR_SESSION_LINES=""   # "tms-id<TAB>source-eni<TAB>target<TAB>filter" per line, for the report
+MIRROR_SESSIONS_DROPPED="" # recorded earlier, no longer sending to those targets: left alone
+MIRROR_SHARED_LINES=""    # sessions on KVO's filter to a target that is NOT ours: left alone
 SWEEP_GB=0
 SWEEP_COST="0.00"
 UNATTRIBUTED_GB=0
@@ -153,6 +164,7 @@ UNATTRIBUTED_COST="0.00"
 VOLUME_LINES=""       # "vol-id<TAB>size<TAB>type<TAB>state" per line
 
 DELETED_VOLUMES=0; DELETED_GB=0; DELETED_COST=0; DELETED_SGS=0; DELETED_ASGS=0; DELETED_LTS=0
+DELETED_SESSIONS=0
 FAILED_ITEMS=""
 SCRIPT_DONE=false
 PHASE_NAME="startup"
@@ -367,7 +379,9 @@ the extra vPBs that --vpb-rails launched outside CloudFormation and their
 Elastic IPs (terminated BEFORE the stack delete), unattached EBS volumes,
 non-stack security groups sitting in the stack's VPC, the collector Auto
 Scaling Group / launch templates KVO creates outside CloudFormation, the
-traffic mirror targets and filter on those collectors, and whatever the
+traffic mirror sessions KVO cut from the workload ENIs to those collectors
+(deleting one stops only the mirror copies, never the workload's traffic),
+the mirror targets and filter on those collectors, and whatever the
 deploy stamped inside a customer VPC (instances tagged cloudlens:stack=<stack>,
 security groups named cloudlens-*-<stack>). Deleting the stack alone leaves
 all of that billing.
@@ -484,8 +498,11 @@ Order of operations:
   7. Sweep what the delete leaves, in this order: any rail vPB that appeared
      in between, the instances the deploy stamped (cloudlens:stack=<stack>,
      in any VPC, a customer's included), the collector ASGs and launch
-     templates, the traffic mirror targets and filter, the security groups,
-     and last the volumes (only those now 'available').
+     templates, the traffic mirror sessions to those collectors (they hold
+     the targets and the filter, and AWS refuses to delete either while one
+     is in use), then the targets and the filter (left in place while
+     another deployment's session still uses it), the security groups, and
+     last the volumes (only those now 'available').
 HLP
 }
 
@@ -638,6 +655,104 @@ stack_resource_ids() {
     --query "StackResources[?ResourceType=='${1}'].PhysicalResourceId" --output text)"
 }
 
+# The traffic mirror sessions of this stack are attributed by TARGET alone:
+# a session is ours iff it sends to one of SWEEP_MIRROR_TARGETS, the targets
+# on this stack's collectors' ENIs (evidence class 4 below). Nothing else
+# about a session is evidence:
+#   - its filter is not. KVO names it cloudlens.mirror_filter.<vpc>, per VPC
+#     and not per stack, so a second deploy tapping the same VPC has a filter
+#     of that name too, or reuses ours. Counting its sessions as ours would
+#     delete them, and the filter-in-use refusal that protects its filter
+#     would then be gone as well;
+#   - nor is where it sits or how it is tagged: the VPC holds the customer's
+#     own sessions (to a GWLB endpoint or an NLB, their own filter), on the
+#     very workload ENIs KVO taps;
+#   - nor is a session id recorded by an earlier run. It may be gone since,
+#     or repointed (ModifyTrafficMirrorSession) at somebody else's target, so
+#     the list is rebuilt from AWS before it is shown and again just before
+#     anything is deleted, and a recorded id that no longer sends to one of
+#     our targets is named and left alone.
+MIRROR_SESSION_Q='TrafficMirrorSessions[].[TrafficMirrorSessionId,NetworkInterfaceId,TrafficMirrorTargetId,TrafficMirrorFilterId]'
+
+# mirror_sessions_for "TARGETS": the sessions that send to one of TARGETS,
+# one line each: session-id<TAB>source-eni<TAB>target-id<TAB>filter-id.
+# Every row AWS returns is checked again here against TARGETS before it
+# counts. Read-only, and like every probe an empty answer means "none found
+# or could not tell".
+mirror_sessions_for() {
+  local targets="$1" raw="" seen="" sid seni stgt sflt
+  [[ -n "$targets" ]] || return 0
+  raw="$(ro_aws ec2 describe-traffic-mirror-sessions \
+    --filters "Name=traffic-mirror-target-id,Values=$(printf '%s' "$targets" | tr ' ' ',')" \
+    --query "$MIRROR_SESSION_Q" --output text)"
+  while IFS=$'\t' read -r sid seni stgt sflt; do
+    [[ "${sid:-}" == tms-* ]] || continue
+    in_list "$sid" "$seen" && continue
+    [[ -n "${stgt:-}" ]] && in_list "$stgt" "$targets" || continue
+    seen="${seen}${seen:+ }${sid}"
+    printf '%s\t%s\t%s\t%s\n' "$sid" "${seni:-}" "${stgt:-}" "${sflt:-}"
+  done <<< "$raw"
+  return 0
+}
+
+# shared_filter_sessions "FILTERS" "TARGETS": the sessions that use one of
+# FILTERS but send to a target outside TARGETS, same line format. Those are
+# NOT ours; they are found only so the report can say why KVO's filter may
+# have to stay. Read-only.
+shared_filter_sessions() {
+  local filters="$1" targets="$2" raw="" sid seni stgt sflt
+  [[ -n "$filters" ]] || return 0
+  raw="$(ro_aws ec2 describe-traffic-mirror-sessions \
+    --filters "Name=traffic-mirror-filter-id,Values=$(printf '%s' "$filters" | tr ' ' ',')" \
+    --query "$MIRROR_SESSION_Q" --output text)"
+  while IFS=$'\t' read -r sid seni stgt sflt; do
+    [[ "${sid:-}" == tms-* ]] || continue
+    [[ -n "${stgt:-}" ]] && in_list "$stgt" "$targets" && continue
+    printf '%s\t%s\t%s\t%s\n' "$sid" "${seni:-}" "${stgt:-}" "${sflt:-}"
+  done <<< "$raw"
+  return 0
+}
+
+# collect_mirror_sessions: REBUILD SWEEP_MIRROR_SESSIONS from what AWS says
+# sends to one of SWEEP_MIRROR_TARGETS right now (details kept in
+# MIRROR_SESSION_LINES for the report). Whatever the list held before, from a
+# manifest or from an earlier call, and that AWS no longer attributes goes to
+# MIRROR_SESSIONS_DROPPED: named, never deleted. Read-only.
+collect_mirror_sessions() {
+  local _ms _rest _before="$SWEEP_MIRROR_SESSIONS"
+  SWEEP_MIRROR_SESSIONS=""; MIRROR_SESSIONS_DROPPED=""; MIRROR_SESSION_LINES=""; MIRROR_SHARED_LINES=""
+  MIRROR_SESSION_LINES="$(mirror_sessions_for "$SWEEP_MIRROR_TARGETS")"
+  while IFS=$'\t' read -r _ms _rest; do
+    [[ -n "${_ms:-}" ]] || continue
+    in_list "$_ms" "$SWEEP_MIRROR_SESSIONS" || SWEEP_MIRROR_SESSIONS="${SWEEP_MIRROR_SESSIONS}${SWEEP_MIRROR_SESSIONS:+ }${_ms}"
+  done <<< "$MIRROR_SESSION_LINES"
+  for _ms in $_before; do
+    in_list "$_ms" "$SWEEP_MIRROR_SESSIONS" || MIRROR_SESSIONS_DROPPED="${MIRROR_SESSIONS_DROPPED}${MIRROR_SESSIONS_DROPPED:+ }${_ms}"
+  done
+  MIRROR_SHARED_LINES="$(shared_filter_sessions "$SWEEP_MIRROR_FILTERS" "$SWEEP_MIRROR_TARGETS")"
+  return 0
+}
+
+# explain_dropped_sessions: one line per MIRROR_SESSIONS_DROPPED id saying
+# what became of it, from AWS. Read-only; never a reason to delete anything.
+explain_dropped_sessions() {
+  local _ms _out _row _a _b _c _d
+  for _ms in $MIRROR_SESSIONS_DROPPED; do
+    _out="$(PROBE_MERGE_STDERR=1 ro_aws ec2 describe-traffic-mirror-sessions \
+      --traffic-mirror-session-ids "$_ms" --query "$MIRROR_SESSION_Q" --output text)"
+    _row="$(printf '%s\n' "$_out" | grep "^${_ms}[[:space:]]" | head -1 || true)"
+    if [[ -n "$_row" ]]; then
+      IFS=$'\t' read -r _a _b _c _d <<< "$_row"
+      note "recorded mirror session ${_ms} now sends to ${_c:-?}, not to this stack's collectors: left alone"
+    elif [[ "$_out" == *"InvalidTrafficMirrorSessionId.NotFound"* ]]; then
+      note "recorded mirror session ${_ms} is already gone"
+    else
+      note "recorded mirror session ${_ms} no longer sends to this stack's collectors, or AWS could not be read: left alone"
+    fi
+  done
+  return 0
+}
+
 if [[ "$STACK_STATUS" != "MISSING" ]]; then
   STACK_INSTANCE_IDS="$(tokens "$(stack_resource_ids 'AWS::EC2::Instance')")"
   STACK_SG_IDS="$(tokens "$(stack_resource_ids 'AWS::EC2::SecurityGroup')")"
@@ -667,6 +782,13 @@ else
   SWEEP_OWN_INSTANCES="$(state_get SWEEP_OWN_INSTANCES 2>/dev/null || true)"
   SWEEP_MIRROR_TARGETS="$(state_get SWEEP_MIRROR_TARGETS 2>/dev/null || true)"
   SWEEP_MIRROR_FILTERS="$(state_get SWEEP_MIRROR_FILTERS 2>/dev/null || true)"
+  # Absent from a manifest written before sessions were recorded, and never
+  # trusted as it stands when present. So AWS is asked now for the sessions
+  # still sending to the recorded targets (the rule above the helpers), for
+  # the report and the confirmation, and asked again in Phase 7 just before
+  # the delete. A recorded id AWS no longer attributes is named, not deleted.
+  SWEEP_MIRROR_SESSIONS="$(state_get SWEEP_MIRROR_SESSIONS 2>/dev/null || true)"
+  collect_mirror_sessions
   [[ -z "$SWEEP_SGS" ]] && SWEEP_SGS="$(state_get SWEEP_SGS 2>/dev/null || true)"
   if [[ -n "$SWEEP_VOLUMES" || -n "$STACK_VPC_ID" ]]; then
     note "Using the manifest recorded by an earlier run: ${STATE_FILE}"
@@ -777,6 +899,7 @@ fi
 #   collector ASGs tagged cloudlens:ip=<THIS stack's vController private IP>
 #   mirror targets on those collectors' ENIs, and the filter KVO named
 #   cloudlens.mirror_filter.<vpc>, only when the collectors were ours
+#   mirror sessions that send to one of those targets (never by filter)
 if [[ "$STACK_STATUS" != "MISSING" ]]; then
   _rail_ids="$(tokens "$(ro_aws ec2 describe-instances \
       --filters "Name=tag:cloudlens:stack,Values=${STACK_NAME}" "Name=tag-key,Values=cloudlens:vpb-rail" \
@@ -839,11 +962,22 @@ if [[ "$STACK_STATUS" != "MISSING" ]]; then
     [[ -n "$STACK_VPC_ID" ]] && SWEEP_MIRROR_FILTERS="$(tokens "$(ro_aws ec2 describe-traffic-mirror-filters \
       --filters "Name=tag:Name,Values=cloudlens.mirror_filter.${STACK_VPC_ID}" \
       --query 'TrafficMirrorFilters[].TrafficMirrorFilterId' --output text)")"
+    # The sessions KVO cut to those targets. They do NOT go with the
+    # collectors: KVO cuts one per tapped WORKLOAD ENI (source = the
+    # workload's ENI, target = the collector's target, filter = KVO's), the
+    # workload ENIs outlive the stack, and the KVO that would remove the
+    # sessions is deleted with it. Left in place they hold the target and the
+    # filter (AWS refuses both deletes, TrafficMirrorTargetInUse, seen live
+    # 2026-10-16), and worse: AWS mirrors a packet to the first matching
+    # session on an ENI only, so a stale session to a dead target swallows
+    # the copies a redeployed KVO's new sessions should get. Attributed by
+    # target only: the filter's name is per VPC, not per stack.
+    collect_mirror_sessions
   fi
   _n_own="$(printf '%s' "$SWEEP_OWN_INSTANCES" | wc -w | tr -d ' ')"
   _n_coll="$(printf '%s' "$_coll_ids" | wc -w | tr -d ' ')"
   if (( _n_own + _n_coll > 0 )); then
-    ok "Stamped by this deploy: ${_n_own} instance(s), ${_n_coll} collector(s), $(printf '%s' "$SWEEP_MIRROR_TARGETS" | wc -w | tr -d ' ') mirror target(s)"
+    ok "Stamped by this deploy: ${_n_own} instance(s), ${_n_coll} collector(s), $(printf '%s' "$SWEEP_MIRROR_TARGETS" | wc -w | tr -d ' ') mirror target(s), $(printf '%s' "$SWEEP_MIRROR_SESSIONS" | wc -w | tr -d ' ') mirror session(s)"
   fi
 fi
 
@@ -902,6 +1036,7 @@ if [[ "$AUDIT_ONLY" != "true" && "$DRY_RUN" != "true" && "$STACK_STATUS" != "MIS
   state_set SWEEP_OWN_INSTANCES "$SWEEP_OWN_INSTANCES"
   state_set SWEEP_MIRROR_TARGETS "$SWEEP_MIRROR_TARGETS"
   state_set SWEEP_MIRROR_FILTERS "$SWEEP_MIRROR_FILTERS"
+  state_set SWEEP_MIRROR_SESSIONS "$SWEEP_MIRROR_SESSIONS"
   [[ -n "$STATE_FILE" ]] && note "Manifest recorded: ${STATE_FILE}"
 elif [[ "$DRY_RUN" == "true" && "$STACK_STATUS" != "MISSING" ]]; then
   dryrun_say "would record the attribution manifest to ${STATE_FILE}"
@@ -962,6 +1097,42 @@ if [[ -n "$SWEEP_LTS" ]]; then
   for _l in $SWEEP_LTS; do echo "    $_l"; done
 fi
 
+if [[ -n "$SWEEP_MIRROR_SESSIONS" ]]; then
+  echo
+  echo "  Traffic mirror sessions to this stack's collectors (one per tapped workload ENI):"
+  for _ms in $SWEEP_MIRROR_SESSIONS; do
+    _meni=""; _mtgt=""
+    while IFS=$'\t' read -r _a _b _c _d; do
+      [[ "${_a:-}" == "$_ms" ]] && { _meni="${_b:-}"; _mtgt="${_c:-}"; break; }
+    done <<< "$MIRROR_SESSION_LINES"
+    if [[ -n "$_meni" ]]; then
+      printf '    %-26s source %s, target %s\n' "$_ms" "$_meni" "${_mtgt:-?}"
+    else
+      printf '    %s\n' "$_ms"
+    fi
+  done
+  note "Deleting a session stops only the mirror COPIES sent to the collector."
+  note "The workload's production traffic never passes through a session and is"
+  note "not affected. Left in place, a session blocks the delete of its target and"
+  note "filter, and since AWS sends each packet only to the first matching session"
+  note "on an ENI, it keeps the copies a redeployed KVO's new sessions should get."
+fi
+if [[ -n "$MIRROR_SESSIONS_DROPPED" ]]; then
+  echo
+  echo "  Mirror sessions recorded by an earlier run that no longer send to this stack's collectors:"
+  explain_dropped_sessions
+fi
+if [[ -n "$MIRROR_SHARED_LINES" ]]; then
+  echo
+  echo "  Traffic mirror sessions that use this VPC's KVO filter but send to a target"
+  echo "  this stack does not own (another deployment's or the customer's), left alone:"
+  while IFS=$'\t' read -r _a _b _c _d; do
+    [[ -n "${_a:-}" ]] || continue
+    printf '    %-26s source %s, target %s, filter %s\n' "$_a" "${_b:-?}" "${_c:-?}" "${_d:-?}"
+  done <<< "$MIRROR_SHARED_LINES"
+  note "A filter that one of them still uses stays: it is shared, not ours alone."
+fi
+
 # In audit mode also surface volumes that are loose in the region but NOT
 # attributable to this stack. Reported so the cost is visible, never deletable:
 # in a shared account "available" is not ownership.
@@ -1000,6 +1171,7 @@ if [[ "$AUDIT_ONLY" == "true" ]]; then
   echo "  Non-stack SGs in VPC:  $(printf '%s' "$SWEEP_SGS" | wc -w | tr -d ' ')"
   echo "  Orphan ASGs:           $(printf '%s' "$SWEEP_ASGS" | wc -w | tr -d ' ')"
   echo "  Orphan launch temps:   $(printf '%s' "$SWEEP_LTS" | wc -w | tr -d ' ')"
+  echo "  Mirror sessions:       $(printf '%s' "$SWEEP_MIRROR_SESSIONS" | wc -w | tr -d ' ') (to this stack's collectors)"
   echo "  Unattributed EBS:      ${UNATTRIBUTED_GB} GB, about \$${UNATTRIBUTED_COST}/month (reported only)"
   echo
   echo "  Nothing was deleted. To actually tear this down:"
@@ -1193,6 +1365,14 @@ echo "  About to delete, in ${REGION}:"
 [[ -n "$SWEEP_SGS" ]]  && echo "    - $(printf '%s' "$SWEEP_SGS" | wc -w | tr -d ' ') non-stack security groups in ${STACK_VPC_ID}"
 [[ -n "$SWEEP_ASGS" ]] && echo "    - $(printf '%s' "$SWEEP_ASGS" | wc -w | tr -d ' ') Auto Scaling groups"
 [[ -n "$SWEEP_LTS" ]]  && echo "    - $(printf '%s' "$SWEEP_LTS" | wc -w | tr -d ' ') launch templates"
+if [[ -n "$SWEEP_MIRROR_SESSIONS$SWEEP_MIRROR_TARGETS$SWEEP_MIRROR_FILTERS" ]]; then
+  echo "    - traffic mirroring: $(printf '%s' "$SWEEP_MIRROR_SESSIONS" | wc -w | tr -d ' ') session(s) (${SWEEP_MIRROR_SESSIONS:-none found}), then"
+  echo "      $(printf '%s' "$SWEEP_MIRROR_TARGETS" | wc -w | tr -d ' ') target(s) and $(printf '%s' "$SWEEP_MIRROR_FILTERS" | wc -w | tr -d ' ') filter(s). The sessions sending to those targets"
+  echo "      are looked up again just before the delete, and only those go; a"
+  echo "      filter another session still uses is left in place. Deleting a"
+  echo "      session stops only the mirror copies; the workloads' production"
+  echo "      traffic is unaffected."
+fi
 if [[ "$HAS_KVO" == "true" && "$SWEEP_ONLY" != "true" ]]; then
   echo "    - the KVO in that stack, with every licence still activated on it. The"
   echo "      next step offers to release them first; whatever is not released is"
@@ -1737,10 +1917,15 @@ else
     fi
   done
 
-  # ---- mirror targets sit on the collectors' ENIs; the filter is shared by
-  # the sessions KVO cut, which go with the collectors. Targets first, then
-  # the filter, after the collectors are gone (the ASG delete above waits).
-  if [[ -n "$SWEEP_MIRROR_TARGETS$SWEEP_MIRROR_FILTERS" && "$DRY_RUN" != "true" ]]; then
+  # ---- traffic mirroring: sessions, then targets, then the filter.
+  # The targets sit on the collectors' ENIs. The sessions do NOT go with the
+  # collectors: KVO cuts one per tapped WORKLOAD ENI (source = the workload's
+  # ENI, target = the collector's target, filter = KVO's filter), and the KVO
+  # that would remove them is deleted with the stack. A session left behind
+  # holds its target and filter (AWS refuses both deletes with ...InUse, seen
+  # live 2026-10-16) and keeps taking the copies on its ENI. Deleting one stops
+  # only those copies; the workload's own traffic is never touched.
+  if [[ -n "$SWEEP_MIRROR_TARGETS$SWEEP_MIRROR_FILTERS$SWEEP_MIRROR_SESSIONS" && "$DRY_RUN" != "true" ]]; then
     for _a in $SWEEP_ASGS; do
       for _try in 1 2 3 4 5 6 7 8 9 10 11 12; do
         [[ "$(ro_aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$_a" --query 'length(AutoScalingGroups)' --output text 2>/dev/null)" == "0" ]] && break
@@ -1748,6 +1933,29 @@ else
       done
     done
   fi
+  # Ask AWS again, now, which sessions send to our targets, and delete those
+  # and only those. The list from Phase 2 (or the manifest) is not reused as
+  # it stands: KVO was alive until the stack delete and may have cut another
+  # session since, a --sweep-only run with a manifest written before sessions
+  # were recorded has the targets but no session list, and a recorded session
+  # may have been repointed at somebody else's target since. The rule is the
+  # one above the helpers: by target, never by filter.
+  collect_mirror_sessions
+  explain_dropped_sessions
+  for _ms in $SWEEP_MIRROR_SESSIONS; do
+    if del_aws ec2 delete-traffic-mirror-session --traffic-mirror-session-id "$_ms"; then
+      ok "$(did) traffic mirror session ${_ms} (mirror copies only: production traffic is unaffected)"
+      DELETED_SESSIONS=$(( DELETED_SESSIONS + 1 ))
+    else
+      case "$DEL_ERR" in
+        # Recorded by an earlier run that already removed it: nothing to do,
+        # and not a failure to send the operator chasing.
+        *InvalidTrafficMirrorSessionId.NotFound*) note "traffic mirror session ${_ms} is already gone" ;;
+        *) warn "could not delete mirror session ${_ms}: ${DEL_ERR}"
+           record_failure "$_ms" "$DEL_ERR" ;;
+      esac
+    fi
+  done
   for _t in $SWEEP_MIRROR_TARGETS; do
     if del_aws ec2 delete-traffic-mirror-target --traffic-mirror-target-id "$_t"; then
       ok "$(did) traffic mirror target ${_t}"
@@ -1756,12 +1964,24 @@ else
       record_failure "$_t" "$DEL_ERR"
     fi
   done
+  # The filter is attributed by KVO's per-VPC name, so it can be shared with
+  # another deployment tapping the same VPC. AWS refuses the delete while any
+  # session uses it, and that refusal is what protects a shared filter: when
+  # the session it names is not one of ours, the filter stays and that is
+  # the right outcome, not a failure to chase.
   for _f in $SWEEP_MIRROR_FILTERS; do
     if del_aws ec2 delete-traffic-mirror-filter --traffic-mirror-filter-id "$_f"; then
       ok "$(did) traffic mirror filter ${_f}"
     else
-      warn "could not delete mirror filter ${_f}: ${DEL_ERR}"
-      record_failure "$_f" "$DEL_ERR"
+      _by=""
+      [[ "$DEL_ERR" == *TrafficMirrorFilterInUse* ]] && _by="$(printf '%s' "$DEL_ERR" | sed -n 's/.*in use by \(tms-[0-9a-zA-Z]*\).*/\1/p')"
+      if [[ -n "$_by" ]] && ! in_list "$_by" "$SWEEP_MIRROR_SESSIONS"; then
+        warn "mirror filter ${_f} left in place: still used by session ${_by}, which was not found sending to this stack's collectors"
+        note "the filter is shared with whoever owns that session, and goes when they remove it"
+      else
+        warn "could not delete mirror filter ${_f}: ${DEL_ERR}"
+        record_failure "$_f" "$DEL_ERR"
+      fi
     fi
   done
 
@@ -1810,7 +2030,7 @@ else
     fi
   fi
 
-  if (( DELETED_VOLUMES == 0 && DELETED_SGS == 0 && DELETED_ASGS == 0 && DELETED_LTS == 0 )); then
+  if (( DELETED_VOLUMES == 0 && DELETED_SGS == 0 && DELETED_ASGS == 0 && DELETED_LTS == 0 && DELETED_SESSIONS == 0 )); then
     ok "Nothing left to sweep."
   fi
 fi
@@ -1828,6 +2048,7 @@ echo "  Volumes ${_lbl}:    ${DELETED_VOLUMES} (${DELETED_GB} GB, about \$${_sav
 echo "  Security groups:    ${DELETED_SGS}"
 echo "  Auto Scaling grps:  ${DELETED_ASGS}"
 echo "  Launch templates:   ${DELETED_LTS}"
+echo "  Mirror sessions:    ${DELETED_SESSIONS}"
 if [[ -n "$FAILED_ITEMS" ]]; then
   echo
   warn "Some resources could not be removed:"

@@ -245,9 +245,9 @@ SUPPORTED_CFN_REGIONS="us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-w
 # at runtime so Phase 4's subscription probe and the Terraform path work in any
 # supported region. The template itself resolves AMIs from its own RegionMap.
 MARKETPLACE_OWNER="679593333241"
-CLMS_AMI_NAME="CLMS_6.12.1-32-prod-m4ufj3qrd4shm"
-KVO_AMI_NAME="kvo-2.13.0-prod-ol4ektflnyxn2"
-VPB_AMI_NAME="cloudlens-vpb-kvo-3.13.0-7-security-update-1-prod-ltzj3zafoveok"
+CLMS_AMI_NAME="CloudLens-vController-Virtual-Appliance-AWS-6.14.1-45-prod-m4ufj3qrd4shm"
+KVO_AMI_NAME="kvo-3.1.0-prod-ol4ektflnyxn2"
+VPB_AMI_NAME="cloudlens-vpb-kvo-3.16.0-4-prod-ltzj3zafoveok"
 
 # us-east-1 fallback ids (used if name resolution fails, e.g. offline dry-run).
 # An explicit CLOUDLENS_*_AMI env var always wins and disables auto-resolution.
@@ -255,16 +255,16 @@ CLMS_AMI_OVERRIDE="${CLOUDLENS_VCONTROLLER_AMI:-}"
 KVO_AMI_OVERRIDE="${CLOUDLENS_KVO_AMI:-}"
 VPB_AMI_OVERRIDE="${CLOUDLENS_VPB_AMI:-}"
 # vController (formerly CLMS)
-CLMS_AMI="${CLMS_AMI_OVERRIDE:-ami-0bebd5e730315337e}"
+CLMS_AMI="${CLMS_AMI_OVERRIDE:-ami-0b15df4defb740754}"
 CLMS_TYPE="${CLOUDLENS_VCONTROLLER_TYPE:-t3.xlarge}"
 # KVO (Keysight Vision Orchestrator)
-KVO_AMI="${KVO_AMI_OVERRIDE:-ami-017c0db8981569380}"
+KVO_AMI="${KVO_AMI_OVERRIDE:-ami-04b79ded0ffdaaed3}"
 KVO_TYPE="${CLOUDLENS_KVO_TYPE:-c5.2xlarge}"
 # vPB (Virtual Packet Broker) - management SSH is on port 9022, not 22
-VPB_AMI="${VPB_AMI_OVERRIDE:-ami-0d00b42a9748d580c}"
+VPB_AMI="${VPB_AMI_OVERRIDE:-ami-0e78d35898708162b}"
 VPB_TYPE="${CLOUDLENS_VPB_TYPE:-t3.xlarge}"
 # Collector SVM (informational; not deployed by this stack directly)
-COLLECTOR_AMI="${CLOUDLENS_COLLECTOR_AMI:-ami-0c22ade3667f8d35a}"
+COLLECTOR_AMI="${CLOUDLENS_COLLECTOR_AMI:-ami-03547c03fd3babb82}"
 
 VPB_SSH_PORT="${CLOUDLENS_VPB_SSH_PORT:-9022}"
 
@@ -482,6 +482,11 @@ SKIP_PROVE=false;   REASON_PROVE=""
 # falls back to the documented default when there is no terminal to ask on.
 SENSOR_MODE="${CLOUDLENS_SENSOR_MODE:-}"   # standalone | kvo | none
 KVO_CODES=()                  # --kvo-codes, repeatable, passed straight through
+# Codes may also come from the environment (space separated), which keeps them
+# off this script's own command line; --kvo-codes adds to whatever is here.
+if [[ -n "${CLOUDLENS_KVO_CODES:-}" ]]; then
+  read -r -a KVO_CODES <<< "$CLOUDLENS_KVO_CODES"
+fi
 CLOUD_CONFIG_NAME="${CLOUDLENS_CLOUD_CONFIG:-cloudlens-aws}"
 CLM_NAME_IN_KVO="${CLOUDLENS_CLM_NAME:-cloudlens-manager}"
 VPB_DEVICE_NAME="${CLOUDLENS_VPB_DEVICE_NAME:-cloudlens-vpb}"
@@ -5925,7 +5930,7 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     skip_note "KVO licensing"
     ok "No activation code is re-used, so no entitlement quantity is spent."
   elif [[ "$DRY_RUN" == "true" ]]; then
-    dryrun_say "python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure --accept-eula ${KVO_CODES[@]+--codes ${KVO_CODES[*]}}"
+    dryrun_say "CLOUDLENS_KVO_CODES=<${#KVO_CODES[@]} code(s), hidden> python3 scripts/kvo_license.py --kvo ${KVO_PUBLIC_IP} --insecure --accept-eula"
     [[ ${#KVO_CODES[@]} -eq 0 ]] && dryrun_say "no --kvo-codes given: on a terminal kvo_license.py would prompt for code + quantity"
   elif [[ -z "$LIC_SCRIPT" ]]; then
     warn "scripts/kvo_license.py not found; cannot license KVO."
@@ -5950,8 +5955,10 @@ if [[ "$DEPLOY_KVO" == "true" ]]; then
     # fresh KVO could never be licensed however valid the code was. Seen live:
     # "auth failed: Expecting value: line 1 column 1" on an HTML redirect body.
     # Phase 12 already tells the operator this deploy accepts the KVO EULA.
-    if python3 "$LIC_SCRIPT" --kvo "$KVO_PUBLIC_IP" --insecure --accept-eula \
-         ${KVO_CODES[@]+--codes "${KVO_CODES[@]}"}; then
+    # Codes go in the environment: on the command line any process listing
+    # would show them, and they are spendable entitlement.
+    if CLOUDLENS_KVO_CODES="${KVO_CODES[@]+${KVO_CODES[*]}}" \
+         python3 "$LIC_SCRIPT" --kvo "$KVO_PUBLIC_IP" --insecure --accept-eula; then
       ok "KVO licensing completed."
     else
       warn "KVO licensing did not complete."
@@ -7034,7 +7041,9 @@ PYWL
           note "  from the collector egress subnet: VPC peering or TGW, plus routes."
           note "  The subnet checks below verify placement, not reachability."
         fi
-        if python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
+        # The mirror key pair travels in the environment, not on the command line.
+        if CLOUDLENS_MIRROR_ACCESS_KEY="$MIRROR_ACCESS_KEY" CLOUDLENS_MIRROR_SECRET_KEY="$MIRROR_SECRET_KEY" \
+           python3 "$MIRROR_SCRIPT" --kvo "$KVO_PUBLIC_IP" --clm-name "$CLM_NAME_IN_KVO" \
              --region "$REGION" --vpc-id "$m_vpc" --name "$m_name" \
              --source-tag "${DISCOVERY_TAG_KEY}=${DISCOVERY_TAG_VALUE}" \
              ${WL_MANIFEST:+--selection "$WL_MANIFEST"} \
@@ -7051,7 +7060,6 @@ PYWL
              --gre-key "$CLOUDLENS_GRE_KEY" \
              --tool-encap L2GRE \
              --device-link vpb-c2dl \
-             --aws-access-key "$MIRROR_ACCESS_KEY" --aws-secret-key "$MIRROR_SECRET_KEY" \
              --accept-eula --insecure; then
           MIRROR_ANY_DONE=true
           ok "Mirror fabric '${m_name}' committed; the collector for ${m_vpc} is launching in KVO."

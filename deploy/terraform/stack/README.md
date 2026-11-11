@@ -33,10 +33,10 @@ The stack pins the CloudLens Marketplace AMIs. A one-time Marketplace subscripti
 
 | Component | AMI | Instance type |
 |---|---|---|
-| vController (CLMS) | `ami-0bebd5e730315337e` | `t3.xlarge` |
-| KVO | `ami-017c0db8981569380` | `c5.2xlarge` (enforced) |
-| vPB | `ami-0a561b450552b707d` | `t3.xlarge` (enforced) |
-| Collector SVM (v6.13.0) | `ami-0c22ade3667f8d35a` | reference, not deployed by this stack |
+| vController (CLMS) | `ami-0b15df4defb740754` | `t3.xlarge` |
+| KVO | `ami-04b79ded0ffdaaed3` | `c5.2xlarge` (enforced) |
+| vPB | `ami-0e78d35898708162b` | `t3.xlarge` (enforced) |
+| Collector SVM (v6.14.1) | `ami-03547c03fd3babb82` | reference, not deployed by this stack |
 
 The KVO and vPB instance types are locked by validation blocks in their child modules, so an override to an unsupported type fails at `terraform plan`.
 

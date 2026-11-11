@@ -26,7 +26,7 @@ admin_username = "cloudlens"
 
 # OPTIONAL: KVO Marketplace AMI (us-east-1). Requires a one-time Marketplace
 # subscription on the account.
-ami_id = "ami-017c0db8981569380"
+ami_id = "ami-04b79ded0ffdaaed3"
 
 # NOTE: instance_type is fixed to c5.2xlarge. The KVO AMI is qualified on
 # c5.2xlarge only and the module rejects any other value.

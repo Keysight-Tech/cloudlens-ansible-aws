@@ -69,6 +69,15 @@ def introspect_input(base, token, verify, type_name):
     return {f["name"]: f for f in (t.get("inputFields") or [])}
 
 
+def policy_source(base, token, verify, name):
+    """The policy's traffic source in the shape this KVO takes. KVO 2.13 has
+    source:{name}; KVO 3.1.0 removed it for sources:[{name}] (live schema,
+    2026-10-16), and an unknown field fails the whole mutation."""
+    if "source" in introspect_input(base, token, verify, "_MonitoringPolicyInput"):
+        return {"source": {"name": name}}
+    return {"sources": [{"name": name}]}
+
+
 def unwrap(t):
     """(kinds seen, innermost named type) for a GraphQL type reference."""
     kinds, cur = [], t
@@ -281,6 +290,13 @@ def main():
     # output, and one tcpdump tells you which path delivered which packet.
     ap.add_argument("--egress-gre-key", type=int, default=200,
                     help="L2GRE key the vPB uses on its egress tunnel to the tool")
+    # VXLAN is what ExtraHop and most cloud tools ingest natively. No Keysight
+    # guide shows a KVO-managed vPB originating VXLAN to a remote tool (every
+    # example is L2GRE), so this is opt-in and exists to test exactly that.
+    ap.add_argument("--egress-encap", default="L2GRE", choices=["L2GRE", "VXLAN"],
+                    help="tunnel the vPB uses on its egress to the tool (default L2GRE)")
+    ap.add_argument("--egress-vni", type=int, default=200,
+                    help="VXLAN VNI for --egress-encap VXLAN (UDP 4789)")
     ap.add_argument("--kvo-admin-user", default="admin")
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true")
@@ -399,14 +415,18 @@ def main():
         else:
             log(f"4/7 tool '{a.tool}' already exists")
     else:
-        log(f"4/7 createTool (REMOTE from device -> {a.capture_ip}, L2GRE key {a.egress_gre_key})")
+        if a.egress_encap == "VXLAN":
+            encap = {"vxlanEncapsulation": {"vnid": str(a.egress_vni), "udpDestPort": 4789}}
+            log(f"4/7 createTool (REMOTE from device -> {a.capture_ip}, VXLAN VNI {a.egress_vni})")
+        else:
+            encap = {"l2greEncapsulation": {"key": str(a.egress_gre_key)}}
+            log(f"4/7 createTool (REMOTE from device -> {a.capture_ip}, L2GRE key {a.egress_gre_key})")
         if not step(base, tok, verify, "create egress tool",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_ToolInput!){ createTool(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.tool, "c": cluster,
-                     "s": {"type": "REMOTE", "reachableFrom": "DEVICE_CONFIG",
-                           "vlanStripping": False,
-                           "tunnelOrigRemoteIP": a.capture_ip,
-                           "l2greEncapsulation": {"key": str(a.egress_gre_key)}}}): return 5
+                     "s": dict({"type": "REMOTE", "reachableFrom": "DEVICE_CONFIG",
+                                "vlanStripping": False,
+                                "tunnelOrigRemoteIP": a.capture_ip}, **encap)}): return 5
 
     # 5. egress -> tool  (separate call from the ingress bind on purpose)
     log(f"5/7 bind {a.egress_port} (egress) -> tool")
@@ -556,8 +576,8 @@ def main():
         if not step(base, tok, verify, "create monitoring policy",
                     "mutation($n:String!,$cr:String!,$c:String,$s:_MonitoringPolicyInput!){ createMonitoringPolicy(name:$n,changeID:$cr,clusterID:$c,settings:$s){ uid } }",
                     {"n": a.policy, "c": cluster,
-                     "s": dict({"source": {"name": src}, "tools": policy_tools,
-                                "runMode": "CONTINUOUSLY", "type": "REGULAR"}, **policy_extra)}): return 5
+                     "s": dict(policy_source(base, tok, verify, src), tools=policy_tools,
+                               runMode="CONTINUOUSLY", type="REGULAR", **policy_extra)}): return 5
         a.collection = src   # so the summary below names what was actually used
 
     v = gql(base, tok, "{ devices{name availability{value}} c2DLinks{name} tools{name type} monitoringPolicies{name} changeRequests{uid status} }", None, verify)

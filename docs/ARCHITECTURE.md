@@ -39,9 +39,9 @@ Banners 1 to 5 (environment, pre-flight, customer input, Marketplace subscriptio
 
 | Product | Role | Instance type | us-east-1 AMI |
 |---|---|---|---|
-| **vController** (CloudLens Manager, CLMS) | Sensor management and registration; every sensor registers to it on first start | `t3.xlarge` (default) or `m5.xlarge` | `ami-0bebd5e730315337e` |
-| **KVO** (Keysight Vision Orchestrator) | Orchestrator: licensing, Cloud Config, vPB control, AWS Zone Tapping | `c5.2xlarge` only | `ami-017c0db8981569380` |
-| **vPB** (Virtual Packet Broker) | Filter, dedup, load balance; three network interfaces (mgmt, ingress, egress). CLI login is the EC2 key pair on port 9022, then `sudo vpb`; there is no password | `t3.xlarge` only | `ami-0d00b42a9748d580c` |
+| **vController** (CloudLens Manager, CLMS) | Sensor management and registration; every sensor registers to it on first start | `t3.xlarge` (default) or `m5.xlarge` | `ami-0b15df4defb740754` |
+| **KVO** (Keysight Vision Orchestrator) | Orchestrator: licensing, Cloud Config, vPB control, AWS Zone Tapping | `c5.2xlarge` only | `ami-04b79ded0ffdaaed3` |
+| **vPB** (Virtual Packet Broker) | Filter, dedup, load balance; three network interfaces (mgmt, ingress, egress). CLI login is the EC2 key pair on port 9022, then `sudo vpb`; there is no password | `t3.xlarge` only | `ami-0e78d35898708162b` |
 | **Collector SVM** (Service VM) | AWS VPC Traffic Mirror target; KVO launches it into an Auto Scaling Group during the mirror phase | `t3.xlarge`: the default of `--collector-type` on `scripts/kvo_aws_mirror.py`, not a `deploy-stack.sh` flag | Resolved per region by name at run time (`cloudlens-vpb-svm-*`, newest), never a fixed id |
 
 The AMI ids are the us-east-1 entries of the template's `RegionMap`; `stack.yaml` carries 12 regions and `--region` picks the right set. All three Marketplace listings need an active subscription in the account before launch.
@@ -178,7 +178,7 @@ Sensor targets are found by tag: `cloudlens=yes` by default (`DiscoveryTagKey` a
 
 CloudFormation owns the resources in Phase 1. The deploy also creates, outside the stack: the extra rail vPBs and their Elastic IPs (`--vpb-rails`, tagged `cloudlens:stack=<stack>` and `cloudlens:vpb-rail=<area>`), the three collector security groups, the collector Auto Scaling Group and launch templates KVO creates, and the mirror targets, filters and sessions.
 
-`deploy/teardown-stack.sh` terminates the rail vPBs and releases their Elastic IPs before the stack delete (they hold the stack security group open), deletes the stack, then sweeps what the delete leaves behind: the volumes (the Marketplace AMIs keep their root volumes on termination), the non-stack security groups, the collector Auto Scaling Group, the mirror targets and the deploy-stamped resources inside a customer VPC. In a pre-existing VPC the VPC itself and anything the deploy did not stamp are left alone. Release the KVO's licences before the delete; the teardown asks, or takes `--release-licences`.
+`deploy/teardown-stack.sh` terminates the rail vPBs and releases their Elastic IPs before the stack delete (they hold the stack security group open), deletes the stack, then sweeps what the delete leaves behind: the volumes (the Marketplace AMIs keep their root volumes on termination), the non-stack security groups, the collector Auto Scaling Group, the mirror sessions KVO cut from the workload ENIs to its collectors (first, since they hold the targets and filter; deleting one stops only the mirror copies), the mirror targets and filter, and the deploy-stamped resources inside a customer VPC. A session is swept only when it sends to one of this stack's collector targets, checked against AWS just before the delete; its filter is not evidence, because KVO names it per VPC and another deployment tapping the same VPC can share it. The customer's own sessions and another deployment's are never touched, and a filter one of them still uses is left in place. In a pre-existing VPC the VPC itself and anything the deploy did not stamp are left alone. Release the KVO's licences before the delete; the teardown asks, or takes `--release-licences`.
 
 ## Customer case study
 

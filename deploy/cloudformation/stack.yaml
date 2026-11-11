@@ -363,64 +363,64 @@ Parameters:
 Mappings:
   RegionMap:
     us-east-1:
-      VcontrollerAmi: ami-0bebd5e730315337e
-      KvoAmi: ami-017c0db8981569380
-      VpbAmi: ami-0d00b42a9748d580c
+      VcontrollerAmi: ami-0b15df4defb740754
+      KvoAmi: ami-04b79ded0ffdaaed3
+      VpbAmi: ami-0e78d35898708162b
       TestRhelAmi: ami-037b1265ce539a36b
     us-east-2:
-      VcontrollerAmi: ami-085c6b0cf292a110f
-      KvoAmi: ami-09ba4a3a96b404131
-      VpbAmi: ami-0bdb147359362e451
+      VcontrollerAmi: ami-0c2eef104fd5535a3
+      KvoAmi: ami-00873a9b9ce0ec400
+      VpbAmi: ami-000a6600726d8d90c
       TestRhelAmi: ami-00abb3be2c0a00884
     us-west-1:
-      VcontrollerAmi: ami-0420c02f2c555a402
-      KvoAmi: ami-078dcfe6ef376cbf8
-      VpbAmi: ami-0f4c90de5b6218bcb
+      VcontrollerAmi: ami-07085154d5034ccc4
+      KvoAmi: ami-06802cb9637470411
+      VpbAmi: ami-0818bf0e2961cdf95
       TestRhelAmi: ami-01bd9d5a15b53f425
     us-west-2:
-      VcontrollerAmi: ami-0f3fba668617b18f1
-      KvoAmi: ami-0461fbb90a12fc90d
-      VpbAmi: ami-0b21fd86f3ef95d20
+      VcontrollerAmi: ami-0efaf047316bf77d5
+      KvoAmi: ami-037088eedf82321e2
+      VpbAmi: ami-0119eb520838ffaf9
       TestRhelAmi: ami-01a0de0b8c3e70f9b
     eu-west-1:
-      VcontrollerAmi: ami-0bf7638d1e75aac19
-      KvoAmi: ami-073bf2fb4534dbd7a
-      VpbAmi: ami-0a326441326d1a1ba
+      VcontrollerAmi: ami-04933816e1531f905
+      KvoAmi: ami-016fa7b59b7cce0b8
+      VpbAmi: ami-07bbe88ddc81c5a5e
       TestRhelAmi: ami-02568ac5ddcbd31e7
     eu-west-2:
-      VcontrollerAmi: ami-0c8189014261e3c7f
-      KvoAmi: ami-0f0b3a8233656bee1
-      VpbAmi: ami-0c2424fa82af5583d
+      VcontrollerAmi: ami-082d2d5bdaa8456f6
+      KvoAmi: ami-0027626e1eb699f6f
+      VpbAmi: ami-0c7e45702a900d63d
       TestRhelAmi: ami-069464cbf08dc03ee
     eu-central-1:
-      VcontrollerAmi: ami-0e8c6cc855fccfc22
-      KvoAmi: ami-0fcc45a154c9e0a9c
-      VpbAmi: ami-081212375359e9f18
+      VcontrollerAmi: ami-0aaaad981125b5f8c
+      KvoAmi: ami-0d7101cbfbcc7fcc7
+      VpbAmi: ami-05afea88e0ee774ae
       TestRhelAmi: ami-070b1015e2969b61e
     ca-central-1:
-      VcontrollerAmi: ami-0b4ec2f46fc51cd6d
-      KvoAmi: ami-0164ddd77416f2ca2
-      VpbAmi: ami-036351ce1ebb5bf52
+      VcontrollerAmi: ami-01473f6471eef0247
+      KvoAmi: ami-00f2efd183f348051
+      VpbAmi: ami-0f6e4447a57167764
       TestRhelAmi: ami-04abfc5870b97cb27
     ap-southeast-1:
-      VcontrollerAmi: ami-04955ec1c6899170d
-      KvoAmi: ami-0c9a3935cfbc53ac8
-      VpbAmi: ami-0fd9d87d31db91dbb
+      VcontrollerAmi: ami-0495f7718864ffc72
+      KvoAmi: ami-0ecccddb9233068b8
+      VpbAmi: ami-0c824e8cd69e494b3
       TestRhelAmi: ami-0f88780df278d47eb
     ap-southeast-2:
-      VcontrollerAmi: ami-00fb08ffc483a3ea1
-      KvoAmi: ami-0b38af1afe0f11695
-      VpbAmi: ami-0c35e40887fa8547c
+      VcontrollerAmi: ami-08503840dde9b974c
+      KvoAmi: ami-0a76e577ebbc620aa
+      VpbAmi: ami-0012bcbd048b1f090
       TestRhelAmi: ami-00db6ff7f6494b853
     ap-northeast-1:
-      VcontrollerAmi: ami-05383c85ebe460ee6
-      KvoAmi: ami-096430c7ccaba7a2c
-      VpbAmi: ami-0cb2da0165c37db78
+      VcontrollerAmi: ami-0fa6abc54d4d794bf
+      KvoAmi: ami-0b5eba4dfc873149f
+      VpbAmi: ami-03ddc14e67c15e82e
       TestRhelAmi: ami-0154353c91d5d85fd
     ap-south-1:
-      VcontrollerAmi: ami-0de9998616b04343e
-      KvoAmi: ami-0e579f93331cd8712
-      VpbAmi: ami-0fd34a7cce0d8aaaa
+      VcontrollerAmi: ami-0c06ddcb2e3236294
+      KvoAmi: ami-015eb87c8865c5fe9
+      VpbAmi: ami-0c676ef0394e5082e
       TestRhelAmi: ami-07965f2ce18015293
 
 Conditions:
@@ -955,9 +955,25 @@ Resources:
       KeyName: !If [CreateKeyPair, !Ref GeneratedKeyPair, !Ref KeyPairName]
       # SubnetId, SecurityGroupIds and SourceDestCheck live on VpbMgmtEni now:
       # EC2 rejects them here once an interface is supplied by reference.
-      NetworkInterfaces:
-        - DeviceIndex: 0
-          NetworkInterfaceId: !Ref VpbMgmtEni
+      #
+      # All interfaces are attached AT LAUNCH, never by separate attachment
+      # resources. CloudFormation now releases an instance's dependents while
+      # its own eventual-consistency check is still running; two attachments
+      # landing in that window changed the instance under the check, which then
+      # never stabilised ("Exceeded attempts to wait", NotStabilized after ~40
+      # min) and rolled the whole stack back, KVO and vController included
+      # (live, 2026-10-15). Launching with eth0-eth2 also means the vPB boots
+      # with every interface it will ever have.
+      NetworkInterfaces: !If
+        - VpbMultiNic
+        - - DeviceIndex: 0
+            NetworkInterfaceId: !Ref VpbMgmtEni
+          - DeviceIndex: 1
+            NetworkInterfaceId: !Ref VpbIngressEni
+          - DeviceIndex: 2
+            NetworkInterfaceId: !Ref VpbEgressEni
+        - - DeviceIndex: 0
+            NetworkInterfaceId: !Ref VpbMgmtEni
       Tags:
         - Key: Name
           Value: !If [CustomVpbName, !Ref VpbName, !Sub "${AWS::StackName}-vpb"]
@@ -1023,22 +1039,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpb-egress"
-
-  VpbIngressAttachment:
-    Type: AWS::EC2::NetworkInterfaceAttachment
-    Condition: VpbMultiNic
-    Properties:
-      InstanceId: !Ref VpbInstance
-      NetworkInterfaceId: !Ref VpbIngressEni
-      DeviceIndex: 1
-
-  VpbEgressAttachment:
-    Type: AWS::EC2::NetworkInterfaceAttachment
-    Condition: VpbMultiNic
-    Properties:
-      InstanceId: !Ref VpbInstance
-      NetworkInterfaceId: !Ref VpbEgressEni
-      DeviceIndex: 2
 
   # ---------- Optional test workloads ----------
   # Plain VMs that exist only to prove the sensor path. They land in THIS

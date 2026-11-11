@@ -85,6 +85,9 @@ for path in sorted(glob.glob(os.environ.get("TEMPLATE_DIR","deploy/cloudformatio
     for name, r in res.items():
         if r.get("Type") == "AWS::EC2::Instance":
             nics = (r.get("Properties") or {}).get("NetworkInterfaces") or []
+            if isinstance(nics, dict) and "Fn::If" in nics:
+                branches = [b for b in nics["Fn::If"][1:] if isinstance(b, list)]
+                nics = max(branches, key=len) if branches else []
             if len(nics) > 1:
                 multinic.add(name)
 

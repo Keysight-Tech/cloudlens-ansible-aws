@@ -37,7 +37,7 @@ variable "public_key" {
 variable "ami_id" {
   description = "KVO Marketplace AMI ID. Requires a one-time Marketplace subscription on the account. Default is the us-east-1 CloudLens KVO image."
   type        = string
-  default     = "ami-017c0db8981569380"
+  default     = "ami-04b79ded0ffdaaed3"
 }
 
 variable "instance_type" {

@@ -36,7 +36,7 @@ Exit codes: 0 ok, 3 KVO auth/eula, 4 not licensed, 5 presence/commit,
 6 cloud config, 7 collection, 8 CLM not found/CONNECTED.
 """
 from __future__ import annotations
-import argparse, json, subprocess, sys, time
+import argparse, json, os, subprocess, sys, time
 import requests
 
 def log(m): print(f"[kvo-mirror] {m}", file=sys.stderr, flush=True)
@@ -441,9 +441,23 @@ def create_remote_tool(base, token, cr, name, cluster, remote_ip, encap, gre_key
     rows = d.get("data", {}).get("createTool") or []
     return rows[0] if rows else None
 
+_POLICY_INPUT_FIELDS = {}
+
+def policy_source(base, token, verify, name):
+    """The policy's traffic source in the shape this KVO takes. KVO 2.13 has
+    source:{name}; KVO 3.1.0 removed it for sources:[{name}] (live schema,
+    2026-10-16), and an unknown field fails the whole mutation."""
+    if base not in _POLICY_INPUT_FIELDS:
+        d = gql(base, token, '{ __type(name:"_MonitoringPolicyInput"){ inputFields { name } } }', None, verify)
+        t = (d.get("data") or {}).get("__type") or {}
+        _POLICY_INPUT_FIELDS[base] = {f["name"] for f in (t.get("inputFields") or [])}
+    if "source" in _POLICY_INPUT_FIELDS[base]:
+        return {"source": {"name": name}}
+    return {"sources": [{"name": name}]}
+
 def create_monitoring_policy(base, token, cr, name, cluster, collection_name, tool_name, verify):
     settings = {
-        "source": {"name": collection_name},
+        **policy_source(base, token, verify, collection_name),
         "tools": {"name": tool_name},
         "runMode": "CONTINUOUSLY",
         "type": "REGULAR",
@@ -589,8 +603,13 @@ def main():
                          "re-attaches it whenever the config is rebuilt so the link is never "
                          "dropped (a dropped link fails the policy commit -> zero sessions). "
                          "Only names that already exist in KVO are attached.")
-    ap.add_argument("--aws-access-key", help="AWS access key for KVO (omit to use KVO's instance role)")
-    ap.add_argument("--aws-secret-key", help="AWS secret key for KVO (omit to use KVO's instance role)")
+    # The key pair defaults to the environment so callers need not put a secret
+    # on the command line, where any process listing would show it.
+    ap.add_argument("--aws-access-key", default=os.environ.get("CLOUDLENS_MIRROR_ACCESS_KEY") or None,
+                    help="AWS access key for KVO (default: $CLOUDLENS_MIRROR_ACCESS_KEY; "
+                         "omit both to use KVO's instance role)")
+    ap.add_argument("--aws-secret-key", default=os.environ.get("CLOUDLENS_MIRROR_SECRET_KEY") or None,
+                    help="AWS secret key for KVO (default: $CLOUDLENS_MIRROR_SECRET_KEY)")
     ap.add_argument("--kvo-admin-user", default="admin")
     ap.add_argument("--kvo-admin-pass", default="admin")
     ap.add_argument("--accept-eula", action="store_true", help="accept KVO EULA if pending (legal acceptance)")

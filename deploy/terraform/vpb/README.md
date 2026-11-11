@@ -43,7 +43,7 @@ When creating a new VPC the module builds three subnets (mgmt/ingress/egress) in
 | `admin_username` | `cloudlens` | OS admin user (for the ssh_command output) |
 | `key_name` | `""` | Existing EC2 key pair name |
 | `public_key` | `""` | SSH public key to import as a new key pair |
-| `ami_id` | `ami-0a561b450552b707d` | vPB Marketplace AMI |
+| `ami_id` | `ami-0e78d35898708162b` | vPB Marketplace AMI |
 | `instance_type` | `t3.xlarge` | Fixed: t3.xlarge only |
 | `ingress_nic_count` | `1` | Ingress NICs (1-3) |
 | `egress_nic_count` | `1` | Egress NICs (1-3) |
@@ -85,8 +85,8 @@ Subscribe once in the AWS Marketplace console before applying:
 ```bash
 #   https://console.aws.amazon.com/marketplace
 # The AMI ID used by this module (us-east-1):
-#   ami-0a561b450552b707d  (CloudLens Virtual Packet Broker)
-aws ec2 describe-images --image-ids ami-0a561b450552b707d --region us-east-1
+#   ami-0e78d35898708162b  (CloudLens Virtual Packet Broker)
+aws ec2 describe-images --image-ids ami-0e78d35898708162b --region us-east-1
 ```
 
 Without an active subscription, `terraform apply` fails with an OptInRequired error at instance launch.
